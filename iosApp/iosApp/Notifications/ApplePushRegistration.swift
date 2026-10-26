@@ -57,7 +57,7 @@ extension ApplePushDisplayTargetStore {
 }
 
 enum ApplePushRegistrationWire {
-    static let defaultTopic = "org.siloserver.silo"
+    static let defaultTopic = "com.cubbiestream.kyro"
     static let privatePushMode = "private_push"
     static let offPushMode = "off"
 
@@ -189,7 +189,7 @@ actor ApplePushRegistrar {
     }
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.cubbiestream.kyro",
         category: "ApplePush"
     )
     /// How long a held generation is not sent again: after a registration
@@ -674,7 +674,7 @@ final class ApplePushRegistrationCoordinator {
     static let shared = ApplePushRegistrationCoordinator()
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.cubbiestream.kyro",
         category: "ApplePush"
     )
 

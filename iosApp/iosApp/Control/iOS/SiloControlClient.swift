@@ -126,7 +126,7 @@ final class SiloControlClient {
     private static let offerTitleWait: Duration = .milliseconds(300)
     private static let persistedTargetKey = "silocontrol.lastTarget"
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.cubbiestream.kyro",
         category: "control.client"
     )
 

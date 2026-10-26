@@ -215,7 +215,7 @@ struct TVTopMenuBar: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.cubbiestream.kyro",
         category: "TVFocus"
     )
 

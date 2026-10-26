@@ -73,7 +73,11 @@ enum AetherAudioSessionOwnership {
         let others = registrations.withLock { all in all.filter { $0.key != ownID }.map(\.value) }
         // Probes run outside the lock: they are main-actor reads into engines, and a
         // probe must never be able to re-enter this registry while it is locked.
-        return !others.contains { $0.probe?() ?? true }
+        return mayDeactivateSharedSession(otherOwnersHoldingAudio: others.map { $0.probe?() ?? true })
+    }
+
+    static func mayDeactivateSharedSession(otherOwnersHoldingAudio: [Bool]) -> Bool {
+        !otherOwnersHoldingAudio.contains(true)
     }
 
     private static func register(

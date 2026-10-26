@@ -144,7 +144,7 @@ struct SignInTVView: View {
     }
 }
 
-/// Handles `silo://device?server=&url=&code=` from the web approval page:
+/// Handles `kyro://device?server=&url=&code=` from the web approval page:
 /// finds the saved server with that verified identity, or offers to add it
 /// from the link's address, then shows the approval card.
 struct DeviceLinkApprovalView: View {

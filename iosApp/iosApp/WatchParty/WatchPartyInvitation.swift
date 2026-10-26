@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Two shapes name the same invitation:
 /// - `https://<server>/rooms/join?token=…`, the shareable web link.
-/// - `silo://watch-party?server=<server>&token=…`, the app link the server's
+/// - `kyro://watch-party?server=<server>&token=…`, the app link the server's
 ///   join page offers, since a self-hosted domain can't be a universal link.
 struct WatchPartyInvitation: Equatable, Sendable {
     let serverURL: String

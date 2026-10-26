@@ -250,7 +250,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
 
     private static func body(token: String = tokenA) -> APIv2ApplePushRegistrationBody {
         APIv2ApplePushRegistrationBody(deviceId: "device-1", apnsToken: token, apnsEnvironment: "sandbox",
-            apnsTopic: "org.siloserver.silo", pushMode: "private_push")
+            apnsTopic: "com.cubbiestream.kyro", pushMode: "private_push")
     }
 
     private static let accepted = ApplePushRegistrar.Result.registered(ApplePushAcceptedRegistration(
@@ -274,7 +274,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: String])
         XCTAssertEqual(sent, [
             "device_id": "device-1", "apns_token": Self.tokenA, "apns_environment": "sandbox",
-            "apns_topic": "org.siloserver.silo", "push_mode": "private_push",
+            "apns_topic": "com.cubbiestream.kyro", "push_mode": "private_push",
         ])
         XCTAssertEqual(try h.record()?.installationKey, key)
         // Keyed by the deployment and profile pushes will name.

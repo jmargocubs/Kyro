@@ -12,7 +12,7 @@ import Security
 ///    own path prefix, so the app never opens another origin. An oauth
 ///    provider without `native_start_path` offers no browser sign-in.
 /// 3. The server finishes with the provider and redirects to the fixed app
-///    URI `org.siloserver.silo:/auth/callback` with `code`, `state`,
+///    URI `com.cubbiestream.kyro:/auth/callback` with `code`, `state`,
 ///    `server` and `iss` (the origin where the native start first arrived),
 ///    or `error`.
 /// 4. Check `state`, `server`, and that `iss` is the saved base's origin,
@@ -27,8 +27,8 @@ import Security
 /// nor any token is ever logged.
 enum NativeSignIn {
     /// RFC 8252 private-use scheme: the iOS bundle prefix and the Android
-    /// `applicationId`. Distinct from the `silo://` deep links.
-    static let callbackScheme = "org.siloserver.silo"
+    /// `applicationId`. Distinct from the `kyro://` deep links.
+    static let callbackScheme = "com.cubbiestream.kyro"
     static let callbackPath = "/auth/callback"
 
     /// Whether `url` is the handshake's app redirect rather than a deep link.

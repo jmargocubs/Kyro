@@ -1205,6 +1205,8 @@ private extension Route {
             return "serverNeedsSetup"
         case .search:
             return "search"
+        case .liveTV:
+            return "liveTV"
         case .libraryCollection:
             return "libraryCollection"
         case .itemDetail:

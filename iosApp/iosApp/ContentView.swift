@@ -32,7 +32,7 @@ struct ContentView: View {
     /// only one deferred intent: a newer external URL supersedes an older one.
     @State private var pendingDeepLink: URL?
     #if os(iOS)
-    /// A TV sign-in link being approved (`silo://device?…`).
+    /// A TV sign-in link being approved (`kyro://device?…`).
     @State private var deviceApprovalLink: DeviceApprovalLink?
     #endif
     /// Monotonically identifies the newest accepted external navigation
@@ -888,16 +888,16 @@ struct ContentView: View {
     }
     #endif
 
-    /// Resolves a `silo://` URL (or its legacy `continuum://` alias) to a
+    /// Resolves a `kyro://` URL (or its legacy `continuum://` alias) to a
     /// navigation action. Supported shapes:
-    /// - `silo://item/{contentId}` — push the detail screen
-    /// - `silo://play/{contentId}` — push the player (resume from
+    /// - `kyro://item/{contentId}` — push the detail screen
+    /// - `kyro://play/{contentId}` — push the player (resume from
     ///   last known position)
-    /// - `silo://downloads` — select the Downloads tab (local
+    /// - `kyro://downloads` — select the Downloads tab (local
     ///   download notifications)
-    /// - `silo://watch-party?server=…&token=…` — join a Watch Party
+    /// - `kyro://watch-party?server=…&token=…` — join a Watch Party
     ///   invitation (see `WatchPartyInvitation`)
-    /// - `silo://search?q={term}` — open Search with `term` filled in
+    /// - `kyro://search?q={term}` — open Search with `term` filled in
     ///   (Siri's in-app search; see `SiriSearchLink`)
     ///
     /// If the auth state isn't ready yet, the link is queued in
@@ -3276,6 +3276,8 @@ struct MainTabView: View {
     @ViewBuilder
     private func routeContent(for route: Route) -> some View {
         switch route {
+        case .liveTV:
+            LiveTVView(service: .shared)
         case .libraryCollection(let libraryId, let collectionId, let title, let kind, let mediaScope):
             LibraryCollectionDetailView(
                 libraryId: libraryId,

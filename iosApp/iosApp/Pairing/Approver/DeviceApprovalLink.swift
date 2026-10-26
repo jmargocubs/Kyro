@@ -1,6 +1,6 @@
 import Foundation
 
-/// `silo://device?server=<server_id>&url=<base>&code=<code>`: the web
+/// `kyro://device?server=<server_id>&url=<base>&code=<code>`: the web
 /// approval page's "Open in the Silo app" link for a TV sign-in code.
 ///
 /// A code means nothing without its server, so the link names the server by
@@ -26,7 +26,7 @@ struct DeviceApprovalLink: Identifiable, Equatable, Sendable {
         self.code = DeviceUserCode.normalized(code)
     }
 
-    /// `silo://device?server=&url=&code=` again, to re-handle once the app is
+    /// `kyro://device?server=&url=&code=` again, to re-handle once the app is
     /// ready for it (after adding the server, or signing in to it again).
     var url: URL? {
         var components = URLComponents()

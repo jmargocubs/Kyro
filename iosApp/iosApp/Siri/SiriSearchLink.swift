@@ -1,7 +1,7 @@
 #if os(iOS) || os(tvOS)
 import Foundation
 
-/// `silo://search?q=<term>` opens Search with `term` filled in.
+/// `kyro://search?q=<term>` opens Search with `term` filled in.
 ///
 /// Siri's in-app search (`SearchInSiloIntent`) hands its term to the app
 /// through this link, so a Siri request shares the authentication,

@@ -38,7 +38,7 @@ final class TVPairingBrowser {
     /// True between `start()` and `stop()`. While false, `found` is empty,
     /// which says nothing about any TV. Stored so views observe it.
     private(set) var isBrowsing = false
-    private nonisolated static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.browser")
+    private nonisolated static let logger = Logger(subsystem: "com.cubbiestream.kyro", category: "pairing.browser")
 
     init(selfHeal: BonjourSelfHeal = BonjourSelfHeal()) {
         self.selfHeal = selfHeal

@@ -171,7 +171,7 @@ final class ReceiverPairingCoordinator {
     /// explicit TV-side teardown is waiting for the current attempt to reach
     /// its cancellation-safe boundary.
     private var isCancelling = false
-    private static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.receiver")
+    private static let logger = Logger(subsystem: "com.cubbiestream.kyro", category: "pairing.receiver")
 
     init(
         api: any PairingDeviceAuthorizing = PairingDeviceAPI(),

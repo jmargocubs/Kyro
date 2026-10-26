@@ -94,6 +94,7 @@ final class PlayerOrientationCoordinator {
     }
 
     private var rotationState = PlayerRotationState()
+    @ObservationIgnored private var liveTVOrientationObservers: [NSObjectProtocol] = []
     private(set) var observedOrientation: PlayerScreenOrientation = .portrait
     var isPlayerActive: Bool { rotationState.isPlayerActive }
     var isRotationLocked: Bool { rotationState.isLocked }
@@ -141,8 +142,32 @@ final class PlayerOrientationCoordinator {
         updateOrientationPolicy(preferredOrientation: persistedLock ?? deviceOrientationMask())
     }
 
+    /// Live TV shares the app-level orientation bridge but deliberately does
+    /// not read or persist the movie-player orientation preference.
+    func activateLiveTVPlayer() {
+        refreshInterfaceOrientation()
+        rotationState.activate()
+        observeLiveTVOrientationChanges()
+        updateOrientationPolicy(preferredOrientation: deviceOrientationMask())
+    }
+
+    /// Requests a geometry change only while the Live TV cover is active. The
+    /// scene's allowed mask remains both landscape sides, so device rotation
+    /// continues to work and iOS can reject the request when rotation is locked.
+    func requestLiveTVOrientation(_ orientation: PlayerScreenOrientation) {
+        guard rotationState.isPlayerActive else { return }
+        updateOrientationPolicy(preferredOrientation: orientation.mask)
+    }
+
+    func toggleLiveTVOrientation() {
+        guard rotationState.isPlayerActive else { return }
+        refreshInterfaceOrientation()
+        requestLiveTVOrientation(observedOrientation.toggled)
+    }
+
     func deactivatePlayer() {
         rotationState.deactivate()
+        stopObservingLiveTVOrientationChanges()
         updateOrientationPolicy(preferredOrientation: Self.appDefaultOrientations.contains(.portrait)
             ? .portrait : Self.appDefaultOrientations)
     }
@@ -172,6 +197,22 @@ final class PlayerOrientationCoordinator {
         guard let current = currentInterfaceOrientation(),
               let orientation = PlayerScreenOrientation(interfaceOrientation: current) else { return }
         observedOrientation = orientation
+    }
+
+    private func observeLiveTVOrientationChanges() {
+        stopObservingLiveTVOrientationChanges()
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        let center = NotificationCenter.default
+        let token = center.addObserver(forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshInterfaceOrientation() }
+        }
+        liveTVOrientationObservers.append(token)
+    }
+
+    private func stopObservingLiveTVOrientationChanges() {
+        for token in liveTVOrientationObservers { NotificationCenter.default.removeObserver(token) }
+        if !liveTVOrientationObservers.isEmpty { UIDevice.current.endGeneratingDeviceOrientationNotifications() }
+        liveTVOrientationObservers.removeAll()
     }
 
     /// Read the real interface orientation for every tap. Explicit rotation

@@ -152,6 +152,14 @@ struct ProfileAvatarMenu: View {
 
     var body: some View {
         Menu {
+            Button {
+                router.navigate(to: .liveTV)
+            } label: {
+                Label("Live TV", systemImage: "dot.radiowaves.left.and.right")
+            }
+
+            Divider()
+
             #if os(iOS) || os(tvOS)
             if WatchPartyEntry.isAvailable {
                 Button(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3") { router.navigate(to: .watchParty) }

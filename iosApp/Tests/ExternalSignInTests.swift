@@ -327,11 +327,11 @@ final class ExternalSignInTests: XCTestCase {
         }
         XCTAssertEqual(ExternalSignInError.issuerMismatch.message,
             "This sign-in came back from a different server. Nothing was signed in.")
-        let deepLink = try XCTUnwrap(URL(string: "silo://auth/callback?code=c&state=st&server=\(Self.serverId)"))
-        XCTAssertFalse(NativeSignIn.isCallback(deepLink), "silo:// deep links are not the sign-in redirect")
+        let deepLink = try XCTUnwrap(URL(string: "kyro://auth/callback?code=c&state=st&server=\(Self.serverId)"))
+        XCTAssertFalse(NativeSignIn.isCallback(deepLink), "kyro:// deep links are not the sign-in redirect")
         XCTAssertThrowsError(try NativeSignInCallback.parse(deepLink, expectedState: "st", expectedServerId: Self.serverId,
             expectedIssuer: Self.origin))
-        let otherPath = try XCTUnwrap(URL(string: "org.siloserver.silo:/other?code=c&state=st&server=\(Self.serverId)"))
+        let otherPath = try XCTUnwrap(URL(string: "com.cubbiestream.kyro:/other?code=c&state=st&server=\(Self.serverId)"))
         XCTAssertThrowsError(try NativeSignInCallback.parse(otherPath, expectedState: "st", expectedServerId: Self.serverId,
             expectedIssuer: Self.origin)) {
             XCTAssertEqual($0 as? ExternalSignInError, .incompleteCallback)
@@ -408,7 +408,7 @@ final class ExternalSignInTests: XCTestCase {
         var startURLs: [URL] { lock.withLock { opened } }
 
         @MainActor func authenticate(url: URL, callbackScheme: String) async throws -> URL {
-            XCTAssertEqual(callbackScheme, "org.siloserver.silo")
+            XCTAssertEqual(callbackScheme, "com.cubbiestream.kyro")
             lock.withLock { opened.append(url) }
             try await whileOpen?()
             return try answer(url)
@@ -1424,7 +1424,7 @@ extension ExternalSignInTests {
         let strays = [
             Self.callback(["code": "c", "state": "someone-else", "server": Self.serverId]),
             Self.callback(["code": "c", "server": Self.serverId]),
-            try XCTUnwrap(URL(string: "org.siloserver.silo:/auth/callback")),
+            try XCTUnwrap(URL(string: "com.cubbiestream.kyro:/auth/callback")),
         ]
         for stray in strays {
             XCTAssertFalse(runner.receiveExternalCallback(stray), stray.absoluteString)

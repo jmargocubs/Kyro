@@ -247,7 +247,7 @@ class PlayerViewModel {
         return initialLibraryId
     }
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.cubbiestream.kyro",
         category: "Player"
     )
 
@@ -11539,7 +11539,7 @@ private final class LiveSubtitlePlaybackAdapter: LivePlaybackControls {
 @MainActor
 private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.cubbiestream.kyro",
         category: "LiveSubtitle"
     )
 

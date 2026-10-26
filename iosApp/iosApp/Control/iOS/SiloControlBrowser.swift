@@ -47,7 +47,7 @@ final class SiloControlBrowser {
     private var browser: NWBrowser?
     private let selfHeal: BonjourSelfHeal
     private nonisolated static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.cubbiestream.kyro",
         category: "control.browser"
     )
 

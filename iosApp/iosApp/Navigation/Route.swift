@@ -8,6 +8,9 @@ enum Route: Hashable {
 
     // Main tabs
     case search
+    /// Optional live-channel destination, pushed from the profile menu so it
+    /// does not add a fifth or sixth item to Silo's customizable native tab bar.
+    case liveTV
     case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?, mediaScope: LibraryVideoScope? = nil)
     case itemDetail(
         contentId: String,

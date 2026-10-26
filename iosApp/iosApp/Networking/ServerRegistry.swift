@@ -133,8 +133,8 @@ enum ServerRegistryError: LocalizedError {
 /// - **UserDefaults** (`siloServerRegistry.v1`): the server list and
 ///   active ID on iOS/macOS. tvOS stores the shared list in the
 ///   user-independent Keychain and the active ID in current-user defaults.
-/// - **Keychain** (`SharedKeychain` service `org.siloserver.silo`, account
-///   `org.siloserver.silo.<id>.{accessToken,refreshToken,profileToken}`): per-
+/// - **Keychain** (`SharedKeychain` service `com.cubbiestream.kyro`, account
+///   `com.cubbiestream.kyro.<id>.{accessToken,refreshToken,profileToken}`): per-
 ///   server tokens, activated by `TokenStore.switchActiveServer`.
 ///
 /// The registry is the single source of truth for URL + name.
@@ -163,7 +163,7 @@ final class ServerRegistry {
     private static let legacyMigratedKey = "continuumServerRegistry.migrated.v1"
     private static let sharedTVRegistryAccount = SharedStorage.keychainAccountPrefix + "serverRegistry.v2"
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.cubbiestream.kyro",
         category: "ServerRegistry"
     )
 
