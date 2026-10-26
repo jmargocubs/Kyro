@@ -4,11 +4,11 @@
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.org.siloserver.silo</string>
+		<string>group.com.cubbiestream.kyro</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)org.siloserver.silo.shared</string>
+		<string>$(AppIdentifierPrefix)com.cubbiestream.kyro.shared</string>
 	</array>
 </dict>
 </plist>

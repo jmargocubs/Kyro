@@ -1,6 +1,6 @@
 name: Silo
 options:
-  bundleIdPrefix: org.siloserver.silo
+  bundleIdPrefix: com.cubbiestream.kyro
   deploymentTarget:
     iOS: "18.0"
     macOS: "26.0"

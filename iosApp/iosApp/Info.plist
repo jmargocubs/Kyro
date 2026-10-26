@@ -4,14 +4,14 @@
 <dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>org.siloserver.silo.downloads-refresh</string>
+		<string>com.cubbiestream.kyro.downloads-refresh</string>
 		<string>com.continuum.play.downloads-refresh</string>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).downloads.continued.*</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Silo</string>
+	<string>Kyro</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconName</key>
@@ -38,18 +38,17 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>org.siloserver.silo</string>
+			<string>com.cubbiestream.kyro</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>silo</string>
-				<string>continuum</string>
+				<string>kyro</string>
 			</array>
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>SiloKeychainAccessGroup</key>
-	<string>$(AppIdentifierPrefix)org.siloserver.silo.shared</string>
+	<string>$(AppIdentifierPrefix)com.cubbiestream.kyro.shared</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
@@ -62,7 +61,7 @@
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Silo uses your local network to find Silo servers, and to set up and control Silo on your Apple TV.</string>
+	<string>Kyro uses your local network to find Silo servers, and to set up and control Silo on your Apple TV.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_silopair._tcp</string>
