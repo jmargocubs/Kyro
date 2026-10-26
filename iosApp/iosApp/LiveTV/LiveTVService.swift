@@ -17,14 +17,13 @@ final class LiveTVService {
     private(set) var channelCatalogRevision = 0
 
     private var channelCatalogs: [UUID: [LiveTVChannel]] = [:]
-    private var guideCatalogs: [UUID: [LiveTVProgram]] = [:]
-    private var guideIndexes: [UUID: [String: [LiveTVProgram]]] = [:]
+    private var guideIndexes: [UUID: EPGIndex] = [:]
     private var categoryCatalogs: [UUID: [String]] = [:]
     private var shortEPGLoaded = Set<String>()
-    private var guideRefreshDates: [UUID: Date] = [:]
     private let defaults: UserDefaults
     private let secretStore: LiveTVSecretStore
     @ObservationIgnored private let session: URLSession
+    @ObservationIgnored private let epg: EPGService
     /// The one Live TV player session for the process, created on first playback. Views read it
     /// from here so a SwiftUI redraw never allocates a player or registers an audio claim.
     @ObservationIgnored private(set) lazy var playerSession = LiveTVPlayerSession.makeDefault()
@@ -32,17 +31,19 @@ final class LiveTVService {
     private static let providersKey = "liveTV.providers.v1"
     private static let favoritesKey = "liveTV.favorites.v1"
     private static let maximumPlaylistBytes = 16 * 1024 * 1024
-    private static let maximumGuideBytes = 16 * 1024 * 1024
     private static let maximumChannels = 20_000
-    private static let maximumPrograms = 50_000
 
     init(
         defaults: UserDefaults = .standard,
         secretStore: LiveTVSecretStore? = nil,
-        session: URLSession? = nil
+        session: URLSession? = nil,
+        epg: EPGService? = nil
     ) {
         self.defaults = defaults
         self.secretStore = secretStore ?? KeychainLiveTVSecretStore()
+        self.epg = epg ?? EPGService(
+            cache: .makeDefault(),
+            loader: session.map { URLSessionEPGFeedLoader(session: $0) } ?? URLSessionEPGFeedLoader.makeDefault())
         if let session {
             self.session = session
         } else {
@@ -127,11 +128,10 @@ final class LiveTVService {
     func removeProvider(_ id: UUID) {
         providers.removeAll { $0.id == id }
         channelCatalogs[id] = nil
-        guideCatalogs[id] = nil
         guideIndexes[id] = nil
         categoryCatalogs[id] = nil
         shortEPGLoaded = shortEPGLoaded.filter { !$0.hasPrefix("\(id.uuidString):") }
-        guideRefreshDates[id] = nil
+        Task { [epg] in await epg.remove(providerID: id) }
         _ = secretStore.remove(account: Self.secretAccount(id))
         if selectedProviderID == id { selectedProviderID = providers.first?.id }
         persistProviders()
@@ -157,7 +157,6 @@ final class LiveTVService {
         isLoading = true
         errorMessage = nil
         guideMessage = nil
-        defer { isLoading = false }
 
         do {
             let loadedChannels: [LiveTVChannel]
@@ -182,36 +181,57 @@ final class LiveTVService {
             providers[providerIndex].lastRefreshed = .now
             persistProviders()
 
-            if source.kind == .m3u, let xmltvURL = source.xmltvURL, Self.isWebURL(xmltvURL) {
-                do {
-                    let guideData = try await fetch(xmltvURL, maximumBytes: Self.maximumGuideBytes)
-                    let guideLimit = Self.maximumPrograms
-                    let (loadedGuide, guideIndex) = try await Task.detached(priority: .utility) {
-                        let guide = try LiveTVXMLTVParser.parse(data: guideData, limit: guideLimit)
-                        return (guide, Self.index(guide))
-                    }.value
-                    guideCatalogs[providerID] = loadedGuide
-                    guideIndexes[providerID] = guideIndex
-                    guideRefreshDates[providerID] = .now
-                    guideMessage = loadedGuide.isEmpty ? "No guide listings are available yet." : nil
-                } catch {
-                    // Keep a previously parsed guide for this session; never
-                    // print or surface a provider URL or transport error.
-                    guideMessage = "Guide data could not be refreshed."
-                }
-            } else {
-                if source.kind == .m3u {
-                    guideCatalogs[providerID] = []
-                    guideIndexes[providerID] = [:]
-                    guideRefreshDates[providerID] = nil
-                }
-            }
-            updateGuideFreshness(for: providerID)
         } catch let error as LiveTVError {
             errorMessage = error.localizedDescription
+            isLoading = false
+            return
         } catch {
             errorMessage = "The playlist could not be loaded. Check the provider settings and try again."
+            isLoading = false
+            return
         }
+        // Channels are usable now; the guide fills in behind them.
+        isLoading = false
+        await refreshGuide(providerID: providerID, source: source)
+    }
+
+    /// Shows the cached guide immediately, then refreshes it when the policy says it is due.
+    private func refreshGuide(providerID: UUID, source: LiveTVSourceConfiguration) async {
+        let feed: EPGFeedSource?
+        switch source.kind {
+        case .m3u:
+            feed = source.xmltvURL.flatMap(Self.webURL).map(EPGFeedSource.xmltv)
+        case .xtream:
+            if let server = source.serverURL, let username = source.username, let password = source.password {
+                feed = .xtream(server: server, username: username, password: password)
+            } else {
+                feed = nil
+            }
+        }
+        guard let feed else {
+            guideIndexes[providerID] = nil
+            await epg.remove(providerID: providerID)
+            updateGuideFreshness(for: providerID)
+            return
+        }
+        let channels = channelCatalogs[providerID] ?? []
+        let filter = EPGChannelFilter(guideIDs: channels.map(\.guideID), names: channels.map(\.name))
+        if guideIndexes[providerID] == nil, let cached = await epg.index(for: providerID) {
+            guideIndexes[providerID] = cached
+            updateGuideFreshness(for: providerID)
+        }
+        do {
+            let index = try await epg.refresh(providerID: providerID, source: feed, channels: filter)
+            guard providers.contains(where: { $0.id == providerID }) else { return }
+            guideIndexes[providerID] = index
+            guideMessage = index.programCount == 0 ? "No guide listings are available yet." : nil
+        } catch is CancellationError {
+            return
+        } catch {
+            // Keep a previously loaded guide; never print or surface a provider URL or transport error.
+            guideMessage = "Guide data could not be refreshed."
+        }
+        updateGuideFreshness(for: providerID)
     }
 
     var categories: [String] {
@@ -283,20 +303,12 @@ final class LiveTVService {
         do {
             let url = try XtreamURLBuilder.apiURL(server: server, username: username, password: password,
                                                  action: "get_short_epg", streamID: streamID, limit: 10)
-            let response = try JSONDecoder().decode(XtreamShortEPGResponse.self,
-                from: await fetch(url, maximumBytes: 512 * 1024))
-            let programs = (response.epgList ?? []).compactMap { item -> LiveTVProgram? in
-                guard let title = item.title?.nilIfEmpty,
-                      let startValue = item.startTimestamp.flatMap(TimeInterval.init),
-                      let endValue = item.stopTimestamp.flatMap(TimeInterval.init), startValue < endValue else { return nil }
-                return LiveTVProgram(id: "xtream:\(streamID):\(Int(startValue))", channelID: channel.guideID ?? String(streamID),
-                                     title: title, startsAt: Date(timeIntervalSince1970: startValue), endsAt: Date(timeIntervalSince1970: endValue))
-            }
+            let data = try await fetch(url, maximumBytes: 512 * 1024)
             let guideID = channel.guideID ?? String(streamID)
-            guideCatalogs[providerID, default: []].removeAll { $0.channelID == guideID }
-            guideCatalogs[providerID, default: []].append(contentsOf: programs)
-            guideIndexes[providerID, default: [:]][guideID] = programs.sorted { $0.startsAt < $1.startsAt }
-            guideRefreshDates[providerID] = .now
+            let programs = try XtreamEPG.programs(from: data, guideID: guideID, limits: epg.limits)
+            let index = await epg.replacePrograms(programs, guideID: guideID, providerID: providerID)
+            guard providers.contains(where: { $0.id == providerID }) else { return }
+            guideIndexes[providerID] = index
             guideMessage = programs.isEmpty ? "No guide listings are available yet." : nil
             updateGuideFreshness(for: providerID)
         } catch {
@@ -318,12 +330,9 @@ final class LiveTVService {
         guard let providerID = UUID(uuidString: String(channel.id.prefix(36))) else {
             return LiveTVProgramPair(current: nil, next: nil)
         }
-        return LiveTVProgramSelection.pair(channelGuideID: channel.guideID,
-                                           programsByChannel: guideIndexes[providerID] ?? [:], at: date)
-    }
-
-    nonisolated private static func index(_ programs: [LiveTVProgram]) -> [String: [LiveTVProgram]] {
-        Dictionary(grouping: programs, by: \.channelID).mapValues { $0.sorted { $0.startsAt < $1.startsAt } }
+        guard let index = guideIndexes[providerID] else { return LiveTVProgramPair(current: nil, next: nil) }
+        let pair = index.nowNext(guideID: channel.guideID, name: channel.name, at: date)
+        return LiveTVProgramPair(current: pair.current.map(LiveTVProgram.init), next: pair.next.map(LiveTVProgram.init))
     }
 
     private func fetch(_ address: String, maximumBytes: Int) async throws -> Data {
@@ -360,11 +369,11 @@ final class LiveTVService {
     }
 
     private func updateGuideFreshness(for providerID: UUID) {
-        guard let refreshed = guideRefreshDates[providerID] else {
-            isGuideStale = !(guideCatalogs[providerID]?.isEmpty == false)
+        guard let index = guideIndexes[providerID] else {
+            isGuideStale = true
             return
         }
-        isGuideStale = Date.now.timeIntervalSince(refreshed) > 36 * 60 * 60
+        isGuideStale = !epg.policy.freshness(of: index, now: .now).isUsable
     }
 
     private static func secretAccount(_ id: UUID) -> String { "provider.\(id.uuidString)" }

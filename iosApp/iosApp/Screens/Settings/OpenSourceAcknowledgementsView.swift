@@ -64,6 +64,7 @@ enum OpenSourceAcknowledgements {
         Resource(title: "HarfBuzz", name: "HarfBuzz"),
         Resource(title: "libpng", name: "libpng"),
         Resource(title: "ThumbHash decoder — MIT", name: "ThumbHash-MIT"),
+        Resource(title: "Telly XMLTV guide code — MIT", name: "Telly-MIT"),
     ]
 
     /// One titled license text per resource.

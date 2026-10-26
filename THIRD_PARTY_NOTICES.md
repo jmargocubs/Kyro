@@ -228,6 +228,21 @@ and a bounded asynchronous cache around the reference algorithm.
   <https://github.com/evanw/thumbhash/tree/a652ce6ed691242f459f468f0a8756cda3b90a82>
 - Bundled text: `ThumbHash-MIT.txt`
 
+## Telly XMLTV guide code
+
+Kyro's Live TV guide layer (`iosApp/iosApp/LiveTV/EPG/`) includes code adapted
+from Telly, distributed under the MIT license, Copyright (c) 2026 John Corser.
+The adapted parts are the XMLTV timestamp, streaming parser, element reader and
+episode-number conversion; the compressed-feed sniffing follows Telly's design
+but uses Apple's Compression framework instead of Telly's SWCompression
+dependency. Kyro adds strict timestamp validation, daylight-saving resolution,
+channel filtering, limits, cancellation, indexing and caching. No Telly
+dependency (SWCompression, BitByteData, GRDB or VLCKit) is linked.
+
+- Exact source:
+  <https://github.com/johnpc/telly-apple/tree/66c74301701822bed92bc245c7d887d9f78beb01>
+- Bundled text: `Telly-MIT.txt`
+
 ## Runtime attributions
 
 These services are not shipped in the app bundle, but the app shows their

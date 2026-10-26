@@ -96,6 +96,13 @@ struct LiveTVProgram: Hashable, Identifiable, Sendable {
     func isCurrent(at date: Date = .now) -> Bool { startsAt <= date && date < endsAt }
 }
 
+extension LiveTVProgram {
+    init(_ program: EPGProgram) {
+        self.init(id: program.id, channelID: program.channelID, title: program.title,
+                  startsAt: program.start, endsAt: program.end)
+    }
+}
+
 struct LiveTVProgramPair: Equatable {
     let current: LiveTVProgram?
     let next: LiveTVProgram?
@@ -182,26 +189,6 @@ final class LiveTVChannelSearchModel {
     func waitForCurrentSearch() async { await debounceTask?.value }
 }
 
-enum LiveTVProgramSelection {
-    static func pair(channelGuideID: String?, programsByChannel: [String: [LiveTVProgram]], at date: Date = .now) -> LiveTVProgramPair {
-        guard let channelGuideID, let programs = programsByChannel[channelGuideID] else {
-            return LiveTVProgramPair(current: nil, next: nil)
-        }
-        let currentIndex = programs.firstIndex { $0.isCurrent(at: date) }
-        let current = currentIndex.map { programs[$0] }
-        let next = programs.first { $0.startsAt >= date && $0.id != current?.id }
-        return LiveTVProgramPair(current: current, next: next)
-    }
-
-    static func pair(channelGuideID: String?, programs: [LiveTVProgram], at date: Date = .now) -> LiveTVProgramPair {
-        guard let channelGuideID else { return LiveTVProgramPair(current: nil, next: nil) }
-        let matching = programs.filter { $0.channelID == channelGuideID }.sorted { $0.startsAt < $1.startsAt }
-        let current = matching.first { $0.isCurrent(at: date) }
-        let next = matching.first { $0.startsAt >= date && $0.id != current?.id }
-        return LiveTVProgramPair(current: current, next: next)
-    }
-}
-
 enum LiveTVError: LocalizedError, Equatable {
     case invalidConfiguration
     case keychainUnavailable
@@ -265,17 +252,6 @@ struct XtreamLiveStreamResponse: Decodable, Sendable {
         case streamIcon = "stream_icon", categoryID = "category_id"
         case epgChannelID = "epg_channel_id", containerExtension = "container_extension"
     }
-}
-
-struct XtreamShortEPGResponse: Decodable, Sendable {
-    struct Entry: Decodable, Sendable {
-        let title: String?
-        let startTimestamp: String?
-        let stopTimestamp: String?
-        enum CodingKeys: String, CodingKey { case title; case startTimestamp = "start_timestamp"; case stopTimestamp = "stop_timestamp" }
-    }
-    let epgList: [Entry]?
-    enum CodingKeys: String, CodingKey { case epgList = "epg_list" }
 }
 
 enum XtreamURLBuilder {
@@ -1100,70 +1076,6 @@ enum LiveTVM3UParser {
             result[String(line[keyRange]).lowercased()] = String(line[valueRange])
         }
         return result
-    }
-}
-
-enum LiveTVXMLTVParser {
-    static func parse(data: Data, limit: Int = 50_000) throws -> [LiveTVProgram] {
-        let delegate = XMLTVDelegate(limit: limit)
-        let parser = XMLParser(data: data)
-        parser.delegate = delegate
-        parser.shouldResolveExternalEntities = false
-        guard parser.parse() else { throw LiveTVError.invalidPlaylist }
-        return delegate.programs
-    }
-}
-
-private final class XMLTVDelegate: NSObject, XMLParserDelegate {
-    private(set) var programs: [LiveTVProgram] = []
-    private let limit: Int
-    private var current: (channel: String, start: Date, end: Date, title: String?)?
-    private var element = ""
-    private var text = ""
-
-    init(limit: Int) { self.limit = limit }
-
-    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
-                qualifiedName qName: String?, attributes: [String: String] = [:]) {
-        element = elementName
-        text = ""
-        guard elementName == "programme", programs.count < limit,
-              let channel = attributes["channel"],
-              let start = Self.date(attributes["start"]),
-              let end = Self.date(attributes["stop"]), start < end else { return }
-        current = (channel, start, end, nil)
-    }
-
-    func parser(_ parser: XMLParser, foundCharacters string: String) { text += string }
-
-    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?,
-                qualifiedName qName: String?) {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if elementName == "title", current != nil, !value.isEmpty { current?.title = value }
-        if elementName == "programme", let item = current, let title = item.title {
-            programs.append(LiveTVProgram(
-                id: "\(item.channel):\(Int(item.start.timeIntervalSince1970))",
-                channelID: item.channel,
-                title: title,
-                startsAt: item.start,
-                endsAt: item.end
-            ))
-            current = nil
-        }
-        element = ""
-        text = ""
-    }
-
-    private static func date(_ value: String?) -> Date? {
-        guard let value else { return nil }
-        for format in ["yyyyMMddHHmmss Z", "yyyyMMddHHmm Z", "yyyyMMddHHmmss", "yyyyMMddHHmm"] {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(secondsFromGMT: 0)
-            formatter.dateFormat = format
-            if let date = formatter.date(from: value) { return date }
-        }
-        return nil
     }
 }
 

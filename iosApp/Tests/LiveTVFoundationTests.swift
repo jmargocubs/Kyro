@@ -148,12 +148,12 @@ final class LiveTVFoundationTests: XCTestCase {
           </programme>
         </tv>
         """#
-        let programs = try LiveTVXMLTVParser.parse(data: Data(xml.utf8))
         let now = ISO8601DateFormatter().date(from: "2026-01-01T11:30:00Z")!
-        let pair = LiveTVProgramSelection.pair(channelGuideID: "news.one", programs: programs, at: now)
+        let index = try EPGIndex(document: XMLTVParser.parse(Data(xml.utf8)), fetchedAt: now, now: now, limits: EPGLimits())
+        let pair = index.nowNext(guideID: "news.one", name: nil, at: now)
         XCTAssertEqual(pair.current?.title, "Current bulletin")
         XCTAssertEqual(pair.next?.title, "Next bulletin")
-        XCTAssertNil(LiveTVProgramSelection.pair(channelGuideID: nil, programs: programs, at: now).current)
+        XCTAssertNil(index.nowNext(guideID: nil, name: nil, at: now).current)
     }
 
     private func makeSession(_ engine: LiveTVTestEngine) -> LiveTVPlayerSession {

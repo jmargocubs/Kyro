@@ -99,6 +99,13 @@ ThumbHash decoder
   Silo includes an adapted copy of the reference Swift decode path with input
   validation, cross-platform image creation, and a bounded asynchronous cache.
 
+Telly XMLTV guide code
+  Revision: 66c74301701822bed92bc245c7d887d9f78beb01
+  License: MIT
+  Source: https://github.com/johnpc/telly-apple/tree/66c74301701822bed92bc245c7d887d9f78beb01
+  Kyro includes adapted copies of Telly's XMLTV timestamp, parser and
+  episode-number code with validation, limits, cancellation and indexing.
+
 SMBClient 0.3.1 is present in SwiftPM's resolution graph only because
 AetherEngine publishes a separate optional AetherEngineSMB product. Silo links
 the AetherEngine product, not AetherEngineSMB, so SMBClient is not included in
