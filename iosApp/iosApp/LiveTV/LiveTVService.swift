@@ -13,6 +13,10 @@ final class LiveTVService {
     private(set) var errorMessage: String?
     private(set) var guideMessage: String?
     private(set) var isGuideStale = false
+    /// True while a guide download for the selected playlist is in progress.
+    private(set) var isGuideLoading = false
+    /// Changes whenever any provider's guide listings change, so views can drop derived layout.
+    private(set) var guideRevision = 0
     private(set) var favoriteChannelIDs = Set<String>()
     private(set) var channelCatalogRevision = 0
 
@@ -140,6 +144,7 @@ final class LiveTVService {
         providers.removeAll { $0.id == id }
         channelCatalogs[id] = nil
         guideIndexes[id] = nil
+        guideRevision &+= 1
         categoryCatalogs[id] = nil
         shortEPGLoaded = shortEPGLoaded.filter { !$0.hasPrefix("\(id.uuidString):") }
         Task { [epg] in await epg.remove(providerID: id) }
@@ -221,20 +226,25 @@ final class LiveTVService {
         }
         guard let feed else {
             guideIndexes[providerID] = nil
+            guideRevision &+= 1
             await epg.remove(providerID: providerID)
             updateGuideFreshness(for: providerID)
             return
         }
+        isGuideLoading = true
+        defer { isGuideLoading = false }
         let channels = channelCatalogs[providerID] ?? []
         let filter = EPGChannelFilter(guideIDs: channels.map(\.guideID), names: channels.map(\.name))
         if guideIndexes[providerID] == nil, let cached = await epg.index(for: providerID) {
             guideIndexes[providerID] = cached
+            guideRevision &+= 1
             updateGuideFreshness(for: providerID)
         }
         do {
             let index = try await epg.refresh(providerID: providerID, source: feed, channels: filter)
             guard providers.contains(where: { $0.id == providerID }) else { return }
             guideIndexes[providerID] = index
+            guideRevision &+= 1
             guideMessage = index.programCount == 0 ? "No guide listings are available yet." : nil
         } catch is CancellationError {
             return
@@ -320,6 +330,7 @@ final class LiveTVService {
             let index = await epg.replacePrograms(programs, guideID: guideID, providerID: providerID)
             guard providers.contains(where: { $0.id == providerID }) else { return }
             guideIndexes[providerID] = index
+            guideRevision &+= 1
             guideMessage = programs.isEmpty ? "No guide listings are available yet." : nil
             updateGuideFreshness(for: providerID)
         } catch {
@@ -374,6 +385,16 @@ final class LiveTVService {
         guard let index = guideIndexes[providerID] else { return LiveTVProgramPair(current: nil, next: nil) }
         let pair = index.nowNext(guideID: channel.guideID, name: channel.name, at: date)
         return LiveTVProgramPair(current: pair.current.map(LiveTVProgram.init), next: pair.next.map(LiveTVProgram.init))
+    }
+
+    /// Listings for one channel that overlap `interval`, in airing order. Empty when its guide is
+    /// missing or no longer usable.
+    func guidePrograms(for channel: LiveTVChannel, overlapping interval: DateInterval) -> [EPGProgram] {
+        guard !isGuideStale,
+              let providerID = UUID(uuidString: String(channel.id.prefix(36))),
+              let index = guideIndexes[providerID],
+              let key = index.channelKey(guideID: channel.guideID, name: channel.name) else { return [] }
+        return index.programs(channelKey: key, overlapping: interval)
     }
 
     private func fetch(_ address: String, maximumBytes: Int) async throws -> Data {

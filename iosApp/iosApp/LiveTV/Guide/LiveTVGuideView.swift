@@ -1,0 +1,575 @@
+import SwiftUI
+
+/// The full Live TV guide: a fixed channel column beside a horizontally scrolling time grid.
+///
+/// One two-axis scroll view hosts lazily built rows under a pinned time header. The channel
+/// column and the titles of programmes already under way stay at the leading edge through
+/// `visualEffect` offsets, so scrolling never writes view state.
+struct LiveTVGuideView: View {
+    @Bindable var service: LiveTVService
+    @Environment(\.timeZone) private var timeZone
+    @State private var selectedCategory: String?
+    @State private var favoritesOnly = false
+    @State private var rows: [LiveTVChannel] = []
+    @State private var timeline = LiveTVGuideTimeline(now: .now, timeZone: .current)
+    @State private var cells = LiveTVGuideCellCache()
+    @State private var position = ScrollPosition(idType: String.self)
+    @State private var span = LiveTVGuideVisibleSpan(offsetX: 0, viewportWidth: 430, bucketWidth: 240)
+    @State private var hasScrolledToNow = false
+    @State private var detail: LiveTVGuideDetail?
+    @State private var pendingTune: LiveTVChannel?
+
+    var body: some View {
+        content
+            .background(Color.siloBackground)
+            .tint(LiveTVAccent.orchidLight)
+            .navigationTitle(selectedCategory ?? (favoritesOnly ? "Favorites" : "TV Guide"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbar }
+            .fullScreenCover(item: Binding(
+                get: { service.presentation.channel(for: .guide) },
+                set: { if $0 == nil { service.presentation.coverDismissed(from: .guide) } }
+            )) { channel in
+                LiveTVPlayerView(channel: channel, channels: service.channels, session: service.playerSession,
+                                 service: service)
+            }
+            .sheet(item: $detail, onDismiss: tunePending) { detail in
+                LiveTVProgramDetailView(detail: detail) {
+                    pendingTune = detail.channel
+                    self.detail = nil
+                }
+            }
+            .onAppear {
+                service.presentation.surfaceAppeared(.guide)
+                if timeline.timeZone != timeZone { rebuildTimeline(at: .now) }
+                rebuildRows()
+            }
+            .onDisappear { service.presentation.surfaceDisappeared(.guide) }
+            .onChange(of: selectedCategory) { rebuildRows() }
+            .onChange(of: favoritesOnly) { rebuildRows() }
+            .onChange(of: service.favoriteChannelIDs) { if favoritesOnly { rebuildRows() } }
+            .onChange(of: service.channelCatalogRevision) { rebuildRows() }
+            .onChange(of: timeZone) { rebuildTimeline(at: .now) }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch LiveTVGuideContentState.resolve(hasProviders: !service.providers.isEmpty, isLoading: service.isLoading,
+                                               errorMessage: service.errorMessage, channelCount: service.channels.count,
+                                               visibleCount: rows.count) {
+        case .setup:
+            ContentUnavailableView("Set Up Live TV", systemImage: "antenna.radiowaves.left.and.right",
+                                   description: Text("Add a playlist in Live TV settings to see the guide."))
+        case .loading:
+            ProgressView("Loading channels…")
+                .foregroundStyle(Color.siloSecondaryText)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .failed(let message):
+            ContentUnavailableView {
+                Label("Couldn’t Load Channels", systemImage: "wifi.exclamationmark")
+            } description: {
+                Text(message)
+            } actions: {
+                Button("Try Again") { Task { await service.refreshSelectedProvider() } }
+            }
+        case .noChannels:
+            ContentUnavailableView("No Channels", systemImage: "tv",
+                                   description: Text("Refresh the playlist or check its settings."))
+        case .noMatches:
+            ContentUnavailableView {
+                Label(favoritesOnly ? "No Favorites Here" : "No Channels", systemImage: favoritesOnly ? "star" : "tv")
+            } description: {
+                Text(favoritesOnly ? "Star channels in Live TV to see them in the guide."
+                                   : "This category has no channels.")
+            } actions: {
+                Button("Show All Channels") {
+                    favoritesOnly = false
+                    selectedCategory = nil
+                }
+            }
+        case .ready:
+            VStack(spacing: 0) {
+                if let banner = LiveTVGuideContentState.banner(errorMessage: service.errorMessage,
+                                                               guideMessage: service.guideMessage,
+                                                               isGuideStale: service.isGuideStale,
+                                                               isGuideLoading: service.isGuideLoading) {
+                    Label(banner, systemImage: "exclamationmark.circle")
+                        .font(.footnote)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.siloSurface)
+                }
+                grid
+            }
+        }
+    }
+
+    private var grid: some View {
+        TimelineView(.everyMinute) { context in
+            let now = context.date
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        ForEach(rows) { channel in
+                            LiveTVGuideRow(
+                                channel: channel,
+                                cells: cells.cells(for: channel, revision: service.guideRevision, isGuideStale: service.isGuideStale,
+                                                   timeline: timeline) {
+                                    service.guidePrograms(for: channel, overlapping: timeline.interval)
+                                },
+                                timeline: timeline,
+                                span: span,
+                                now: now,
+                                isFavorite: service.isFavorite(channel),
+                                isGuideLoading: service.isGuideLoading,
+                                onTuneChannel: { tune(channel) },
+                                onToggleFavorite: { service.toggleFavorite(channel) },
+                                onSelect: { select($0, on: channel, at: now) }
+                            )
+                        }
+                    } header: {
+                        LiveTVGuideTimeHeader(timeline: timeline, now: now)
+                    }
+                }
+            }
+            .scrollPosition($position)
+            .scrollIndicators(.hidden)
+            // Only whole-hour crossings change `span`, so scrolling itself does not update view state.
+            .onScrollGeometryChange(for: LiveTVGuideVisibleSpan.self) { [bucketWidth = timeline.pointsPerMinute * 60] geometry in
+                LiveTVGuideVisibleSpan(offsetX: geometry.contentOffset.x, viewportWidth: geometry.containerSize.width,
+                                       bucketWidth: bucketWidth)
+            } action: { _, newValue in
+                span = newValue
+            }
+            .onAppear {
+                guard !hasScrolledToNow else { return }
+                hasScrolledToNow = true
+                position.scrollTo(x: timeline.scrollOffset(showing: now))
+            }
+            .onChange(of: now) {
+                if timeline.needsRebuild(at: now) { rebuildTimeline(at: now) }
+            }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button("Now") {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    position.scrollTo(x: timeline.scrollOffset(showing: .now))
+                }
+            }
+            .accessibilityHint("Scrolls the guide to the current time")
+            Button {
+                favoritesOnly.toggle()
+            } label: {
+                Image(systemName: favoritesOnly ? "star.fill" : "star")
+            }
+            .accessibilityLabel(favoritesOnly ? "Show all channels" : "Show favorites only")
+            if !service.categories.isEmpty {
+                Menu {
+                    Button {
+                        selectedCategory = nil
+                    } label: {
+                        if selectedCategory == nil { Label("All Categories", systemImage: "checkmark") }
+                        else { Text("All Categories") }
+                    }
+                    ForEach(service.categories, id: \.self) { category in
+                        Button {
+                            selectedCategory = category
+                        } label: {
+                            if selectedCategory == category { Label(category, systemImage: "checkmark") }
+                            else { Text(category) }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease.circle\(selectedCategory == nil ? "" : ".fill")")
+                }
+                .accessibilityLabel("Filter by category")
+            }
+        }
+    }
+
+    private func select(_ program: EPGProgram, on channel: LiveTVChannel, at now: Date) {
+        switch LiveTVGuideAction(program, at: now) {
+        case .tune: tune(channel)
+        case .showDetails: detail = LiveTVGuideDetail(channel: channel, program: program)
+        }
+    }
+
+    private func tunePending() {
+        guard let channel = pendingTune else { return }
+        pendingTune = nil
+        tune(channel)
+    }
+
+    private func tune(_ channel: LiveTVChannel) {
+        service.choose(channel, from: .guide)
+    }
+
+    private func rebuildRows() {
+        if let selectedCategory, !service.categories.contains(selectedCategory) { self.selectedCategory = nil }
+        rows = LiveTVChannelFiltering.filter(service.channels, query: "", category: selectedCategory,
+                                             favoritesOnly: favoritesOnly, favoriteIDs: service.favoriteChannelIDs)
+    }
+
+    private func rebuildTimeline(at now: Date) {
+        timeline = LiveTVGuideTimeline(now: now, timeZone: timeZone)
+        position.scrollTo(x: timeline.scrollOffset(showing: now))
+    }
+}
+
+/// Programme cells per channel for the current guide revision and window, built once per row.
+/// Not observed: it only memoizes values derived from observed service state.
+@MainActor
+final class LiveTVGuideCellCache {
+    private struct Key: Equatable {
+        let revision: Int
+        let isGuideStale: Bool
+        let timeline: LiveTVGuideTimeline
+    }
+
+    private var key: Key?
+    private var storage: [String: [LiveTVGuideCell]] = [:]
+
+    func cells(for channel: LiveTVChannel, revision: Int, isGuideStale: Bool, timeline: LiveTVGuideTimeline,
+               programs: () -> [EPGProgram]) -> [LiveTVGuideCell] {
+        let key = Key(revision: revision, isGuideStale: isGuideStale, timeline: timeline)
+        if key != self.key {
+            self.key = key
+            storage.removeAll(keepingCapacity: true)
+        }
+        if let cached = storage[channel.id] { return cached }
+        let built = LiveTVGuideCell.cells(for: programs(), in: timeline)
+        storage[channel.id] = built
+        return built
+    }
+}
+
+struct LiveTVGuideDetail: Identifiable {
+    let channel: LiveTVChannel
+    let program: EPGProgram
+    var id: String { "\(channel.id)|\(program.id)" }
+}
+
+private enum LiveTVGuideMetrics {
+    static let channelColumnWidth: CGFloat = 116
+    static let rowHeight: CGFloat = 64
+    static let headerHeight: CGFloat = 36
+}
+
+private extension View {
+    /// Keeps the view at the scroll view's leading edge plus `inset`, moving at most `maximum`.
+    func pinnedToScrollLeading(inset: CGFloat = 0, maximum: CGFloat = .greatestFiniteMagnitude) -> some View {
+        visualEffect { content, proxy in
+            content.offset(x: min(max(0, inset - proxy.frame(in: .scrollView).minX), max(0, maximum)))
+        }
+    }
+}
+
+private struct LiveTVGuideTimeHeader: View {
+    let timeline: LiveTVGuideTimeline
+    let now: Date
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ZStack(alignment: .topLeading) {
+                ForEach(timeline.ticks) { tick in
+                    let x = timeline.x(for: tick.date)
+                    Rectangle()
+                        .fill(Color.siloSecondaryText.opacity(tick.isHour ? 0.35 : 0.18))
+                        .frame(width: 1, height: tick.isHour ? 12 : 7)
+                        .offset(x: x, y: LiveTVGuideMetrics.headerHeight - (tick.isHour ? 12 : 7))
+                    Text(tick.date, format: .dateTime.hour().minute())
+                        .font(.caption.weight(tick.isHour ? .semibold : .regular))
+                        .monospacedDigit()
+                        .foregroundStyle(tick.isHour ? Color.siloOnSurface : Color.siloSecondaryText)
+                        .fixedSize()
+                        .offset(x: x + 5, y: 9)
+                }
+                Capsule()
+                    .fill(LiveTVAccent.orchidLight)
+                    .frame(width: 8, height: 8)
+                    .offset(x: timeline.x(for: now) - 4, y: LiveTVGuideMetrics.headerHeight - 8)
+                    .accessibilityHidden(true)
+            }
+            .frame(width: timeline.width, height: LiveTVGuideMetrics.headerHeight, alignment: .topLeading)
+            .padding(.leading, LiveTVGuideMetrics.channelColumnWidth)
+
+            Text(now, format: .dateTime.weekday(.abbreviated).day().month(.abbreviated))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(LiveTVAccent.orchidLight)
+                .frame(width: LiveTVGuideMetrics.channelColumnWidth, height: LiveTVGuideMetrics.headerHeight)
+                .background(Color.siloBackground)
+                .pinnedToScrollLeading()
+                .zIndex(1)
+        }
+        .background(Color.siloBackground)
+        .overlay(alignment: .bottom) { Divider() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Timeline")
+    }
+}
+
+private struct LiveTVGuideRow: View {
+    let channel: LiveTVChannel
+    let cells: [LiveTVGuideCell]
+    let timeline: LiveTVGuideTimeline
+    let span: LiveTVGuideVisibleSpan
+    let now: Date
+    let isFavorite: Bool
+    let isGuideLoading: Bool
+    let onTuneChannel: () -> Void
+    let onToggleFavorite: () -> Void
+    let onSelect: (EPGProgram) -> Void
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ZStack(alignment: .topLeading) {
+                if cells.isEmpty {
+                    Text(isGuideLoading ? "Loading guide…" : "No guide information")
+                        .font(.footnote)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .padding(.horizontal, 12)
+                        .frame(height: LiveTVGuideMetrics.rowHeight)
+                        .pinnedToScrollLeading(inset: LiveTVGuideMetrics.channelColumnWidth)
+                } else {
+                    ForEach(cells.filter(span.renders)) { cell in
+                        LiveTVGuideProgramCell(cell: cell, now: now, pinsTitle: span.pinsTitle(of: cell)) {
+                            onSelect(cell.program)
+                        }
+                        .frame(width: cell.width, height: LiveTVGuideMetrics.rowHeight)
+                        .offset(x: cell.x)
+                    }
+                }
+                Rectangle()
+                    .fill(LiveTVAccent.orchidLight)
+                    .frame(width: 2, height: LiveTVGuideMetrics.rowHeight)
+                    .offset(x: timeline.x(for: now) - 1)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            .frame(width: timeline.width, height: LiveTVGuideMetrics.rowHeight, alignment: .topLeading)
+            .padding(.leading, LiveTVGuideMetrics.channelColumnWidth)
+
+            channelCell
+                .pinnedToScrollLeading()
+                .zIndex(1)
+        }
+        .overlay(alignment: .bottom) { Divider().opacity(0.5) }
+    }
+
+    private var channelCell: some View {
+        Button(action: onTuneChannel) {
+            HStack(spacing: 8) {
+                LiveTVChannelLogo(channel: channel, size: CGSize(width: 36, height: 30))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(channel.name)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.siloOnSurface)
+                        .lineLimit(2)
+                    if isFavorite {
+                        Image(systemName: "star.fill")
+                            .font(.caption2)
+                            .foregroundStyle(LiveTVAccent.orchidLight)
+                            .accessibilityHidden(true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(width: LiveTVGuideMetrics.channelColumnWidth, height: LiveTVGuideMetrics.rowHeight)
+            .background(Color.siloSurface)
+            .overlay(alignment: .trailing) { Divider() }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(action: onTuneChannel) { Label("Watch", systemImage: "play.fill") }
+            Button(action: onToggleFavorite) {
+                Label(isFavorite ? "Remove from Favorites" : "Add to Favorites", systemImage: isFavorite ? "star.slash" : "star")
+            }
+        }
+        .accessibilityLabel("Watch \(channel.name)")
+        .accessibilityHint(isFavorite ? "Favorite channel" : "")
+    }
+}
+
+private struct LiveTVGuideProgramCell: View {
+    let cell: LiveTVGuideCell
+    let now: Date
+    /// Only a programme that can straddle the viewport's leading edge needs its title to slide;
+    /// every other cell skips the per-frame scroll-geometry effect.
+    let pinsTitle: Bool
+    let action: () -> Void
+
+    private var state: LiveTVGuideProgramState { LiveTVGuideProgramState(cell.program, at: now) }
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(background)
+                if state == .current {
+                    progress
+                }
+                if cell.width >= 28 {
+                    titleBlock
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                if state == .current {
+                    RoundedRectangle(cornerRadius: 8).strokeBorder(LiveTVAccent.orchidLight.opacity(0.7), lineWidth: 1)
+                }
+            }
+            .padding(2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityText)
+        .accessibilityHint(state == .current ? "Plays this channel" : "Shows program details")
+    }
+
+    @ViewBuilder
+    private var titleBlock: some View {
+        if pinsTitle {
+            titleText.pinnedToScrollLeading(inset: LiveTVGuideMetrics.channelColumnWidth, maximum: cell.width - 96)
+        } else {
+            titleText
+        }
+    }
+
+    private var titleText: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(cell.program.title)
+                .font(.subheadline.weight(state == .current ? .semibold : .regular))
+                .foregroundStyle(state == .past ? Color.siloSecondaryText : Color.siloOnSurface)
+            Text("\(cell.program.start, format: .dateTime.hour().minute()) – \(cell.program.end, format: .dateTime.hour().minute())")
+        }
+        .font(.caption2)
+        .monospacedDigit()
+        .foregroundStyle(Color.siloSecondaryText)
+        .lineLimit(1)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    private var background: Color {
+        switch state {
+        case .past: Color.siloSurface.opacity(0.55)
+        case .current: LiveTVAccent.orchid.opacity(0.38)
+        case .upcoming: Color.siloSurfaceElevated
+        }
+    }
+
+    private var progress: some View {
+        GeometryReader { proxy in
+            let total = cell.program.end.timeIntervalSince(cell.program.start)
+            let elapsed = now.timeIntervalSince(cell.program.start)
+            Capsule()
+                .fill(LiveTVAccent.orchidLight)
+                .frame(width: proxy.size.width * CGFloat(min(max(elapsed / max(total, 1), 0), 1)), height: 3)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+        }
+        .padding(.horizontal, 6)
+        .padding(.bottom, 3)
+        .allowsHitTesting(false)
+    }
+
+    private var accessibilityText: String {
+        let status = switch state {
+        case .past: "Ended"
+        case .current: "On now"
+        case .upcoming: "Upcoming"
+        }
+        let start = cell.program.start.formatted(date: .omitted, time: .shortened)
+        let end = cell.program.end.formatted(date: .omitted, time: .shortened)
+        return "\(cell.program.title), \(start) to \(end), \(status)"
+    }
+}
+
+/// Details for a programme that is not airing. Watching is an explicit choice, never automatic.
+struct LiveTVProgramDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    let detail: LiveTVGuideDetail
+    let onWatch: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            TimelineView(.everyMinute) { context in
+                let state = LiveTVGuideProgramState(detail.program, at: context.date)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 10) {
+                            LiveTVChannelLogo(channel: detail.channel, size: CGSize(width: 44, height: 36))
+                            Text(detail.channel.name)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Color.siloSecondaryText)
+                        }
+                        Text(detail.program.title)
+                            .font(.title2.weight(.bold))
+                            .foregroundStyle(Color.siloOnSurface)
+                        if let subtitle = detail.program.subtitle {
+                            Text(subtitle).font(.headline).foregroundStyle(Color.siloOnSurface)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(detail.program.start, format: .dateTime.weekday(.wide).day().month(.wide))
+                            Text("\(detail.program.start, format: .dateTime.hour().minute()) – \(detail.program.end, format: .dateTime.hour().minute())")
+                            Text(statusText(state, now: context.date))
+                                .foregroundStyle(LiveTVAccent.orchidLight)
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        let tags = [detail.program.episode, detail.program.category].compactMap { $0 }
+                        if !tags.isEmpty {
+                            HStack(spacing: 8) {
+                                ForEach(tags, id: \.self) { tag in
+                                    Text(tag)
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(Color.siloSurfaceElevated, in: Capsule())
+                                }
+                            }
+                        }
+                        if let summary = detail.program.summary {
+                            Text(summary).font(.body).foregroundStyle(Color.siloOnSurface)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
+                }
+                .safeAreaInset(edge: .bottom) {
+                    Button(action: onWatch) {
+                        Label(state == .current ? "Watch Now" : "Watch \(detail.channel.name) Now", systemImage: "play.fill")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(LiveTVAccent.orchid)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
+                }
+            }
+            .background(Color.siloBackground)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+        .presentationDetents([.medium, .large])
+        .tint(LiveTVAccent.orchidLight)
+    }
+
+    private func statusText(_ state: LiveTVGuideProgramState, now: Date) -> String {
+        switch state {
+        case .past: return "Ended"
+        case .current: return "On now"
+        case .upcoming:
+            let minutes = Int((detail.program.start.timeIntervalSince(now) / 60).rounded(.up))
+            if minutes < 60 { return "Starts in \(minutes) min" }
+            return "Starts \(detail.program.start.formatted(.relative(presentation: .named)))"
+        }
+    }
+}

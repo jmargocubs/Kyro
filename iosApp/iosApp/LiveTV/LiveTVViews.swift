@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum LiveTVAccent {
+enum LiveTVAccent {
     static let orchid = Color(hex: "#713B88")
     static let orchidLight = Color(hex: "#C59BDB")
 }
@@ -12,6 +12,7 @@ struct LiveTVView: View {
     @State private var selectedCategory: String?
     @State private var favoritesOnly = false
     @State private var isShowingSettings = false
+    @State private var isShowingGuide = false
 
     var body: some View {
         List {
@@ -129,6 +130,14 @@ struct LiveTVView: View {
         .searchable(text: $searchText, prompt: "Search channels")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if !service.channels.isEmpty {
+                    Button {
+                        isShowingGuide = true
+                    } label: {
+                        Image(systemName: "calendar.day.timeline.left")
+                    }
+                    .accessibilityLabel("TV guide")
+                }
                 if service.providers.count > 1 {
                     Menu {
                         ForEach(service.providers) { provider in
@@ -170,6 +179,9 @@ struct LiveTVView: View {
                 LiveTVSettingsView(service: service)
             }
             .tint(LiveTVAccent.orchidLight)
+        }
+        .navigationDestination(isPresented: $isShowingGuide) {
+            LiveTVGuideView(service: service)
         }
         .fullScreenCover(item: Binding(
             get: { service.presentation.channel(for: .list) },
@@ -262,25 +274,29 @@ struct LiveTVView: View {
         .listRowBackground(Color.siloSurface)
     }
 
-    @ViewBuilder
     private func channelLogo(_ channel: LiveTVChannel) -> some View {
-        if let logoURL = channel.logoURL {
-            AsyncImageView(url: logoURL.absoluteString, targetSize: CGSize(width: 50, height: 42),
-                           contentMode: .fit, placeholderSymbol: "tv")
-            .frame(width: 50, height: 42)
-            .accessibilityHidden(true)
-        } else {
-            logoPlaceholder
-        }
+        LiveTVChannelLogo(channel: channel, size: CGSize(width: 50, height: 42))
     }
+}
 
-    private var logoPlaceholder: some View {
-        Image(systemName: "tv")
-            .font(.title3)
-            .foregroundStyle(LiveTVAccent.orchidLight)
-            .frame(width: 50, height: 42)
-            .background(Color.siloSurfaceElevated, in: RoundedRectangle(cornerRadius: 8))
-            .accessibilityHidden(true)
+/// A channel's logo, or a TV placeholder when it has none.
+struct LiveTVChannelLogo: View {
+    let channel: LiveTVChannel
+    let size: CGSize
+
+    var body: some View {
+        if let logoURL = channel.logoURL {
+            AsyncImageView(url: logoURL.absoluteString, targetSize: size, contentMode: .fit, placeholderSymbol: "tv")
+                .frame(width: size.width, height: size.height)
+                .accessibilityHidden(true)
+        } else {
+            Image(systemName: "tv")
+                .font(.title3)
+                .foregroundStyle(LiveTVAccent.orchidLight)
+                .frame(width: size.width, height: size.height)
+                .background(Color.siloSurfaceElevated, in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityHidden(true)
+        }
     }
 }
 
