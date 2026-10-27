@@ -273,6 +273,23 @@ final class PictureInPictureCoordinator {
         lifecycleOwner === owner && isEngaged
     }
 
+    /// Whether `owner` is still the bound session. False once the coordinator was torn down,
+    /// which tells an engagement-ended callback that it was not an ordinary window close.
+    func isBound(to owner: AnyObject) -> Bool {
+        lifecycleOwner === owner
+    }
+
+    /// Close the window if one is up or starting, without ever starting one. `toggle()` starts when
+    /// nothing is active, which a caller that only wants it closed must not do.
+    func stopPictureInPicture() {
+        if let controller, controller.isPictureInPictureActive || isActive {
+            controller.stopPictureInPicture()
+        } else if isTransitioning {
+            // AVKit cannot stop a window that has not finished starting; stop it once it has.
+            shouldStopForForegroundReturn = true
+        }
+    }
+
     func toggle() {
         guard let controller else { return }
         if controller.isPictureInPictureActive || isActive {

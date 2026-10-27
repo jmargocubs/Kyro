@@ -11,7 +11,6 @@ struct LiveTVView: View {
     @State private var searchModel = LiveTVChannelSearchModel()
     @State private var selectedCategory: String?
     @State private var favoritesOnly = false
-    @State private var selectedChannel: LiveTVChannel?
     @State private var isShowingSettings = false
 
     var body: some View {
@@ -172,8 +171,12 @@ struct LiveTVView: View {
             }
             .tint(LiveTVAccent.orchidLight)
         }
-        .fullScreenCover(item: $selectedChannel) { channel in
-            LiveTVPlayerView(channel: channel, channels: service.channels, session: service.playerSession)
+        .fullScreenCover(item: Binding(
+            get: { service.presentation.channel(for: .list) },
+            set: { if $0 == nil { service.presentation.coverDismissed(from: .list) } }
+        )) { channel in
+            LiveTVPlayerView(channel: channel, channels: service.channels, session: service.playerSession,
+                             service: service)
         }
         .task(id: service.selectedProviderID) {
             updateSearch()
@@ -181,8 +184,14 @@ struct LiveTVView: View {
                 await service.refreshSelectedProvider()
             }
         }
-        .onAppear { updateSearch() }
-        .onDisappear { searchModel.cancel() }
+        .onAppear {
+            updateSearch()
+            service.presentation.surfaceAppeared(.list)
+        }
+        .onDisappear {
+            searchModel.cancel()
+            service.presentation.surfaceDisappeared(.list)
+        }
         .onChange(of: searchText) { updateSearch() }
         .onChange(of: selectedCategory) { updateSearch() }
         .onChange(of: favoritesOnly) { updateSearch() }
@@ -198,7 +207,7 @@ struct LiveTVView: View {
     private func channelRow(_ channel: LiveTVChannel) -> some View {
         HStack(spacing: 12) {
             Button {
-                selectedChannel = channel
+                service.choose(channel, from: .list)
                 Task { await service.refreshShortEPG(for: channel) }
             } label: {
                 HStack(spacing: 12) {

@@ -572,6 +572,14 @@ struct ContentView: View {
             updateProfileAwayStartForBackgroundPlayback()
         }
         #endif
+        #if os(iOS)
+        // Picture in Picture's restore control needs a Live TV screen to put the player on.
+        .task {
+            LiveTVService.shared.presentation.navigateToLiveTV = { [router] in
+                router.navigate(to: .liveTV)
+            }
+        }
+        #endif
         .onChange(of: requestsScreensCheck, initial: true) { _, check in
             guard check.requestsUnavailable else { return }
             router.closeRequestsScreens()

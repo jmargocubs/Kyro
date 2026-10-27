@@ -27,6 +27,12 @@ final class LiveTVService {
     /// The one Live TV player session for the process, created on first playback. Views read it
     /// from here so a SwiftUI redraw never allocates a player or registers an audio claim.
     @ObservationIgnored private(set) lazy var playerSession = LiveTVPlayerSession.makeDefault()
+    /// One full-screen player presentation and Picture in Picture hand-off, shared by the channel
+    /// list and the guide.
+    @ObservationIgnored let presentation = LiveTVPresentation(scheduler: LiveTVTaskScheduler())
+    #if os(iOS)
+    @ObservationIgnored private var pictureInPictureMonitor: LiveTVPictureInPictureMonitor?
+    #endif
 
     private static let providersKey = "liveTV.providers.v1"
     private static let favoritesKey = "liveTV.favorites.v1"
@@ -53,6 +59,10 @@ final class LiveTVService {
             configuration.urlCache = nil
             self.session = URLSession(configuration: configuration)
         }
+        presentation.stopPlayback = { [weak self] in self?.endPlayback() }
+        #if os(iOS)
+        presentation.stopPictureInPicture = { PictureInPictureCoordinator.shared.stopPictureInPicture() }
+        #endif
         favoriteChannelIDs = Set(defaults.stringArray(forKey: Self.favoritesKey) ?? [])
         if let data = defaults.data(forKey: Self.providersKey),
            let saved = try? JSONDecoder().decode([LiveTVProvider].self, from: data) {
@@ -126,6 +136,7 @@ final class LiveTVService {
     }
 
     func removeProvider(_ id: UUID) {
+        presentation.providerRemoved(id, activeChannelID: playerSession.activeChannelID)
         providers.removeAll { $0.id == id }
         channelCatalogs[id] = nil
         guideIndexes[id] = nil
@@ -314,6 +325,36 @@ final class LiveTVService {
         } catch {
             shortEPGLoaded.remove(channel.id)
             guideMessage = "Guide data could not be refreshed."
+        }
+    }
+
+    /// Stops the live stream and releases its Picture in Picture binding. Nothing keeps playing.
+    func endPlayback() {
+        playerSession.stop()
+        #if os(iOS)
+        PictureInPictureCoordinator.shared.endSession(owner: playerSession)
+        #endif
+    }
+
+    /// Binds Picture in Picture to the session once a tune has created its engine, and starts
+    /// watching the session for failures while the window owns it.
+    func attachPictureInPicture() {
+        #if os(iOS)
+        playerSession.bindPictureInPicture(presentation: presentation)
+        if pictureInPictureMonitor == nil {
+            pictureInPictureMonitor = LiveTVPictureInPictureMonitor(session: playerSession, presentation: presentation) { [weak self] in
+                guard let self else { return }
+                self.playerSession.bindPictureInPicture(presentation: self.presentation)
+            }
+        }
+        #endif
+    }
+
+    /// A channel was chosen in the list or the guide. Opens the player, or retunes the Picture in
+    /// Picture window in place.
+    func choose(_ channel: LiveTVChannel, from presenter: LiveTVPresenter) {
+        if presentation.select(channel, from: presenter) == .playInPlace {
+            playerSession.play(channel)
         }
     }
 

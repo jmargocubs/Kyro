@@ -103,18 +103,29 @@ final class AetherLiveTVEngine: LiveTVEngineDriving {
 
 extension LiveTVPlayerSession {
     static func makeDefault() -> LiveTVPlayerSession {
-        LiveTVPlayerSession(
+        #if os(iOS)
+        let reference = LiveTVSessionReference()
+        #endif
+        let session = LiveTVPlayerSession(
             scheduler: LiveTVTaskScheduler(),
             makeEngine: { try AetherLiveTVEngine() },
             isOtherVideoActive: {
                 #if os(iOS)
-                // Engaged covers PiP starting as well as active.
-                PictureInPictureCoordinator.shared.isEngaged
+                // Engaged covers PiP starting as well as active. Live TV's own window is the stream
+                // being tuned, so only another player's window blocks it.
+                let coordinator = PictureInPictureCoordinator.shared
+                return LiveTVPictureInPicturePolicy.isOtherVideoActive(
+                    isEngaged: coordinator.isEngaged,
+                    liveTVOwnsEngagement: reference.session.map(coordinator.ownsEngagedSession) ?? false)
                 #else
                 false
                 #endif
             }
         )
+        #if os(iOS)
+        reference.session = session
+        #endif
+        return session
     }
 }
 
@@ -132,14 +143,20 @@ struct LiveTVPlayerView: View {
     @State private var controls = LiveTVControlsVisibility(scheduler: LiveTVTaskScheduler())
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
+    @State private var pictureInPicture = PictureInPictureCoordinator.shared
+    @Environment(\.scenePhase) private var scenePhase
     #endif
     let channels: [LiveTVChannel]
     let session: LiveTVPlayerSession
+    /// Owns the shared presentation and Picture in Picture hand-off; nil for a bare player.
+    let service: LiveTVService?
 
-    init(channel: LiveTVChannel, channels: [LiveTVChannel], session: LiveTVPlayerSession) {
+    init(channel: LiveTVChannel, channels: [LiveTVChannel], session: LiveTVPlayerSession,
+         service: LiveTVService? = nil) {
         _channel = State(initialValue: channel)
         self.channels = channels
         self.session = session
+        self.service = service
     }
 
     var body: some View {
@@ -198,6 +215,22 @@ struct LiveTVPlayerView: View {
                     .accessibilityHint("Changes Live TV orientation without stopping playback")
                     #endif
 
+                    #if os(iOS)
+                    if pictureInPicture.isSupported, pictureInPicture.hasSource {
+                        Button {
+                            controls.interact()
+                            pictureInPicture.toggle()
+                        } label: {
+                            Image(systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter")
+                                .font(.headline.weight(.semibold))
+                                .frame(width: 44, height: 44)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                        .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
+                        .accessibilityLabel(pictureInPicture.isActive ? "Exit Picture in Picture" : "Picture in Picture")
+                    }
+                    #endif
+
                     Button {
                         controls.interact()
                         isShowingChannelPicker = true
@@ -245,8 +278,12 @@ struct LiveTVPlayerView: View {
         #if os(iOS)
         .statusBarHidden()
         #endif
-        .task { session.play(channel) }
+        .task {
+            session.play(channel)
+            service?.attachPictureInPicture()
+        }
         .onAppear {
+            service?.presentation.playerDidAppear(channel)
             #if os(iOS)
             orientationCoordinator.activateLiveTVPlayer()
             #endif
@@ -254,13 +291,31 @@ struct LiveTVPlayerView: View {
         .onChange(of: channel) { oldValue, newValue in
             guard oldValue.id != newValue.id else { return }
             controls.channelChanged()
+            service?.presentation.playerChannelChanged(to: newValue)
             session.play(newValue)
         }
+        #if os(iOS)
+        // Picture in Picture started from the button: only the cover closes. The stream plays on in
+        // the window, and AVKit's restore control re-presents this player.
+        .onChange(of: pictureInPicture.controlStartToken) { _, _ in
+            guard pictureInPicture.ownsEngagedSession(session) else { return }
+            service?.presentation.pictureInPictureStartedFromControl()
+            dismiss()
+        }
+        // Automatic Picture in Picture on leaving the app keeps this cover, so coming back lands on
+        // the player itself; end the window into it.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { pictureInPicture.stopForReturnToPresentedPlayer(owner: session) }
+        }
+        #endif
         .onChange(of: session.state) { syncControls() }
         .onChange(of: isShowingChannelPicker) { syncControls() }
         .onDisappear {
             controls.cancel()
-            session.stop()
+            // A cover closed for Picture in Picture leaves the stream playing in the window.
+            if service.map({ LiveTVPictureInPicturePolicy.shouldStopWhenPlayerDisappears($0.presentation.phase) }) ?? true {
+                session.stop()
+            }
             #if os(iOS)
             orientationCoordinator.deactivatePlayer()
             #endif
