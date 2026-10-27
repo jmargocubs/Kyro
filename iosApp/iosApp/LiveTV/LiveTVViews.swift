@@ -14,6 +14,13 @@ struct LiveTVView: View {
     @State private var isShowingSettings = false
     @State private var isShowingGuide = false
 
+    private var contentState: LiveTVChannelListContentState {
+        LiveTVChannelListContentState.resolve(hasProviders: !service.providers.isEmpty,
+                                              isLoading: service.isLoading,
+                                              errorMessage: service.errorMessage,
+                                              channelCount: service.channels.count)
+    }
+
     var body: some View {
         List {
             if let provider = service.selectedProvider {
@@ -37,7 +44,7 @@ struct LiveTVView: View {
                 }
             }
 
-            if service.isLoading && service.channels.isEmpty {
+            if case .loading = contentState {
                 Section {
                     HStack(spacing: 12) {
                         ProgressView()
@@ -45,7 +52,7 @@ struct LiveTVView: View {
                     }
                     .listRowBackground(Color.siloSurface)
                 }
-            } else if let error = service.errorMessage {
+            } else if case .failed(let error) = contentState {
                 Section {
                     ContentUnavailableView {
                         Label("Couldn’t Load Channels", systemImage: "wifi.exclamationmark")
@@ -57,7 +64,7 @@ struct LiveTVView: View {
                     }
                     .listRowBackground(Color.siloSurface)
                 }
-            } else if service.providers.isEmpty {
+            } else if case .setup = contentState {
                 Section {
                     ContentUnavailableView {
                         Label("Set Up Live TV", systemImage: "antenna.radiowaves.left.and.right")
@@ -70,7 +77,7 @@ struct LiveTVView: View {
                     }
                     .listRowBackground(Color.siloSurface)
                 }
-            } else if service.channels.isEmpty {
+            } else if case .noChannels = contentState {
                 Section {
                     ContentUnavailableView(
                         "No Channels",
@@ -80,6 +87,14 @@ struct LiveTVView: View {
                     .listRowBackground(Color.siloSurface)
                 }
             } else {
+                if let error = service.errorMessage {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.circle")
+                            .font(.footnote)
+                            .foregroundStyle(Color.siloSecondaryText)
+                            .listRowBackground(Color.siloSurface)
+                    }
+                }
                 if !service.providers.isEmpty {
                     Section {
                         HStack(spacing: 10) {
@@ -144,7 +159,6 @@ struct LiveTVView: View {
                             Button {
                                 selectedCategory = nil
                                 service.selectProvider(provider.id)
-                                Task { if service.channels.isEmpty { await service.refresh(providerID: provider.id) } }
                             } label: {
                                 if provider.id == service.selectedProviderID {
                                     Label(provider.name, systemImage: "checkmark")
@@ -192,9 +206,7 @@ struct LiveTVView: View {
         }
         .task(id: service.selectedProviderID) {
             updateSearch()
-            if service.channels.isEmpty, service.selectedProviderID != nil {
-                await service.refreshSelectedProvider()
-            }
+            await service.prepareSelectedProvider()
         }
         .onAppear {
             updateSearch()
@@ -395,7 +407,7 @@ struct LiveTVSettingsView: View {
             titleVisibility: .visible
         ) {
             Button("Remove Provider", role: .destructive) {
-                if let providerToRemove { service.removeProvider(providerToRemove.id) }
+                if let providerToRemove { Task { await service.removeProvider(providerToRemove.id) } }
                 providerToRemove = nil
             }
         }

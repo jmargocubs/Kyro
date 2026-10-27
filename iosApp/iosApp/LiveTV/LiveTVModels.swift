@@ -86,6 +86,24 @@ struct LiveTVChannel: Hashable, Identifiable, Sendable {
     var streamID: Int? = nil
 }
 
+/// The list blocks only when there are no channels to browse; refresh failures become banners
+/// whenever a usable cached or live catalog is present.
+enum LiveTVChannelListContentState: Equatable, Sendable {
+    case setup
+    case loading
+    case failed(String)
+    case noChannels
+    case ready
+
+    static func resolve(hasProviders: Bool, isLoading: Bool, errorMessage: String?, channelCount: Int) -> Self {
+        guard hasProviders else { return .setup }
+        if channelCount > 0 { return .ready }
+        if isLoading { return .loading }
+        if let errorMessage { return .failed(errorMessage) }
+        return .noChannels
+    }
+}
+
 struct LiveTVProgram: Hashable, Identifiable, Sendable {
     let id: String
     let channelID: String

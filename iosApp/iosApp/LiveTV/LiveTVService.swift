@@ -28,6 +28,15 @@ final class LiveTVService {
     private let secretStore: LiveTVSecretStore
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private let epg: EPGService
+    @ObservationIgnored private let channelSnapshotStore: LiveTVChannelSnapshotStore
+    /// The one playlist download in flight. Removing its provider cancels it and clears this, so a
+    /// late result can no longer be applied.
+    @ObservationIgnored private var playlistRefresh: (providerID: UUID, token: UUID, task: Task<LiveTVCachedCatalog, Error>)?
+    /// Cached channel and guide restores, kept after they finish so each provider is read from disk once.
+    @ObservationIgnored private var cacheRestores: [UUID: Task<Void, Never>] = [:]
+    /// Providers whose channels came from a playlist download in this process, so they can play.
+    @ObservationIgnored private var liveCatalogs = Set<UUID>()
+    @ObservationIgnored private var automaticRefreshAttempts: [UUID: Date] = [:]
     /// The one Live TV player session for the process, created on first playback. Views read it
     /// from here so a SwiftUI redraw never allocates a player or registers an audio claim.
     @ObservationIgnored private(set) lazy var playerSession = LiveTVPlayerSession.makeDefault()
@@ -42,15 +51,21 @@ final class LiveTVService {
     private static let favoritesKey = "liveTV.favorites.v1"
     private static let maximumPlaylistBytes = 16 * 1024 * 1024
     private static let maximumChannels = 20_000
+    /// A downloaded playlist older than this is refreshed when Live TV opens.
+    private static let playlistRefreshInterval: TimeInterval = 12 * 60 * 60
+    /// Opening Live TV again within this time does not retry a download that just ran or failed.
+    private static let automaticRetryInterval: TimeInterval = 5 * 60
 
     init(
         defaults: UserDefaults = .standard,
         secretStore: LiveTVSecretStore? = nil,
         session: URLSession? = nil,
-        epg: EPGService? = nil
+        epg: EPGService? = nil,
+        channelSnapshotStore: LiveTVChannelSnapshotStore = LiveTVChannelSnapshotStore()
     ) {
         self.defaults = defaults
         self.secretStore = secretStore ?? KeychainLiveTVSecretStore()
+        self.channelSnapshotStore = channelSnapshotStore
         self.epg = epg ?? EPGService(
             cache: .makeDefault(),
             loader: session.map { URLSessionEPGFeedLoader(session: $0) } ?? URLSessionEPGFeedLoader.makeDefault())
@@ -73,6 +88,9 @@ final class LiveTVService {
             providers = saved
             selectedProviderID = saved.first?.id
         }
+        if let selectedProviderID {
+            Task { [weak self] in await self?.restoreCachedState(for: selectedProviderID) }
+        }
     }
 
     var channels: [LiveTVChannel] {
@@ -92,7 +110,60 @@ final class LiveTVService {
         guard providers.contains(where: { $0.id == id }) else { return }
         selectedProviderID = id
         errorMessage = nil
+        guideMessage = nil
+        isGuideLoading = false
         updateGuideFreshness(for: id)
+        Task { [weak self] in await self?.restoreCachedState(for: id) }
+    }
+
+    /// Shows the provider's cached channels and guide without touching the network. Concurrent
+    /// callers share one disk read; the files are decoded off the main actor.
+    func restoreCachedState(for providerID: UUID) async {
+        if let restore = cacheRestores[providerID] { return await restore.value }
+        guard providers.contains(where: { $0.id == providerID }) else { return }
+        let restore = Task { [weak self] in
+            guard let self else { return }
+            await self.loadCachedState(for: providerID)
+        }
+        cacheRestores[providerID] = restore
+        await restore.value
+    }
+
+    private func loadCachedState(for providerID: UUID) async {
+        let secrets = snapshotSecrets(providerID: providerID)
+        if channelCatalogs[providerID] == nil,
+           let cached = await channelSnapshotStore.loadCatalog(providerID: providerID, secrets: secrets),
+           // A download may have finished, or the provider been removed, while the file was read.
+           channelCatalogs[providerID] == nil, providers.contains(where: { $0.id == providerID }) {
+            channelCatalogs[providerID] = cached.channels
+            categoryCatalogs[providerID] = cached.categories
+            channelCatalogRevision &+= 1
+        }
+        // The guide cache is keyed by provider and only returned while still usable.
+        guard guideIndexes[providerID] == nil, let index = await epg.index(for: providerID),
+              guideIndexes[providerID] == nil, providers.contains(where: { $0.id == providerID }) else { return }
+        guideIndexes[providerID] = index
+        guideRevision &+= 1
+        if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
+    }
+
+    /// Cached channels and guide first, then a playlist download only when one is due: no playable
+    /// catalog yet this session, or the last download is old. Explicit refreshes skip this check.
+    func prepareSelectedProvider(now: Date = .now) async {
+        guard let providerID = selectedProviderID else { return }
+        await restoreCachedState(for: providerID)
+        guard selectedProviderID == providerID, needsAutomaticRefresh(providerID, now: now) else { return }
+        automaticRefreshAttempts[providerID] = now
+        await refresh(providerID: providerID)
+    }
+
+    private func needsAutomaticRefresh(_ providerID: UUID, now: Date) -> Bool {
+        guard playlistRefresh == nil else { return false }
+        if let attempt = automaticRefreshAttempts[providerID],
+           now.timeIntervalSince(attempt) < Self.automaticRetryInterval { return false }
+        guard liveCatalogs.contains(providerID),
+              let refreshed = providers.first(where: { $0.id == providerID })?.lastRefreshed else { return true }
+        return now.timeIntervalSince(refreshed) > Self.playlistRefreshInterval
     }
 
     @discardableResult
@@ -139,19 +210,50 @@ final class LiveTVService {
         return id
     }
 
-    func removeProvider(_ id: UUID) {
+    /// Forgets the provider at once, then deletes its files. Everything the UI reads (selection,
+    /// channels, guide, status) is settled before the first suspension, so no view or late task can
+    /// observe a selected provider that no longer exists.
+    func removeProvider(_ id: UUID) async {
+        forgetProvider(id)
+        await deleteProviderFiles(id)
+    }
+
+    /// The synchronous half of removal: in-memory state, credentials and the selection.
+    func forgetProvider(_ id: UUID) {
         presentation.providerRemoved(id, activeChannelID: playerSession.activeChannelID)
+        if playlistRefresh?.providerID == id {
+            playlistRefresh?.task.cancel()
+            playlistRefresh = nil
+            isLoading = false
+        }
+        cacheRestores.removeValue(forKey: id)?.cancel()
+        liveCatalogs.remove(id)
+        automaticRefreshAttempts[id] = nil
         providers.removeAll { $0.id == id }
         channelCatalogs[id] = nil
+        categoryCatalogs[id] = nil
         guideIndexes[id] = nil
         guideRevision &+= 1
-        categoryCatalogs[id] = nil
+        channelCatalogRevision &+= 1
+        favoriteChannelIDs = favoriteChannelIDs.filter { !$0.hasPrefix("\(id.uuidString):") }
+        defaults.set(favoriteChannelIDs.sorted(), forKey: Self.favoritesKey)
         shortEPGLoaded = shortEPGLoaded.filter { !$0.hasPrefix("\(id.uuidString):") }
-        Task { [epg] in await epg.remove(providerID: id) }
         _ = secretStore.remove(account: Self.secretAccount(id))
-        if selectedProviderID == id { selectedProviderID = providers.first?.id }
+        let wasSelected = selectedProviderID == id
+        if wasSelected { selectedProviderID = providers.first?.id }
         persistProviders()
-        if let selectedProviderID { updateGuideFreshness(for: selectedProviderID) }
+        // Status belongs to the selected provider; removing another one leaves it alone.
+        guard wasSelected else { return }
+        errorMessage = nil
+        guideMessage = nil
+        isGuideLoading = false
+        if let selectedProviderID { updateGuideFreshness(for: selectedProviderID) } else { isGuideStale = true }
+    }
+
+    /// The disk half of removal: the channel snapshot and the guide cache.
+    func deleteProviderFiles(_ id: UUID) async {
+        await channelSnapshotStore.remove(providerID: id)
+        await epg.remove(providerID: id)
     }
 
     func refreshSelectedProvider() async {
@@ -160,59 +262,92 @@ final class LiveTVService {
     }
 
     func refresh(providerID: UUID) async {
-        guard !isLoading,
-              let providerIndex = providers.firstIndex(where: { $0.id == providerID }),
+        guard playlistRefresh == nil else { return }
+        guard providers.contains(where: { $0.id == providerID }),
               let serialized = secretStore.read(account: Self.secretAccount(providerID)),
               let data = serialized.data(using: .utf8),
               let source = try? JSONDecoder().decode(LiveTVSourceConfiguration.self, from: data),
               (source.kind == .m3u ? source.playlistURL.map(Self.isWebURL) == true : source.serverURL.map(Self.isWebURL) == true) else {
-            errorMessage = "Add a valid playlist in Live TV settings to load channels."
+            if selectedProviderID == providerID {
+                errorMessage = "Add a valid playlist in Live TV settings to load channels."
+            }
             return
         }
 
+        let token = UUID()
+        let work = Task { [weak self] () throws -> LiveTVCachedCatalog in
+            guard let self else { throw CancellationError() }
+            return try await self.downloadCatalog(source, providerID: providerID)
+        }
+        playlistRefresh = (providerID, token, work)
         isLoading = true
-        errorMessage = nil
-        guideMessage = nil
+        if selectedProviderID == providerID {
+            errorMessage = nil
+            guideMessage = nil
+        }
 
-        do {
-            let loadedChannels: [LiveTVChannel]
-            if source.kind == .m3u, let playlistURL = source.playlistURL {
-                let playlistData = try await fetch(playlistURL, maximumBytes: Self.maximumPlaylistBytes)
-                let channelLimit = Self.maximumChannels
-                loadedChannels = try await Task.detached(priority: .utility) {
-                    try LiveTVM3UParser.parse(data: playlistData, providerID: providerID, limit: channelLimit)
-                }.value
-            } else {
-                loadedChannels = try await loadXtream(source, providerID: providerID)
+        let result = await work.result
+        // Removing the provider cancels this refresh and has already cleared the loading state.
+        guard playlistRefresh?.token == token else { return }
+        playlistRefresh = nil
+        isLoading = false
+        guard providers.contains(where: { $0.id == providerID }) else { return }
+
+        let loaded: LiveTVCachedCatalog
+        switch result {
+        case .success(let catalog):
+            loaded = catalog
+        case .failure(let error as LiveTVError):
+            if selectedProviderID == providerID { errorMessage = error.localizedDescription }
+            return
+        case .failure:
+            if selectedProviderID == providerID {
+                errorMessage = "The playlist could not be loaded. Check the provider settings and try again."
             }
-            guard !loadedChannels.isEmpty else { throw LiveTVError.noChannels }
-            channelCatalogs[providerID] = loadedChannels
-            categoryCatalogs[providerID] = await Task.detached(priority: .utility) {
-                Array(Set(loadedChannels.map(\.category))).sorted {
-                    $0.localizedStandardCompare($1) == .orderedAscending
-                }
-            }.value
-            channelCatalogRevision &+= 1
-            providers[providerIndex].channelCount = loadedChannels.count
+            return
+        }
+        channelCatalogs[providerID] = loaded.channels
+        categoryCatalogs[providerID] = loaded.categories
+        channelCatalogRevision &+= 1
+        liveCatalogs.insert(providerID)
+        if let providerIndex = providers.firstIndex(where: { $0.id == providerID }) {
+            providers[providerIndex].channelCount = loaded.channels.count
             providers[providerIndex].lastRefreshed = .now
             persistProviders()
+        }
 
-        } catch let error as LiveTVError {
-            errorMessage = error.localizedDescription
-            isLoading = false
-            return
-        } catch {
-            errorMessage = "The playlist could not be loaded. Check the provider settings and try again."
-            isLoading = false
+        await channelSnapshotStore.save(providerID: providerID, channels: loaded.channels,
+                                        secrets: LiveTVSnapshotSecrets(source: source))
+        // The provider may have been removed while the snapshot was written; never leave it behind.
+        guard providers.contains(where: { $0.id == providerID }) else {
+            await channelSnapshotStore.remove(providerID: providerID)
             return
         }
         // Channels are usable now; the guide fills in behind them.
-        isLoading = false
         await refreshGuide(providerID: providerID, source: source)
+    }
+
+    private func downloadCatalog(_ source: LiveTVSourceConfiguration, providerID: UUID) async throws -> LiveTVCachedCatalog {
+        let loadedChannels: [LiveTVChannel]
+        if source.kind == .m3u, let playlistURL = source.playlistURL {
+            let playlistData = try await fetch(playlistURL, maximumBytes: Self.maximumPlaylistBytes)
+            let channelLimit = Self.maximumChannels
+            loadedChannels = try await Task.detached(priority: .utility) {
+                try LiveTVM3UParser.parse(data: playlistData, providerID: providerID, limit: channelLimit)
+            }.value
+        } else {
+            loadedChannels = try await loadXtream(source, providerID: providerID)
+        }
+        guard !loadedChannels.isEmpty else { throw LiveTVError.noChannels }
+        let categories = await Task.detached(priority: .utility) {
+            LiveTVChannel.orderedCategories(of: loadedChannels)
+        }.value
+        return LiveTVCachedCatalog(channels: loadedChannels, categories: categories)
     }
 
     /// Shows the cached guide immediately, then refreshes it when the policy says it is due.
     private func refreshGuide(providerID: UUID, source: LiveTVSourceConfiguration) async {
+        guard providers.contains(where: { $0.id == providerID }) else { return }
         let feed: EPGFeedSource?
         switch source.kind {
         case .m3u:
@@ -228,31 +363,42 @@ final class LiveTVService {
             guideIndexes[providerID] = nil
             guideRevision &+= 1
             await epg.remove(providerID: providerID)
-            updateGuideFreshness(for: providerID)
+            guard providers.contains(where: { $0.id == providerID }) else { return }
+            if selectedProviderID == providerID {
+                guideMessage = nil
+                updateGuideFreshness(for: providerID)
+            }
             return
         }
-        isGuideLoading = true
-        defer { isGuideLoading = false }
+        if selectedProviderID == providerID { isGuideLoading = true }
+        defer { if selectedProviderID == providerID { isGuideLoading = false } }
         let channels = channelCatalogs[providerID] ?? []
         let filter = EPGChannelFilter(guideIDs: channels.map(\.guideID), names: channels.map(\.name))
-        if guideIndexes[providerID] == nil, let cached = await epg.index(for: providerID) {
+        if guideIndexes[providerID] == nil, let cached = await epg.index(for: providerID),
+           guideIndexes[providerID] == nil, providers.contains(where: { $0.id == providerID }) {
             guideIndexes[providerID] = cached
             guideRevision &+= 1
-            updateGuideFreshness(for: providerID)
+            if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
         }
         do {
             let index = try await epg.refresh(providerID: providerID, source: feed, channels: filter)
             guard providers.contains(where: { $0.id == providerID }) else { return }
             guideIndexes[providerID] = index
             guideRevision &+= 1
-            guideMessage = index.programCount == 0 ? "No guide listings are available yet." : nil
+            if selectedProviderID == providerID {
+                guideMessage = index.programCount == 0 ? "No guide listings are available yet." : nil
+            }
         } catch is CancellationError {
             return
         } catch {
             // Keep a previously loaded guide; never print or surface a provider URL or transport error.
-            guideMessage = "Guide data could not be refreshed."
+            if providers.contains(where: { $0.id == providerID }), selectedProviderID == providerID {
+                guideMessage = "Guide data could not be refreshed."
+            }
         }
-        updateGuideFreshness(for: providerID)
+        if providers.contains(where: { $0.id == providerID }), selectedProviderID == providerID {
+            updateGuideFreshness(for: providerID)
+        }
     }
 
     var categories: [String] {
@@ -325,17 +471,22 @@ final class LiveTVService {
             let url = try XtreamURLBuilder.apiURL(server: server, username: username, password: password,
                                                  action: "get_short_epg", streamID: streamID, limit: 10)
             let data = try await fetch(url, maximumBytes: 512 * 1024)
+            guard providers.contains(where: { $0.id == providerID }) else { return }
             let guideID = channel.guideID ?? String(streamID)
             let programs = try XtreamEPG.programs(from: data, guideID: guideID, limits: epg.limits)
             let index = await epg.replacePrograms(programs, guideID: guideID, providerID: providerID)
             guard providers.contains(where: { $0.id == providerID }) else { return }
             guideIndexes[providerID] = index
             guideRevision &+= 1
-            guideMessage = programs.isEmpty ? "No guide listings are available yet." : nil
-            updateGuideFreshness(for: providerID)
+            if selectedProviderID == providerID {
+                guideMessage = programs.isEmpty ? "No guide listings are available yet." : nil
+                updateGuideFreshness(for: providerID)
+            }
         } catch {
             shortEPGLoaded.remove(channel.id)
-            guideMessage = "Guide data could not be refreshed."
+            if providers.contains(where: { $0.id == providerID }), selectedProviderID == providerID {
+                guideMessage = "Guide data could not be refreshed."
+            }
         }
     }
 
@@ -364,9 +515,31 @@ final class LiveTVService {
     /// A channel was chosen in the list or the guide. Opens the player, or retunes the Picture in
     /// Picture window in place.
     func choose(_ channel: LiveTVChannel, from presenter: LiveTVPresenter) {
+        guard isPlayable(channel) else { rejectCachedPlayback(); return }
         if presentation.select(channel, from: presenter) == .playInPlace {
             playerSession.play(channel)
         }
+    }
+
+    /// Shared validation and session route for channel-picker retunes inside the player.
+    @discardableResult
+    func playFromPlayerPicker(_ channel: LiveTVChannel) -> Bool {
+        guard isPlayable(channel) else { rejectCachedPlayback(); return false }
+        errorMessage = nil
+        presentation.playerChannelChanged(to: channel)
+        playerSession.play(channel)
+        return true
+    }
+
+    private func isPlayable(_ channel: LiveTVChannel) -> Bool {
+        guard let providerID = UUID(uuidString: String(channel.id.prefix(36))),
+              providers.contains(where: { $0.id == providerID }),
+              let scheme = channel.streamURL.scheme?.lowercased() else { return false }
+        return ["http", "https"].contains(scheme)
+    }
+
+    private func rejectCachedPlayback() {
+        if selectedProviderID != nil { errorMessage = "Refresh the playlist to play this channel." }
     }
 
     func toggleFavorite(_ channel: LiveTVChannel) {
@@ -430,7 +603,17 @@ final class LiveTVService {
         defaults.set(data, forKey: Self.providersKey)
     }
 
+    private func snapshotSecrets(providerID: UUID) -> LiveTVSnapshotSecrets {
+        guard let serialized = secretStore.read(account: Self.secretAccount(providerID)),
+              let data = serialized.data(using: .utf8),
+              let source = try? JSONDecoder().decode(LiveTVSourceConfiguration.self, from: data) else {
+            return LiveTVSnapshotSecrets()
+        }
+        return LiveTVSnapshotSecrets(source: source)
+    }
+
     private func updateGuideFreshness(for providerID: UUID) {
+        guard selectedProviderID == providerID else { return }
         guard let index = guideIndexes[providerID] else {
             isGuideStale = true
             return

@@ -291,8 +291,6 @@ struct LiveTVPlayerView: View {
         .onChange(of: channel) { oldValue, newValue in
             guard oldValue.id != newValue.id else { return }
             controls.channelChanged()
-            service?.presentation.playerChannelChanged(to: newValue)
-            session.play(newValue)
         }
         #if os(iOS)
         // Picture in Picture started from the button: only the cover closes. The stream plays on in
@@ -322,6 +320,11 @@ struct LiveTVPlayerView: View {
         }
         .sheet(isPresented: $isShowingChannelPicker) {
             LiveTVChannelPickerView(channels: channels, selectedChannelID: channel.id) { selected in
+                if let service {
+                    guard service.playFromPlayerPicker(selected) else { return }
+                } else {
+                    session.play(selected)
+                }
                 channel = selected
                 isShowingChannelPicker = false
             }
@@ -434,4 +437,3 @@ private struct LiveTVChannelPickerView: View {
         search.update(channels: channels, query: query, category: nil, favoritesOnly: false, favoriteIDs: [])
     }
 }
-
