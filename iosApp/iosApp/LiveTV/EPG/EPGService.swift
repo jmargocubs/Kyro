@@ -21,6 +21,15 @@ enum EPGFeedSource: Sendable, Equatable {
 /// Downloads a guide feed. Implementations must honor task cancellation and never surface the URL.
 protocol EPGFeedLoading: Sendable {
     func load(_ url: URL, maximumBytes: Int) async throws -> Data
+    /// `maximumDecodedBytes` applies only to a body the HTTP stack already decoded from a declared
+    /// content coding into XML text; every other body stays under `maximumBytes`.
+    func load(_ url: URL, maximumBytes: Int, maximumDecodedBytes: Int) async throws -> Data
+}
+
+extension EPGFeedLoading {
+    func load(_ url: URL, maximumBytes: Int, maximumDecodedBytes: Int) async throws -> Data {
+        try await load(url, maximumBytes: maximumBytes)
+    }
 }
 
 struct URLSessionEPGFeedLoader: EPGFeedLoading {
@@ -37,10 +46,16 @@ struct URLSessionEPGFeedLoader: EPGFeedLoading {
     }
 
     func load(_ url: URL, maximumBytes: Int) async throws -> Data {
+        try await load(url, maximumBytes: maximumBytes, maximumDecodedBytes: maximumBytes)
+    }
+
+    func load(_ url: URL, maximumBytes: Int, maximumDecodedBytes: Int) async throws -> Data {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.setValue("application/xml, text/xml, application/gzip, application/x-xz, */*",
                          forHTTPHeaderField: "Accept")
-        let delegate = BoundedEPGDownload(maximumBytes: maximumBytes, onAcceptedBytes: onAcceptedBytes)
+        let delegate = BoundedEPGDownload(maximumBytes: maximumBytes,
+                                          maximumDecodedBytes: max(maximumBytes, maximumDecodedBytes),
+                                          onAcceptedBytes: onAcceptedBytes)
         let boundedSession = URLSession(configuration: session.configuration, delegate: delegate, delegateQueue: nil)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -53,9 +68,22 @@ struct URLSessionEPGFeedLoader: EPGFeedLoading {
 }
 
 /// Owns one URLSession data task and stops it as soon as the actual body exceeds its cap.
+///
+/// URLSession transparently decodes gzip, deflate and Brotli content codings, so a provider's
+/// 12 MB compressed transfer arrives as 80 MB of XML. Such a body is held to the expanded-XML cap
+/// instead of the download cap, but only when both the declared coding is one URLSession decodes
+/// and the delivered bytes are XML text. A compressed file (`.xml.gz`, `.xml.xz`) sent with or
+/// without a content coding starts with its archive magic, not `<`, and keeps the download cap.
 private final class BoundedEPGDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private enum Representation { case undecided, decodedXML, other }
+
+    private static let decodedCodings: Set<String> = ["gzip", "x-gzip", "deflate", "br"]
+
     private let lock = NSLock()
     private let maximumBytes: Int
+    private let maximumDecodedBytes: Int
+    private var isTransportDecoded = false
+    private var representation = Representation.undecided
     private let onAcceptedBytes: (@Sendable (Int) -> Void)?
     private var continuation: CheckedContinuation<Data, Error>?
     private var responseError: Error?
@@ -65,8 +93,9 @@ private final class BoundedEPGDownload: NSObject, URLSessionDataDelegate, @unche
     private var finished = false
     private var cancelled = false
 
-    init(maximumBytes: Int, onAcceptedBytes: (@Sendable (Int) -> Void)?) {
+    init(maximumBytes: Int, maximumDecodedBytes: Int, onAcceptedBytes: (@Sendable (Int) -> Void)?) {
         self.maximumBytes = maximumBytes
+        self.maximumDecodedBytes = maximumDecodedBytes
         self.onAcceptedBytes = onAcceptedBytes
     }
 
@@ -95,6 +124,15 @@ private final class BoundedEPGDownload: NSObject, URLSessionDataDelegate, @unche
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if let http = response as? HTTPURLResponse {
+            let codings = (http.value(forHTTPHeaderField: "Content-Encoding") ?? "")
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                .filter { !$0.isEmpty && $0 != "identity" }
+            isTransportDecoded = !codings.isEmpty && codings.allSatisfy(Self.decodedCodings.contains)
+        }
+        // For a content-coded response the declared length is the compressed transfer, which stays
+        // under the download cap.
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             responseError = EPGError.providerRejected
             completionHandler(.cancel)
@@ -110,7 +148,11 @@ private final class BoundedEPGDownload: NSObject, URLSessionDataDelegate, @unche
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard body.count <= maximumBytes - data.count else {
+        if representation == .undecided {
+            representation = isTransportDecoded ? Self.classify(data, atStart: body.isEmpty) : .other
+        }
+        let limit = representation == .decodedXML ? maximumDecodedBytes : maximumBytes
+        guard body.count <= limit - data.count else {
             responseError = EPGError.responseTooLarge
             dataTask.cancel()
             return
@@ -127,6 +169,16 @@ private final class BoundedEPGDownload: NSObject, URLSessionDataDelegate, @unche
         if wasCancelled || (error as? URLError)?.code == .cancelled { finish(.failure(CancellationError())); return }
         if error != nil { finish(.failure(EPGError.providerRejected)); return }
         finish(.success(body))
+    }
+
+    /// XML text after an optional UTF-8 byte-order mark and whitespace; undecided until a
+    /// significant byte arrives, and the download cap applies meanwhile. While undecided the body
+    /// holds only whitespace, so each chunk is classified on its own without copying the body.
+    private static func classify(_ chunk: Data, atStart: Bool) -> Representation {
+        var bytes = chunk[...]
+        if atStart, bytes.starts(with: [0xEF, 0xBB, 0xBF]) { bytes = bytes.dropFirst(3) }
+        guard let first = bytes.first(where: { ![0x20, 0x09, 0x0A, 0x0D].contains($0) }) else { return .undecided }
+        return first == UInt8(ascii: "<") ? .decodedXML : .other
     }
 
     private func finish(_ result: Result<Data, Error>) {
@@ -348,7 +400,8 @@ actor EPGService {
                                           loader: any EPGFeedLoading, limits: EPGLimits,
                                           fetchedAt: Date) async throws -> EPGIndex {
         let url = try source.feedURL()
-        let download = try await loader.load(url, maximumBytes: limits.maximumDownloadBytes)
+        let download = try await loader.load(url, maximumBytes: limits.maximumDownloadBytes,
+                                             maximumDecodedBytes: limits.maximumXMLBytes)
         try Task.checkCancellation()
         let xml = try EPGPayloadDecoder.xmlData(from: download, maximumBytes: limits.maximumXMLBytes)
         try Task.checkCancellation()

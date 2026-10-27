@@ -138,6 +138,95 @@ final class LiveTVEPGTests: XCTestCase {
         XCTAssertEqual(counter.value, 8)
     }
 
+    /// The provider case: `Content-Encoding: gzip`, a compressed Content-Length under the download
+    /// cap, and URLSession delivering the decoded XML, which is larger than the download cap.
+    func testTransportDecodedXMLUsesTheExpandedCapLikeTheProviderResponse() async throws {
+        let xml = Data(feed((0..<40).map { ("news.one", $0 * 30, 30, "P\($0)") }).utf8)
+        XCTAssertGreaterThan(xml.count, 2_000)
+        let chunks = stride(from: 0, to: xml.count, by: 512).map { xml.subdata(in: $0 ..< min($0 + 512, xml.count)) }
+        for coding in ["gzip", "GZIP", "br", "deflate", "x-gzip, identity"] {
+            StreamingURLProtocol.install(chunks: chunks, contentLength: "400", headers: ["Content-Encoding": coding])
+            let data = try await makeStreamingLoader().load(URL(string: "https://epg.test/guide")!,
+                                                            maximumBytes: 1_000, maximumDecodedBytes: 100_000)
+            XCTAssertEqual(data, xml, coding)
+            let document = try XMLTVParser.parse(EPGPayloadDecoder.xmlData(from: data, maximumBytes: 100_000))
+            XCTAssertEqual(document.programs.count, 40)
+        }
+        // A byte-order mark and whitespace before the root are still XML; an all-whitespace first
+        // chunk defers the decision.
+        StreamingURLProtocol.install(chunks: [Data([0xEF, 0xBB, 0xBF, 0x0A, 0x20]), xml], contentLength: nil,
+                                     headers: ["Content-Encoding": "gzip"])
+        let prefixed = try await makeStreamingLoader().load(URL(string: "https://epg.test/guide")!,
+                                                            maximumBytes: 1_000, maximumDecodedBytes: 100_000)
+        XCTAssertEqual(prefixed.count, xml.count + 5)
+    }
+
+    func testDecodedXMLStillStopsAtTheExpandedCapWithoutContentLength() async throws {
+        let counter = AcceptedByteCounter()
+        StreamingURLProtocol.install(chunks: [Data("<tv>".utf8)] + Array(repeating: Data(repeating: 0x20, count: 400), count: 20),
+                                     contentLength: nil, delay: 5_000_000, headers: ["Content-Encoding": "gzip"])
+        await XCTAssertThrowsAsync(try await makeStreamingLoader(counter: counter).load(
+            URL(string: "https://epg.test/guide")!, maximumBytes: 100, maximumDecodedBytes: 2_000)) {
+            XCTAssertEqual($0 as? EPGError, .responseTooLarge)
+        }
+        XCTAssertLessThanOrEqual(counter.value, 2_000)
+        XCTAssertLessThan(StreamingURLProtocol.sentChunks, 21, "the request stops before the whole body is sent")
+        XCTAssertTrue(StreamingURLProtocol.wasStopped)
+    }
+
+    func testOnlyDecodedXMLGetsTheExpandedCap() async throws {
+        let oversizedXML = [Data("<tv>".utf8), Data(repeating: 0x20, count: 1_500)]
+        let gzipFile = [Data([0x1F, 0x8B, 0x08, 0x00]), Data(repeating: 0, count: 1_500)]
+        let cases: [(name: String, chunks: [Data], headers: [String: String], length: String?)] = [
+            ("plain XML, no content coding", oversizedXML, [:], nil),
+            ("identity coding", oversizedXML, ["Content-Encoding": "identity"], nil),
+            ("coding URLSession does not decode", oversizedXML, ["Content-Encoding": "compress"], nil),
+            ("partly undecodable codings", oversizedXML, ["Content-Encoding": "gzip, compress"], nil),
+            ("gzip file inside a gzip transfer", gzipFile, ["Content-Encoding": "gzip"], nil),
+            ("compressed transfer larger than the download cap", oversizedXML, ["Content-Encoding": "gzip"], "1001"),
+        ]
+        for item in cases {
+            StreamingURLProtocol.install(chunks: item.chunks, contentLength: item.length, headers: item.headers)
+            await XCTAssertThrowsAsync(try await makeStreamingLoader().load(
+                URL(string: "https://epg.test/guide")!, maximumBytes: 1_000, maximumDecodedBytes: 100_000)) {
+                XCTAssertEqual($0 as? EPGError, .responseTooLarge, item.name)
+            }
+        }
+    }
+
+    func testWhitespaceHeavyResponseKeepsTheDownloadCapUntilXMLStarts() async throws {
+        let blanks = Array(repeating: Data(repeating: 0x20, count: 100), count: 6)
+        let xml = Data(feed([("news.one", 0, 60, "Now")]).utf8)
+        // Whitespace first, then XML: the expanded cap applies once `<` arrives.
+        StreamingURLProtocol.install(chunks: blanks + [xml, Data(repeating: 0x20, count: 3_000)], contentLength: nil,
+                                     headers: ["Content-Encoding": "gzip"])
+        let data = try await makeStreamingLoader().load(URL(string: "https://epg.test/guide")!,
+                                                        maximumBytes: 1_000, maximumDecodedBytes: 100_000)
+        XCTAssertEqual(data.count, 600 + xml.count + 3_000)
+
+        // Endless whitespace never reaches XML, so it stops at the download cap, not the expanded one.
+        let counter = AcceptedByteCounter()
+        StreamingURLProtocol.install(chunks: Array(repeating: Data(repeating: 0x0A, count: 100), count: 200),
+                                     contentLength: nil, delay: 2_000_000, headers: ["Content-Encoding": "gzip"])
+        await XCTAssertThrowsAsync(try await makeStreamingLoader(counter: counter).load(
+            URL(string: "https://epg.test/guide")!, maximumBytes: 1_000, maximumDecodedBytes: 100_000)) {
+            XCTAssertEqual($0 as? EPGError, .responseTooLarge)
+        }
+        XCTAssertLessThanOrEqual(counter.value, 1_000)
+        XCTAssertLessThan(StreamingURLProtocol.sentChunks, 20)
+        XCTAssertTrue(StreamingURLProtocol.wasStopped)
+    }
+
+    func testServiceAllowsDecodedXMLUpToTheXMLCap() async throws {
+        let loader = LimitRecordingLoader(payload: Data(feed([("news.one", 0, 60, "Now")]).utf8))
+        var limits = EPGLimits()
+        limits.maximumDownloadBytes = 1_000
+        limits.maximumXMLBytes = 9_000
+        let service = EPGService(cache: nil, loader: loader, limits: limits, now: { [now] in now })
+        _ = try await service.refresh(providerID: UUID(), source: source)
+        XCTAssertEqual(loader.limits, [1_000, 9_000])
+    }
+
     func testNetworkLoaderCancellationStopsUnderlyingRequest() async throws {
         StreamingURLProtocol.install(chunks: Array(repeating: Data(repeating: 1, count: 1), count: 100),
                                      contentLength: nil, delay: 20_000_000)
@@ -646,6 +735,24 @@ private final class TestClock: @unchecked Sendable {
     }
 }
 
+private final class LimitRecordingLoader: EPGFeedLoading, @unchecked Sendable {
+    private let lock = NSLock()
+    private let payload: Data
+    private var recorded: [Int] = []
+    init(payload: Data) { self.payload = payload }
+    var limits: [Int] { lock.withLock { recorded } }
+
+    func load(_ url: URL, maximumBytes: Int) async throws -> Data {
+        XCTFail("the service must pass the decoded-XML cap")
+        return payload
+    }
+
+    func load(_ url: URL, maximumBytes: Int, maximumDecodedBytes: Int) async throws -> Data {
+        lock.withLock { recorded = [maximumBytes, maximumDecodedBytes] }
+        return payload
+    }
+}
+
 /// A feed loader that holds each download until released and records calls and cancellations.
 private final class GateLoader: EPGFeedLoading, @unchecked Sendable {
     private let lock = NSLock()
@@ -691,6 +798,7 @@ private final class StreamingURLProtocol: URLProtocol {
         let chunks: [Data]
         let contentLength: String?
         let delay: UInt64
+        var headers: [String: String] = [:]
     }
     private static let lock = NSLock()
     private static var plan = Plan(chunks: [], contentLength: nil, delay: 0)
@@ -702,9 +810,9 @@ private final class StreamingURLProtocol: URLProtocol {
     static var sentChunks: Int { lock.withLock { sent } }
     static var wasStopped: Bool { lock.withLock { stopped } }
 
-    static func install(chunks: [Data], contentLength: String?, delay: UInt64 = 0) {
+    static func install(chunks: [Data], contentLength: String?, delay: UInt64 = 0, headers: [String: String] = [:]) {
         lock.withLock {
-            plan = Plan(chunks: chunks, contentLength: contentLength, delay: delay)
+            plan = Plan(chunks: chunks, contentLength: contentLength, delay: delay, headers: headers)
             sent = 0
             stopped = false
         }
@@ -715,7 +823,7 @@ private final class StreamingURLProtocol: URLProtocol {
 
     override func startLoading() {
         let plan = Self.lock.withLock { Self.plan }
-        var headers = [String: String]()
+        var headers = plan.headers
         if let length = plan.contentLength { headers["Content-Length"] = length }
         guard let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
                                              headerFields: headers) else { return }
