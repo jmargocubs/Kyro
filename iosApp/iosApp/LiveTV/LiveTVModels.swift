@@ -168,6 +168,15 @@ final class LiveTVChannelSearchModel {
     private var generation = 0
     private var debounceTask: Task<Void, Never>?
     private var worker: Task<[String: [LiveTVChannel]], Never>?
+    /// Last query accepted by `update`. Nil after `cancel`, so the next pass is a fresh population.
+    private var scheduledQuery: String?
+    /// True only while a non-empty query edit is waiting. Category changes and the first population leave this false.
+    private(set) var isDebouncingTextInput = false
+    /// Text-input delay. Tests replace this so a reintroduced category sleep is recorded instead of waiting on the clock.
+    @ObservationIgnored
+    var waitForTextInput: @MainActor (Duration) async -> Void = { duration in
+        try? await Task.sleep(for: duration)
+    }
 
     func update(channels: [LiveTVChannel], query: String, category: String?, favoritesOnly: Bool,
                 favoriteIDs: Set<String>, debounce: Duration = .milliseconds(180)) {
@@ -175,13 +184,30 @@ final class LiveTVChannelSearchModel {
         let current = generation
         debounceTask?.cancel()
         worker?.cancel()
-        let snapshots = (channels, query.trimmingCharacters(in: .whitespacesAndNewlines), category, favoritesOnly, favoriteIDs)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A non-empty query edit keeps the debounce. Clearing the field is not a keystroke: the
+        // empty query, including one paired with a new category, starts immediately. The value is
+        // stored before any wait, so a following category change also starts immediately. The first
+        // population, a repeated query, favorites, and a catalog refresh start immediately too.
+        let textEdited = scheduledQuery != nil && scheduledQuery != trimmed && !trimmed.isEmpty
+        scheduledQuery = trimmed
+        let snapshots = (channels, trimmed, category, favoritesOnly, favoriteIDs)
+        let wait: Duration = textEdited ? debounce : .zero
+        isDebouncingTextInput = wait > .zero
         debounceTask = Task {
-            do { try await Task.sleep(for: debounce) } catch { return }
+            if wait > .zero {
+                await waitForTextInput(wait)
+                guard !Task.isCancelled, current == generation else { return }
+                isDebouncingTextInput = false
+            }
             guard !Task.isCancelled, current == generation else { return }
             let work = Task.detached(priority: .userInitiated) {
                 LiveTVChannelFiltering.grouped(snapshots.0, query: snapshots.1, category: snapshots.2,
                                                favoritesOnly: snapshots.3, favoriteIDs: snapshots.4)
+            }
+            guard !Task.isCancelled, current == generation else {
+                work.cancel()
+                return
             }
             worker = work
             let grouped = await work.value
@@ -199,6 +225,8 @@ final class LiveTVChannelSearchModel {
         worker?.cancel()
         debounceTask = nil
         worker = nil
+        scheduledQuery = nil
+        isDebouncingTextInput = false
         groups = [:]
         orderedCategories = []
         resultCount = 0

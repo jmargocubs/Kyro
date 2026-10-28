@@ -109,14 +109,257 @@ final class LiveTVFoundationTests: XCTestCase {
         XCTAssertEqual(search.resultCount, 1)
         XCTAssertEqual(search.groups["News"]?.first?.id, "provider:19999")
 
+        let gate = TextInputDelayGate(hold: true)
+        gate.install(on: search)
+        defer { gate.release() }
         search.update(channels: channels, query: "Channel 2", category: "Sports", favoritesOnly: false,
                       favoriteIDs: [], debounce: .seconds(1))
+        XCTAssertTrue(search.isDebouncingTextInput)
+        if !search.isDebouncingTextInput { return }
+        await gate.waitUntilEntered()
         search.update(channels: channels, query: "Channel 18000", category: "Sports", favoritesOnly: false,
                       favoriteIDs: [], debounce: .zero)
+        XCTAssertFalse(search.isDebouncingTextInput, "an explicit zero debounce must replace the held query")
         await search.waitForCurrentSearch()
         XCTAssertEqual(search.groups.values.flatMap { $0 }.map(\.id), ["provider:18000"])
+        gate.release()
+        await Task.yield()
+        XCTAssertEqual(search.groups.values.flatMap { $0 }.map(\.id), ["provider:18000"],
+                       "releasing the superseded query must not publish it")
         search.cancel()
         XCTAssertEqual(search.resultCount, 0)
+        XCTAssertFalse(search.isDebouncingTextInput)
+    }
+
+    func testCategoryAndInitialPopulationPublishWithoutTextDebounce() async {
+        let channels = largeSearchCatalog()
+        let search = LiveTVChannelSearchModel()
+        let gate = TextInputDelayGate(hold: false)
+        gate.install(on: search)
+
+        search.update(channels: channels, query: "", category: nil, favoritesOnly: false, favoriteIDs: [])
+        XCTAssertFalse(search.isDebouncingTextInput, "the first catalog population must not schedule the text debounce")
+        if search.isDebouncingTextInput { return }
+        await search.waitForCurrentSearch()
+        XCTAssertTrue(gate.delays.isEmpty, "the first population must not call the text-input delay: \(gate.delays)")
+        XCTAssertEqual(search.resultCount, 20_000)
+
+        search.update(channels: channels, query: "", category: "Sports", favoritesOnly: false, favoriteIDs: [])
+        XCTAssertFalse(search.isDebouncingTextInput, "a category change with the same query must not schedule the text debounce")
+        if search.isDebouncingTextInput { return }
+        await search.waitForCurrentSearch()
+        XCTAssertTrue(gate.delays.isEmpty, "a category change must not call the text-input delay: \(gate.delays)")
+        XCTAssertEqual(search.resultCount, 10_000)
+        XCTAssertEqual(search.orderedCategories, ["Sports"])
+    }
+
+    func testRapidCategorySwitchPublishesOnlyTheLatestSelection() async {
+        let channels = searchSchedulingCatalog()
+        let search = LiveTVChannelSearchModel()
+        let gate = TextInputDelayGate(hold: true)
+        gate.install(on: search)
+        defer { gate.release() }
+        for category in ["News", "Sports", "News", "Sports", nil] as [String?] {
+            search.update(channels: channels, query: "  ", category: category, favoritesOnly: false, favoriteIDs: [])
+            XCTAssertFalse(search.isDebouncingTextInput)
+        }
+        if search.isDebouncingTextInput { return }
+        await search.waitForCurrentSearch()
+        XCTAssertTrue(gate.delays.isEmpty)
+        XCTAssertEqual(search.resultCount, channels.count)
+        XCTAssertEqual(Set(search.orderedCategories), ["News", "Sports"])
+    }
+
+    func testSearchInputReplacementRejectsTheStaleQuery() async {
+        let channels = searchSchedulingCatalog()
+        let search = LiveTVChannelSearchModel()
+        let gate = TextInputDelayGate(hold: true)
+        gate.install(on: search)
+        defer { gate.release() }
+        search.update(channels: channels, query: "", category: nil, favoritesOnly: false, favoriteIDs: [])
+        await search.waitForCurrentSearch()
+
+        search.update(channels: channels, query: "Channel 1", category: nil, favoritesOnly: false,
+                      favoriteIDs: [], debounce: .seconds(30))
+        XCTAssertTrue(search.isDebouncingTextInput)
+        if !search.isDebouncingTextInput { return }
+        await gate.waitUntilEntered()
+        XCTAssertEqual(search.resultCount, channels.count, "the first query must stay unpublished while its delay is held")
+
+        gate.hold = false
+        search.update(channels: channels, query: "Channel 19999", category: "News", favoritesOnly: false, favoriteIDs: [])
+        XCTAssertTrue(search.isDebouncingTextInput, "replacing the query is still a text edit")
+        if !search.isDebouncingTextInput { return }
+        XCTAssertEqual(search.resultCount, channels.count, "the replacement must not publish synchronously")
+        await gate.waitUntilEntered(count: 2)
+        XCTAssertEqual(gate.delays, [.seconds(30), .milliseconds(180)])
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.resultCount, 1)
+        XCTAssertEqual(search.groups["News"]?.map(\.id), ["provider:19999"])
+        XCTAssertNil(search.groups["Sports"])
+        gate.release()
+        await Task.yield()
+        XCTAssertEqual(search.groups["News"]?.map(\.id), ["provider:19999"],
+                       "the held query must not publish after the replacement")
+    }
+
+    func testTextInputStaysDebouncedWhileCategoryStaysImmediate() async {
+        let channels = searchSchedulingCatalog()
+        let search = LiveTVChannelSearchModel()
+        let gate = TextInputDelayGate(hold: true)
+        gate.install(on: search)
+        defer { gate.release() }
+        search.update(channels: channels, query: "", category: nil, favoritesOnly: false, favoriteIDs: [])
+        await search.waitForCurrentSearch()
+
+        search.update(channels: channels, query: "Channel 19999", category: nil, favoritesOnly: false, favoriteIDs: [])
+        XCTAssertTrue(search.isDebouncingTextInput)
+        if !search.isDebouncingTextInput { return }
+        await gate.waitUntilEntered()
+        XCTAssertEqual(gate.delays, [.milliseconds(180)])
+        XCTAssertEqual(search.resultCount, channels.count, "a keystroke must not publish while its delay is held")
+
+        search.update(channels: channels, query: "Channel 19999", category: "News", favoritesOnly: false, favoriteIDs: [])
+        XCTAssertFalse(search.isDebouncingTextInput, "the same query with a new category must not keep the text delay")
+        if search.isDebouncingTextInput { return }
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.resultCount, 1)
+        XCTAssertEqual(search.groups["News"]?.map(\.id), ["provider:19999"])
+        gate.release()
+        await Task.yield()
+        XCTAssertEqual(search.groups["News"]?.map(\.id), ["provider:19999"])
+    }
+
+    func testClearingAQueryPublishesTheCategoryWithoutTheTextDelay() async {
+        let channels = searchSchedulingCatalog()
+        let search = LiveTVChannelSearchModel()
+        let gate = TextInputDelayGate(hold: true)
+        gate.install(on: search)
+        defer { gate.release() }
+        search.update(channels: channels, query: "Channel 19999", category: nil, favoritesOnly: false,
+                      favoriteIDs: [], debounce: .zero)
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.resultCount, 1)
+
+        search.update(channels: channels, query: "", category: "Sports", favoritesOnly: false, favoriteIDs: [])
+        XCTAssertFalse(search.isDebouncingTextInput,
+                       "clearing the field while switching category must not schedule the text debounce")
+        if search.isDebouncingTextInput { return }
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(gate.delays, [], "clearing to an empty query must not call the text-input delay: \(gate.delays)")
+        XCTAssertEqual(search.orderedCategories, ["Sports"])
+        XCTAssertEqual(search.resultCount, channels.filter { $0.category == "Sports" }.count)
+        XCTAssertFalse(search.groups["Sports"]?.contains { $0.id == "provider:19999" } ?? false)
+
+        search.update(channels: channels, query: "Channel 1", category: "Sports", favoritesOnly: false, favoriteIDs: [])
+        XCTAssertTrue(search.isDebouncingTextInput)
+        if !search.isDebouncingTextInput { return }
+        await gate.waitUntilEntered()
+        search.update(channels: channels, query: "   ", category: "News", favoritesOnly: false, favoriteIDs: [])
+        XCTAssertFalse(search.isDebouncingTextInput, "a later clear-and-category update must cancel the held keystroke")
+        if search.isDebouncingTextInput { return }
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.orderedCategories, ["News"])
+        XCTAssertEqual(search.resultCount, channels.filter { $0.category == "News" }.count)
+        gate.release()
+        await Task.yield()
+        XCTAssertEqual(search.orderedCategories, ["News"], "the held keystroke must not replace the cleared category")
+    }
+
+    func testCancelledSearchDoesNotPublishAndTheNextPopulationIsImmediate() async {
+        let channels = searchSchedulingCatalog()
+        let search = LiveTVChannelSearchModel()
+        let gate = TextInputDelayGate(hold: true)
+        gate.install(on: search)
+        defer { gate.release() }
+        search.update(channels: channels, query: "", category: nil, favoritesOnly: false, favoriteIDs: [])
+        await search.waitForCurrentSearch()
+        search.update(channels: channels, query: "Channel 5", category: nil, favoritesOnly: false,
+                      favoriteIDs: [], debounce: .seconds(30))
+        XCTAssertTrue(search.isDebouncingTextInput)
+        if !search.isDebouncingTextInput { return }
+        await gate.waitUntilEntered()
+        search.cancel()
+        XCTAssertFalse(search.isDebouncingTextInput)
+        XCTAssertEqual(search.resultCount, 0)
+        XCTAssertTrue(search.groups.isEmpty)
+        gate.release()
+        await Task.yield()
+        XCTAssertEqual(search.resultCount, 0, "a cancelled text delay must not publish after it is released")
+
+        search.update(channels: channels, query: "Channel 18000", category: "Sports", favoritesOnly: false, favoriteIDs: [])
+        XCTAssertFalse(search.isDebouncingTextInput, "the population after cancel is a fresh pass, not a keystroke")
+        if search.isDebouncingTextInput { return }
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.groups["Sports"]?.map(\.id), ["provider:18000"])
+    }
+
+    func testUnicodeSearchAndCategoryStayOnTheFilteredCatalog() async {
+        let channels = largeSearchCatalog()
+        let search = LiveTVChannelSearchModel()
+        let gate = TextInputDelayGate(hold: false)
+        gate.install(on: search)
+        search.update(channels: channels, query: "cafe", category: nil, favoritesOnly: false, favoriteIDs: [],
+                      debounce: .zero)
+        XCTAssertFalse(search.isDebouncingTextInput)
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.groups["News"]?.map(\.name), ["Café Culture"])
+
+        search.update(channels: channels, query: "CAFÉ", category: "Sports", favoritesOnly: false, favoriteIDs: [])
+        XCTAssertTrue(search.isDebouncingTextInput, "changing cafe to CAFÉ is a query edit and keeps the text debounce")
+        search.waitForTextInput = { _ in }
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.resultCount, 0, "the Café channel is News, so a Sports filter excludes it")
+
+        search.update(channels: channels, query: "спорт", category: "Sports", favoritesOnly: false, favoriteIDs: [],
+                      debounce: .zero)
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.groups["Sports"]?.map(\.name), ["Спорт Один"])
+
+        let favoriteID = "provider:7"
+        search.update(channels: channels, query: "", category: "News", favoritesOnly: true,
+                      favoriteIDs: [favoriteID])
+        XCTAssertFalse(search.isDebouncingTextInput, "clearing the query while changing category and favorites must not debounce")
+        if search.isDebouncingTextInput { return }
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.groups["News"]?.map(\.id), [favoriteID])
+    }
+
+    private func searchSchedulingCatalog() -> [LiveTVChannel] {
+        [
+            searchChannel("0", "Café Culture", "News"),
+            searchChannel("1", "Спорт Один", "Sports"),
+            searchChannel("2", "Channel 2", "Sports"),
+            searchChannel("7", "Channel 7", "News"),
+            searchChannel("18000", "Channel 18000", "Sports"),
+            searchChannel("19999", "Channel 19999", "News"),
+        ]
+    }
+
+    private func searchChannel(_ id: String, _ name: String, _ category: String) -> LiveTVChannel {
+        LiveTVChannel(id: "provider:\(id)", guideID: nil, name: name,
+                      streamURL: URL(string: "https://fixture.invalid/\(id).m3u8")!,
+                      logoURL: nil, category: category)
+    }
+
+    private func largeSearchCatalog() -> [LiveTVChannel] {
+        (0..<20_000).map { index in
+            let name: String
+            let category: String
+            if index == 0 {
+                name = "Café Culture"
+                category = "News"
+            } else if index == 1 {
+                name = "Спорт Один"
+                category = "Sports"
+            } else {
+                name = "Channel \(index)"
+                category = index.isMultiple(of: 2) ? "Sports" : "News"
+            }
+            return LiveTVChannel(id: "provider:\(index)", guideID: nil, name: name,
+                                 streamURL: URL(string: "https://fixture.invalid/\(index).m3u8")!,
+                                 logoURL: nil, category: category)
+        }
     }
 
     func testFavoriteAndCategoryFilteringKeepsStableChannelIdentity() throws {
@@ -427,5 +670,46 @@ private final class LiveTVTestScheduler: LiveTVScheduling {
     var now: Double { 0 }
     func schedule(after seconds: Double, _ action: @escaping @MainActor @Sendable () -> Void) -> LiveTVTimerHandle {
         LiveTVTimerHandle {}
+    }
+}
+
+/// Holds the search model's text-input delay so tests can see the scheduled duration without waiting on a clock.
+@MainActor
+private final class TextInputDelayGate {
+    var hold: Bool
+    private(set) var delays: [Duration] = []
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var entryTarget = 1
+
+    init(hold: Bool) {
+        self.hold = hold
+    }
+
+    func install(on search: LiveTVChannelSearchModel) {
+        search.waitForTextInput = { [weak self] duration in
+            guard let self else { return }
+            self.delays.append(duration)
+            if self.delays.count >= self.entryTarget {
+                self.entryWaiter?.resume()
+                self.entryWaiter = nil
+            }
+            guard self.hold else { return }
+            await withCheckedContinuation { continuation in
+                self.continuations.append(continuation)
+            }
+        }
+    }
+
+    func waitUntilEntered(count: Int = 1) async {
+        entryTarget = count
+        if delays.count >= count { return }
+        await withCheckedContinuation { entryWaiter = $0 }
+    }
+
+    func release() {
+        let pending = continuations
+        continuations.removeAll()
+        pending.forEach { $0.resume() }
     }
 }
