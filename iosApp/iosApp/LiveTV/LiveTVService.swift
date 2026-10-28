@@ -34,6 +34,7 @@ final class LiveTVService {
     @ObservationIgnored private var playlistRefresh: (providerID: UUID, token: UUID, task: Task<LiveTVCachedCatalog, Error>)?
     /// Cached channel and guide restores, kept after they finish so each provider is read from disk once.
     @ObservationIgnored private var cacheRestores: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var guideCacheOrphanSweep: Task<Void, Never>?
     /// Providers whose channels came from a playlist download in this process, so they can play.
     @ObservationIgnored private var liveCatalogs = Set<UUID>()
     @ObservationIgnored private var automaticRefreshAttempts: [UUID: Date] = [:]
@@ -89,6 +90,9 @@ final class LiveTVService {
             selectedProviderID = saved.first?.id
         }
         if let selectedProviderID {
+            // Cached-first startup reads a verified v2 guide. Legacy v1 migration stays off:
+            // `EPGService.migrateLegacyCache(providerID:source:)` is the only switch, and nothing
+            // in startup, restore, or refresh calls it.
             Task { [weak self] in await self?.restoreCachedState(for: selectedProviderID) }
         }
     }
@@ -121,6 +125,17 @@ final class LiveTVService {
     func restoreCachedState(for providerID: UUID) async {
         if let restore = cacheRestores[providerID] { return await restore.value }
         guard providers.contains(where: { $0.id == providerID }) else { return }
+        if let guideCacheOrphanSweep {
+            await guideCacheOrphanSweep.value
+        } else {
+            let service = epg
+            let knownProviderIDs = Set(providers.map(\.id))
+            let sweep = Task { await service.removeOrphanedCacheFiles(keeping: knownProviderIDs) }
+            guideCacheOrphanSweep = sweep
+            await sweep.value
+        }
+        guard providers.contains(where: { $0.id == providerID }) else { return }
+        if let restore = cacheRestores[providerID] { return await restore.value }
         let restore = Task { [weak self] in
             guard let self else { return }
             await self.loadCachedState(for: providerID)
@@ -131,6 +146,7 @@ final class LiveTVService {
 
     private func loadCachedState(for providerID: UUID) async {
         let secrets = snapshotSecrets(providerID: providerID)
+        let epgSource = loadSourceConfiguration(providerID: providerID).flatMap(Self.epgFeedSource)
         if channelCatalogs[providerID] == nil,
            let cached = await channelSnapshotStore.loadCatalog(providerID: providerID, secrets: secrets),
            // A download may have finished, or the provider been removed, while the file was read.
@@ -139,9 +155,11 @@ final class LiveTVService {
             categoryCatalogs[providerID] = cached.categories
             channelCatalogRevision &+= 1
         }
-        // The guide cache is keyed by provider and only returned while still usable.
-        guard guideIndexes[providerID] == nil, let index = await epg.index(for: providerID),
-              guideIndexes[providerID] == nil, providers.contains(where: { $0.id == providerID }) else { return }
+        // The guide cache is keyed by provider and only returned while still usable. Short-guide
+        // listings alone never stand in for it.
+        guard !showsFullGuide(providerID), let epgSource,
+              let index = await epg.index(for: providerID, source: epgSource),
+              !showsFullGuide(providerID), providers.contains(where: { $0.id == providerID }) else { return }
         guideIndexes[providerID] = index
         guideRevision &+= 1
         if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
@@ -348,21 +366,11 @@ final class LiveTVService {
     /// Shows the cached guide immediately, then refreshes it when the policy says it is due.
     private func refreshGuide(providerID: UUID, source: LiveTVSourceConfiguration) async {
         guard providers.contains(where: { $0.id == providerID }) else { return }
-        let feed: EPGFeedSource?
-        switch source.kind {
-        case .m3u:
-            feed = source.xmltvURL.flatMap(Self.webURL).map(EPGFeedSource.xmltv)
-        case .xtream:
-            if let server = source.serverURL, let username = source.username, let password = source.password {
-                feed = .xtream(server: server, username: username, password: password)
-            } else {
-                feed = nil
-            }
-        }
+        let feed = Self.epgFeedSource(source)
         guard let feed else {
             guideIndexes[providerID] = nil
             guideRevision &+= 1
-            await epg.remove(providerID: providerID)
+            await epg.clear(providerID: providerID)
             guard providers.contains(where: { $0.id == providerID }) else { return }
             if selectedProviderID == providerID {
                 guideMessage = nil
@@ -374,12 +382,19 @@ final class LiveTVService {
         defer { if selectedProviderID == providerID { isGuideLoading = false } }
         let channels = channelCatalogs[providerID] ?? []
         let filter = EPGChannelFilter(guideIDs: channels.map(\.guideID), names: channels.map(\.name))
-        if guideIndexes[providerID] == nil, let cached = await epg.index(for: providerID),
-           guideIndexes[providerID] == nil, providers.contains(where: { $0.id == providerID }) {
-            guideIndexes[providerID] = cached
-            guideRevision &+= 1
-            if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
+        let currentEPGSource = Self.epgFeedSource(source)
+        if !showsFullGuide(providerID), let currentEPGSource {
+            let cached = await epg.index(for: providerID, source: currentEPGSource)
+            // Removal can finish while the source-verified cached read is queued on disk. Never
+            // fall through and start a network refresh after that await.
+            guard providers.contains(where: { $0.id == providerID }) else { return }
+            if let cached, !showsFullGuide(providerID) {
+                guideIndexes[providerID] = cached
+                guideRevision &+= 1
+                if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
+            }
         }
+        guard providers.contains(where: { $0.id == providerID }) else { return }
         do {
             let index = try await epg.refresh(providerID: providerID, source: feed, channels: filter)
             guard providers.contains(where: { $0.id == providerID }) else { return }
@@ -467,23 +482,59 @@ final class LiveTVService {
               source.kind == .xtream, let server = source.serverURL,
               let username = source.username, let password = source.password else { return }
         shortEPGLoaded.insert(channel.id)
+        let guideID = channel.guideID ?? String(streamID)
+        // The ticket is issued before the request is sent. A full refresh, source change or removal
+        // that happens while the request is in flight makes the response stale, and EPGService drops it.
+        guard let epgSource = Self.epgFeedSource(source),
+              let ticket = await epg.beginShortRequest(providerID: providerID, source: epgSource,
+                                                       guideID: guideID) else {
+            shortEPGLoaded.remove(channel.id)
+            return
+        }
         do {
             let url = try XtreamURLBuilder.apiURL(server: server, username: username, password: password,
                                                  action: "get_short_epg", streamID: streamID, limit: 10)
             let data = try await fetch(url, maximumBytes: 512 * 1024)
+            try Task.checkCancellation()
             guard providers.contains(where: { $0.id == providerID }) else { return }
-            let guideID = channel.guideID ?? String(streamID)
             let programs = try XtreamEPG.programs(from: data, guideID: guideID, limits: epg.limits)
-            let index = await epg.replacePrograms(programs, guideID: guideID, providerID: providerID)
+            guard let index = await epg.applyShortPrograms(programs, guideID: guideID, ticket: ticket) else {
+                // Superseded by a newer full guide, a newer response for this channel, a source
+                // change, or cancelled before publication. A later selection may request it again.
+                shortEPGLoaded.remove(channel.id)
+                return
+            }
             guard providers.contains(where: { $0.id == providerID }) else { return }
-            guideIndexes[providerID] = index
+            // A short-guide result that lost the race with cache load must not replace a full guide
+            // already published here. Re-read so the short listings are applied on top of it.
+            let published: EPGIndex
+            if index.isShortGuideOnly, showsFullGuide(providerID) {
+                guard let merged = await epg.index(for: providerID, source: epgSource),
+                      !merged.isShortGuideOnly,
+                      providers.contains(where: { $0.id == providerID }) else {
+                    shortEPGLoaded.remove(channel.id)
+                    return
+                }
+                published = merged
+            } else {
+                published = index
+            }
+            guideIndexes[providerID] = published
             guideRevision &+= 1
             if selectedProviderID == providerID {
-                guideMessage = programs.isEmpty ? "No guide listings are available yet." : nil
+                // An empty short response is not evidence that the full guide has no listings.
+                if published.isShortGuideOnly {
+                    guideMessage = published.programCount == 0 ? "No guide listings are available yet." : nil
+                } else if published.programCount > 0, guideMessage == "No guide listings are available yet." {
+                    guideMessage = nil
+                }
                 updateGuideFreshness(for: providerID)
             }
         } catch {
             shortEPGLoaded.remove(channel.id)
+            // The shared fetch reports a cancelled download as a provider error; the task's own
+            // cancellation state is authoritative. Cancellation is not a failure to report.
+            guard !(error is CancellationError), !Task.isCancelled else { return }
             if providers.contains(where: { $0.id == providerID }), selectedProviderID == providerID {
                 guideMessage = "Guide data could not be refreshed."
             }
@@ -604,12 +655,29 @@ final class LiveTVService {
     }
 
     private func snapshotSecrets(providerID: UUID) -> LiveTVSnapshotSecrets {
-        guard let serialized = secretStore.read(account: Self.secretAccount(providerID)),
-              let data = serialized.data(using: .utf8),
-              let source = try? JSONDecoder().decode(LiveTVSourceConfiguration.self, from: data) else {
-            return LiveTVSnapshotSecrets()
-        }
+        guard let source = loadSourceConfiguration(providerID: providerID) else { return LiveTVSnapshotSecrets() }
         return LiveTVSnapshotSecrets(source: source)
+    }
+
+    private func loadSourceConfiguration(providerID: UUID) -> LiveTVSourceConfiguration? {
+        guard let serialized = secretStore.read(account: Self.secretAccount(providerID)),
+              let data = serialized.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(LiveTVSourceConfiguration.self, from: data)
+    }
+
+    private static func epgFeedSource(_ source: LiveTVSourceConfiguration) -> EPGFeedSource? {
+        switch source.kind {
+        case .m3u:
+            return source.xmltvURL.flatMap(webURL).map(EPGFeedSource.xmltv)
+        case .xtream:
+            guard let server = source.serverURL, let username = source.username, let password = source.password else { return nil }
+            return .xtream(server: server, username: username, password: password)
+        }
+    }
+
+    /// Whether the provider shows a full guide, not just Xtream short-guide listings.
+    private func showsFullGuide(_ providerID: UUID) -> Bool {
+        guideIndexes[providerID].map { !$0.isShortGuideOnly } ?? false
     }
 
     private func updateGuideFreshness(for providerID: UUID) {

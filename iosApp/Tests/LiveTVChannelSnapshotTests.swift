@@ -10,6 +10,7 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
     private var secrets: SnapshotTestSecretStore!
     private var snapshots: LiveTVChannelSnapshotStore!
     private var guideCache: EPGCacheStore!
+    private var epgFingerprinter: EPGSourceFingerprinter!
 
     private let playlist = #"""
     #EXTM3U
@@ -26,6 +27,7 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         secrets = SnapshotTestSecretStore()
         snapshots = LiveTVChannelSnapshotStore(directory: directory.appendingPathComponent("channels"))
         guideCache = EPGCacheStore(directory: directory.appendingPathComponent("guide"))
+        epgFingerprinter = .inMemory()
         PlaylistURLProtocol.reset(body: playlist)
     }
 
@@ -35,10 +37,11 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
-    private func makeService(loader: any EPGFeedLoading = OfflineGuideLoader()) -> LiveTVService {
+    private func makeService(loader: any EPGFeedLoading = OfflineGuideLoader(),
+                             epgService: EPGService? = nil) -> LiveTVService {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [PlaylistURLProtocol.self]
-        let epg = EPGService(cache: guideCache, loader: loader)
+        configuration.protocolClasses = [PlaylistURLProtocol.self, PanelURLProtocol.self]
+        let epg = epgService ?? EPGService(cache: guideCache, loader: loader, fingerprinter: epgFingerprinter)
         return LiveTVService(defaults: defaults, secretStore: secrets, session: URLSession(configuration: configuration),
                              epg: epg, channelSnapshotStore: snapshots)
     }
@@ -62,6 +65,10 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         """
         let index = try EPGIndex(document: XMLTVParser.parse(Data(xml.utf8)), fetchedAt: now, now: now, limits: EPGLimits())
         try guideCache.save(index, providerID: providerID)
+        let source = EPGFeedSource.xmltv(URL(string: "https://epg.test/guide.xml")!)
+        let fingerprint = try epgFingerprinter.fingerprint(for: source).bytes
+        try guideCache.saveState(EPGCacheState(providerID: providerID, sourceFingerprint: fingerprint,
+                                               lastSuccessfulFetchAt: now))
     }
 
     // MARK: - Store
@@ -317,6 +324,10 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         let news = try XCTUnwrap(service.channels.first)
         XCTAssertEqual(service.programPair(for: news).current?.title, "Cached Now")
         XCTAssertFalse(service.isGuideStale)
+        let guideNames = (try? FileManager.default.contentsOfDirectory(atPath: guideCache.directory.path)) ?? []
+        XCTAssertTrue(guideNames.contains("\(providerID.uuidString).epgcache"))
+        XCTAssertFalse(guideNames.contains { $0.hasSuffix(".v2.epgcache") || $0.hasSuffix(".stage") },
+                       "startup may show a bound v1 guide but must not migrate it")
 
         // Cached rows carry no stream address, so they cannot open the player.
         service.choose(news, from: .list)
@@ -326,6 +337,224 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         // Returning to Live TV straight after a failure does not retry the download.
         await service.prepareSelectedProvider()
         XCTAssertEqual(PlaylistURLProtocol.requests, 1)
+    }
+
+    func testCachedFirstRestoreRejectsGuideAfterTheProviderSourceChanges() async throws {
+        let service = makeService()
+        let providerID = try addProvider(to: service, guide: true)
+        try await seedCache(providerID: providerID)
+        let account = "provider.\(providerID.uuidString)"
+        let stored = try XCTUnwrap(secrets.read(account: account)?.data(using: .utf8))
+        var configuration = try JSONDecoder().decode(LiveTVSourceConfiguration.self, from: stored)
+        configuration.xmltvURL = "https://epg.test/other-guide.xml"
+        _ = secrets.save(String(decoding: try JSONEncoder().encode(configuration), as: UTF8.self), account: account)
+
+        let restored = makeService()
+        await restored.restoreCachedState(for: providerID)
+        let channel = try XCTUnwrap(restored.channels.first)
+        XCTAssertNil(restored.programPair(for: channel).current,
+                     "provider UUID and cached-first restoration cannot bind the old source's v1 guide")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: guideCache.directory
+            .appendingPathComponent("\(providerID.uuidString).v2.epgcache").path))
+    }
+
+    func testVerifiedV2GuideSurvivesRestartAndAFailedRefresh() async throws {
+        let writerLoader = StaticGuideLoader(payload: guideXML(title: "Fresh Guide"))
+        let writer = makeService(loader: writerLoader)
+        let providerID = try addProvider(to: writer, guide: true)
+        PlaylistURLProtocol.reset(body: playlist)
+        await writer.prepareSelectedProvider()
+        let written = try XCTUnwrap(writer.channels.first { $0.name == "News One" })
+        XCTAssertEqual(writer.programPair(for: written).current?.title, "Fresh Guide")
+        XCTAssertEqual(writerLoader.calls, 1)
+        let v2 = guideCache.directory.appendingPathComponent("\(providerID.uuidString).v2.epgcache")
+        let state = guideCache.directory.appendingPathComponent("\(providerID.uuidString).state")
+        try await waitUntil { FileManager.default.fileExists(atPath: v2.path) && FileManager.default.fileExists(atPath: state.path) }
+        let preserved = try Data(contentsOf: v2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: guideCache.directory
+            .appendingPathComponent("\(providerID.uuidString).epgcache").path))
+
+        PlaylistURLProtocol.reset(body: playlist, status: 503)
+        let offline = CountingOfflineGuideLoader()
+        let restarted = makeService(loader: offline)
+        await restarted.prepareSelectedProvider()
+        let restored = try XCTUnwrap(restarted.channels.first { $0.name == "News One" })
+        XCTAssertEqual(restarted.programPair(for: restored).current?.title, "Fresh Guide")
+        XCTAssertEqual(offline.calls, 0, "offline startup serves the verified v2 guide without a download")
+        XCTAssertFalse(restarted.isGuideStale)
+
+        PlaylistURLProtocol.reset(body: playlist)
+        await restarted.refresh(providerID: providerID)
+        XCTAssertGreaterThan(offline.calls, 0, "a due refresh still attempts the network")
+        XCTAssertEqual(restarted.programPair(for: restored).current?.title, "Fresh Guide")
+        XCTAssertEqual(try Data(contentsOf: v2), preserved, "a failed refresh leaves the verified v2 guide in place")
+    }
+
+    func testSourceChangeDoesNotDisplayAnotherV2GuideAndRemovalDoesNotRecreateIt() async throws {
+        let loader = StaticGuideLoader(payload: guideXML(title: "Original Guide"))
+        let service = makeService(loader: loader)
+        let providerID = try addProvider(to: service, guide: true)
+        PlaylistURLProtocol.reset(body: playlist)
+        await service.prepareSelectedProvider()
+        let v2 = guideCache.directory.appendingPathComponent("\(providerID.uuidString).v2.epgcache")
+        try await waitUntil { FileManager.default.fileExists(atPath: v2.path) }
+        let preserved = try Data(contentsOf: v2)
+
+        let account = "provider.\(providerID.uuidString)"
+        let stored = try XCTUnwrap(secrets.read(account: account)?.data(using: .utf8))
+        var configuration = try JSONDecoder().decode(LiveTVSourceConfiguration.self, from: stored)
+        configuration.xmltvURL = "https://epg.test/other-guide.xml"
+        _ = secrets.save(String(decoding: try JSONEncoder().encode(configuration), as: UTF8.self), account: account)
+
+        let changed = makeService(loader: CountingOfflineGuideLoader())
+        await changed.restoreCachedState(for: providerID)
+        let channel = try XCTUnwrap(changed.channels.first { $0.name == "News One" })
+        XCTAssertNil(changed.programPair(for: channel).current,
+                     "a v2 guide for the previous XMLTV URL is not shown for the new source")
+        XCTAssertEqual(try Data(contentsOf: v2), preserved, "a source mismatch does not rewrite or delete the previous v2 guide")
+
+        await service.removeProvider(providerID)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: guideCache.directory.path)) ?? []
+        XCTAssertFalse(names.contains { $0.contains(providerID.uuidString) })
+        let revived = makeService()
+        await revived.restoreCachedState(for: providerID)
+        XCTAssertFalse(revived.providers.contains { $0.id == providerID })
+        XCTAssertTrue(((try? FileManager.default.contentsOfDirectory(atPath: guideCache.directory.path)) ?? []).isEmpty)
+    }
+
+    func testShortGuideOverlayKeepsTheFullGuideAndDoesNotSuppressRefresh() async throws {
+        let clock = GuideClock(Date())
+        let loader = StaticGuideLoader(payload: twoChannelGuideXML(at: clock.date))
+        let epg = EPGService(cache: guideCache, loader: loader, fingerprinter: epgFingerprinter, now: { clock.date })
+        let service = makeService(loader: loader, epgService: epg)
+        let providerID = try service.saveXtreamConfiguration(name: "Panel", serverURL: "http://panel.test:8080",
+                                                             username: "alice", password: "s3cret-pass")
+        PanelURLProtocol.reset()
+        await service.prepareSelectedProvider()
+        let news = try XCTUnwrap(service.channels.first { $0.name == "News One" })
+        let sport = try XCTUnwrap(service.channels.first { $0.name == "Sport" })
+        XCTAssertEqual(service.programPair(for: news).current?.title, "Full News")
+        XCTAssertEqual(service.programPair(for: sport).current?.title, "Full Sport")
+        XCTAssertEqual(loader.calls, 1)
+        XCTAssertNotNil(news.streamID)
+        XCTAssertNotNil(sport.streamID)
+
+        PanelURLProtocol.shortBody = #"{"epg_listings":[]}"#
+        await service.refreshShortEPG(for: news)
+        XCTAssertEqual(service.programPair(for: news).current?.title, "Full News")
+        XCTAssertEqual(service.programPair(for: sport).current?.title, "Full Sport")
+        XCTAssertNil(service.guideMessage, "an empty short response must not claim the full guide is empty")
+        XCTAssertEqual(loader.calls, 1)
+
+        let start = Int(clock.date.addingTimeInterval(-60).timeIntervalSince1970)
+        let end = Int(clock.date.addingTimeInterval(3_600).timeIntervalSince1970)
+        let title = Data("Short now".utf8).base64EncodedString()
+        PanelURLProtocol.shortBody = #"{"epg_listings":[{"title":"\#(title)","start_timestamp":\#(start),"stop_timestamp":\#(end)}]}"#
+        await service.refreshShortEPG(for: sport)
+        XCTAssertEqual(service.programPair(for: sport).current?.title, "Short now")
+        XCTAssertEqual(service.programPair(for: news).current?.title, "Full News",
+                       "a short-guide overlay must not hide the rest of the full guide")
+        XCTAssertEqual(loader.calls, 1)
+
+        clock.date = clock.date.addingTimeInterval(13 * 3_600)
+        await service.refresh(providerID: providerID)
+        XCTAssertEqual(loader.calls, 2, "short listings do not make the stale full guide look fresh")
+        XCTAssertEqual(service.programPair(for: news, at: clock.date).current?.title, "Full News")
+    }
+
+    private func makeXtreamService(clock: GuideClock) async throws -> (LiveTVService, UUID, LiveTVChannel, LiveTVChannel) {
+        let loader = StaticGuideLoader(payload: twoChannelGuideXML(at: clock.date))
+        let epg = EPGService(cache: guideCache, loader: loader, fingerprinter: epgFingerprinter, now: { clock.date })
+        let service = makeService(loader: loader, epgService: epg)
+        let providerID = try service.saveXtreamConfiguration(name: "Panel", serverURL: "http://panel.test:8080",
+                                                             username: "alice", password: "s3cret-pass")
+        PanelURLProtocol.reset()
+        await service.prepareSelectedProvider()
+        let news = try XCTUnwrap(service.channels.first { $0.name == "News One" })
+        let sport = try XCTUnwrap(service.channels.first { $0.name == "Sport" })
+        return (service, providerID, news, sport)
+    }
+
+    private func shortGuideBody(title: String, at date: Date) -> String {
+        let start = Int(date.addingTimeInterval(-60).timeIntervalSince1970)
+        let end = Int(date.addingTimeInterval(3_600).timeIntervalSince1970)
+        let encoded = Data(title.utf8).base64EncodedString()
+        return #"{"epg_listings":[{"title":"\#(encoded)","start_timestamp":\#(start),"stop_timestamp":\#(end)}]}"#
+    }
+
+    func testCancellingAShortGuideDownloadPublishesNothingReportsNothingAndAllowsARetry() async throws {
+        let clock = GuideClock(Date())
+        let (service, _, _, sport) = try await makeXtreamService(clock: clock)
+        XCTAssertEqual(service.programPair(for: sport).current?.title, "Full Sport")
+        PanelURLProtocol.shortBody = shortGuideBody(title: "Cancelled", at: clock.date)
+        PanelURLProtocol.holdShortGuide()
+
+        let request = Task { await service.refreshShortEPG(for: sport) }
+        try await waitUntil { PanelURLProtocol.heldShortRequests == 1 }
+        request.cancel()
+        await request.value
+
+        XCTAssertEqual(service.programPair(for: sport).current?.title, "Full Sport")
+        XCTAssertNil(service.guideMessage, "cancellation is not reported as a provider failure")
+
+        // The cancelled request did not leave the channel marked as loaded.
+        PanelURLProtocol.releaseShortGuide()
+        PanelURLProtocol.shortBody = shortGuideBody(title: "Retried", at: clock.date)
+        await service.refreshShortEPG(for: sport)
+        XCTAssertEqual(PanelURLProtocol.shortRequests, 2)
+        XCTAssertEqual(service.programPair(for: sport).current?.title, "Retried")
+    }
+
+    func testRemovingTheProviderDuringAShortGuideDownloadPublishesNothing() async throws {
+        let clock = GuideClock(Date())
+        let (service, providerID, _, sport) = try await makeXtreamService(clock: clock)
+        PanelURLProtocol.shortBody = shortGuideBody(title: "Removed", at: clock.date)
+        PanelURLProtocol.holdShortGuide()
+
+        let request = Task { await service.refreshShortEPG(for: sport) }
+        try await waitUntil { PanelURLProtocol.heldShortRequests == 1 }
+        await service.removeProvider(providerID)
+        PanelURLProtocol.releaseShortGuide()
+        await request.value
+
+        XCTAssertFalse(service.providers.contains { $0.id == providerID })
+        XCTAssertNil(service.programPair(for: sport).current)
+        XCTAssertNil(service.guideMessage)
+        let guideFiles = (try? FileManager.default.contentsOfDirectory(atPath: guideCache.directory.path)) ?? []
+        XCTAssertFalse(guideFiles.contains { $0.hasPrefix(providerID.uuidString) }, "a late response recreates no files")
+    }
+
+    func testRemovalDuringHeldCachedGuideReadCannotStartNetworkRefreshOrRecreateFiles() async throws {
+        let baseCache = guideCache
+        let gate = CacheReadGate()
+        var heldCache = guideCache!
+        heldCache.verifiedReadInterceptor = { providerID, fingerprint, isCurrent in
+            gate.enterAndWait()
+            return baseCache!.loadVerified(providerID: providerID, fingerprint: fingerprint, isCurrent: isCurrent)
+        }
+        let epgLoader = CountingOfflineGuideLoader()
+        let service = makeService(epgService: EPGService(cache: heldCache, loader: epgLoader,
+                                                        fingerprinter: epgFingerprinter))
+        let providerID = try addProvider(to: service, guide: true)
+        try await seedCache(providerID: providerID)
+        PlaylistURLProtocol.reset(body: playlist)
+
+        let refresh = Task { await service.refresh(providerID: providerID) }
+        let readStarted = await gate.waitUntilEntered(timeout: 5)
+        XCTAssertTrue(readStarted, "refreshGuide should enter the held cached guide read")
+        let removal = Task { await service.removeProvider(providerID) }
+        try await waitUntil { !service.providers.contains(where: { $0.id == providerID }) }
+        gate.release()
+        await refresh.value
+        await removal.value
+
+        XCTAssertEqual(epgLoader.calls, 0, "the resumed refreshGuide must stop after the cached-read await")
+        XCTAssertFalse(service.providers.contains(where: { $0.id == providerID }))
+        let remainingGuideFiles = (try? FileManager.default.contentsOfDirectory(atPath: guideCache.directory.path)) ?? []
+        XCTAssertFalse(remainingGuideFiles.contains { $0.hasPrefix(providerID.uuidString) },
+                       "provider removal leaves no guide, state or stage to recreate later")
+        let remainingSnapshot = await snapshots.load(providerID: providerID)
+        XCTAssertNil(remainingSnapshot)
     }
 
     func testRepeatedNavigationDoesNotRedownloadAFreshPlaylist() async throws {
@@ -545,6 +774,18 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         XCTAssertTrue(condition())
     }
 
+    private func twoChannelGuideXML(at now: Date) -> Data {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMddHHmmss '+0000'"
+        func stamp(_ delta: TimeInterval) -> String { formatter.string(from: now.addingTimeInterval(delta)) }
+        return Data("""
+        <tv><programme channel="news.one" start="\(stamp(-600))" stop="\(stamp(172_800))"><title>Full News</title></programme>\
+        <programme channel="sport" start="\(stamp(-600))" stop="\(stamp(172_800))"><title>Full Sport</title></programme></tv>
+        """.utf8)
+    }
+
     private func guideXML(title: String) -> Data {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -566,9 +807,62 @@ private final class SnapshotTestSecretStore: LiveTVSecretStore {
     func remove(account: String) -> Bool { values.removeValue(forKey: account) != nil }
 }
 
+private final class GuideClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Date
+    init(_ date: Date) { stored = date }
+    var date: Date {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
+private final class StaticGuideLoader: EPGFeedLoading, @unchecked Sendable {
+    private let lock = NSLock()
+    private let payload: Data
+    private var count = 0
+    init(payload: Data) { self.payload = payload }
+    var calls: Int { lock.withLock { count } }
+    func load(_ url: URL, maximumBytes: Int) async throws -> Data {
+        lock.withLock { count += 1 }
+        return payload
+    }
+    func load(_ url: URL, maximumBytes: Int, maximumDecodedBytes: Int) async throws -> Data {
+        try await load(url, maximumBytes: maximumBytes)
+    }
+}
+
 private struct OfflineGuideLoader: EPGFeedLoading {
     func load(_ url: URL, maximumBytes: Int) async throws -> Data { throw EPGError.providerRejected }
     func load(_ url: URL, maximumBytes: Int, maximumDecodedBytes: Int) async throws -> Data { throw EPGError.providerRejected }
+}
+
+private final class CountingOfflineGuideLoader: EPGFeedLoading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var calls: Int { lock.withLock { count } }
+    func load(_ url: URL, maximumBytes: Int) async throws -> Data {
+        lock.withLock { count += 1 }
+        throw EPGError.providerRejected
+    }
+    func load(_ url: URL, maximumBytes: Int, maximumDecodedBytes: Int) async throws -> Data {
+        try await load(url, maximumBytes: maximumBytes)
+    }
+}
+
+private final class CacheReadGate: @unchecked Sendable {
+    private let entered = DispatchSemaphore(value: 0)
+    private let releaseSignal = DispatchSemaphore(value: 0)
+    func enterAndWait() { entered.signal(); releaseSignal.wait() }
+    func waitUntilEntered(timeout: TimeInterval) async -> Bool {
+        let semaphore = entered
+        return await Task.detached { Self.wait(semaphore, timeout: timeout) }.value
+    }
+    func release() { releaseSignal.signal() }
+
+    private static func wait(_ semaphore: DispatchSemaphore, timeout: TimeInterval) -> Bool {
+        semaphore.wait(timeout: .now() + timeout) == .success
+    }
 }
 
 private struct ControlledGuideLoader: EPGFeedLoading {
@@ -673,6 +967,83 @@ private final class PlaylistURLProtocol: URLProtocol {
               let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil) else { return }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
+/// Serves the Xtream panel used by the short-guide regression. Other tests never request this host.
+/// A held short-guide response waits for `releaseShortGuide()` or for its task to be cancelled.
+private final class PanelURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var shortListings = #"{"epg_listings":[]}"#
+    private static var holdsShortGuide = false
+    private static var shortRequestCount = 0
+    private static var heldShortGuides: [PanelURLProtocol] = []
+
+    static func reset() {
+        lock.withLock {
+            shortListings = #"{"epg_listings":[]}"#
+            holdsShortGuide = false
+            shortRequestCount = 0
+            heldShortGuides = []
+        }
+    }
+    static var shortBody: String {
+        get { lock.withLock { shortListings } }
+        set { lock.withLock { shortListings = newValue } }
+    }
+    static var shortRequests: Int { lock.withLock { shortRequestCount } }
+    static var heldShortRequests: Int { lock.withLock { heldShortGuides.count } }
+    static func holdShortGuide() { lock.withLock { holdsShortGuide = true } }
+    static func releaseShortGuide() {
+        let released = lock.withLock { () -> [PanelURLProtocol] in
+            holdsShortGuide = false
+            defer { heldShortGuides = [] }
+            return heldShortGuides
+        }
+        released.forEach { $0.respond() }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "panel.test" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let held = Self.lock.withLock { () -> Bool in
+            guard action == "get_short_epg" else { return false }
+            Self.shortRequestCount += 1
+            if Self.holdsShortGuide { Self.heldShortGuides.append(self) }
+            return Self.holdsShortGuide
+        }
+        if !held { respond() }
+    }
+
+    override func stopLoading() {
+        Self.lock.withLock { Self.heldShortGuides.removeAll { $0 === self } }
+    }
+
+    private var action: String? {
+        let items = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems } ?? []
+        return items.first { $0.name == "action" }?.value
+    }
+
+    private func respond() {
+        let body: String
+        switch action {
+        case nil:
+            body = #"{"user_info":{"auth":1,"status":"Active","allowed_output_formats":["ts"]}}"#
+        case "get_live_categories":
+            body = #"[{"category_id":"1","category_name":"News"}]"#
+        case "get_live_streams":
+            body = #"[{"stream_id":7,"name":"News One","epg_channel_id":"news.one","category_id":"1","container_extension":"ts"},{"stream_id":8,"name":"Sport","epg_channel_id":"sport","category_id":"1","container_extension":"ts"}]"#
+        case "get_short_epg":
+            body = Self.shortBody
+        default:
+            body = "{}"
+        }
+        guard let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil) else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 }

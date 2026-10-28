@@ -1,9 +1,24 @@
 import Foundation
+import OSLog
 
-/// Where a provider's guide comes from.
-enum EPGFeedSource: Sendable, Equatable {
+/// Where a provider's guide comes from. Descriptions are redacted: the Xtream case contains a
+/// password, and an XMLTV URL can carry userinfo, a query, or a fragment. Diagnostics must use
+/// these descriptions rather than a synthesized dump of the associated values.
+enum EPGFeedSource: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     case xmltv(URL)
     case xtream(server: String, username: String, password: String)
+
+    var description: String {
+        switch self {
+        case .xmltv: "EPGFeedSource.xmltv(redacted)"
+        case .xtream: "EPGFeedSource.xtream(redacted)"
+        }
+    }
+
+    var debugDescription: String { description }
+
+    /// Reflection would otherwise print every associated value, including a password or token.
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }
 
     func feedURL() throws -> URL {
         switch self {
@@ -195,6 +210,17 @@ private final class BoundedEPGDownload: NSObject, URLSessionDataDelegate, @unche
     }
 }
 
+/// Identifies one Xtream short-guide request. It is issued before the request leaves the device and
+/// is honoured only if the provider's source and generation are unchanged, no full guide has been
+/// published since, and no newer request for the same channel has already been applied.
+struct EPGShortRequestTicket: Sendable, Equatable {
+    fileprivate let providerID: UUID
+    fileprivate let generation: Int
+    fileprivate let publication: Int
+    fileprivate let channelKey: String
+    fileprivate let sequence: Int
+}
+
 /// Owns every provider's guide: loads it from cache, refreshes it from the feed, and answers
 /// freshness questions.
 ///
@@ -205,30 +231,66 @@ private final class BoundedEPGDownload: NSObject, URLSessionDataDelegate, @unche
 /// - A failed or cancelled refresh never replaces a usable guide or the cache.
 /// - Removing a provider discards any refresh still in flight for it.
 actor EPGService {
+    private struct RetryFailure {
+        let source: EPGFeedSource
+        let sourceFingerprint: Data?
+        let count: Int
+        let nextRetryAt: Date
+    }
+
     private struct Flight {
         let id: UUID
+        let source: EPGFeedSource
+        let sourceFingerprint: Data?
+        let generation: Int
         var task: Task<Void, Never>?
         var waiters: [UUID: CheckedContinuation<EPGIndex, Error>] = [:]
     }
 
     private let cache: EPGCacheStore?
     private let loader: any EPGFeedLoading
+    private let fingerprinter: EPGSourceFingerprinter
     nonisolated let policy: EPGRefreshPolicy
     nonisolated let limits: EPGLimits
     private let now: @Sendable () -> Date
 
     private var indexes: [UUID: EPGIndex] = [:]
+    /// In-memory guides are visible only to the exact source that was fetched or verified.
+    private var indexSources: [UUID: EPGFeedSource] = [:]
+    private var requestedSources: [UUID: EPGFeedSource] = [:]
     private var flights: [UUID: Flight] = [:]
-    private var failures: [UUID: (count: Int, last: Date)] = [:]
+    private var failures: [UUID: RetryFailure] = [:]
+    private var cacheStates: [UUID: EPGCacheState] = [:]
+    /// The persisted retry state load for each provider, at most one per process and source.
+    private var stateLoads: [UUID: (fingerprint: Data, task: Task<Void, Never>)] = [:]
+    /// Disk operations for one provider, chained so they run in order: writes, and state reads
+    /// whose cleanup could otherwise remove a newer file.
     private var pendingWrites: [UUID: (id: UUID, task: Task<Void, Never>)] = [:]
-    private var checkedCache = Set<UUID>()
+    private var orphanSweepTask: Task<Void, Never>?
+    private var checkedCache = [UUID: Data]()
+    private let diskGenerationGate = EPGDiskGenerationGate()
     /// Bumped on removal so work that started before it cannot restore the provider's guide.
     private var generations: [UUID: Int] = [:]
+    /// Provider UUIDs are unique and never reused. Once removed, no delayed caller may revive it.
+    private var removedProviders = Set<UUID>()
+    private var clearingProviders = Set<UUID>()
+    /// Short-guide listings applied this process, by guide channel key. They are newer than a cached
+    /// guide for the hours they cover, so they are reapplied when one loads; a full refresh supersedes them.
+    private var shortGuides: [UUID: [String: (guideID: String, programs: [EPGProgram])]] = [:]
+    /// Incremented by every successful full publication. A short request issued before it is stale.
+    private var publications: [UUID: Int] = [:]
+    private var shortRequestSequence: [UUID: Int] = [:]
+    /// The newest short request applied for each channel. An older response for that channel is dropped.
+    private var appliedShortSequence: [UUID: [String: Int]] = [:]
+    private var lastCacheWriteDiagnostic: Date?
+    private static let cacheLogger = Logger(subsystem: "com.cubbiestream.kyro", category: "EPGCache")
 
-    init(cache: EPGCacheStore?, loader: any EPGFeedLoading, policy: EPGRefreshPolicy = EPGRefreshPolicy(),
+    init(cache: EPGCacheStore?, loader: any EPGFeedLoading, fingerprinter: EPGSourceFingerprinter = EPGSourceFingerprinter(),
+         policy: EPGRefreshPolicy = EPGRefreshPolicy(),
          limits: EPGLimits = EPGLimits(), now: @escaping @Sendable () -> Date = { Date() }) {
         self.cache = cache
         self.loader = loader
+        self.fingerprinter = fingerprinter
         self.policy = policy
         self.limits = limits
         self.now = now
@@ -236,8 +298,27 @@ actor EPGService {
 
     /// The guide in memory, else the cached one, if it is still usable.
     func index(for providerID: UUID) async -> EPGIndex? {
-        if indexes[providerID] == nil { await loadCached(providerID) }
-        guard let index = indexes[providerID], policy.freshness(of: index, now: now()).isUsable else { return nil }
+        // Source-less callers may use only a full guide already established by a refresh this process.
+        // Short-guide listings are visible through the source-aware lookup, but they are not that guide.
+        guard !removedProviders.contains(providerID), !clearingProviders.contains(providerID),
+              let index = fullGuide(providerID), indexSources[providerID] != nil,
+              policy.freshness(of: index, now: now()).isUsable else { return nil }
+        return index
+    }
+
+    /// Source-aware cached-first read. When Keychain is unavailable, disk data is not shown;
+    /// already verified in-memory data for this exact source remains usable during the outage.
+    func index(for providerID: UUID, source: EPGFeedSource) async -> EPGIndex? {
+        guard !removedProviders.contains(providerID), !clearingProviders.contains(providerID) else { return nil }
+        activateSource(source, for: providerID)
+        if let index = indexes[providerID], !index.isShortGuideOnly, indexSources[providerID] == source,
+           policy.freshness(of: index, now: now()).isUsable { return index }
+        // Without a fingerprint only the verified in-memory guide, possibly short-guide-only, is usable.
+        if let fingerprint = try? fingerprinter.fingerprint(for: source).bytes {
+            await loadCached(providerID, source: source, fingerprint: fingerprint)
+        }
+        guard let index = indexes[providerID], indexSources[providerID] == source,
+              policy.freshness(of: index, now: now()).isUsable else { return nil }
         return index
     }
 
@@ -247,7 +328,22 @@ actor EPGService {
     }
 
     func freshness(for providerID: UUID) -> EPGFreshness {
-        indexes[providerID].map { policy.freshness(of: $0, now: now()) } ?? .missing
+        // Short-guide listings do not make the full guide fresh, missing, or expired.
+        fullGuide(providerID).map { policy.freshness(of: $0, now: now()) } ?? .missing
+    }
+
+    /// One-time startup cleanup for providers removed while the app was not running.
+    func removeOrphanedCacheFiles(keeping providerIDs: Set<UUID>) async {
+        guard let cache else { return }
+        let priorSweep = orphanSweepTask
+        let writes = pendingWrites.values.map(\.task)
+        let sweep = Task {
+            await priorSweep?.value
+            for write in writes { await write.value }
+            await Self.sweepCache(cache, keeping: providerIDs)
+        }
+        orphanSweepTask = sweep
+        await sweep.value
     }
 
     /// A fresh guide for the provider, downloading it only when the policy says it is due.
@@ -257,13 +353,35 @@ actor EPGService {
     ///   - force: refresh even when the guide is fresh or a recent failure is backing off.
     func refresh(providerID: UUID, source: EPGFeedSource, channels: EPGChannelFilter? = nil,
                  force: Bool = false) async throws -> EPGIndex {
-        if indexes[providerID] == nil { await loadCached(providerID) }
+        guard !removedProviders.contains(providerID), !clearingProviders.contains(providerID) else { throw CancellationError() }
+        activateSource(source, for: providerID)
+        // Keychain failures disable persisted identity/retry state, not the network refresh.
+        let fingerprint = try? fingerprinter.fingerprint(for: source).bytes
+        let generation = generations[providerID, default: 0]
+        // A current in-memory failure is newer than queued disk state. Avoid blocking a caller on
+        // cache I/O when backoff already answers the request (and preserve ordered state writes).
+        if !force, flights[providerID] == nil,
+           isBackingOff(providerID, fingerprint: fingerprint, source: source) {
+            if let current = fullGuide(providerID), policy.freshness(of: current, now: now()).isUsable {
+                return current
+            }
+            throw EPGError.providerRejected
+        }
+        if fullGuide(providerID) == nil, let fingerprint {
+            await loadCached(providerID, source: source, fingerprint: fingerprint)
+        }
+        guard generations[providerID, default: 0] == generation else { throw CancellationError() }
+        if let fingerprint {
+            if failures[providerID]?.sourceFingerprint != fingerprint { failures[providerID] = nil }
+            await loadPersistedState(providerID, fingerprint: fingerprint, source: source, generation: generation)
+            guard generations[providerID, default: 0] == generation else { throw CancellationError() }
+        }
         if !force, flights[providerID] == nil {
-            let current = indexes[providerID]
+            let current = fullGuide(providerID)
             let freshness = current.map { policy.freshness(of: $0, now: now()) } ?? .missing
             if freshness == .fresh, let current { return current }
             // A feed that just failed is not refetched on every visit, whatever the guide's state.
-            if isBackingOff(providerID) {
+            if isBackingOff(providerID, fingerprint: fingerprint, source: source) {
                 if freshness.isUsable, let current { return current }
                 throw EPGError.providerRejected
             }
@@ -276,48 +394,112 @@ actor EPGService {
                     continuation.resume(throwing: CancellationError())
                     return
                 }
-                join(providerID, waiterID: waiterID, continuation: continuation, source: source, channels: channels)
+                join(providerID, waiterID: waiterID, continuation: continuation, source: source,
+                     sourceFingerprint: fingerprint, generation: generation, channels: channels)
             }
         } onCancel: {
             Task { await self.leave(providerID, waiterID: waiterID) }
         }
     }
 
-    /// Replaces one channel's listings with newer ones (Xtream short EPG). Not persisted: the next
-    /// full refresh supersedes it.
-    func replacePrograms(_ programs: [EPGProgram], guideID: String, providerID: UUID) -> EPGIndex {
+    /// Issues a ticket for one Xtream short-guide request. Call it before the request is sent.
+    /// Returns nil when the provider is removed or the guide id has no channel key.
+    func beginShortRequest(providerID: UUID, source: EPGFeedSource, guideID: String) -> EPGShortRequestTicket? {
+        guard !removedProviders.contains(providerID), !clearingProviders.contains(providerID) else { return nil }
+        activateSource(source, for: providerID)
+        guard let key = EPGChannelKey.guideID(guideID) else { return nil }
+        let sequence = shortRequestSequence[providerID, default: 0] + 1
+        shortRequestSequence[providerID] = sequence
+        return EPGShortRequestTicket(providerID: providerID, generation: generations[providerID, default: 0],
+                                     publication: publications[providerID, default: 0],
+                                     channelKey: key, sequence: sequence)
+    }
+
+    /// Applies a short-guide response if its ticket is still current. A response is rejected when
+    /// the provider was removed or its source changed, when a full guide was published after the
+    /// request started, when a newer request for the same channel has already been applied, or
+    /// when the calling task is cancelled. Cancellation is checked here, inside the actor, so a
+    /// response cancelled after its download but before publication cannot be applied.
+    /// Rejection changes nothing. Not persisted: the next full refresh supersedes it.
+    func applyShortPrograms(_ programs: [EPGProgram], guideID: String,
+                            ticket: EPGShortRequestTicket) -> EPGIndex? {
+        let providerID = ticket.providerID
+        guard !Task.isCancelled,
+              !removedProviders.contains(providerID), !clearingProviders.contains(providerID),
+              generations[providerID, default: 0] == ticket.generation,
+              publications[providerID, default: 0] == ticket.publication,
+              EPGChannelKey.guideID(guideID) == ticket.channelKey,
+              ticket.sequence > appliedShortSequence[providerID]?[ticket.channelKey] ?? 0,
+              let source = requestedSources[providerID] else { return nil }
         // An expired guide is not a base: newer listings would otherwise stay hidden behind its age.
+        // Without a full guide the result is short-guide-only, so it never stands in for one.
         let base = indexes[providerID].flatMap { policy.freshness(of: $0, now: now()).isUsable ? $0 : nil }
-            ?? .empty(fetchedAt: now())
+            ?? .shortGuideBase(fetchedAt: now())
         let updated = base.replacingPrograms(programs, guideID: guideID, now: now(), limits: limits)
+        shortGuides[providerID, default: [:]][ticket.channelKey] = (guideID, programs)
+        appliedShortSequence[providerID, default: [:]][ticket.channelKey] = ticket.sequence
         indexes[providerID] = updated
+        indexSources[providerID] = source
         return updated
+    }
+
+    /// Issues a ticket and applies the response immediately. Only safe when no await separates
+    /// the request from the response; otherwise use `beginShortRequest` and `applyShortPrograms`.
+    func replacePrograms(_ programs: [EPGProgram], guideID: String, providerID: UUID,
+                         source: EPGFeedSource) -> EPGIndex? {
+        guard let ticket = beginShortRequest(providerID: providerID, source: source, guideID: guideID) else {
+            return nil
+        }
+        return applyShortPrograms(programs, guideID: guideID, ticket: ticket)
     }
 
     /// Forgets the provider's guide, cancels its refresh and deletes its cache file.
     func remove(providerID: UUID) async {
+        removedProviders.insert(providerID)
+        await clearProviderData(providerID)
+    }
+
+    /// Drops a guide for a still-configured provider that currently has no EPG source.
+    func clear(providerID: UUID) async {
+        guard !removedProviders.contains(providerID) else { return }
+        clearingProviders.insert(providerID)
+        await clearProviderData(providerID)
+        clearingProviders.remove(providerID)
+    }
+
+    private func clearProviderData(_ providerID: UUID) async {
         if let flight = flights.removeValue(forKey: providerID) {
             flight.task?.cancel()
             for continuation in flight.waiters.values { continuation.resume(throwing: CancellationError()) }
         }
         indexes[providerID] = nil
+        indexSources[providerID] = nil
+        shortGuides[providerID] = nil
+        appliedShortSequence[providerID] = nil
+        shortRequestSequence[providerID] = nil
         failures[providerID] = nil
-        checkedCache.insert(providerID)
+        cacheStates[providerID] = nil
+        stateLoads[providerID] = nil
+        checkedCache[providerID] = nil
         generations[providerID, default: 0] += 1
+        diskGenerationGate.set(providerID, generation: generations[providerID, default: 0])
         if let write = pendingWrites.removeValue(forKey: providerID) { await write.task.value }
+        await orphanSweepTask?.value
         if let cache { await Self.removeCache(cache, providerID: providerID) }
     }
 
     // MARK: - Refresh flights
 
     private func join(_ providerID: UUID, waiterID: UUID, continuation: CheckedContinuation<EPGIndex, Error>,
-                      source: EPGFeedSource, channels: EPGChannelFilter?) {
+                      source: EPGFeedSource, sourceFingerprint: Data?, generation: Int,
+                      channels: EPGChannelFilter?) {
         if flights[providerID] != nil {
             flights[providerID]?.waiters[waiterID] = continuation
             return
         }
         let flightID = UUID()
-        flights[providerID] = Flight(id: flightID, waiters: [waiterID: continuation])
+        flights[providerID] = Flight(id: flightID, source: source, sourceFingerprint: sourceFingerprint,
+                                     generation: generation, waiters: [waiterID: continuation])
         let loader = loader, limits = limits, fetchedAt = now()
         flights[providerID]?.task = Task {
             let result: Result<EPGIndex, Error>
@@ -338,12 +520,45 @@ actor EPGService {
         switch result {
         case .success(let index):
             indexes[providerID] = index
+            indexSources[providerID] = flight.source
+            // The full guide supersedes every short-guide overlay and every short request still in flight.
+            shortGuides[providerID] = nil
+            publications[providerID, default: 0] += 1
             failures[providerID] = nil
-            persist(index, providerID: providerID)
+            if let fingerprint = flight.sourceFingerprint {
+                let fresh = EPGCacheState(providerID: providerID, sourceFingerprint: fingerprint,
+                                          lastSuccessfulFetchAt: index.fetchedAt)
+                cacheStates[providerID] = fresh
+                persist(index, fingerprint: fingerprint, providerID: providerID, generation: flight.generation)
+            }
             for continuation in flight.waiters.values { continuation.resume(returning: index) }
         case .failure(let error):
             if !(error is CancellationError) {
-                failures[providerID] = ((failures[providerID]?.count ?? 0) + 1, now())
+                if let fingerprint = flight.sourceFingerprint {
+                    let prior = failures[providerID].flatMap { $0.sourceFingerprint == fingerprint ? $0.count : nil } ?? 0
+                    let count = min(EPGCacheState.maximumFailureCount, prior + 1)
+                    let nextRetryAt = now().addingTimeInterval(policy.retryDelay(afterFailures: count))
+                    failures[providerID] = RetryFailure(source: flight.source, sourceFingerprint: fingerprint, count: count,
+                                                        nextRetryAt: nextRetryAt)
+                    let previous = cacheStates[providerID].flatMap {
+                        $0.sourceFingerprint == fingerprint ? $0.lastSuccessfulFetchDate : nil
+                    }
+                    let linkedContentID = cacheStates[providerID].flatMap {
+                        $0.sourceFingerprint == fingerprint ? $0.contentID : nil
+                    }
+                    let state = EPGCacheState(providerID: providerID, sourceFingerprint: fingerprint,
+                                              contentID: linkedContentID,
+                                              lastSuccessfulFetchAt: previous, failureCount: count,
+                                              nextRetryAt: nextRetryAt)
+                    cacheStates[providerID] = state
+                    persistState(state, generation: flight.generation)
+                } else {
+                    // Retain process-local backoff if Keychain is temporarily unavailable.
+                    let prior = failures[providerID]?.count ?? 0
+                    let count = min(EPGCacheState.maximumFailureCount, prior + 1)
+                    failures[providerID] = RetryFailure(source: flight.source, sourceFingerprint: nil, count: count,
+                        nextRetryAt: now().addingTimeInterval(policy.retryDelay(afterFailures: count)))
+                }
             }
             for continuation in flight.waiters.values { continuation.resume(throwing: error) }
         }
@@ -362,32 +577,238 @@ actor EPGService {
         }
     }
 
-    private func isBackingOff(_ providerID: UUID) -> Bool {
+    private func isBackingOff(_ providerID: UUID, fingerprint: Data?, source: EPGFeedSource) -> Bool {
         guard let failure = failures[providerID] else { return false }
-        return now().timeIntervalSince(failure.last) < policy.retryDelay(afterFailures: failure.count)
+        if let fingerprint {
+            guard failure.sourceFingerprint == fingerprint else { return false }
+        } else {
+            guard failure.source == source else { return false }
+        }
+        return now() < failure.nextRetryAt
     }
 
     // MARK: - Cache
 
-    private func loadCached(_ providerID: UUID) async {
-        guard let cache, checkedCache.insert(providerID).inserted else { return }
+    /// Loads the verified cached guide unless a full guide is already in memory. A short-guide-only
+    /// index does not block it; its listings are reapplied on top of the cached guide.
+    private func loadCached(_ providerID: UUID, source: EPGFeedSource, fingerprint: Data) async {
+        guard let cache, checkedCache[providerID] != fingerprint else { return }
         let generation = generations[providerID, default: 0]
-        guard let cached = await Self.readCache(cache, providerID: providerID) else { return }
+        let read = enqueueCacheRead(cache, providerID: providerID, fingerprint: fingerprint, generation: generation)
+        guard let cached = await read.value else { return }
         // A refresh may have finished, or the provider been removed, while the file was read.
-        guard indexes[providerID] == nil, generations[providerID, default: 0] == generation else { return }
-        indexes[providerID] = cached
+        guard fullGuide(providerID) == nil, generations[providerID, default: 0] == generation else { return }
+        checkedCache[providerID] = fingerprint
+        indexes[providerID] = applyingShortGuides(to: cached, providerID: providerID)
+        indexSources[providerID] = source
     }
 
-    private func persist(_ index: EPGIndex, providerID: UUID) {
+    /// The in-memory guide only when it is a full guide, not short-guide listings alone.
+    private func fullGuide(_ providerID: UUID) -> EPGIndex? {
+        indexes[providerID].flatMap { $0.isShortGuideOnly ? nil : $0 }
+    }
+
+    private func applyingShortGuides(to index: EPGIndex, providerID: UUID) -> EPGIndex {
+        (shortGuides[providerID] ?? [:]).values.reduce(index) {
+            $0.replacingPrograms($1.programs, guideID: $1.guideID, now: now(), limits: limits)
+        }
+    }
+
+    /// Explicit Stage D integration point. It is deliberately never called by startup or cache reads.
+    /// Provider source is fixed for this operation; source changes or removal advance the generation
+    /// and invalidate every boundary callback.
+    func migrateLegacyCache(providerID: UUID, source: EPGFeedSource) async -> Bool {
+        guard !removedProviders.contains(providerID), !clearingProviders.contains(providerID) else { return false }
+        activateSource(source, for: providerID)
+        guard let cache, let fingerprint = try? fingerprinter.fingerprint(for: source).bytes else { return false }
+        let generation = generations[providerID, default: 0]
+        let previous = pendingWrites[providerID]?.task
+        let priorSweep = orphanSweepTask
+        let id = UUID()
+        let guardToken = diskGenerationGate
+        let fingerprinter = self.fingerprinter
+        let operation = Task<Bool, Never> {
+            await priorSweep?.value
+            await previous?.value
+            guard self.canWrite(providerID: providerID, generation: generation) else {
+                self.finishWrite(providerID, writeID: id)
+                return false
+            }
+            let valid: @Sendable () -> Bool = {
+                guard guardToken.isCurrent(providerID, generation: generation) else { return false }
+                return fingerprinter.check(stored: fingerprint, against: source) == .matches
+            }
+            let result = await Task.detached {
+                cache.migrate(providerID: providerID, fingerprint: fingerprint, isCurrent: valid)
+            }.value
+            self.finishWrite(providerID, writeID: id)
+            return result
+        }
+        pendingWrites[providerID] = (id, Task { _ = await operation.value })
+        return await operation.value
+    }
+
+    private func enqueueCacheRead(_ cache: EPGCacheStore, providerID: UUID, fingerprint: Data,
+                                  generation: Int) -> Task<EPGIndex?, Never> {
+        let previous = pendingWrites[providerID]?.task
+        let priorSweep = orphanSweepTask
+        let id = UUID()
+        let read = Task<EPGIndex?, Never> {
+            await priorSweep?.value
+            await previous?.value
+            guard self.canWrite(providerID: providerID, generation: generation) else { return nil }
+            let gate = self.diskGenerationGate
+            return await Self.readVerifiedCache(cache, providerID: providerID, fingerprint: fingerprint,
+                                                isCurrent: { gate.isCurrent(providerID, generation: generation) })
+        }
+        pendingWrites[providerID] = (id, Task {
+            _ = await read.value
+            self.finishWrite(providerID, writeID: id)
+        })
+        return read
+    }
+
+    /// Seeds retry state from disk once per process and source; concurrent callers share the load.
+    /// Disk never replaces a success or failure this process already recorded, since that is newer.
+    private func loadPersistedState(_ providerID: UUID, fingerprint: Data, source: EPGFeedSource,
+                                    generation: Int) async {
+        guard let cache else { return }
+        if let load = stateLoads[providerID], load.fingerprint == fingerprint { return await load.task.value }
+        let read = enqueueStateRead(cache, providerID: providerID, fingerprint: fingerprint, generation: generation)
+        let load = Task {
+            let state = await read.value
+            guard let state, self.canWrite(providerID: providerID, generation: generation),
+                  self.failures[providerID] == nil,
+                  self.cacheStates[providerID].map({ $0.sourceFingerprint != fingerprint }) ?? true else { return }
+            self.cacheStates[providerID] = state
+            if state.failureCount > 0, let nextRetryAt = state.nextRetryDate {
+                self.failures[providerID] = RetryFailure(source: source, sourceFingerprint: fingerprint,
+                                                         count: state.failureCount, nextRetryAt: nextRetryAt)
+            }
+        }
+        stateLoads[providerID] = (fingerprint, load)
+        await load.value
+    }
+
+    /// Reads state behind every queued operation for the provider, so the read's cleanup of an
+    /// invalid file can never remove one written after it was judged invalid.
+    private func enqueueStateRead(_ cache: EPGCacheStore, providerID: UUID, fingerprint: Data,
+                                  generation: Int) -> Task<EPGCacheState?, Never> {
+        let previous = pendingWrites[providerID]?.task
+        let priorSweep = orphanSweepTask
+        let operationID = UUID()
+        let read = Task<EPGCacheState?, Never> {
+            await priorSweep?.value
+            await previous?.value
+            guard self.canWrite(providerID: providerID, generation: generation) else { return nil }
+            return await Self.readState(cache, providerID: providerID, fingerprint: fingerprint)
+        }
+        pendingWrites[providerID] = (operationID, Task {
+            _ = await read.value
+            self.finishWrite(providerID, writeID: operationID)
+        })
+        return read
+    }
+
+    private func persist(_ index: EPGIndex, fingerprint: Data, providerID: UUID, generation: Int) {
         guard let cache else { return }
         let previous = pendingWrites[providerID]?.task
+        let priorSweep = orphanSweepTask
         let writeID = UUID()
         // Writes for one provider run in order, so an older guide never lands on top of a newer one.
         pendingWrites[providerID] = (writeID, Task {
+            await priorSweep?.value
             await previous?.value
-            await Self.writeCache(cache, index: index, providerID: providerID)
+            guard self.canWrite(providerID: providerID, generation: generation) else {
+                self.finishWrite(providerID, writeID: writeID)
+                return
+            }
+            if let contentID = await Self.writeV2Cache(cache, index: index, providerID: providerID,
+                                                       fingerprint: fingerprint) {
+                let state = EPGCacheState(providerID: providerID, sourceFingerprint: fingerprint,
+                                          contentID: contentID, lastSuccessfulFetchAt: index.fetchedAt)
+                if !(await Self.writeState(cache, state: state)) {
+                    self.recordCacheWriteFailure("state metadata write")
+                } else if self.canWrite(providerID: providerID, generation: generation) {
+                    self.linkInMemoryState(providerID, fingerprint: fingerprint, fetchedAt: index.fetchedAt,
+                                           contentID: contentID)
+                }
+            } else {
+                self.recordCacheWriteFailure("v2 guide write")
+            }
             self.finishWrite(providerID, writeID: writeID)
         })
+    }
+
+    private func persistState(_ state: EPGCacheState, generation: Int) {
+        guard let cache else { return }
+        let previous = pendingWrites[state.providerID]?.task
+        let priorSweep = orphanSweepTask
+        let writeID = UUID()
+        pendingWrites[state.providerID] = (writeID, Task {
+            await priorSweep?.value
+            await previous?.value
+            guard self.canWrite(providerID: state.providerID, generation: generation) else {
+                self.finishWrite(state.providerID, writeID: writeID)
+                return
+            }
+            let resolved = self.linkedForWrite(state)
+            if !(await Self.writeState(cache, state: resolved)) { self.recordCacheWriteFailure("state metadata write") }
+            self.finishWrite(state.providerID, writeID: writeID)
+        })
+    }
+
+    /// Links the written guide's content ID into the in-memory state for that same success. A
+    /// failure recorded while the guide was being written is newer and keeps its retry fields; a
+    /// later success is never overwritten by this older one.
+    private func linkInMemoryState(_ providerID: UUID, fingerprint: Data, fetchedAt: Date, contentID: UUID) {
+        guard let current = cacheStates[providerID], current.sourceFingerprint == fingerprint,
+              current.lastSuccessfulFetchDate == fetchedAt, current.contentID == nil else { return }
+        cacheStates[providerID] = current.linked(to: contentID)
+    }
+
+    /// A failure state captured before its guide's write finished carries no content ID. If memory
+    /// has since linked exactly that state to the written guide, persist the linked form.
+    private func linkedForWrite(_ state: EPGCacheState) -> EPGCacheState {
+        guard state.contentID == nil, let current = cacheStates[state.providerID],
+              let contentID = current.contentID, current.sourceFingerprint == state.sourceFingerprint,
+              current.lastSuccessfulFetchAt == state.lastSuccessfulFetchAt,
+              current.failureCount == state.failureCount, current.nextRetryAt == state.nextRetryAt else {
+            return state
+        }
+        return state.linked(to: contentID)
+    }
+
+    private func canWrite(providerID: UUID, generation: Int) -> Bool {
+        generations[providerID, default: 0] == generation
+    }
+
+    /// Rate-limited static diagnostics only: never log a source URL, username, password, or error
+    /// description supplied by a transport/filesystem implementation.
+    private func recordCacheWriteFailure(_ operation: String) {
+        let instant = now()
+        guard lastCacheWriteDiagnostic.map({ instant.timeIntervalSince($0) >= 300 }) ?? true else { return }
+        lastCacheWriteDiagnostic = instant
+        Self.cacheLogger.error("EPG cache \(operation, privacy: .public) failed; the prior cache was retained")
+    }
+
+    private func activateSource(_ source: EPGFeedSource, for providerID: UUID) {
+        guard let prior = requestedSources[providerID], prior != source else {
+            requestedSources[providerID] = source
+            return
+        }
+        generations[providerID, default: 0] += 1
+        diskGenerationGate.set(providerID, generation: generations[providerID, default: 0])
+        if let flight = flights.removeValue(forKey: providerID) {
+            flight.task?.cancel()
+            for waiter in flight.waiters.values { waiter.resume(throwing: CancellationError()) }
+        }
+        indexes[providerID] = nil
+        indexSources[providerID] = nil
+        shortGuides[providerID] = nil
+        checkedCache[providerID] = nil
+        failures[providerID] = nil
+        requestedSources[providerID] = source
     }
 
     private func finishWrite(_ providerID: UUID, writeID: UUID) {
@@ -412,15 +833,43 @@ actor EPGService {
         return try EPGIndex(document: document, fetchedAt: fetchedAt, now: fetchedAt, limits: limits)
     }
 
-    private nonisolated static func readCache(_ cache: EPGCacheStore, providerID: UUID) async -> EPGIndex? {
-        cache.load(providerID: providerID)
+    private nonisolated static func readVerifiedCache(_ cache: EPGCacheStore, providerID: UUID,
+                                                      fingerprint: Data,
+                                                      isCurrent: @Sendable () -> Bool) async -> EPGIndex? {
+        cache.loadVerified(providerID: providerID, fingerprint: fingerprint, isCurrent: isCurrent)
     }
 
-    private nonisolated static func writeCache(_ cache: EPGCacheStore, index: EPGIndex, providerID: UUID) async {
-        try? cache.save(index, providerID: providerID)
+    private nonisolated static func sweepCache(_ cache: EPGCacheStore, keeping providerIDs: Set<UUID>) async {
+        cache.removeOrphans(keeping: providerIDs)
+    }
+
+    private nonisolated static func readState(_ cache: EPGCacheStore, providerID: UUID,
+                                              fingerprint: Data) async -> EPGCacheState? {
+        cache.loadStateForCurrentGuide(providerID: providerID, fingerprint: fingerprint)
+    }
+
+    private nonisolated static func writeV2Cache(_ cache: EPGCacheStore, index: EPGIndex, providerID: UUID,
+                                                 fingerprint: Data) async -> UUID? {
+        try? cache.saveV2(index, providerID: providerID, fingerprint: fingerprint)
+    }
+
+    private nonisolated static func writeState(_ cache: EPGCacheStore, state: EPGCacheState) async -> Bool {
+        do { try cache.saveState(state) } catch { return false }
+        return true
     }
 
     private nonisolated static func removeCache(_ cache: EPGCacheStore, providerID: UUID) async {
         cache.remove(providerID: providerID)
+    }
+}
+
+/// Synchronous cross-task generation token used by disk-boundary callbacks. `remove` advances it
+/// before awaiting queued work, so a delayed migration cannot stage, promote or delete afterward.
+private final class EPGDiskGenerationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [UUID: Int] = [:]
+    func set(_ id: UUID, generation: Int) { lock.withLock { values[id] = generation } }
+    func isCurrent(_ id: UUID, generation: Int) -> Bool {
+        lock.withLock { values[id, default: 0] == generation }
     }
 }

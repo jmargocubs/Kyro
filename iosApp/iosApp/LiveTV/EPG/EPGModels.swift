@@ -114,3 +114,17 @@ struct EPGLimits: Sendable {
     /// Applied only to timestamps that carry no UTC offset.
     var fallbackTimeZone = TimeZone(secondsFromGMT: 0)!
 }
+
+/// The one representation of a guide's fetch time.
+///
+/// The cache header, record and state file store fetch times as IEEE 754 seconds since 1970, while
+/// `Date` holds seconds since 2001. A fractional `Date()` loses its lowest bit in that conversion
+/// about half the time, so a guide read back would not equal the one written. `EPGIndex` therefore
+/// canonicalizes its fetch time on construction to the value that survives the conversion. The
+/// mapping is idempotent and keeps the 1970-based value unchanged, so in-memory guides, cache files
+/// and state agree exactly; comparisons stay exact equality, never a tolerance.
+enum EPGTimestamp {
+    static func canonical(_ date: Date) -> Date {
+        Date(timeIntervalSince1970: date.timeIntervalSince1970)
+    }
+}

@@ -54,7 +54,11 @@ struct EPGIndex: Sendable {
         var truncated = false
     }
 
+    /// Canonical (`EPGTimestamp`), so it compares exactly with the same guide read from cache.
     let fetchedAt: Date
+    /// Built only from Xtream short-guide listings, with no full guide underneath. It can be shown,
+    /// but it never stands in for the full guide: it doesn't hide a cached one or make a refresh due.
+    let isShortGuideOnly: Bool
     private(set) var programsByChannel: [String: [EPGProgram]]
     /// Normalized display name to normalized guide ID. Names shared by different guide channels are
     /// left out, so a name match never shows another channel's guide.
@@ -67,9 +71,16 @@ struct EPGIndex: Sendable {
         EPGIndex(fetchedAt: fetchedAt, programsByChannel: [:], channelIDsByName: [:], statistics: Statistics())
     }
 
+    /// A base for short-guide listings when no full guide is loaded.
+    static func shortGuideBase(fetchedAt: Date) -> EPGIndex {
+        EPGIndex(fetchedAt: fetchedAt, programsByChannel: [:], channelIDsByName: [:], statistics: Statistics(),
+                 isShortGuideOnly: true)
+    }
+
     init(fetchedAt: Date, programsByChannel: [String: [EPGProgram]], channelIDsByName: [String: String],
-         statistics: Statistics) {
-        self.fetchedAt = fetchedAt
+         statistics: Statistics, isShortGuideOnly: Bool = false) {
+        self.fetchedAt = EPGTimestamp.canonical(fetchedAt)
+        self.isShortGuideOnly = isShortGuideOnly
         self.programsByChannel = programsByChannel
         self.channelIDsByName = channelIDsByName
         self.statistics = statistics
@@ -160,7 +171,7 @@ struct EPGIndex: Sendable {
         merged[key] = Self.normalize(incoming + kept, window: Self.window(now: now, limits: limits), now: now,
                                      limit: limits.maximumProgramsPerChannel, statistics: &statistics)
         return EPGIndex(fetchedAt: fetchedAt, programsByChannel: merged, channelIDsByName: channelIDsByName,
-                        statistics: statistics)
+                        statistics: statistics, isShortGuideOnly: isShortGuideOnly)
     }
 
     // MARK: - Building

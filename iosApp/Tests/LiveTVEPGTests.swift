@@ -128,7 +128,7 @@ final class LiveTVEPGTests: XCTestCase {
             }
             XCTAssertLessThan(counter.value, 16,
                               "must stop accepting body bytes (Content-Length: \(contentLength ?? "absent"))")
-            XCTAssertTrue(StreamingURLProtocol.wasStopped)
+            try await waitUntil { StreamingURLProtocol.wasStopped }
         }
 
         StreamingURLProtocol.install(chunks: [Data("1234".utf8), Data("5678".utf8)], contentLength: "8")
@@ -136,6 +136,19 @@ final class LiveTVEPGTests: XCTestCase {
         let data = try await makeStreamingLoader(counter: counter).load(URL(string: "https://epg.test/guide")!, maximumBytes: 8)
         XCTAssertEqual(data, Data("12345678".utf8))
         XCTAssertEqual(counter.value, 8)
+    }
+
+    func testGuideDownloadDoesNotSendConditionalValidators() async throws {
+        StreamingURLProtocol.install(chunks: [Data("<tv></tv>".utf8)], contentLength: "9")
+        _ = try await makeStreamingLoader(counter: AcceptedByteCounter())
+            .load(URL(string: "https://epg.test/guide.xml?token=private")!, maximumBytes: 100)
+        let names = Set(StreamingURLProtocol.requestHeaderNames.map { $0.lowercased() })
+        XCTAssertFalse(names.contains("if-none-match"))
+        XCTAssertFalse(names.contains("if-modified-since"))
+        XCTAssertFalse(names.contains("etag"))
+        XCTAssertEqual(StreamingURLProtocol.cachePolicy, .reloadIgnoringLocalCacheData)
+        let rendered = StreamingURLProtocol.requestHeaderNames.joined(separator: " ")
+        XCTAssertFalse(rendered.lowercased().contains("private"))
     }
 
     /// The provider case: `Content-Encoding: gzip`, a compressed Content-Length under the download
@@ -171,7 +184,7 @@ final class LiveTVEPGTests: XCTestCase {
         }
         XCTAssertLessThanOrEqual(counter.value, 2_000)
         XCTAssertLessThan(StreamingURLProtocol.sentChunks, 21, "the request stops before the whole body is sent")
-        XCTAssertTrue(StreamingURLProtocol.wasStopped)
+        try await waitUntil { StreamingURLProtocol.wasStopped }
     }
 
     func testOnlyDecodedXMLGetsTheExpandedCap() async throws {
@@ -214,7 +227,7 @@ final class LiveTVEPGTests: XCTestCase {
         }
         XCTAssertLessThanOrEqual(counter.value, 1_000)
         XCTAssertLessThan(StreamingURLProtocol.sentChunks, 20)
-        XCTAssertTrue(StreamingURLProtocol.wasStopped)
+        try await waitUntil { StreamingURLProtocol.wasStopped }
     }
 
     func testServiceAllowsDecodedXMLUpToTheXMLCap() async throws {
@@ -222,7 +235,7 @@ final class LiveTVEPGTests: XCTestCase {
         var limits = EPGLimits()
         limits.maximumDownloadBytes = 1_000
         limits.maximumXMLBytes = 9_000
-        let service = EPGService(cache: nil, loader: loader, limits: limits, now: { [now] in now })
+        let service = EPGService(cache: nil, loader: loader, fingerprinter: .inMemory(), limits: limits, now: { [now] in now })
         _ = try await service.refresh(providerID: UUID(), source: source)
         XCTAssertEqual(loader.limits, [1_000, 9_000])
     }
@@ -541,7 +554,9 @@ final class LiveTVEPGTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)],
                                              ofItemAtPath: directory.appendingPathComponent("\(first.uuidString).epgcache").path)
         try cache.save(index, providerID: third)
-        XCTAssertNil(cache.load(providerID: first), "the oldest guide is evicted past the entry limit")
+        // Legacy v1 files count toward the limit but are never evicted by it on their own; see
+        // testEvictionNeverDeletesLegacyV1OnItsOwn in EPGCacheStateTests.
+        XCTAssertNotNil(cache.load(providerID: first), "legacy v1 is preserved past the entry limit")
         XCTAssertNotNil(cache.load(providerID: third))
 
         let corrupt = directory.appendingPathComponent("\(second.uuidString).epgcache")
@@ -558,20 +573,81 @@ final class LiveTVEPGTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let loader = GateLoader(payload: Data(serviceFeed.utf8), released: true)
         let provider = UUID()
-        let writer = EPGService(cache: EPGCacheStore(directory: directory), loader: loader, now: { [now] in now })
+        let fingerprinter = EPGSourceFingerprinter.inMemory()
+        let writer = EPGService(cache: EPGCacheStore(directory: directory), loader: loader, fingerprinter: fingerprinter, now: { [now] in now })
         _ = try await writer.refresh(providerID: provider, source: source)
-        try await waitUntil { FileManager.default.fileExists(atPath: directory.appendingPathComponent("\(provider.uuidString).epgcache").path) }
+        try await waitUntil { FileManager.default.fileExists(atPath: directory.appendingPathComponent("\(provider.uuidString).v2.epgcache").path) }
 
         let offline = GateLoader(payload: Data(), released: true, failure: EPGError.providerRejected)
-        let reader = EPGService(cache: EPGCacheStore(directory: directory), loader: offline, now: { [now] in now.addingTimeInterval(600) })
+        let reader = EPGService(cache: EPGCacheStore(directory: directory), loader: offline, fingerprinter: fingerprinter, now: { [now] in now.addingTimeInterval(600) })
         let index = try await reader.refresh(providerID: provider, source: source)
         XCTAssertEqual(index.nowNext(guideID: "news.one", name: nil, at: now).current?.title, "Current")
         XCTAssertEqual(offline.calls, 0)
     }
 
+    func testShortGuideAloneNeverHidesTheCachedFullGuide() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let provider = UUID(), fingerprinter = EPGSourceFingerprinter.inMemory()
+        let writer = EPGService(cache: EPGCacheStore(directory: directory), loader: GateLoader(payload: Data(serviceFeed.utf8), released: true),
+                                fingerprinter: fingerprinter, now: { [now] in now })
+        _ = try await writer.refresh(providerID: provider, source: source)
+        try await waitUntil { FileManager.default.fileExists(atPath: directory.appendingPathComponent("\(provider.uuidString).v2.epgcache").path) }
+
+        let offline = GateLoader(payload: Data(), released: true, failure: EPGError.providerRejected)
+        let reader = EPGService(cache: EPGCacheStore(directory: directory), loader: offline, fingerprinter: fingerprinter,
+                                now: { [now] in now.addingTimeInterval(600) })
+        let short = await reader.replacePrograms(shortListing, guideID: "sports.two", providerID: provider, source: source)
+        let partial = try XCTUnwrap(short)
+        XCTAssertTrue(partial.isShortGuideOnly)
+        XCTAssertEqual(partial.nowNext(guideID: "sports.two", name: nil, at: now.addingTimeInterval(600)).current?.title, "Short now",
+                       "short-guide listings stay playable on their own")
+
+        let restored = await reader.index(for: provider, source: source)
+        let guide = try XCTUnwrap(restored, "the cached full guide still loads")
+        XCTAssertFalse(guide.isShortGuideOnly)
+        XCTAssertEqual(guide.nowNext(guideID: "news.one", name: nil, at: now).current?.title, "Current")
+        XCTAssertEqual(guide.nowNext(guideID: "sports.two", name: nil, at: now.addingTimeInterval(600)).current?.title, "Short now",
+                       "newer short-guide listings are reapplied over the cached guide")
+        XCTAssertEqual(offline.calls, 0)
+    }
+
+    func testShortGuideAloneNeverSatisfiesFullGuideFreshness() async throws {
+        // Without a cache, a refresh after short-guide listings still downloads the full guide.
+        let loader = GateLoader(payload: Data(serviceFeed.utf8), released: true)
+        let service = EPGService(cache: nil, loader: loader, fingerprinter: .inMemory(), now: { [now] in now })
+        let provider = UUID()
+        _ = await service.replacePrograms(shortListing, guideID: "sports.two", providerID: provider, source: source)
+        let shortFreshness = await service.freshness(for: provider)
+        XCTAssertEqual(shortFreshness, .missing, "short-guide listings do not count as a full guide")
+        let shortOnlyLookup = await service.index(for: provider)
+        XCTAssertNil(shortOnlyLookup, "a source-less lookup does not publish short listings as the guide")
+        let refreshed = try await service.refresh(providerID: provider, source: source)
+        XCTAssertEqual(loader.calls, 1, "a short-guide-only index does not make the full guide fresh")
+        XCTAssertFalse(refreshed.isShortGuideOnly)
+        XCTAssertEqual(refreshed.nowNext(guideID: "news.one", name: nil, at: now).current?.title, "Current")
+
+        // Over a full guide, short-guide listings update it in place and it stays fresh.
+        let updated = await service.replacePrograms(shortListing, guideID: "sports.two", providerID: provider, source: source)
+        XCTAssertEqual(updated?.isShortGuideOnly, false)
+        XCTAssertEqual(updated?.nowNext(guideID: "news.one", name: nil, at: now).current?.title, "Current")
+        _ = try await service.refresh(providerID: provider, source: source)
+        XCTAssertEqual(loader.calls, 1)
+
+        // While backing off, a short-guide-only index is not returned as the full guide.
+        let failing = GateLoader(payload: Data(), released: true, failure: EPGError.providerRejected)
+        let backingOff = EPGService(cache: nil, loader: failing, fingerprinter: .inMemory(), now: { [now] in now })
+        await XCTAssertThrowsAsync(try await backingOff.refresh(providerID: provider, source: source))
+        _ = await backingOff.replacePrograms(shortListing, guideID: "sports.two", providerID: provider, source: source)
+        await XCTAssertThrowsAsync(try await backingOff.refresh(providerID: provider, source: source)) {
+            XCTAssertEqual($0 as? EPGError, .providerRejected)
+        }
+        XCTAssertEqual(failing.calls, 1)
+    }
+
     func testFailedRefreshBacksOffUnlessForced() async throws {
         let loader = GateLoader(payload: Data(), released: true, failure: EPGError.providerRejected)
-        let service = EPGService(cache: nil, loader: loader, now: { [now] in now })
+        let service = EPGService(cache: nil, loader: loader, fingerprinter: .inMemory(), now: { [now] in now })
         let provider = UUID()
         await XCTAssertThrowsAsync(try await service.refresh(providerID: provider, source: source))
         await XCTAssertThrowsAsync(try await service.refresh(providerID: provider, source: source))
@@ -584,7 +660,7 @@ final class LiveTVEPGTests: XCTestCase {
 
     func testConcurrentRefreshesShareOneDownload() async throws {
         let loader = GateLoader(payload: Data(serviceFeed.utf8))
-        let service = EPGService(cache: nil, loader: loader, now: { [now] in now })
+        let service = EPGService(cache: nil, loader: loader, fingerprinter: .inMemory(), now: { [now] in now })
         let provider = UUID()
         let source = source
         let tasks = (0..<5).map { _ in Task { try await service.refresh(providerID: provider, source: source) } }
@@ -599,7 +675,7 @@ final class LiveTVEPGTests: XCTestCase {
     func testCancellingTheOnlyWaiterCancelsTheDownloadAndKeepsTheLastGuide() async throws {
         let clock = TestClock(now)
         let loader = GateLoader(payload: Data(serviceFeed.utf8), released: true)
-        let service = EPGService(cache: nil, loader: loader, now: { clock.date })
+        let service = EPGService(cache: nil, loader: loader, fingerprinter: .inMemory(), now: { clock.date })
         let provider = UUID()
         let source = source
         let first = try await service.refresh(providerID: provider, source: source)
@@ -617,7 +693,7 @@ final class LiveTVEPGTests: XCTestCase {
 
     func testCancellingOneWaiterLeavesTheSharedRefreshRunning() async throws {
         let loader = GateLoader(payload: Data(serviceFeed.utf8))
-        let service = EPGService(cache: nil, loader: loader, now: { [now] in now })
+        let service = EPGService(cache: nil, loader: loader, fingerprinter: .inMemory(), now: { [now] in now })
         let provider = UUID()
         let source = source
         let cancelled = Task { try await service.refresh(providerID: provider, source: source) }
@@ -636,7 +712,7 @@ final class LiveTVEPGTests: XCTestCase {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let loader = GateLoader(payload: Data(serviceFeed.utf8))
-        let service = EPGService(cache: EPGCacheStore(directory: directory), loader: loader, now: { [now] in now })
+        let service = EPGService(cache: EPGCacheStore(directory: directory), loader: loader, fingerprinter: .inMemory(), now: { [now] in now })
         let provider = UUID()
         let source = source
         let task = Task { try await service.refresh(providerID: provider, source: source) }
@@ -653,6 +729,10 @@ final class LiveTVEPGTests: XCTestCase {
     // MARK: - Helpers
 
     private var source: EPGFeedSource { .xmltv(URL(string: "https://guide.example/epg.xml.gz")!) }
+
+    private var shortListing: [EPGProgram] {
+        [EPGProgram(channelID: "sports.two", start: now, end: now.addingTimeInterval(3_600), title: "Short now")]
+    }
 
     private var serviceFeed: String {
         feed([("news.one", -60, 90, "Current"), ("news.one", 30, 60, "Next"), ("news.one", 90, 1_200, "Later")])
@@ -804,17 +884,23 @@ private final class StreamingURLProtocol: URLProtocol {
     private static var plan = Plan(chunks: [], contentLength: nil, delay: 0)
     private static var sent = 0
     private static var stopped = false
+    private static var headerNames: [String] = []
+    private static var policy: URLRequest.CachePolicy = .useProtocolCachePolicy
     private let stateLock = NSLock()
     private var isStopped = false
 
     static var sentChunks: Int { lock.withLock { sent } }
     static var wasStopped: Bool { lock.withLock { stopped } }
+    static var requestHeaderNames: [String] { lock.withLock { headerNames } }
+    static var cachePolicy: URLRequest.CachePolicy { lock.withLock { policy } }
 
     static func install(chunks: [Data], contentLength: String?, delay: UInt64 = 0, headers: [String: String] = [:]) {
         lock.withLock {
             plan = Plan(chunks: chunks, contentLength: contentLength, delay: delay, headers: headers)
             sent = 0
             stopped = false
+            headerNames = []
+            policy = .useProtocolCachePolicy
         }
     }
 
@@ -822,7 +908,11 @@ private final class StreamingURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        let plan = Self.lock.withLock { Self.plan }
+        let plan = Self.lock.withLock { () -> Plan in
+            Self.headerNames = request.allHTTPHeaderFields?.keys.map { $0 } ?? []
+            Self.policy = request.cachePolicy
+            return Self.plan
+        }
         var headers = plan.headers
         if let length = plan.contentLength { headers["Content-Length"] = length }
         guard let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",

@@ -51,7 +51,9 @@ final class LiveTVFoundationTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let secrets = MemoryLiveTVSecretStore()
-        let service = LiveTVService(defaults: defaults, secretStore: secrets)
+        let service = LiveTVService(defaults: defaults, secretStore: secrets,
+                                    epg: EPGService(cache: nil, loader: URLSessionEPGFeedLoader.makeDefault(),
+                                                    fingerprinter: .inMemory()))
         let token = "playlist-token-should-not-leak"
         let guideToken = "guide-token-should-not-leak"
 
@@ -353,7 +355,8 @@ final class LiveTVFoundationTests: XCTestCase {
         XCTAssertTrue(apiComponents.queryItems?.contains(URLQueryItem(name: "action", value: "get_live_streams")) == true)
         XCTAssertTrue(api.absoluteString.contains("user%20name"))
         let stream = try XtreamURLBuilder.streamURL(server: "https://provider.example.test:9443/base",
-                                                    username: "a/b", password: "c?d", streamID: 17, extension: "m3u8")
+                                                    username: "a/b", password: "c?d", streamID: 17, extension: "m3u8",
+                                                    allowedOutputFormats: ["m3u8"])
         XCTAssertEqual(stream.scheme, "https")
         XCTAssertEqual(stream.port, 9443)
         XCTAssertTrue(stream.absoluteString.contains("/base/live/a%2Fb/c%3Fd/17.m3u8"))
@@ -365,7 +368,9 @@ final class LiveTVFoundationTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let secrets = MemoryLiveTVSecretStore()
-        let service = LiveTVService(defaults: defaults, secretStore: secrets)
+        let service = LiveTVService(defaults: defaults, secretStore: secrets,
+                                    epg: EPGService(cache: nil, loader: URLSessionEPGFeedLoader.makeDefault(),
+                                                    fingerprinter: .inMemory()))
         let m3uID = try service.saveConfiguration(name: "M3U", playlistURL: "https://example.test/list.m3u", xmltvURL: nil)
         let password = "private-Xtream-pass"
         let xtreamID = try service.saveXtreamConfiguration(name: "Xtream", serverURL: "http://example.test:8080/base",

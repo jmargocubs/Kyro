@@ -1,154 +1,548 @@
 import Foundation
 
-/// Disk cache of indexed guides: one compressed file per provider under Caches.
+/// Disk cache of indexed guides: one compressed file per provider in the platform's guide directory.
 ///
 /// Files are named by provider ID and hold only listings, never feed URLs or credentials. Writes
-/// are atomic. A corrupt, foreign-version or oversized file is deleted and reads as missing. Total
-/// size and entry count are bounded, evicting the least recently written guides first.
+/// are atomic, and a failed write leaves the previous guide in place. Verified reads never delete a
+/// guide they reject: a corrupt, foreign-version, oversized or unreadable file reads as missing and
+/// is kept until a verified v2 guide replaces it, the provider is removed, or the orphan sweep runs.
+/// Decompression is bounded by `EPGCacheFormat.Limits`. Total size and entry count are bounded,
+/// evicting the least recently written guides first.
 ///
 /// Synchronous file I/O: call it from a nonisolated async context, never the main actor.
 struct EPGCacheStore: Sendable {
     let directory: URL
-    var maximumEntryBytes = 48 * 1024 * 1024
+    /// Second v1 location on iOS/macOS. tvOS stores v1 and v2 side-by-side in `directory`.
+    var legacyReadDirectory: URL?
+    var formatLimits = EPGCacheFormat.Limits()
     var maximumTotalBytes = 128 * 1024 * 1024
     var maximumEntries = 8
+    var maximumStateBytes = 4 * 1024
+    var stateWriter: @Sendable (Data, URL) throws -> Void = { data, url in
+        try Self.writeProtectedAtomically(data, url)
+    }
+#if DEBUG
+    /// Deterministic read gate for cache lifecycle tests. Not compiled into release builds.
+    var verifiedReadInterceptor: (@Sendable (UUID, Data, @Sendable () -> Bool) -> EPGIndex?)?
+#endif
+    var stageWriter: @Sendable (Data, URL) throws -> Void = { data, url in
+        try Self.writeProtectedAtomically(data, url)
+    }
+    var promoter: @Sendable (URL, URL) throws -> Void = { source, destination in
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: source)
+        } else {
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
+    }
+    /// Lists a guide directory for eviction accounting. Injectable so tests can simulate an
+    /// unreadable directory without relying on simulator file permissions.
+    var directoryLister: @Sendable (URL) throws -> [URL] = { url in
+        try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])
+    }
+    /// Size and modification date for eviction accounting. A nil field makes the inventory untrusted.
+    var fileMetadataReader: @Sendable (URL) throws -> (size: Int?, modified: Date?) = { url in
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        return (values.fileSize, values.contentModificationDate)
+    }
+    /// Eviction spans providers, so serialize it with every provider's promotion and removal.
+    private static let diskTransactionLock = NSRecursiveLock()
 
-    private static let magic = Data("KEPG".utf8)
-    private static let version: UInt8 = 1
-    private static let fileExtension = "epgcache"
+    /// Frozen Stage D names: `<uuid>.v1.epgcache`, `<uuid>.v2.epgcache`,
+    /// `<uuid>.<nonce>.stage`. The unsuffixed `.epgcache` is the pre-Stage-D v1 name.
+    private static let v1Extension = "epgcache"
+    private static let fileExtension = v1Extension
+    private static let v2Suffix = ".v2.epgcache"
 
-    init(directory: URL) {
+    init(directory: URL, legacyReadDirectory: URL? = nil) {
         self.directory = directory
+        self.legacyReadDirectory = legacyReadDirectory
     }
 
-    static func makeDefault() -> EPGCacheStore? {
-        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
-        return EPGCacheStore(directory: caches.appendingPathComponent("LiveTVGuide", isDirectory: true))
+    static func makeDefault(fileManager: FileManager = .default) -> EPGCacheStore? {
+        makeDefault(platform: currentPlatform, fileManager: fileManager)
     }
 
-    func load(providerID: UUID) -> EPGIndex? {
-        let url = fileURL(providerID)
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return nil }
-        guard let size = attributes[.size] as? Int, size <= maximumEntryBytes,
-              let file = try? Data(contentsOf: url, options: .mappedIfSafe),
-              file.count > Self.magic.count + 1,
-              file.prefix(Self.magic.count) == Self.magic,
-              file[file.startIndex + Self.magic.count] == Self.version,
-              let payload = try? (file.dropFirst(Self.magic.count + 1) as NSData).decompressed(using: .lzfse) as Data,
-              let record = try? JSONDecoder().decode(Record.self, from: payload),
-              let index = record.index() else {
-            remove(providerID: providerID)
+    /// Exposed for deterministic platform-path tests; production selects its compile-time platform.
+    static func makeDefault(platform: EPGStoragePlatform, fileManager: FileManager = .default) -> EPGCacheStore? {
+        let root: FileManager.SearchPathDirectory = platform == .tvOS ? .cachesDirectory : .applicationSupportDirectory
+        guard let base = fileManager.urls(for: root, in: .userDomainMask).first else { return nil }
+        let directory: URL
+        if platform == .tvOS {
+            directory = base.appendingPathComponent("LiveTVGuide", isDirectory: true)
+        } else {
+            directory = base.appendingPathComponent("Silo", isDirectory: true)
+                .appendingPathComponent("LiveTV", isDirectory: true)
+                .appendingPathComponent("Guide", isDirectory: true)
+        }
+        let legacy: URL? = platform == .tvOS ? nil : fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("LiveTVGuide", isDirectory: true)
+        return EPGCacheStore(directory: directory, legacyReadDirectory: legacy)
+    }
+
+    private static var currentPlatform: EPGStoragePlatform {
+#if os(tvOS)
+        .tvOS
+#elseif os(macOS)
+        .macOS
+#else
+        .iOS
+#endif
+    }
+
+    /// Missing, malformed, oversized or unreadable state is a cache miss, never permission to
+    /// discard a guide. A well-formed state that fails validation, such as one for another source,
+    /// is deleted. The file is read once, and callers must serialize this with the provider's state
+    /// writes, so that deletion can only ever remove the bytes that were judged.
+    func loadState(providerID: UUID, fingerprint: Data, contentID: UUID? = nil) -> EPGCacheState? {
+        let url = stateURL(providerID)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? Int, size >= 0, size <= maximumStateBytes,
+              let data = try? Data(contentsOf: url), data.count <= maximumStateBytes,
+              let state = try? JSONDecoder().decode(EPGCacheState.self, from: data) else { return nil }
+        guard state.isValid(for: providerID, fingerprint: fingerprint, associatedContentID: contentID) else {
+            try? FileManager.default.removeItem(at: url)
             return nil
         }
-        return index
+        return state
     }
 
-    func save(_ index: EPGIndex, providerID: UUID) throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let payload = try JSONEncoder().encode(Record(index))
-        let compressed = try (payload as NSData).compressed(using: .lzfse) as Data
-        var file = Self.magic
-        file.append(Self.version)
-        file.append(compressed)
-        guard file.count <= maximumEntryBytes else {
-            remove(providerID: providerID)
-            throw EPGError.responseTooLarge
+    /// Reads state for a source without confusing an absent/unreadable v2 file with a content-ID
+    /// mismatch. Linked state is accepted only when a fully validated v2 guide for this source
+    /// carries the same ID; legacy state is accepted only when it remains unlinked.
+    func loadStateForCurrentGuide(providerID: UUID, fingerprint: Data) -> EPGCacheState? {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+        let url = stateURL(providerID)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? Int, size >= 0, size <= maximumStateBytes,
+              let data = try? Data(contentsOf: url), data.count <= maximumStateBytes,
+              let state = try? JSONDecoder().decode(EPGCacheState.self, from: data) else { return nil }
+        guard state.isValid(for: providerID, fingerprint: fingerprint,
+                            associatedContentID: state.contentID) else {
+            // Source mismatch invalidates retry metadata, not any guide file.
+            try? FileManager.default.removeItem(at: url)
+            return nil
         }
-        try file.write(to: fileURL(providerID), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        guard let linkedContentID = state.contentID else { return state }
+        guard let guideData = try? Data(contentsOf: v2URL(providerID), options: .mappedIfSafe),
+              let guide = try? EPGCacheFormat.decode(guideData, providerID: providerID, limits: formatLimits),
+              guide.header.sourceFingerprint == fingerprint,
+              guide.header.contentID == linkedContentID else { return nil }
+        return state
+    }
+
+    func saveState(_ state: EPGCacheState) throws {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+        guard state.isValid(for: state.providerID, fingerprint: state.sourceFingerprint,
+                            associatedContentID: state.contentID) else {
+            throw EPGCacheStateStoreError.invalidState
+        }
+        let data = try JSONEncoder().encode(state)
+        guard data.count <= maximumStateBytes else { throw EPGCacheStateStoreError.tooLarge }
+        try prepareDirectory()
+        try stateWriter(data, stateURL(state.providerID))
+    }
+
+    func removeState(providerID: UUID) {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+        try? FileManager.default.removeItem(at: stateURL(providerID))
+    }
+
+    /// Removes guide and state files for providers no longer configured. Listing failure is a no-op.
+    func removeOrphans(keeping providerIDs: Set<UUID>) {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+        sweep(directory, keeping: providerIDs, extensions: [Self.v1Extension, "state"])
+        sweepV2(in: directory, keeping: providerIDs)
+        sweepStages(in: directory)
+        if let legacyReadDirectory, legacyReadDirectory != directory {
+            sweep(legacyReadDirectory, keeping: providerIDs, extensions: [Self.v1Extension])
+        }
+    }
+
+    private func sweep(_ directory: URL, keeping providerIDs: Set<UUID>, extensions: Set<String>) {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+            return
+        }
+        for file in files where extensions.contains(file.pathExtension) {
+            guard let id = providerIDForFile(file),
+                  !providerIDs.contains(id) else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    /// Unverified format inspection is available only to debug/test builds. Production reads must
+    /// go through `loadVerified(providerID:fingerprint:)`.
+#if DEBUG
+    func load(providerID: UUID) -> EPGIndex? {
+        if let index = loadV2(providerID: providerID) { return index }
+        let candidates = legacyURLs(providerID: providerID)
+        return candidates.compactMap { url in
+            loadV1(at: url, deleteInvalid: url.deletingLastPathComponent() == directory)
+        }.max { $0.fetchedAt < $1.fetchedAt }
+    }
+#endif
+
+    /// Returns only a guide with an established binding to the requested source. A v2 header is
+    /// independently bound by its HMAC fingerprint. A v1 guide is eligible only when matching
+    /// persisted Stage C state binds the exact fetchedAt; a UUID match alone is never sufficient.
+    func loadVerified(providerID: UUID, fingerprint: Data,
+                      isCurrent: @Sendable () -> Bool = { true }) -> EPGIndex? {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+#if DEBUG
+        if let verifiedReadInterceptor {
+            return verifiedReadInterceptor(providerID, fingerprint, isCurrent)
+        }
+#endif
+        guard fingerprint.count == EPGCacheFormat.fingerprintLength else { return nil }
+        if let data = try? Data(contentsOf: v2URL(providerID), options: .mappedIfSafe),
+           let decoded = try? EPGCacheFormat.decode(data, providerID: providerID, limits: formatLimits),
+           decoded.header.sourceFingerprint == fingerprint {
+            deleteReadableLegacy(providerID: providerID, isCurrent: isCurrent)
+            return decoded.index
+        }
+        guard let state = readState(providerID: providerID), state.sourceFingerprint == fingerprint,
+              state.contentID == nil, let successAt = state.lastSuccessfulFetchDate else { return nil }
+        var newest: EPGIndex?
+        for url in legacyURLs(providerID: providerID) {
+            guard let candidate = loadV1(at: url, deleteInvalid: false), candidate.fetchedAt == successAt else { continue }
+            if newest == nil || candidate.fetchedAt > newest!.fetchedAt { newest = candidate }
+        }
+        return newest
+    }
+
+    /// A non-destructive state read for identity decisions. Unlike retry-state loading, a mismatch
+    /// is not evidence that any guide is corrupt and must not delete state or guide files.
+    func readState(providerID: UUID) -> EPGCacheState? {
+        let url = stateURL(providerID)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? Int, size >= 0, size <= maximumStateBytes,
+              let data = try? Data(contentsOf: url), data.count <= maximumStateBytes,
+              let state = try? JSONDecoder().decode(EPGCacheState.self, from: data),
+              state.isValid(for: providerID, fingerprint: state.sourceFingerprint,
+                            associatedContentID: state.contentID) else { return nil }
+        return state
+    }
+
+    /// Runs only when explicitly requested by EPGService; normal cache reads never migrate.
+    /// Binding v1 to the supplied fingerprint assumes provider sources cannot be edited in place.
+    func migrate(providerID: UUID, fingerprint: Data, isCurrent: @Sendable () -> Bool = { true }) -> Bool {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+        guard fingerprint.count == EPGCacheFormat.fingerprintLength, isCurrent() else { return false }
+        let v2 = v2URL(providerID)
+        if let data = try? Data(contentsOf: v2, options: .mappedIfSafe),
+           let existing = try? EPGCacheFormat.decode(data, providerID: providerID, limits: formatLimits),
+           existing.header.sourceFingerprint == fingerprint {
+            if let state = readState(providerID: providerID), state.sourceFingerprint == fingerprint,
+               state.contentID == nil, state.lastSuccessfulFetchDate == existing.index.fetchedAt,
+               isCurrent() {
+                do { try saveState(state.linked(to: existing.header.contentID)) }
+                catch { return false }
+            }
+            deleteReadableLegacy(providerID: providerID, isCurrent: isCurrent)
+            return true
+        }
+        guard let state = readState(providerID: providerID), state.sourceFingerprint == fingerprint,
+              state.contentID == nil, let successDate = state.lastSuccessfulFetchDate else { return false }
+        // Decode candidates sequentially so a feed with large records does not multiply peak memory.
+        var selected: EPGIndex?
+        for url in legacyURLs(providerID: providerID) {
+            guard let candidate = loadV1(at: url, deleteInvalid: false), candidate.fetchedAt == successDate else { continue }
+            if selected == nil || candidate.fetchedAt > selected!.fetchedAt { selected = candidate }
+        }
+        guard let index = selected, isCurrent() else { return false }
+        // A raw v1 guide has no source identity. Only Stage C's independently persisted success
+        // state, with an exact fetch-time association, can authorize binding it to this source.
+        do {
+            let contentID = UUID()
+            let bytes = try EPGCacheFormat.encode(index, providerID: providerID, sourceFingerprint: fingerprint,
+                                                  contentID: contentID, limits: formatLimits)
+            try prepareDirectory()
+            let stage = directory.appendingPathComponent("\(providerID.uuidString).\(UUID().uuidString).stage")
+            defer { try? FileManager.default.removeItem(at: stage) }
+            guard isCurrent() else { return false }
+            try stageWriter(bytes, stage)
+            let reopened = try Data(contentsOf: stage, options: .mappedIfSafe)
+            let checked = try EPGCacheFormat.decode(reopened, providerID: providerID, limits: formatLimits)
+            guard checked.header.sourceFingerprint == fingerprint,
+                  checked.header.providerID == providerID,
+                  checked.header.contentID == contentID,
+                  Self.sameGuideContent(checked.index, index), isCurrent() else { return false }
+            try promoter(stage, v2)
+            guard isCurrent() else { return true } // promoted v2 is safe; leave v1 if generation changed
+            try saveState(state.linked(to: contentID))
+            deleteReadableLegacy(providerID: providerID, isCurrent: isCurrent)
+            return true
+        } catch { return false }
+    }
+
+    /// Deletes the provider's v1 files that the v1 reader decodes. Callers have either just
+    /// verified or promoted a source-bound v2 guide, or evicted the provider's entry, so a readable
+    /// v1 guide could only ever resurface as stale data. The v1 reader applies structural checks
+    /// only, so a readable v1 guide outside current v2 policy is deleted too. Unknown framing, a file
+    /// larger than this build's limits, and an unreadable file are kept.
+    private func deleteReadableLegacy(providerID: UUID, isCurrent: @Sendable () -> Bool) {
+        for url in legacyURLs(providerID: providerID) where isCurrent() {
+            guard loadV1(at: url, deleteInvalid: false) != nil, isCurrent() else { continue }
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// Exact comparison. Fetch times are canonical by construction (`EPGTimestamp`), so a guide read
+    /// back equals the one written; any difference in fetch time or programmes rejects the stage.
+    private static func sameGuideContent(_ lhs: EPGIndex, _ rhs: EPGIndex) -> Bool {
+        lhs.fetchedAt == rhs.fetchedAt && lhs.programsByChannel == rhs.programsByChannel &&
+            lhs.channelIDsByName == rhs.channelIDsByName && lhs.coverageEnd == rhs.coverageEnd &&
+            lhs.programCount == rhs.programCount
+    }
+
+    private func legacyURLs(providerID: UUID) -> [URL] {
+        var urls = [directory.appendingPathComponent("\(providerID.uuidString).v1.epgcache"),
+                    directory.appendingPathComponent("\(providerID.uuidString).epgcache")]
+        if let legacyReadDirectory, legacyReadDirectory != directory {
+            urls.append(legacyReadDirectory.appendingPathComponent("\(providerID.uuidString).epgcache"))
+            urls.append(legacyReadDirectory.appendingPathComponent("\(providerID.uuidString).v1.epgcache"))
+        }
+        return urls
+    }
+
+    private func loadV2(providerID: UUID) -> EPGIndex? {
+        let url = v2URL(providerID)
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+              let decoded = try? EPGCacheFormat.decode(data, providerID: providerID, limits: formatLimits) else { return nil }
+        return decoded.index
+    }
+
+    private func loadV1(at url: URL, deleteInvalid: Bool) -> EPGIndex? {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        do { return try EPGCacheFormat.decodeVersion1(data, limits: formatLimits) }
+        catch EPGCacheFormatError.tooLarge { return nil }
+        catch is EPGCacheFormatError {
+            if deleteInvalid { try? FileManager.default.removeItem(at: url) }
+            return nil
+        } catch { return nil }
+    }
+
+    private func sweepStages(in directory: URL) {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        for file in files where file.pathExtension == "stage" {
+            let parts = file.deletingPathExtension().lastPathComponent.split(separator: ".")
+            guard parts.count == 2, UUID(uuidString: String(parts[0])) != nil,
+                  UUID(uuidString: String(parts[1])) != nil else { continue }
+            // A young stage may still belong to an interrupted-but-retrying write, or be in use
+            // by another process sharing the container. Sweep only files older than a full day.
+            guard let date = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  date < Date().addingTimeInterval(-Self.abandonedStageAge) else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+    private func sweepV2(in directory: URL, keeping providerIDs: Set<UUID>) {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
+        for file in files where file.lastPathComponent.hasSuffix(Self.v2Suffix) {
+            let stem = String(file.lastPathComponent.dropLast(Self.v2Suffix.count))
+            guard let id = UUID(uuidString: stem), !providerIDs.contains(id) else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+    private static let abandonedStageAge: TimeInterval = 24 * 60 * 60
+
+    /// Legacy v1 fixture writer, intentionally unavailable in release builds.
+#if DEBUG
+    func save(_ index: EPGIndex, providerID: UUID) throws {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+        try prepareDirectory()
+        let file = try EPGCacheFormat.encodeVersion1(index, limits: formatLimits)
+        try Self.writeProtectedAtomically(file, fileURL(providerID))
         evict(keeping: providerID)
+    }
+#endif
+
+    /// Writes a source-bound v2 guide atomically. Encoding happens before touching the previous
+    /// guide; policy-incompatible legacy indexes therefore leave both the prior guide and state.
+    @discardableResult
+    func saveV2(_ index: EPGIndex, providerID: UUID, fingerprint: Data) throws -> UUID {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+        try prepareDirectory()
+        let contentID = UUID()
+        let bytes = try EPGCacheFormat.encode(index, providerID: providerID, sourceFingerprint: fingerprint,
+                                              contentID: contentID, limits: formatLimits)
+        let stage = directory.appendingPathComponent("\(providerID.uuidString).\(UUID().uuidString).stage")
+        defer { try? FileManager.default.removeItem(at: stage) }
+        try stageWriter(bytes, stage)
+        let reopened = try Data(contentsOf: stage, options: .mappedIfSafe)
+        let checked = try EPGCacheFormat.decode(reopened, providerID: providerID, limits: formatLimits)
+        guard checked.header.sourceFingerprint == fingerprint, checked.header.contentID == contentID,
+              Self.sameGuideContent(checked.index, index) else { throw EPGCacheFormatError.mismatchedMetadata }
+        try promoter(stage, v2URL(providerID))
+        deleteReadableLegacy(providerID: providerID, isCurrent: { true })
+        evict(keeping: providerID)
+        return contentID
     }
 
     func remove(providerID: UUID) {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
         try? FileManager.default.removeItem(at: fileURL(providerID))
+        for url in legacyURLs(providerID: providerID) { try? FileManager.default.removeItem(at: url) }
+        try? FileManager.default.removeItem(at: v2URL(providerID))
+        for stage in stageURLs(providerID: providerID) { try? FileManager.default.removeItem(at: stage) }
+        removeState(providerID: providerID)
     }
 
     private func fileURL(_ providerID: UUID) -> URL {
+        fileURL(providerID, in: directory)
+    }
+
+    private func v2URL(_ providerID: UUID) -> URL { directory.appendingPathComponent("\(providerID.uuidString)\(Self.v2Suffix)") }
+    private func stageURLs(providerID: UUID) -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil))?.filter {
+            $0.lastPathComponent.lowercased().hasPrefix("\(providerID.uuidString.lowercased()).") && $0.pathExtension == "stage"
+        } ?? []
+    }
+
+    private func providerIDForFile(_ file: URL) -> UUID? {
+        let name = file.lastPathComponent
+        if name.hasSuffix(Self.v2Suffix) {
+            return UUID(uuidString: String(name.dropLast(Self.v2Suffix.count)))
+        }
+        let v1Suffix = ".v1.epgcache"
+        if name.hasSuffix(v1Suffix) { return UUID(uuidString: String(name.dropLast(v1Suffix.count))) }
+        return UUID(uuidString: file.deletingPathExtension().lastPathComponent)
+    }
+
+    private func fileURL(_ providerID: UUID, in directory: URL) -> URL {
         directory.appendingPathComponent(providerID.uuidString).appendingPathExtension(Self.fileExtension)
     }
 
-    /// Drops the oldest guides until the cache fits its size and count limits.
+    private func stateURL(_ providerID: UUID) -> URL {
+        directory.appendingPathComponent(providerID.uuidString).appendingPathExtension("state")
+    }
+
+    private func prepareDirectory() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+#if os(iOS) || os(macOS)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var target = directory
+        try target.setResourceValues(values)
+#endif
+    }
+
+    private static func writeProtectedAtomically(_ data: Data, _ url: URL) throws {
+        try data.write(to: url, options: protectedWriteOptions)
+    }
+
+    static var protectedWriteOptions: Data.WritingOptions {
+        [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+    }
+
+    /// Drops the least recently written v2 guides until the cache fits its size and count limits.
+    ///
+    /// The budget covers every recognized guide file: v2 guides in `directory` and v1 files in both
+    /// v1 locations, each file counted once even when both locations are the same directory. Legacy
+    /// v1 files are never removal candidates here: a v1 file is deleted only with its provider's
+    /// evicted v2 guide, and only when it is readable. The provider just written is always kept.
+    /// The inventory is re-read after every removal, so a deleted pair is never still counted and no
+    /// guide is removed once the cache fits. If kept and legacy files alone exceed a limit, eviction
+    /// stops when no candidate remains; the cache stays over until a verified v2 write, provider
+    /// removal, or the orphan sweep removes them.
+    ///
+    /// Eviction deletes only on a complete inventory. If a directory that exists cannot be listed,
+    /// or a counted file's size or date cannot be read, nothing more is removed: an incomplete count
+    /// could otherwise remove a valid guide. A legacy directory that does not exist counts as empty.
+    ///
+    /// Stage files are not guides and never count. Recognized stages older than the abandoned-stage
+    /// age are removed first, exactly as the orphan sweep does; younger stages are left alone.
     private func evict(keeping providerID: UUID) {
-        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
-        guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: keys) else {
-            return
+        sweepStages(in: directory)
+        var attempted = Set<String>()
+        while let inventory = evictionInventory(keeping: providerID),
+              inventory.entries > maximumEntries || inventory.bytes > maximumTotalBytes,
+              let victim = inventory.candidates.first(where: { !attempted.contains($0.path) }) {
+            attempted.insert(victim.path)
+            try? FileManager.default.removeItem(at: victim)
+            // The verified v2 guide is gone, so a readable v1 copy for the same provider must not
+            // resurface as stale data. Unreadable or unsupported v1 files are left in place. If the
+            // v2 guide could not be removed, it still supersedes v1 and nothing else is touched.
+            guard !FileManager.default.fileExists(atPath: victim.path),
+                  let id = providerIDForFile(victim) else { continue }
+            deleteReadableLegacy(providerID: id, isCurrent: { true })
         }
-        let kept = fileURL(providerID).lastPathComponent
-        let entries = urls.filter { $0.pathExtension == Self.fileExtension }.map { url in
-            let values = try? url.resourceValues(forKeys: Set(keys))
-            return (url: url, size: values?.fileSize ?? 0, date: values?.contentModificationDate ?? .distantPast)
-        }.sorted { lhs, rhs in
-            if lhs.url.lastPathComponent == kept { return true }
-            if rhs.url.lastPathComponent == kept { return false }
-            return lhs.date > rhs.date
-        }
-        var total = 0
-        for (position, entry) in entries.enumerated() {
-            total += entry.size
-            if position > 0, position >= maximumEntries || total > maximumTotalBytes {
-                try? FileManager.default.removeItem(at: entry.url)
+    }
+
+    /// Recognized guide files counted against the budget, and the v2 guides that may be evicted,
+    /// oldest first. Nil when the inventory cannot be trusted: the primary directory cannot be
+    /// listed, an existing legacy directory cannot be listed, or a counted file lacks a size or,
+    /// for a candidate, a modification date.
+    private func evictionInventory(keeping providerID: UUID) -> (entries: Int, bytes: Int, candidates: [URL])? {
+        guard let primary = try? directoryLister(directory) else { return nil }
+        var files = primary.filter { providerIDForFile($0) != nil && $0.pathExtension == Self.v1Extension }
+        if let legacy = distinctLegacyReadDirectory {
+            do {
+                // Only v1 names are guides in the legacy location; v2 is never read from there.
+                files += try directoryLister(legacy).filter {
+                    providerIDForFile($0) != nil && $0.pathExtension == Self.v1Extension && !$0.lastPathComponent.hasSuffix(Self.v2Suffix)
+                }
+            } catch let error where Self.isMissingItem(error) {
+                // No legacy cache was ever written here; there is nothing to count.
+            } catch {
+                return nil
             }
         }
+        var seen = Set<String>()
+        var entries = 0, bytes = 0
+        var candidates: [(url: URL, date: Date)] = []
+        for file in files where seen.insert(file.resolvingSymlinksInPath().path).inserted {
+            guard let metadata = try? fileMetadataReader(file), let size = metadata.size, size >= 0 else { return nil }
+            let (sum, overflow) = bytes.addingReportingOverflow(size)
+            bytes = overflow ? Int.max : sum
+            entries += 1
+            if file.lastPathComponent.hasSuffix(Self.v2Suffix), providerIDForFile(file) != providerID {
+                guard let modified = metadata.modified else { return nil }
+                candidates.append((file, modified))
+            }
+        }
+        candidates.sort { lhs, rhs in
+            lhs.date != rhs.date ? lhs.date < rhs.date : lhs.url.lastPathComponent < rhs.url.lastPathComponent
+        }
+        return (entries, bytes, candidates.map(\.url))
+    }
+
+    /// True only for "no such file or directory", never for permission or I/O failures.
+    private static func isMissingItem(_ error: Error) -> Bool {
+        let error = error as NSError
+        switch (error.domain, error.code) {
+        case (NSCocoaErrorDomain, NSFileReadNoSuchFileError), (NSCocoaErrorDomain, NSFileNoSuchFileError),
+             (NSPOSIXErrorDomain, Int(ENOENT)):
+            return true
+        default:
+            return (error.userInfo[NSUnderlyingErrorKey] as? NSError).map(isMissingItem) ?? false
+        }
+    }
+
+    /// The legacy v1 location when it is a different directory from `directory`.
+    private var distinctLegacyReadDirectory: URL? {
+        guard let legacyReadDirectory,
+              legacyReadDirectory.resolvingSymlinksInPath().standardizedFileURL.path
+                != directory.resolvingSymlinksInPath().standardizedFileURL.path else { return nil }
+        return legacyReadDirectory
     }
 }
 
-/// Compact on-disk form: channel IDs are stored once, times as whole seconds.
-private struct Record: Codable {
-    struct Row: Codable {
-        let c: Int
-        let s: Int64
-        let d: Int32
-        let t: String
-        let st: String?
-        let ds: String?
-        let g: String?
-        let e: String?
-    }
+enum EPGStoragePlatform: Equatable, Sendable {
+    case iOS
+    case macOS
+    case tvOS
+}
 
-    let fetchedAt: Double
-    let channelIDs: [String]
-    let names: [String: String]
-    let rows: [Row]
-
-    init(_ index: EPGIndex) {
-        var channelIDs: [String] = []
-        var positions: [String: Int] = [:]
-        var rows: [Row] = []
-        rows.reserveCapacity(index.programCount)
-        for key in index.programsByChannel.keys.sorted() {
-            for program in index.programsByChannel[key] ?? [] {
-                let position: Int
-                if let existing = positions[program.channelID] { position = existing } else {
-                    position = channelIDs.count
-                    positions[program.channelID] = position
-                    channelIDs.append(program.channelID)
-                }
-                let start = Int64(program.start.timeIntervalSince1970.rounded())
-                let duration = Int32(clamping: Int64(program.end.timeIntervalSince1970.rounded()) - start)
-                rows.append(Row(c: position, s: start, d: duration, t: program.title, st: program.subtitle,
-                                ds: program.summary, g: program.category, e: program.episode))
-            }
-        }
-        fetchedAt = index.fetchedAt.timeIntervalSince1970
-        self.channelIDs = channelIDs
-        names = index.channelIDsByName
-        self.rows = rows
-    }
-
-    func index() -> EPGIndex? {
-        var grouped: [String: [EPGProgram]] = [:]
-        for row in rows {
-            guard channelIDs.indices.contains(row.c), row.d > 0,
-                  let key = EPGChannelKey.guideID(channelIDs[row.c]) else { return nil }
-            let start = Date(timeIntervalSince1970: TimeInterval(row.s))
-            grouped[key, default: []].append(EPGProgram(
-                channelID: channelIDs[row.c], start: start, end: start.addingTimeInterval(TimeInterval(row.d)),
-                title: row.t, subtitle: row.st, summary: row.ds, category: row.g, episode: row.e))
-        }
-        // Rows were written in airing order per channel; reject a file that is not.
-        for list in grouped.values where zip(list, list.dropFirst()).contains(where: { $0.end > $1.start }) {
-            return nil
-        }
-        return EPGIndex(fetchedAt: Date(timeIntervalSince1970: fetchedAt), programsByChannel: grouped,
-                        channelIDsByName: names, statistics: EPGIndex.Statistics())
-    }
+enum EPGCacheStateStoreError: Error, Equatable {
+    case invalidState
+    case tooLarge
 }

@@ -98,8 +98,12 @@ enum EPGPayloadDecoder {
     }
 
     /// Streams `input` through a decoder until the compressed stream ends, appending to `output`.
-    private static func decode(_ input: UnsafeBufferPointer<UInt8>, algorithm: compression_algorithm,
-                               into output: inout Data, maximumBytes: Int) throws {
+    ///
+    /// Each call offers the decoder at most the remaining allowance plus one byte, so output past
+    /// `maximumBytes` is detected by that one probe byte and never appended. The scratch buffer stays
+    /// `chunkSize` bytes.
+    static func decode(_ input: UnsafeBufferPointer<UInt8>, algorithm: compression_algorithm,
+                       into output: inout Data, maximumBytes: Int, checksCancellation: Bool = true) throws {
         guard let source = input.baseAddress, !input.isEmpty else { throw EPGError.corruptCompressedData }
         let stream = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
         defer { stream.deallocate() }
@@ -113,12 +117,14 @@ enum EPGPayloadDecoder {
         stream.pointee.src_size = input.count
         var chunks = 0
         while true {
+            let allowance = max(0, maximumBytes - output.count)
+            let capacity = allowance < chunkSize ? allowance + 1 : chunkSize
             stream.pointee.dst_ptr = buffer
-            stream.pointee.dst_size = chunkSize
+            stream.pointee.dst_size = capacity
             let status = compression_stream_process(stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
-            let produced = chunkSize - stream.pointee.dst_size
+            let produced = capacity - stream.pointee.dst_size
             if produced > 0 {
-                guard output.count + produced <= maximumBytes else { throw EPGError.responseTooLarge }
+                guard produced <= allowance else { throw EPGError.responseTooLarge }
                 output.append(buffer, count: produced)
             }
             switch status {
@@ -131,7 +137,7 @@ enum EPGPayloadDecoder {
                 throw EPGError.corruptCompressedData
             }
             chunks += 1
-            if chunks % 16 == 0 { try Task.checkCancellation() }
+            if checksCancellation, chunks % 16 == 0 { try Task.checkCancellation() }
         }
     }
 }
