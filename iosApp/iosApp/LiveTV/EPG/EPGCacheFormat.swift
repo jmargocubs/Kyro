@@ -75,34 +75,178 @@ enum EPGCacheFormat {
 
     // MARK: - Version 2
 
+    /// Builds a whole version 2 file in memory through the same bounded writer the store streams to
+    /// disk, so the two can never disagree.
     static func encode(_ index: EPGIndex, providerID: UUID, sourceFingerprint: Data, contentID: UUID = UUID(),
                        limits: Limits = Limits()) throws -> Data {
-        guard sourceFingerprint.count == fingerprintLength else { throw EPGCacheFormatError.malformedHeader }
-        let record = Record(index)
-        guard record.rows.count <= limits.maximumPrograms else { throw EPGCacheFormatError.tooLarge }
-        guard record.isStructurallyValid, record.meetsLimits(limits) else { throw EPGCacheFormatError.invalidRecord }
-        let (json, compressed) = try encodePayload(record, limits: limits)
-        guard headerLength + compressed.count <= limits.maximumFileBytes else { throw EPGCacheFormatError.tooLarge }
-        let coverage = record.coverage
-
-        var file = Data(capacity: headerLength + compressed.count)
-        file.append(magic)
-        file.append(contentsOf: [version2, 0, 0, 0])
-        file.appendBigEndian(UInt32(headerLength))
-        file.append(providerID.data)
-        file.append(contentID.data)
-        file.append(sourceFingerprint)
-        file.appendBigEndian(record.fetchedAt.bitPattern)
-        file.appendBigEndian(UInt64(bitPattern: coverage?.start ?? 0))
-        file.appendBigEndian(UInt64(bitPattern: coverage?.end ?? 0))
-        file.appendBigEndian(UInt32(record.rows.count))
-        file.appendBigEndian(UInt32(record.channelIDs.count))
-        file.appendBigEndian(UInt64(compressed.count))
-        file.appendBigEndian(UInt64(json.count))
-        file.append(contentsOf: SHA256.hash(data: compressed))
-        assert(file.count == headerLength)
-        file.append(compressed)
+        let writer = try Writer(index, providerID: providerID, sourceFingerprint: sourceFingerprint,
+                                contentID: contentID, limits: limits)
+        var file = Data()
+        _ = try writer.write(append: { file.append($0) },
+                             writeHeader: { file.replaceSubrange(0..<headerLength, with: $0) })
         return file
+    }
+
+    /// A guide accepted for a version 2 write. Creating one applies every record check `decode`
+    /// applies, before any byte is produced, so a write that starts can fail only on a size limit,
+    /// an output error or cancellation, and never produces a file the reader rejects.
+    ///
+    /// `write` streams the payload instead of building it: rows are encoded `batchRows` at a time by
+    /// a `JSONEncoder` with sorted keys, so every batch spells a row the same way, and the JSON is fed
+    /// to one LZFSE stream whose state persists across batches and is finalized once. Channel IDs and
+    /// names are batched the same way. Memory beyond the guide itself is one batch, its JSON and the
+    /// compressor's fixed buffers; the decoded and file size limits are enforced as bytes are produced.
+    struct Writer {
+        static let batchRows = 512
+
+        let providerID: UUID
+        let sourceFingerprint: Data
+        let contentID: UUID
+        let limits: Limits
+        private let index: EPGIndex
+        private let channels: ChannelTable
+        private let coverage: (start: Int64, end: Int64)?
+
+        init(_ index: EPGIndex, providerID: UUID, sourceFingerprint: Data, contentID: UUID = UUID(),
+             limits: Limits = Limits()) throws {
+            guard sourceFingerprint.count == fingerprintLength else { throw EPGCacheFormatError.malformedHeader }
+            let channels = ChannelTable(index)
+            guard channels.programCount <= limits.maximumPrograms,
+                  UInt32(exactly: channels.programCount) != nil else { throw EPGCacheFormatError.tooLarge }
+            guard isValidFetchTime(index.fetchedAt.timeIntervalSince1970),
+                  Record.metadataMeetsLimits(channelIDs: channels.ids, names: index.channelIDsByName,
+                                             rowCount: channels.programCount, limits: limits) else {
+                throw EPGCacheFormatError.invalidRecord
+            }
+            var coverage: (start: Int64, end: Int64)?
+            try channels.forEachProgram(in: index) { program, position in
+                let row = Record.row(program, channel: position)
+                guard Record.isStructurallyValid(row, channelCount: channels.ids.count),
+                      Record.fits(row, limits), let end = Record.end(row) else {
+                    throw EPGCacheFormatError.invalidRecord
+                }
+                coverage = (min(coverage?.start ?? row.s, row.s), max(coverage?.end ?? end, end))
+            }
+            self.index = index
+            self.channels = channels
+            self.coverage = coverage
+            self.providerID = providerID
+            self.sourceFingerprint = sourceFingerprint
+            self.contentID = contentID
+            self.limits = limits
+        }
+
+        /// Writes the file in order through `append`: a zeroed header, then the payload. Once the
+        /// payload is complete, `writeHeader` must overwrite the first `headerLength` bytes with the
+        /// real header. Returns that header. `isCurrent` is checked between batches; when it turns
+        /// false the write throws `CancellationError` and the caller discards the partial output.
+        func write(batchRows: Int = Self.batchRows, isCurrent: () -> Bool = { true },
+                   append: (Data) throws -> Void, writeHeader: (Data) throws -> Void) throws -> Header {
+            let batchRows = max(1, batchRows)
+            func checkCurrent() throws { guard isCurrent() else { throw CancellationError() } }
+            try checkCurrent()
+            try append(Data(count: headerLength))
+
+            let compressor = try LZFSEStreamEncoder()
+            var compressedLength = 0
+            var decodedLength = 0
+            var digest = SHA256()
+            func emit(_ bytes: Data) throws {
+                compressedLength += bytes.count
+                guard headerLength + compressedLength <= limits.maximumFileBytes else {
+                    throw EPGCacheFormatError.tooLarge
+                }
+                digest.update(data: bytes)
+                try append(bytes)
+            }
+            func payload(_ text: String) throws { try payload(Data(text.utf8)) }
+            func payload(_ json: Data) throws {
+                decodedLength += json.count
+                guard decodedLength <= limits.maximumDecodedBytes else { throw EPGCacheFormatError.tooLarge }
+                try compressor.append(json, output: emit)
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            /// Appends the members of an encoded array or object without its brackets, preceded by a
+            /// comma unless it is the first non-empty batch of its container.
+            func members<Value: Encodable>(_ value: Value, continuing: inout Bool) throws {
+                let json = try encoder.encode(value)
+                guard json.count > 2 else { return }
+                if continuing { try payload(",") }
+                try payload(json.dropFirst().dropLast())
+                continuing = true
+            }
+
+            // Keys in sorted order, matching the rows' own sorted keys.
+            try payload(#"{"channelIDs":["#)
+            var continuing = false
+            for start in stride(from: 0, to: channels.ids.count, by: batchRows) {
+                try members(Array(channels.ids[start..<min(start + batchRows, channels.ids.count)]),
+                            continuing: &continuing)
+            }
+            try payload(#"],"fetchedAt":"#)
+            continuing = false
+            try members([index.fetchedAt.timeIntervalSince1970], continuing: &continuing)
+            try payload(#","names":{"#)
+            let nameKeys = index.channelIDsByName.keys.sorted()
+            continuing = false
+            for start in stride(from: 0, to: nameKeys.count, by: batchRows) {
+                try checkCurrent()
+                var batch: [String: String] = [:]
+                for key in nameKeys[start..<min(start + batchRows, nameKeys.count)] {
+                    batch[key] = index.channelIDsByName[key]
+                }
+                try members(batch, continuing: &continuing)
+            }
+            try payload(#"},"rows":["#)
+            continuing = false
+            var rows: [Record.Row] = []
+            rows.reserveCapacity(batchRows)
+            try channels.forEachProgram(in: index) { program, position in
+                rows.append(Record.row(program, channel: position))
+                guard rows.count == batchRows else { return }
+                try checkCurrent()
+                try members(rows, continuing: &continuing)
+                rows.removeAll(keepingCapacity: true)
+            }
+            try members(rows, continuing: &continuing)
+            try payload("]}")
+            try checkCurrent()
+            try compressor.finish(output: emit)
+
+            let header = Header(
+                providerID: providerID, contentID: contentID, sourceFingerprint: sourceFingerprint,
+                fetchedAt: Date(timeIntervalSince1970: index.fetchedAt.timeIntervalSince1970),
+                coverage: coverage.map {
+                    DateInterval(start: Date(timeIntervalSince1970: TimeInterval($0.start)),
+                                 end: Date(timeIntervalSince1970: TimeInterval($0.end)))
+                },
+                programCount: channels.programCount, channelCount: channels.ids.count,
+                compressedLength: compressedLength, decompressedLength: decodedLength,
+                payloadDigest: Data(digest.finalize()))
+            try writeHeader(headerBytes(header))
+            return header
+        }
+
+        private func headerBytes(_ header: Header) -> Data {
+            var file = Data(capacity: headerLength)
+            file.append(magic)
+            file.append(contentsOf: [version2, 0, 0, 0])
+            file.appendBigEndian(UInt32(headerLength))
+            file.append(header.providerID.data)
+            file.append(header.contentID.data)
+            file.append(header.sourceFingerprint)
+            file.appendBigEndian(index.fetchedAt.timeIntervalSince1970.bitPattern)
+            file.appendBigEndian(UInt64(bitPattern: coverage?.start ?? 0))
+            file.appendBigEndian(UInt64(bitPattern: coverage?.end ?? 0))
+            file.appendBigEndian(UInt32(header.programCount))
+            file.appendBigEndian(UInt32(header.channelCount))
+            file.appendBigEndian(UInt64(header.compressedLength))
+            file.appendBigEndian(UInt64(header.decompressedLength))
+            file.append(header.payloadDigest)
+            assert(file.count == headerLength)
+            return file
+        }
     }
 
     /// Reads and validates the header alone. `prefix` holds at least the file's first
@@ -225,7 +369,7 @@ enum EPGCacheFormat {
 
     // MARK: - Payload
 
-    /// Callers validate the record first, so the reader never rejects a file this writes.
+    /// Version 1's one-shot payload. Callers validate the record first.
     private static func encodePayload(_ record: Record, limits: Limits) throws -> (json: Data, compressed: Data) {
         let json = try JSONEncoder().encode(record)
         guard json.count <= limits.maximumDecodedBytes else { throw EPGCacheFormatError.tooLarge }
@@ -345,28 +489,22 @@ enum EPGCacheFormat {
         let rows: [Row]
 
         init(_ index: EPGIndex) {
-            var channelIDs: [String] = []
-            var positions: [String: Int] = [:]
+            let channels = ChannelTable(index)
             var rows: [Row] = []
-            rows.reserveCapacity(index.programCount)
-            for key in index.programsByChannel.keys.sorted() {
-                for program in index.programsByChannel[key] ?? [] {
-                    let position: Int
-                    if let existing = positions[program.channelID] { position = existing } else {
-                        position = channelIDs.count
-                        positions[program.channelID] = position
-                        channelIDs.append(program.channelID)
-                    }
-                    let start = Self.seconds(program.start)
-                    let duration = Int32(clamping: Self.seconds(program.end) - start)
-                    rows.append(Row(c: position, s: start, d: duration, t: program.title, st: program.subtitle,
-                                    ds: program.summary, g: program.category, e: program.episode))
-                }
+            rows.reserveCapacity(channels.programCount)
+            channels.forEachProgram(in: index) { program, position in
+                rows.append(Self.row(program, channel: position))
             }
             fetchedAt = index.fetchedAt.timeIntervalSince1970
-            self.channelIDs = channelIDs
+            channelIDs = channels.ids
             names = index.channelIDsByName
             self.rows = rows
+        }
+
+        static func row(_ program: EPGProgram, channel: Int) -> Row {
+            let start = seconds(program.start)
+            return Row(c: channel, s: start, d: Int32(clamping: seconds(program.end) - start), t: program.title,
+                       st: program.subtitle, ds: program.summary, g: program.category, e: program.episode)
         }
 
         /// Whole seconds since 1970, clamped just outside the valid range so validation rejects it
@@ -378,7 +516,7 @@ enum EPGCacheFormat {
         }
 
         /// End of a row in whole seconds, or nil if the addition overflows.
-        private static func end(_ row: Row) -> Int64? {
+        static func end(_ row: Row) -> Int64? {
             let (end, overflow) = row.s.addingReportingOverflow(Int64(row.d))
             return overflow ? nil : end
         }
@@ -396,25 +534,34 @@ enum EPGCacheFormat {
         /// Checks every version needs before an index is built: times and indexes in range.
         var isStructurallyValid: Bool {
             guard isValidFetchTime(fetchedAt) else { return false }
-            return rows.allSatisfy { row in
-                guard channelIDs.indices.contains(row.c), row.d > 0, isValidSeconds(row.s),
-                      let end = Self.end(row) else { return false }
-                return isValidSeconds(end)
-            }
+            return rows.allSatisfy { Self.isStructurallyValid($0, channelCount: channelIDs.count) }
+        }
+
+        static func isStructurallyValid(_ row: Row, channelCount: Int) -> Bool {
+            guard (0..<channelCount).contains(row.c), row.d > 0, isValidSeconds(row.s),
+                  let end = end(row) else { return false }
+            return isValidSeconds(end)
         }
 
         /// Version 2 policy: bounds every count and string, which the Milestone 1 writer did not.
         func meetsLimits(_ limits: Limits) -> Bool {
-            guard rows.count <= limits.maximumPrograms,
-                  channelIDs.count <= rows.count, names.count <= limits.maximumNames,
-                  Set(channelIDs).count == channelIDs.count,
-                  channelIDs.allSatisfy({ $0.utf8.count <= limits.maximumIdentifierBytes }),
-                  names.allSatisfy({ $0.key.utf8.count <= limits.maximumIdentifierBytes
-                                     && $0.value.utf8.count <= limits.maximumIdentifierBytes }) else {
-                return false
-            }
+            Self.metadataMeetsLimits(channelIDs: channelIDs, names: names, rowCount: rows.count, limits: limits)
+                && rows.allSatisfy { Self.fits($0, limits) }
+        }
+
+        static func metadataMeetsLimits(channelIDs: [String], names: [String: String], rowCount: Int,
+                                        limits: Limits) -> Bool {
+            rowCount <= limits.maximumPrograms
+                && channelIDs.count <= rowCount && names.count <= limits.maximumNames
+                && Set(channelIDs).count == channelIDs.count
+                && channelIDs.allSatisfy({ $0.utf8.count <= limits.maximumIdentifierBytes })
+                && names.allSatisfy({ $0.key.utf8.count <= limits.maximumIdentifierBytes
+                                      && $0.value.utf8.count <= limits.maximumIdentifierBytes })
+        }
+
+        static func fits(_ row: Row, _ limits: Limits) -> Bool {
             func fits(_ text: String?) -> Bool { (text?.count ?? 0) <= limits.maximumTextLength }
-            return rows.allSatisfy { fits($0.t) && fits($0.st) && fits($0.ds) && fits($0.g) && fits($0.e) }
+            return fits(row.t) && fits(row.st) && fits(row.ds) && fits(row.g) && fits(row.e)
         }
 
         func index() -> EPGIndex? {
@@ -437,6 +584,113 @@ enum EPGCacheFormat {
     }
 }
 
+extension EPGCacheFormat {
+    /// The record's channel list: guide keys in sorted order, each programme's channel ID numbered
+    /// by first appearance. Rows refer to channels by that number, and are written in this order.
+    fileprivate struct ChannelTable {
+        let keys: [String]
+        let ids: [String]
+        let positions: [String: Int]
+        let programCount: Int
+
+        init(_ index: EPGIndex) {
+            var ids: [String] = []
+            var positions: [String: Int] = [:]
+            var count = 0
+            let keys = index.programsByChannel.keys.sorted()
+            for key in keys {
+                for program in index.programsByChannel[key] ?? [] where positions[program.channelID] == nil {
+                    positions[program.channelID] = ids.count
+                    ids.append(program.channelID)
+                }
+                count += index.programsByChannel[key]?.count ?? 0
+            }
+            self.keys = keys
+            self.ids = ids
+            self.positions = positions
+            programCount = count
+        }
+
+        func forEachProgram(in index: EPGIndex, _ body: (EPGProgram, Int) throws -> Void) rethrows {
+            for key in keys {
+                for program in index.programsByChannel[key] ?? [] {
+                    // Every channel ID was numbered from this same index.
+                    try body(program, positions[program.channelID]!)
+                }
+            }
+        }
+    }
+}
+
+/// One LZFSE stream compressed incrementally. The stream state persists across `append` calls and
+/// is finalized once, so the output is a single stream of the concatenated input, never a series
+/// of restarted ones. Output is handed on through a fixed scratch buffer as it is produced.
+private final class LZFSEStreamEncoder {
+    private static let chunkSize = 64 * 1024
+    private let stream = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
+    private let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: chunkSize)
+    private var isOpen = false
+
+    init() throws {
+        guard compression_stream_init(stream, COMPRESSION_STREAM_ENCODE, COMPRESSION_LZFSE) == COMPRESSION_STATUS_OK else {
+            throw EPGCacheFormatError.compressionFailed
+        }
+        isOpen = true
+    }
+
+    deinit {
+        if isOpen { compression_stream_destroy(stream) }
+        stream.deallocate()
+        buffer.deallocate()
+    }
+
+    func append(_ input: Data, output: (Data) throws -> Void) throws {
+        guard isOpen else { throw EPGCacheFormatError.compressionFailed }
+        try input.withUnsafeBytes { raw in
+            guard let source = raw.bindMemory(to: UInt8.self).baseAddress, !raw.isEmpty else { return }
+            stream.pointee.src_ptr = source
+            stream.pointee.src_size = raw.count
+            while stream.pointee.src_size > 0 {
+                let remaining = stream.pointee.src_size
+                let produced = try process(flags: 0, output: output)
+                // Each call consumes input or produces output; neither means the encoder is stuck.
+                guard produced > 0 || stream.pointee.src_size < remaining else {
+                    throw EPGCacheFormatError.compressionFailed
+                }
+            }
+        }
+    }
+
+    func finish(output: (Data) throws -> Void) throws {
+        guard isOpen else { throw EPGCacheFormatError.compressionFailed }
+        stream.pointee.src_ptr = UnsafePointer(buffer)
+        stream.pointee.src_size = 0
+        while true {
+            let (produced, status) = try step(flags: Int32(COMPRESSION_STREAM_FINALIZE.rawValue), output: output)
+            if status == COMPRESSION_STATUS_END { break }
+            guard produced > 0 else { throw EPGCacheFormatError.compressionFailed }
+        }
+        compression_stream_destroy(stream)
+        isOpen = false
+    }
+
+    private func process(flags: Int32, output: (Data) throws -> Void) throws -> Int {
+        let (produced, status) = try step(flags: flags, output: output)
+        guard status == COMPRESSION_STATUS_OK else { throw EPGCacheFormatError.compressionFailed }
+        return produced
+    }
+
+    private func step(flags: Int32, output: (Data) throws -> Void) throws -> (Int, compression_status) {
+        stream.pointee.dst_ptr = buffer
+        stream.pointee.dst_size = Self.chunkSize
+        let status = compression_stream_process(stream, flags)
+        guard status != COMPRESSION_STATUS_ERROR else { throw EPGCacheFormatError.compressionFailed }
+        let produced = Self.chunkSize - stream.pointee.dst_size
+        if produced > 0 { try output(Data(bytes: buffer, count: produced)) }
+        return (produced, status)
+    }
+}
+
 enum EPGCacheFormatError: Error, Equatable, Sendable {
     case truncated
     case unrecognized
@@ -449,6 +703,8 @@ enum EPGCacheFormatError: Error, Equatable, Sendable {
     case corruptPayload
     case invalidRecord
     case mismatchedMetadata
+    /// The compressor failed while writing; nothing about the guide is wrong.
+    case compressionFailed
 }
 
 /// Sequential big-endian reads over a buffer whose length the caller has already checked.

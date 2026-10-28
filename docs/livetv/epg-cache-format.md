@@ -104,8 +104,16 @@ conversion and checked with the reference decoder. Apple's decoder decodes it to
 
 ## Store behaviour
 
-- A failed or oversized write leaves the previous file untouched. The write is atomic, and
-  encoding happens before anything touches disk.
+- A failed or oversized write leaves the previous file untouched. The write is atomic. Every record
+  check runs before a stage file exists; the payload is then streamed into the stage, reopened,
+  fully decoded and compared with the guide and header written, and only an exact match is
+  promoted.
+- The v2 writer streams the payload. A `JSONEncoder` with sorted keys encodes 512 rows (or channel
+  IDs, or name entries) at a time, and the JSON feeds one LZFSE stream whose state persists across
+  batches and is finalized once. The output equals a one-shot compression of the same JSON, and
+  the batch size changes no byte. Key order is not part of the format; sorted keys only keep
+  every batch spelled the same way, which keeps the payload small and deterministic. The decoded
+  and file size limits are enforced as bytes are produced.
 - Verified reads never delete a file they reject. A corrupt, foreign-version or oversized file,
   or one that can't be read for now (for example, while data protection keeps it locked), reads as
   missing and is kept until the legacy cleanup policy below allows its removal or the next
@@ -122,8 +130,9 @@ holds the mapped file, the decoded record, and the index built from it. One host
 | 123,000 programmes, 500 channels | 25.5 MiB | 151–198 MiB |
 | 200,000 programmes, 814 channels | 62.5 MiB | 370 MiB |
 
-The range for the same guide depends on the JSON key order. `JSONEncoder` doesn't fix key order,
-and `JSONDecoder`'s peak memory varies with it. The version 2 path itself adds about 2 MiB over
+The range for the same guide depends on the JSON key order. The Milestone 2A.1 one-shot writer
+did not fix key order, and `JSONDecoder`'s peak memory and the compressed size vary with it; the
+streamed writer sorts keys, so its output for a given guide is deterministic. The version 2 path itself adds about 2 MiB over
 version 1 for the same payload. Device measurements on iPhone and Apple TV are still outstanding.
 
 Known release and performance risks, deliberately not changed in Stage D:
@@ -203,6 +212,22 @@ rejects bytes after the stream ends. It applies only the structural record check
 - Ordinary successful refreshes write v2 atomically, then write its associated state. If strict v2
   encoding rejects a feed, the prior guide and state remain untouched; the live session may still
   use the newly fetched index, but it will not be cached. Migration preserves v1 in that case.
+- Guide and state persistence are **not a transaction**. If guide B is promoted over guide A and
+  B's state write fails, B remains the valid guide. A's state bytes may remain, but their content
+  ID does not match B and they cannot restore retry metadata for B. A fresh B can still restore
+  offline without that state. There is no rollback of B or recovery of A's linked state. Diagnostics
+  report the failed operation without claiming that the old guide/state pair survived.
+- Promotion has two boundaries: the final generation check admits the verified write; the atomic
+  filesystem replacement/move commits it. Invalidation after admission may not prevent that commit.
+  Source fingerprints and actor source checks keep the old-source result invisible to the new source.
+  Completed provider removal waits for queued persistence (including state writing), then deletes
+  its files; an admitted old write cannot resurrect a cache after removal completes.
+- Cancellation of a refresh caller withdraws that waiter; if no waiters remain, shared fetch work
+  is cancelled before publication. Once a successful result is published, independently queued
+  persistence is not owned by the caller. The synchronous store intentionally does not interpret
+  Swift task cancellation as an abort: its explicit source-generation gate is checked between
+  batches and before promotion admission. It does not interrupt a filesystem replacement already
+  admitted. These semantics avoid treating cancellation as corruption; they do not promise rollback.
 - V2 write, reopen, promotion, or state-write failures produce a rate-limited diagnostic containing
   only a fixed operation label. It never includes a source, URL, username, password, or arbitrary
   error description.

@@ -25,8 +25,14 @@ struct EPGCacheStore: Sendable {
     /// Deterministic read gate for cache lifecycle tests. Not compiled into release builds.
     var verifiedReadInterceptor: (@Sendable (UUID, Data, @Sendable () -> Bool) -> EPGIndex?)?
 #endif
+    /// Writes a whole migration stage.
     var stageWriter: @Sendable (Data, URL) throws -> Void = { data, url in
         try Self.writeProtectedAtomically(data, url)
+    }
+    /// Appends one chunk of a streamed v2 stage, or rewrites its header after a seek to the start.
+    /// Injectable so tests can fail, hold or corrupt a write part-way through.
+    var stageChunkWriter: @Sendable (Data, FileHandle) throws -> Void = { data, handle in
+        try handle.write(contentsOf: data)
     }
     var promoter: @Sendable (URL, URL) throws -> Void = { source, destination in
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -389,27 +395,59 @@ struct EPGCacheStore: Sendable {
     }
 #endif
 
-    /// Writes a source-bound v2 guide atomically. Encoding happens before touching the previous
-    /// guide; policy-incompatible legacy indexes therefore leave both the prior guide and state.
+    /// Writes a source-bound v2 guide atomically. The guide is checked against v2 policy before a
+    /// stage exists, streamed into the stage in bounded batches, then reopened, fully decoded and
+    /// compared with the guide and header written; only an exact match is promoted. Any failure, or
+    /// `isCurrent` turning false at a checkpoint before promotion admission, removes the stage and
+    /// leaves the previous guide and state untouched. Invalidation after admission may not stop the
+    /// atomic replacement; source binding and ordered removal protect readers (see below).
     @discardableResult
-    func saveV2(_ index: EPGIndex, providerID: UUID, fingerprint: Data) throws -> UUID {
+    func saveV2(_ index: EPGIndex, providerID: UUID, fingerprint: Data,
+                isCurrent: @Sendable () -> Bool = { true }) throws -> UUID {
         Self.diskTransactionLock.lock()
         defer { Self.diskTransactionLock.unlock() }
+        guard isCurrent() else { throw CancellationError() }
         try prepareDirectory()
         let contentID = UUID()
-        let bytes = try EPGCacheFormat.encode(index, providerID: providerID, sourceFingerprint: fingerprint,
-                                              contentID: contentID, limits: formatLimits)
+        let writer = try EPGCacheFormat.Writer(index, providerID: providerID, sourceFingerprint: fingerprint,
+                                               contentID: contentID, limits: formatLimits)
         let stage = directory.appendingPathComponent("\(providerID.uuidString).\(UUID().uuidString).stage")
         defer { try? FileManager.default.removeItem(at: stage) }
-        try stageWriter(bytes, stage)
+        let written = try writeStage(writer, to: stage, isCurrent: isCurrent)
+        guard isCurrent() else { throw CancellationError() }
         let reopened = try Data(contentsOf: stage, options: .mappedIfSafe)
         let checked = try EPGCacheFormat.decode(reopened, providerID: providerID, limits: formatLimits)
-        guard checked.header.sourceFingerprint == fingerprint, checked.header.contentID == contentID,
+        guard checked.header == written, checked.header.sourceFingerprint == fingerprint,
+              checked.header.contentID == contentID,
               Self.sameGuideContent(checked.index, index) else { throw EPGCacheFormatError.mismatchedMetadata }
+        // Admission boundary: after this final check the verified replacement may complete even
+        // if the generation changes. The filesystem commit is the atomic replacement/move below.
+        // Source binding prevents a new source from using it; removal waits for this write then
+        // deletes it. Task cancellation alone deliberately does not abort synchronous persistence.
+        guard isCurrent() else { throw CancellationError() }
         try promoter(stage, v2URL(providerID))
         deleteReadableLegacy(providerID: providerID, isCurrent: { true })
         evict(keeping: providerID)
         return contentID
+    }
+
+    /// Streams `writer` into a new stage created with the guide's data protection. The stage is
+    /// flushed to storage and closed before it is reopened for verification.
+    private func writeStage(_ writer: EPGCacheFormat.Writer, to stage: URL,
+                            isCurrent: () -> Bool) throws -> EPGCacheFormat.Header {
+        try Data().write(to: stage, options: [.withoutOverwriting, .completeFileProtectionUntilFirstUserAuthentication])
+        let handle = try FileHandle(forWritingTo: stage)
+        var isClosed = false
+        defer { if !isClosed { try? handle.close() } }
+        let header = try writer.write(isCurrent: isCurrent, append: { try stageChunkWriter($0, handle) },
+                                      writeHeader: { header in
+                                          try handle.seek(toOffset: 0)
+                                          try stageChunkWriter(header, handle)
+                                      })
+        try handle.synchronize()
+        isClosed = true
+        try handle.close()
+        return header
     }
 
     func remove(providerID: UUID) {

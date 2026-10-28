@@ -149,9 +149,9 @@ final class EPGCacheStateTests: XCTestCase {
 
         let saveEnteredWriter = DispatchSemaphore(value: 0)
         var otherProviderSave = cache
-        otherProviderSave.stageWriter = { data, url in
+        otherProviderSave.stageChunkWriter = { data, handle in
             saveEnteredWriter.signal()
-            try data.write(to: url, options: EPGCacheStore.protectedWriteOptions)
+            try handle.write(contentsOf: data)
         }
         let save = Task.detached {
             try otherProviderSave.saveV2(.empty(fetchedAt: fetchedAt.addingTimeInterval(1)),
@@ -631,7 +631,7 @@ final class EPGCacheStateTests: XCTestCase {
         failedPromotion.maximumEntries = 1
         failedPromotion.promoter = { _, _ in throw CocoaError(.fileWriteNoPermission) }
         var failedStage = failedPromotion
-        failedStage.stageWriter = { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        failedStage.stageChunkWriter = { _, _ in throw CocoaError(.fileWriteNoPermission) }
 
         for store in [failedPromotion, failedStage] {
             XCTAssertThrowsError(try store.saveV2(.empty(fetchedAt: Date(timeIntervalSince1970: 1_800_000_000)),
@@ -985,18 +985,25 @@ final class EPGCacheStateTests: XCTestCase {
         let newer = EPGIndex.empty(fetchedAt: linkedFetchedAt.addingTimeInterval(60))
         let fp = fingerprint
         var disagreeing = store
-        disagreeing.stageWriter = { bytes, url in
+        disagreeing.stageChunkWriter = { bytes, handle in
             // Same provider, source and content ID as the stage, but a different guide inside: only
-            // the reopened content comparison can reject it.
-            let contentID = try EPGCacheFormat.header(of: bytes, fileSize: bytes.count).contentID
-            try EPGCacheFormat.encode(.empty(fetchedAt: newer.fetchedAt.addingTimeInterval(1)), providerID: provider,
-                                      sourceFingerprint: fp, contentID: contentID).write(to: url)
+            // the reopened header and content comparison can reject it.
+            guard bytes.count == EPGCacheFormat.headerLength, bytes.starts(with: Data("KEPG".utf8)) else {
+                return try handle.write(contentsOf: bytes)
+            }
+            let contentID = bytes[28..<44].withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
+            try handle.truncate(atOffset: 0)
+            try handle.write(contentsOf: EPGCacheFormat.encode(.empty(fetchedAt: newer.fetchedAt.addingTimeInterval(1)),
+                                                              providerID: provider, sourceFingerprint: fp,
+                                                              contentID: contentID))
         }
         var corrupting = store
-        corrupting.stageWriter = { bytes, url in
+        let chunks = LockedCounter()
+        corrupting.stageChunkWriter = { bytes, handle in
+            // The second chunk is the first compressed output, after the zeroed header.
             var damaged = bytes
-            damaged[damaged.count - 1] ^= 0xFF
-            try damaged.write(to: url)
+            if chunks.increment() == 2 { damaged[damaged.startIndex] ^= 0xFF }
+            try handle.write(contentsOf: damaged)
         }
 
         for (label, failing) in [("encoder/decoder disagreement", disagreeing), ("stage corruption", corrupting)] {
@@ -1291,7 +1298,7 @@ final class EPGCacheStateTests: XCTestCase {
         let fp = try fingerprinter.fingerprint(for: source).bytes
         let gate = StateWriteGate()
         var cache = EPGCacheStore(directory: directory)
-        cache.stageWriter = { data, url in try gate.write(data, to: url) }
+        cache.stageChunkWriter = { data, handle in try gate.append(data, to: handle) }
         let clock = FractionalClock(Self.fractionalDate(offset: 0))
         let loader = ScriptedEPGLoader()
         loader.enqueue(.success(Self.feed(around: clock.date, title: "Guide")))
@@ -1638,10 +1645,26 @@ private final class StateWriteGate: @unchecked Sendable {
     private let entered = DispatchSemaphore(value: 0)
     private let releaseSignal = DispatchSemaphore(value: 0)
 
+    private let lock = NSLock()
+    private var held = false
+
     func write(_ data: Data, to url: URL) throws {
         entered.signal()
         releaseSignal.wait()
         try data.write(to: url, options: EPGCacheStore.protectedWriteOptions)
+    }
+
+    /// Holds only the first chunk of a streamed stage, then lets the rest through.
+    func append(_ data: Data, to handle: FileHandle) throws {
+        let first = lock.withLock { () -> Bool in
+            defer { held = true }
+            return !held
+        }
+        if first {
+            entered.signal()
+            releaseSignal.wait()
+        }
+        try handle.write(contentsOf: data)
     }
 
     func waitUntilEntered(timeout: TimeInterval) -> Bool {

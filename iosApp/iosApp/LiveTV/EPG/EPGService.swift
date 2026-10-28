@@ -285,6 +285,14 @@ actor EPGService {
     private var shortRequestSequence: [UUID: Int] = [:]
     /// The newest short request applied for each channel. An older response for that channel is dropped.
     private var appliedShortSequence: [UUID: [String: Int]] = [:]
+#if DEBUG
+    /// Acknowledges invalidation before waiting for disk work; tests must not guess actor scheduling.
+    private var generationInvalidationObserver: (@Sendable () -> Void)?
+    func observeGenerationInvalidation(_ observer: @escaping @Sendable () -> Void) {
+        generationInvalidationObserver = observer
+    }
+#endif
+
     private var lastCacheWriteDiagnostic: Date?
     private static let cacheLogger = Logger(subsystem: "com.cubbiestream.kyro", category: "EPGCache")
 
@@ -487,6 +495,9 @@ actor EPGService {
         verifiedCacheHeaders[providerID] = nil
         generations[providerID, default: 0] += 1
         diskGenerationGate.set(providerID, generation: generations[providerID, default: 0])
+#if DEBUG
+        generationInvalidationObserver?()
+#endif
         if let write = pendingWrites.removeValue(forKey: providerID) { await write.task.value }
         await orphanSweepTask?.value
         if let cache { await Self.removeCache(cache, providerID: providerID) }
@@ -718,6 +729,9 @@ actor EPGService {
         return read
     }
 
+    // Persistence is independently queued after publication. Cancelling a refresh waiter does not
+    // cancel this task. Generation invalidation aborts before the promotion admission check; once
+    // admitted, promotion may finish. Guide promotion and state writing are not one transaction.
     private func persist(_ index: EPGIndex, fingerprint: Data, providerID: UUID, generation: Int) {
         guard let cache else { return }
         let previous = pendingWrites[providerID]?.task
@@ -731,8 +745,10 @@ actor EPGService {
                 self.finishWrite(providerID, writeID: writeID)
                 return
             }
+            let gate = self.diskGenerationGate
             if let contentID = await Self.writeV2Cache(cache, index: index, providerID: providerID,
-                                                       fingerprint: fingerprint) {
+                                                       fingerprint: fingerprint,
+                                                       isCurrent: { gate.isCurrent(providerID, generation: generation) }) {
                 let state = EPGCacheState(providerID: providerID, sourceFingerprint: fingerprint,
                                           contentID: contentID, lastSuccessfulFetchAt: index.fetchedAt)
                 if !(await Self.writeState(cache, state: state)) {
@@ -741,7 +757,8 @@ actor EPGService {
                     self.linkInMemoryState(providerID, fingerprint: fingerprint, fetchedAt: index.fetchedAt,
                                            contentID: contentID)
                 }
-            } else {
+            } else if self.canWrite(providerID: providerID, generation: generation) {
+                // A write abandoned for a removed provider or a changed source is not a failure.
                 self.recordCacheWriteFailure("v2 guide write")
             }
             self.finishWrite(providerID, writeID: writeID)
@@ -797,7 +814,7 @@ actor EPGService {
         let instant = now()
         guard lastCacheWriteDiagnostic.map({ instant.timeIntervalSince($0) >= 300 }) ?? true else { return }
         lastCacheWriteDiagnostic = instant
-        Self.cacheLogger.error("EPG cache \(operation, privacy: .public) failed; the prior cache was retained")
+        Self.cacheLogger.error("EPG cache \(operation, privacy: .public) failed; guide and state are persisted separately")
     }
 
     private func activateSource(_ source: EPGFeedSource, for providerID: UUID) {
@@ -807,6 +824,9 @@ actor EPGService {
         }
         generations[providerID, default: 0] += 1
         diskGenerationGate.set(providerID, generation: generations[providerID, default: 0])
+#if DEBUG
+        generationInvalidationObserver?()
+#endif
         if let flight = flights.removeValue(forKey: providerID) {
             flight.task?.cancel()
             for waiter in flight.waiters.values { waiter.resume(throwing: CancellationError()) }
@@ -859,8 +879,9 @@ actor EPGService {
     }
 
     private nonisolated static func writeV2Cache(_ cache: EPGCacheStore, index: EPGIndex, providerID: UUID,
-                                                 fingerprint: Data) async -> UUID? {
-        try? cache.saveV2(index, providerID: providerID, fingerprint: fingerprint)
+                                                 fingerprint: Data,
+                                                 isCurrent: @Sendable () -> Bool) async -> UUID? {
+        try? cache.saveV2(index, providerID: providerID, fingerprint: fingerprint, isCurrent: isCurrent)
     }
 
     private nonisolated static func writeState(_ cache: EPGCacheStore, state: EPGCacheState) async -> Bool {
