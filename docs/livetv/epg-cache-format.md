@@ -132,8 +132,10 @@ Known release and performance risks, deliberately not changed in Stage D:
   which can take seconds for a large guide. A cached read for one provider waits behind another
   provider's write, and each waiting call blocks a Swift concurrency pool thread. The lock does
   not coordinate separate processes, such as two Mac builds sharing one directory.
-- Reading persisted state decodes the whole v2 guide to confirm its content ID, so the first
-  refresh after launch decodes that guide twice. A header-only check would be enough.
+- Reading persisted state no longer decodes the v2 guide a second time when the cached read
+  just validated it: the state read re-checks the file's header and payload digest instead (see
+  Stage C storage and state). Without that earlier validation, for example when the file changed
+  in between, it still decodes the whole guide.
 - Legacy cleanup and migration decode v1 candidates one at a time, but a verified v2 guide stays
   in memory while its v1 counterparts are decoded for deletion.
 
@@ -162,6 +164,10 @@ rejects bytes after the stream ends. It applies only the structural record check
   A state with a content ID is accepted only when the fully validated, current-source v2 guide
   carries that exact content ID; missing or unreadable v2 data makes the state unavailable but does
   not delete the state or guide. Successful refresh/restart reads use this same association check.
+  When the cached read has already fully validated the v2 guide, the state read reuses that
+  result only if the file still has the identical header, including its random content ID and
+  payload digest, and its payload still hashes to that digest. That proves it is the same bytes,
+  so the guide is not decoded again. Any difference falls back to full validation.
   Missing, malformed, oversized, or temporarily unreadable state is a miss; it does not invalidate
   a guide. Atomic state-write failure leaves the previous state in place. Removal waits for queued
   writes and then deletes state and guides; orphan cleanup is limited to recognized guide/state

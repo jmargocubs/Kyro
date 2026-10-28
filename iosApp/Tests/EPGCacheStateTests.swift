@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import Silo
@@ -779,6 +780,233 @@ final class EPGCacheStateTests: XCTestCase {
         XCTAssertFalse(exists(primary, "\(older.uuidString).v2.epgcache"), "the next write with a full inventory evicts")
         XCTAssertFalse(exists(primary, "\(newer.uuidString).v2.epgcache"))
         XCTAssertTrue(exists(primary, "\(kept.uuidString).v2.epgcache"))
+    }
+
+    // MARK: - Verified-header state reads
+
+    private let linkedFetchedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// A one-programme guide with a 20-character title, its validated header, and a linked state.
+    private func linkedGuide(_ directory: URL) throws
+        -> (store: EPGCacheStore, provider: UUID, header: EPGCacheFormat.Header, state: EPGCacheState) {
+        let store = EPGCacheStore(directory: directory)
+        let provider = UUID()
+        let index = EPGIndex(fetchedAt: linkedFetchedAt, programsByChannel: ["news.one": [
+            EPGProgram(channelID: "news.one", start: linkedFetchedAt, end: linkedFetchedAt.addingTimeInterval(3_600),
+                       title: "A twenty char title."),
+        ]], channelIDsByName: [:], statistics: .init())
+        let contentID = try store.saveV2(index, providerID: provider, fingerprint: fingerprint)
+        let verified = try XCTUnwrap(store.loadVerifiedGuide(providerID: provider, fingerprint: fingerprint))
+        let header = try XCTUnwrap(verified.header, "a v2 read returns the header it validated")
+        XCTAssertEqual(header.contentID, contentID)
+        let state = EPGCacheState(providerID: provider, sourceFingerprint: fingerprint, contentID: contentID,
+                                  lastSuccessfulFetchAt: linkedFetchedAt, failureCount: 2,
+                                  nextRetryAt: linkedFetchedAt.addingTimeInterval(600))
+        try store.saveState(state)
+        return (store, provider, header, state)
+    }
+
+    /// A store whose policy rejects that guide on any full decode, while header checks still pass.
+    /// It accepting linked state therefore shows the guide was not decoded again.
+    private func probe(_ store: EPGCacheStore) -> EPGCacheStore {
+        var strict = store
+        strict.formatLimits.maximumTextLength = 5
+        return strict
+    }
+
+    private func v2File(_ directory: URL, _ provider: UUID) -> URL {
+        directory.appendingPathComponent("\(provider.uuidString).v2.epgcache")
+    }
+
+    func testVerifiedHeaderRestoresLinkedStateWithoutDecodingTheGuideAgain() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (store, provider, header, state) = try linkedGuide(directory)
+
+        XCTAssertEqual(store.loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint,
+                                                      verifiedHeader: header), state)
+        XCTAssertEqual(probe(store).loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint,
+                                                             verifiedHeader: header), state,
+                       "the file just validated is recognized from its header and digest alone")
+        XCTAssertNil(probe(store).loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint),
+                     "without a verified header the guide is fully decoded, and this probe rejects it")
+        XCTAssertEqual(store.loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint), state,
+                       "full validation still accepts the same state")
+    }
+
+    func testVerifiedHeaderNeverLinksStateToAnotherGuideOrSource() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (store, provider, header, state) = try linkedGuide(directory)
+
+        let otherSource = EPGCacheFormat.Header(
+            providerID: header.providerID, contentID: header.contentID,
+            sourceFingerprint: Data(repeating: 0xAB, count: EPGCacheFormat.fingerprintLength),
+            fetchedAt: header.fetchedAt, coverage: header.coverage, programCount: header.programCount,
+            channelCount: header.channelCount, compressedLength: header.compressedLength,
+            decompressedLength: header.decompressedLength, payloadDigest: header.payloadDigest)
+        XCTAssertNil(probe(store).loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint,
+                                                           verifiedHeader: otherSource),
+                     "a header bound to another source is ignored and the guide is fully validated")
+        XCTAssertEqual(store.loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint,
+                                                      verifiedHeader: otherSource), state)
+
+        try store.saveState(EPGCacheState(providerID: provider, sourceFingerprint: fingerprint, contentID: UUID(),
+                                          lastSuccessfulFetchAt: linkedFetchedAt))
+        XCTAssertNil(store.loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint,
+                                                    verifiedHeader: header),
+                     "state linked to another write is not made current by this guide's header")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: v2File(directory, provider).path))
+    }
+
+    func testGuideReplacedAfterVerificationFallsBackToFullValidation() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (store, provider, staleHeader, staleState) = try linkedGuide(directory)
+        let replacement = EPGIndex.empty(fetchedAt: linkedFetchedAt.addingTimeInterval(60))
+        let newContentID = try store.saveV2(replacement, providerID: provider, fingerprint: fingerprint)
+
+        XCTAssertNil(store.loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint,
+                                                    verifiedHeader: staleHeader),
+                     "state for the replaced guide is not current")
+        let current = EPGCacheState(providerID: provider, sourceFingerprint: fingerprint, contentID: newContentID,
+                                    lastSuccessfulFetchAt: replacement.fetchedAt)
+        try store.saveState(current)
+        XCTAssertEqual(store.loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint,
+                                                      verifiedHeader: staleHeader), current,
+                       "the replacement is fully validated and accepted on its own")
+        XCTAssertNotEqual(staleState.contentID, newContentID)
+    }
+
+    func testGuideChangedOnDiskAfterVerificationIsNotTrusted() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (store, provider, header, _) = try linkedGuide(directory)
+        let url = v2File(directory, provider)
+        let original = try Data(contentsOf: url)
+        var payloadFlip = original
+        payloadFlip[payloadFlip.count - 2] ^= 0x01
+        var headerEdit = original
+        headerEdit[95] ^= 0x01  // coverage end
+        let mutations: [(String, Data)] = [("payload byte", payloadFlip), ("header field", headerEdit),
+                                           ("truncation", original.dropLast()), ("empty file", Data())]
+
+        for (label, bytes) in mutations {
+            try bytes.write(to: url)
+            XCTAssertNil(store.loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint,
+                                                        verifiedHeader: header), label)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(label): a state read never deletes the guide")
+        }
+        try original.write(to: url)
+        XCTAssertNotNil(store.loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint,
+                                                       verifiedHeader: header), "the state itself was kept")
+    }
+
+    func testGuidesThatFailDecodingNeverYieldAVerifiedHeaderOrState() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (store, provider, _, _) = try linkedGuide(directory)
+        let url = v2File(directory, provider)
+        let original = try Data(contentsOf: url)
+        let start = Int(linkedFetchedAt.timeIntervalSince1970)
+        func record(_ rows: [[String: Any]]) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["fetchedAt": linkedFetchedAt.timeIntervalSince1970,
+                                                        "channelIDs": ["news.one"], "names": [String: String](),
+                                                        "rows": rows])
+        }
+        /// Replaces the payload and rewrites every header field it affects, so the digest and
+        /// lengths are valid and only the record itself can be rejected.
+        func digestValid(_ json: Data, programs: Int, coverage: (Int, Int)) throws -> Data {
+            let payload = try (json as NSData).compressed(using: .lzfse) as Data
+            var file = Data(original.prefix(EPGCacheFormat.headerLength))
+            func put<T: FixedWidthInteger>(_ value: T, at offset: Int) {
+                withUnsafeBytes(of: value.bigEndian) { file.replaceSubrange(offset..<offset + MemoryLayout<T>.size, with: $0) }
+            }
+            put(UInt64(coverage.0), at: 84)
+            put(UInt64(coverage.1), at: 92)
+            put(UInt32(programs), at: 100)
+            put(UInt64(payload.count), at: 108)
+            put(UInt64(json.count), at: 116)
+            file.replaceSubrange(124..<156, with: Data(SHA256.hash(data: payload)))
+            return file + payload
+        }
+
+        let control = try digestValid(record([["c": 0, "s": start, "d": 3_600, "t": "ok"]]), programs: 1,
+                                      coverage: (start, start + 3_600))
+        try control.write(to: url)
+        XCTAssertNotNil(store.loadVerifiedGuide(providerID: provider, fingerprint: fingerprint),
+                        "control: the rewritten framing itself is accepted")
+
+        let rejected: [(String, Data)] = [
+            ("malformed JSON", try digestValid(Data("{\"rows\":".utf8), programs: 1, coverage: (start, start + 3_600))),
+            ("overlapping programmes", try digestValid(record([["c": 0, "s": start, "d": 3_600, "t": "a"],
+                                                               ["c": 0, "s": start + 60, "d": 3_540, "t": "b"]]),
+                                                        programs: 2, coverage: (start, start + 3_600))),
+            ("reordered programmes", try digestValid(record([["c": 0, "s": start + 3_600, "d": 3_600, "t": "b"],
+                                                             ["c": 0, "s": start, "d": 3_600, "t": "a"]]),
+                                                      programs: 2, coverage: (start, start + 7_200))),
+        ]
+        for (label, bytes) in rejected {
+            try bytes.write(to: url)
+            XCTAssertNil(store.loadVerifiedGuide(providerID: provider, fingerprint: fingerprint), label)
+            XCTAssertNil(store.loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint), label)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(label): rejection keeps the file")
+        }
+    }
+
+    func testRestartRestoresTheVerifiedGuideAndItsLinkedBackoff() async throws {
+        let directory = temporaryDirectory(), provider = UUID()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = EPGFeedSource.xmltv(URL(string: "https://guide.example.test/linked-backoff.xml")!)
+        let fingerprinter = EPGSourceFingerprinter.inMemory()
+        let fp = try fingerprinter.fingerprint(for: source).bytes
+        let cache = EPGCacheStore(directory: directory)
+        let contentID = try cache.saveV2(.empty(fetchedAt: linkedFetchedAt), providerID: provider, fingerprint: fp)
+        let restartAt = linkedFetchedAt.addingTimeInterval(13 * 3_600)  // stale but still usable
+        try cache.saveState(EPGCacheState(providerID: provider, sourceFingerprint: fp, contentID: contentID,
+                                          lastSuccessfulFetchAt: linkedFetchedAt, failureCount: 1,
+                                          nextRetryAt: restartAt.addingTimeInterval(300)))
+        let offline = StateTestLoader(failure: EPGError.providerRejected)
+        let service = EPGService(cache: cache, loader: offline, fingerprinter: fingerprinter, now: { restartAt })
+
+        let guide = try await service.refresh(providerID: provider, source: source)
+
+        XCTAssertEqual(guide.fetchedAt, linkedFetchedAt, "the cached guide is restored")
+        XCTAssertEqual(offline.calls, 0, "the linked backoff state is restored, so the feed is not fetched")
+        let freshness = await service.freshness(for: provider)
+        XCTAssertEqual(freshness, .stale)
+    }
+
+    func testSaveV2RejectsAStageThatDoesNotDecodeToTheSameGuide() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (store, provider, header, state) = try linkedGuide(directory)
+        let original = try Data(contentsOf: v2File(directory, provider))
+        let newer = EPGIndex.empty(fetchedAt: linkedFetchedAt.addingTimeInterval(60))
+        let fp = fingerprint
+        var disagreeing = store
+        disagreeing.stageWriter = { bytes, url in
+            // Same provider, source and content ID as the stage, but a different guide inside: only
+            // the reopened content comparison can reject it.
+            let contentID = try EPGCacheFormat.header(of: bytes, fileSize: bytes.count).contentID
+            try EPGCacheFormat.encode(.empty(fetchedAt: newer.fetchedAt.addingTimeInterval(1)), providerID: provider,
+                                      sourceFingerprint: fp, contentID: contentID).write(to: url)
+        }
+        var corrupting = store
+        corrupting.stageWriter = { bytes, url in
+            var damaged = bytes
+            damaged[damaged.count - 1] ^= 0xFF
+            try damaged.write(to: url)
+        }
+
+        for (label, failing) in [("encoder/decoder disagreement", disagreeing), ("stage corruption", corrupting)] {
+            XCTAssertThrowsError(try failing.saveV2(newer, providerID: provider, fingerprint: fingerprint), label)
+            XCTAssertEqual(try Data(contentsOf: v2File(directory, provider)), original, "\(label): previous guide kept")
+            XCTAssertEqual(store.loadStateForCurrentGuide(providerID: provider, fingerprint: fingerprint,
+                                                          verifiedHeader: header), state, "\(label): state kept")
+        }
+        let stages = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".stage") }
+        XCTAssertEqual(stages, [], "failed stages are removed")
     }
 
     func testRetryStatePersistsAcrossServiceInstancesForTheSameSource() async throws {

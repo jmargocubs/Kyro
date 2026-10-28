@@ -184,6 +184,18 @@ enum EPGCacheFormat {
         return (fileHeader, index)
     }
 
+    /// True when `file` is byte-for-byte the file whose fully validated header is `verified`: its
+    /// header is valid and identical, including the random content ID and the payload digest, and
+    /// its payload still hashes to that digest. Lets a caller rely on an earlier full `decode` of
+    /// the same file without decompressing or decoding it again. Never a substitute for `decode`
+    /// on a file that was not fully validated.
+    static func isUnchanged(_ file: Data, since verified: Header, limits: Limits = Limits()) -> Bool {
+        guard let current = try? header(of: file, fileSize: file.count, limits: limits), current == verified else {
+            return false
+        }
+        return constantTimeEqual(Data(SHA256.hash(data: file.dropFirst(headerLength))), current.payloadDigest)
+    }
+
     // MARK: - Version 1
 
     /// Writes version 1 as the Milestone 1 writer did; until migration lands the store still uses it.

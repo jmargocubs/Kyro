@@ -268,6 +268,9 @@ actor EPGService {
     private var pendingWrites: [UUID: (id: UUID, task: Task<Void, Never>)] = [:]
     private var orphanSweepTask: Task<Void, Never>?
     private var checkedCache = [UUID: Data]()
+    /// The validated v2 header of the guide `loadCached` accepted, so the retry-state read can
+    /// check that the file is unchanged instead of decoding the whole guide a second time.
+    private var verifiedCacheHeaders: [UUID: EPGCacheFormat.Header] = [:]
     private let diskGenerationGate = EPGDiskGenerationGate()
     /// Bumped on removal so work that started before it cannot restore the provider's guide.
     private var generations: [UUID: Int] = [:]
@@ -481,6 +484,7 @@ actor EPGService {
         cacheStates[providerID] = nil
         stateLoads[providerID] = nil
         checkedCache[providerID] = nil
+        verifiedCacheHeaders[providerID] = nil
         generations[providerID, default: 0] += 1
         diskGenerationGate.set(providerID, generation: generations[providerID, default: 0])
         if let write = pendingWrites.removeValue(forKey: providerID) { await write.task.value }
@@ -599,7 +603,8 @@ actor EPGService {
         // A refresh may have finished, or the provider been removed, while the file was read.
         guard fullGuide(providerID) == nil, generations[providerID, default: 0] == generation else { return }
         checkedCache[providerID] = fingerprint
-        indexes[providerID] = applyingShortGuides(to: cached, providerID: providerID)
+        verifiedCacheHeaders[providerID] = cached.header
+        indexes[providerID] = applyingShortGuides(to: cached.index, providerID: providerID)
         indexSources[providerID] = source
     }
 
@@ -649,11 +654,11 @@ actor EPGService {
     }
 
     private func enqueueCacheRead(_ cache: EPGCacheStore, providerID: UUID, fingerprint: Data,
-                                  generation: Int) -> Task<EPGIndex?, Never> {
+                                  generation: Int) -> Task<EPGCacheStore.VerifiedGuide?, Never> {
         let previous = pendingWrites[providerID]?.task
         let priorSweep = orphanSweepTask
         let id = UUID()
-        let read = Task<EPGIndex?, Never> {
+        let read = Task<EPGCacheStore.VerifiedGuide?, Never> {
             await priorSweep?.value
             await previous?.value
             guard self.canWrite(providerID: providerID, generation: generation) else { return nil }
@@ -697,11 +702,14 @@ actor EPGService {
         let previous = pendingWrites[providerID]?.task
         let priorSweep = orphanSweepTask
         let operationID = UUID()
+        // Only a hint: the store uses it only if the file on disk is still byte-for-byte that guide.
+        let verifiedHeader = verifiedCacheHeaders[providerID]
         let read = Task<EPGCacheState?, Never> {
             await priorSweep?.value
             await previous?.value
             guard self.canWrite(providerID: providerID, generation: generation) else { return nil }
-            return await Self.readState(cache, providerID: providerID, fingerprint: fingerprint)
+            return await Self.readState(cache, providerID: providerID, fingerprint: fingerprint,
+                                        verifiedHeader: verifiedHeader)
         }
         pendingWrites[providerID] = (operationID, Task {
             _ = await read.value
@@ -807,6 +815,7 @@ actor EPGService {
         indexSources[providerID] = nil
         shortGuides[providerID] = nil
         checkedCache[providerID] = nil
+        verifiedCacheHeaders[providerID] = nil
         failures[providerID] = nil
         requestedSources[providerID] = source
     }
@@ -835,17 +844,18 @@ actor EPGService {
 
     private nonisolated static func readVerifiedCache(_ cache: EPGCacheStore, providerID: UUID,
                                                       fingerprint: Data,
-                                                      isCurrent: @Sendable () -> Bool) async -> EPGIndex? {
-        cache.loadVerified(providerID: providerID, fingerprint: fingerprint, isCurrent: isCurrent)
+                                                      isCurrent: @Sendable () -> Bool) async -> EPGCacheStore.VerifiedGuide? {
+        cache.loadVerifiedGuide(providerID: providerID, fingerprint: fingerprint, isCurrent: isCurrent)
     }
 
     private nonisolated static func sweepCache(_ cache: EPGCacheStore, keeping providerIDs: Set<UUID>) async {
         cache.removeOrphans(keeping: providerIDs)
     }
 
-    private nonisolated static func readState(_ cache: EPGCacheStore, providerID: UUID,
-                                              fingerprint: Data) async -> EPGCacheState? {
-        cache.loadStateForCurrentGuide(providerID: providerID, fingerprint: fingerprint)
+    private nonisolated static func readState(_ cache: EPGCacheStore, providerID: UUID, fingerprint: Data,
+                                              verifiedHeader: EPGCacheFormat.Header?) async -> EPGCacheState? {
+        cache.loadStateForCurrentGuide(providerID: providerID, fingerprint: fingerprint,
+                                       verifiedHeader: verifiedHeader)
     }
 
     private nonisolated static func writeV2Cache(_ cache: EPGCacheStore, index: EPGIndex, providerID: UUID,

@@ -110,7 +110,14 @@ struct EPGCacheStore: Sendable {
     /// Reads state for a source without confusing an absent/unreadable v2 file with a content-ID
     /// mismatch. Linked state is accepted only when a fully validated v2 guide for this source
     /// carries the same ID; legacy state is accepted only when it remains unlinked.
-    func loadStateForCurrentGuide(providerID: UUID, fingerprint: Data) -> EPGCacheState? {
+    ///
+    /// `verifiedHeader` is the header `loadVerifiedGuide` returned for a guide it fully validated.
+    /// When the file on disk still has exactly that header and its payload still matches the
+    /// header's SHA-256 digest, it is byte-for-byte the validated file, so its content ID is used
+    /// without decoding and indexing the guide a second time. Any difference falls back to full
+    /// validation of the current file.
+    func loadStateForCurrentGuide(providerID: UUID, fingerprint: Data,
+                                  verifiedHeader: EPGCacheFormat.Header? = nil) -> EPGCacheState? {
         Self.diskTransactionLock.lock()
         defer { Self.diskTransactionLock.unlock() }
         let url = stateURL(providerID)
@@ -125,8 +132,13 @@ struct EPGCacheStore: Sendable {
             return nil
         }
         guard let linkedContentID = state.contentID else { return state }
-        guard let guideData = try? Data(contentsOf: v2URL(providerID), options: .mappedIfSafe),
-              let guide = try? EPGCacheFormat.decode(guideData, providerID: providerID, limits: formatLimits),
+        guard let guideData = try? Data(contentsOf: v2URL(providerID), options: .mappedIfSafe) else { return nil }
+        if let verifiedHeader, verifiedHeader.providerID == providerID,
+           verifiedHeader.sourceFingerprint == fingerprint,
+           EPGCacheFormat.isUnchanged(guideData, since: verifiedHeader, limits: formatLimits) {
+            return verifiedHeader.contentID == linkedContentID ? state : nil
+        }
+        guard let guide = try? EPGCacheFormat.decode(guideData, providerID: providerID, limits: formatLimits),
               guide.header.sourceFingerprint == fingerprint,
               guide.header.contentID == linkedContentID else { return nil }
         return state
@@ -186,16 +198,30 @@ struct EPGCacheStore: Sendable {
     }
 #endif
 
+    /// A guide that passed verification. `header` is the validated v2 header that bound it to its
+    /// source, or nil for a guide read through the legacy v1 path.
+    struct VerifiedGuide: Sendable {
+        let index: EPGIndex
+        let header: EPGCacheFormat.Header?
+    }
+
     /// Returns only a guide with an established binding to the requested source. A v2 header is
     /// independently bound by its HMAC fingerprint. A v1 guide is eligible only when matching
     /// persisted Stage C state binds the exact fetchedAt; a UUID match alone is never sufficient.
     func loadVerified(providerID: UUID, fingerprint: Data,
                       isCurrent: @Sendable () -> Bool = { true }) -> EPGIndex? {
+        loadVerifiedGuide(providerID: providerID, fingerprint: fingerprint, isCurrent: isCurrent)?.index
+    }
+
+    /// `loadVerified`, also returning the validated v2 header so state can be checked against the
+    /// same file without decoding it again.
+    func loadVerifiedGuide(providerID: UUID, fingerprint: Data,
+                           isCurrent: @Sendable () -> Bool = { true }) -> VerifiedGuide? {
         Self.diskTransactionLock.lock()
         defer { Self.diskTransactionLock.unlock() }
 #if DEBUG
         if let verifiedReadInterceptor {
-            return verifiedReadInterceptor(providerID, fingerprint, isCurrent)
+            return verifiedReadInterceptor(providerID, fingerprint, isCurrent).map { VerifiedGuide(index: $0, header: nil) }
         }
 #endif
         guard fingerprint.count == EPGCacheFormat.fingerprintLength else { return nil }
@@ -203,7 +229,7 @@ struct EPGCacheStore: Sendable {
            let decoded = try? EPGCacheFormat.decode(data, providerID: providerID, limits: formatLimits),
            decoded.header.sourceFingerprint == fingerprint {
             deleteReadableLegacy(providerID: providerID, isCurrent: isCurrent)
-            return decoded.index
+            return VerifiedGuide(index: decoded.index, header: decoded.header)
         }
         guard let state = readState(providerID: providerID), state.sourceFingerprint == fingerprint,
               state.contentID == nil, let successAt = state.lastSuccessfulFetchDate else { return nil }
@@ -212,7 +238,7 @@ struct EPGCacheStore: Sendable {
             guard let candidate = loadV1(at: url, deleteInvalid: false), candidate.fetchedAt == successAt else { continue }
             if newest == nil || candidate.fetchedAt > newest!.fetchedAt { newest = candidate }
         }
-        return newest
+        return newest.map { VerifiedGuide(index: $0, header: nil) }
     }
 
     /// A non-destructive state read for identity decisions. Unlike retry-state loading, a mismatch
