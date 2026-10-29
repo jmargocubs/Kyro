@@ -232,7 +232,6 @@ struct LiveTVView: View {
         HStack(spacing: 12) {
             Button {
                 service.choose(channel, from: .list)
-                Task { await service.refreshShortEPG(for: channel) }
             } label: {
                 HStack(spacing: 12) {
                     channelLogo(channel)

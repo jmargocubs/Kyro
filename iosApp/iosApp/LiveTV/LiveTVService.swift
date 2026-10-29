@@ -23,7 +23,9 @@ final class LiveTVService {
     private var channelCatalogs: [UUID: [LiveTVChannel]] = [:]
     private var guideIndexes: [UUID: EPGIndex] = [:]
     private var categoryCatalogs: [UUID: [String]] = [:]
-    private var shortEPGLoaded = Set<String>()
+    private var shortEPGInFlight = Set<String>()
+    private var shortEPGFreshUntil: [String: Date] = [:]
+    private let shortEPGNow: () -> Date
     private let defaults: UserDefaults
     private let secretStore: LiveTVSecretStore
     @ObservationIgnored private let session: URLSession
@@ -62,11 +64,13 @@ final class LiveTVService {
         secretStore: LiveTVSecretStore? = nil,
         session: URLSession? = nil,
         epg: EPGService? = nil,
-        channelSnapshotStore: LiveTVChannelSnapshotStore = LiveTVChannelSnapshotStore()
+        channelSnapshotStore: LiveTVChannelSnapshotStore = LiveTVChannelSnapshotStore(),
+        shortEPGNow: @escaping () -> Date = { Date() }
     ) {
         self.defaults = defaults
         self.secretStore = secretStore ?? KeychainLiveTVSecretStore()
         self.channelSnapshotStore = channelSnapshotStore
+        self.shortEPGNow = shortEPGNow
         self.epg = epg ?? EPGService(
             cache: .makeDefault(),
             loader: session.map { URLSessionEPGFeedLoader(session: $0) } ?? URLSessionEPGFeedLoader.makeDefault())
@@ -255,7 +259,8 @@ final class LiveTVService {
         channelCatalogRevision &+= 1
         favoriteChannelIDs = favoriteChannelIDs.filter { !$0.hasPrefix("\(id.uuidString):") }
         defaults.set(favoriteChannelIDs.sorted(), forKey: Self.favoritesKey)
-        shortEPGLoaded = shortEPGLoaded.filter { !$0.hasPrefix("\(id.uuidString):") }
+        shortEPGInFlight = shortEPGInFlight.filter { !$0.hasPrefix("\(id.uuidString):") }
+        shortEPGFreshUntil = shortEPGFreshUntil.filter { !$0.key.hasPrefix("\(id.uuidString):") }
         _ = secretStore.remove(account: Self.secretAccount(id))
         let wasSelected = selectedProviderID == id
         if wasSelected { selectedProviderID = providers.first?.id }
@@ -324,6 +329,10 @@ final class LiveTVService {
             }
             return
         }
+        let previousChannels = channelCatalogs[providerID] ?? []
+        let previousFilter = EPGChannelFilter(guideIDs: previousChannels.map(\.guideID), names: previousChannels.map(\.name))
+        let updatedFilter = EPGChannelFilter(guideIDs: loaded.channels.map(\.guideID), names: loaded.channels.map(\.name))
+        let guideFilterChanged = !previousChannels.isEmpty && previousFilter != updatedFilter
         channelCatalogs[providerID] = loaded.channels
         categoryCatalogs[providerID] = loaded.categories
         channelCatalogRevision &+= 1
@@ -342,7 +351,7 @@ final class LiveTVService {
             return
         }
         // Channels are usable now; the guide fills in behind them.
-        await refreshGuide(providerID: providerID, source: source)
+        await refreshGuide(providerID: providerID, source: source, force: guideFilterChanged)
     }
 
     private func downloadCatalog(_ source: LiveTVSourceConfiguration, providerID: UUID) async throws -> LiveTVCachedCatalog {
@@ -364,7 +373,7 @@ final class LiveTVService {
     }
 
     /// Shows the cached guide immediately, then refreshes it when the policy says it is due.
-    private func refreshGuide(providerID: UUID, source: LiveTVSourceConfiguration) async {
+    private func refreshGuide(providerID: UUID, source: LiveTVSourceConfiguration, force: Bool = false) async {
         guard providers.contains(where: { $0.id == providerID }) else { return }
         let feed = Self.epgFeedSource(source)
         guard let feed else {
@@ -396,12 +405,12 @@ final class LiveTVService {
         }
         guard providers.contains(where: { $0.id == providerID }) else { return }
         do {
-            let index = try await epg.refresh(providerID: providerID, source: feed, channels: filter)
+            let index = try await epg.refresh(providerID: providerID, source: feed, channels: filter, force: force)
             guard providers.contains(where: { $0.id == providerID }) else { return }
             guideIndexes[providerID] = index
             guideRevision &+= 1
             if selectedProviderID == providerID {
-                guideMessage = index.programCount == 0 ? "No guide listings are available yet." : nil
+                guideMessage = EPGGuideStatus.message(for: index)
             }
         } catch is CancellationError {
             return
@@ -475,20 +484,24 @@ final class LiveTVService {
     func refreshShortEPG(for channel: LiveTVChannel) async {
         guard let streamID = channel.streamID,
               let providerID = UUID(uuidString: String(channel.id.prefix(36))),
-              !shortEPGLoaded.contains(channel.id),
+              !shortEPGInFlight.contains(channel.id) else { return }
+        let guideID = channel.guideID ?? String(streamID)
+        if (shortEPGFreshUntil[channel.id] ?? .distantPast) > shortEPGNow() {
+            return
+        }
+        guard
               let serialized = secretStore.read(account: Self.secretAccount(providerID)),
               let data = serialized.data(using: .utf8),
               let source = try? JSONDecoder().decode(LiveTVSourceConfiguration.self, from: data),
               source.kind == .xtream, let server = source.serverURL,
               let username = source.username, let password = source.password else { return }
-        shortEPGLoaded.insert(channel.id)
-        let guideID = channel.guideID ?? String(streamID)
+        shortEPGInFlight.insert(channel.id)
+        defer { shortEPGInFlight.remove(channel.id) }
         // The ticket is issued before the request is sent. A full refresh, source change or removal
         // that happens while the request is in flight makes the response stale, and EPGService drops it.
         guard let epgSource = Self.epgFeedSource(source),
               let ticket = await epg.beginShortRequest(providerID: providerID, source: epgSource,
                                                        guideID: guideID) else {
-            shortEPGLoaded.remove(channel.id)
             return
         }
         do {
@@ -501,8 +514,12 @@ final class LiveTVService {
             guard let index = await epg.applyShortPrograms(programs, guideID: guideID, ticket: ticket) else {
                 // Superseded by a newer full guide, a newer response for this channel, a source
                 // change, or cancelled before publication. A later selection may request it again.
-                shortEPGLoaded.remove(channel.id)
                 return
+            }
+            shortEPGFreshUntil[channel.id] = shortEPGNow().addingTimeInterval(programs.isEmpty ? 5 * 60 : 15 * 60)
+            if shortEPGFreshUntil.count > 256,
+               let oldest = shortEPGFreshUntil.min(by: { $0.value < $1.value })?.key {
+                shortEPGFreshUntil.removeValue(forKey: oldest)
             }
             guard providers.contains(where: { $0.id == providerID }) else { return }
             // A short-guide result that lost the race with cache load must not replace a full guide
@@ -512,7 +529,6 @@ final class LiveTVService {
                 guard let merged = await epg.index(for: providerID, source: epgSource),
                       !merged.isShortGuideOnly,
                       providers.contains(where: { $0.id == providerID }) else {
-                    shortEPGLoaded.remove(channel.id)
                     return
                 }
                 published = merged
@@ -523,15 +539,18 @@ final class LiveTVService {
             guideRevision &+= 1
             if selectedProviderID == providerID {
                 // An empty short response is not evidence that the full guide has no listings.
-                if published.isShortGuideOnly {
-                    guideMessage = published.programCount == 0 ? "No guide listings are available yet." : nil
-                } else if published.programCount > 0, guideMessage == "No guide listings are available yet." {
-                    guideMessage = nil
-                }
+                guideMessage = EPGGuideStatus.message(for: published)
                 updateGuideFreshness(for: providerID)
             }
         } catch {
-            shortEPGLoaded.remove(channel.id)
+            // Bound retries for transport/parse failures; cancellation remains immediately retryable.
+            if !(error is CancellationError), !Task.isCancelled {
+                shortEPGFreshUntil[channel.id] = shortEPGNow().addingTimeInterval(2 * 60)
+                if shortEPGFreshUntil.count > 256,
+                   let oldest = shortEPGFreshUntil.min(by: { $0.value < $1.value })?.key {
+                    shortEPGFreshUntil.removeValue(forKey: oldest)
+                }
+            }
             // The shared fetch reports a cancelled download as a provider error; the task's own
             // cancellation state is authoritative. Cancellation is not a failure to report.
             guard !(error is CancellationError), !Task.isCancelled else { return }
@@ -567,6 +586,7 @@ final class LiveTVService {
     /// Picture window in place.
     func choose(_ channel: LiveTVChannel, from presenter: LiveTVPresenter) {
         guard isPlayable(channel) else { rejectCachedPlayback(); return }
+        Task { await refreshShortEPG(for: channel) }
         if presentation.select(channel, from: presenter) == .playInPlace {
             playerSession.play(channel)
         }
@@ -576,6 +596,7 @@ final class LiveTVService {
     @discardableResult
     func playFromPlayerPicker(_ channel: LiveTVChannel) -> Bool {
         guard isPlayable(channel) else { rejectCachedPlayback(); return false }
+        Task { await refreshShortEPG(for: channel) }
         errorMessage = nil
         presentation.playerChannelChanged(to: channel)
         playerSession.play(channel)

@@ -38,12 +38,13 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
     }
 
     private func makeService(loader: any EPGFeedLoading = OfflineGuideLoader(),
-                             epgService: EPGService? = nil) -> LiveTVService {
+                             epgService: EPGService? = nil,
+                             shortEPGNow: @escaping () -> Date = { Date() }) -> LiveTVService {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [PlaylistURLProtocol.self, PanelURLProtocol.self]
         let epg = epgService ?? EPGService(cache: guideCache, loader: loader, fingerprinter: epgFingerprinter)
         return LiveTVService(defaults: defaults, secretStore: secrets, session: URLSession(configuration: configuration),
-                             epg: epg, channelSnapshotStore: snapshots)
+                             epg: epg, channelSnapshotStore: snapshots, shortEPGNow: shortEPGNow)
     }
 
     private func addProvider(to service: LiveTVService, name: String = "Provider", guide: Bool = false) throws -> UUID {
@@ -426,7 +427,7 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         let clock = GuideClock(Date())
         let loader = StaticGuideLoader(payload: twoChannelGuideXML(at: clock.date))
         let epg = EPGService(cache: guideCache, loader: loader, fingerprinter: epgFingerprinter, now: { clock.date })
-        let service = makeService(loader: loader, epgService: epg)
+        let service = makeService(loader: loader, epgService: epg, shortEPGNow: { clock.date })
         let providerID = try service.saveXtreamConfiguration(name: "Panel", serverURL: "http://panel.test:8080",
                                                              username: "alice", password: "s3cret-pass")
         PanelURLProtocol.reset()
@@ -445,7 +446,13 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         XCTAssertEqual(service.programPair(for: sport).current?.title, "Full Sport")
         XCTAssertNil(service.guideMessage, "an empty short response must not claim the full guide is empty")
         XCTAssertEqual(loader.calls, 1)
+        await service.refreshShortEPG(for: news)
+        XCTAssertEqual(PanelURLProtocol.shortRequests, 1, "empty listings are briefly negative-cached")
+        clock.date = clock.date.addingTimeInterval(6 * 60)
+        await service.refreshShortEPG(for: news)
+        XCTAssertEqual(PanelURLProtocol.shortRequests, 2, "empty listings become eligible after negative-cache expiry")
 
+        clock.date = Date()
         let start = Int(clock.date.addingTimeInterval(-60).timeIntervalSince1970)
         let end = Int(clock.date.addingTimeInterval(3_600).timeIntervalSince1970)
         let title = Data("Short now".utf8).base64EncodedString()
@@ -465,7 +472,7 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
     private func makeXtreamService(clock: GuideClock) async throws -> (LiveTVService, UUID, LiveTVChannel, LiveTVChannel) {
         let loader = StaticGuideLoader(payload: twoChannelGuideXML(at: clock.date))
         let epg = EPGService(cache: guideCache, loader: loader, fingerprinter: epgFingerprinter, now: { clock.date })
-        let service = makeService(loader: loader, epgService: epg)
+        let service = makeService(loader: loader, epgService: epg, shortEPGNow: { clock.date })
         let providerID = try service.saveXtreamConfiguration(name: "Panel", serverURL: "http://panel.test:8080",
                                                              username: "alice", password: "s3cret-pass")
         PanelURLProtocol.reset()
@@ -503,6 +510,23 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         await service.refreshShortEPG(for: sport)
         XCTAssertEqual(PanelURLProtocol.shortRequests, 2)
         XCTAssertEqual(service.programPair(for: sport).current?.title, "Retried")
+    }
+
+    func testConcurrentShortGuideSelectionsShareOneInFlightRequest() async throws {
+        let clock = GuideClock(Date())
+        let (service, _, _, sport) = try await makeXtreamService(clock: clock)
+        PanelURLProtocol.shortBody = shortGuideBody(title: "Concurrent", at: clock.date)
+        PanelURLProtocol.holdShortGuide()
+        let first = Task { await service.refreshShortEPG(for: sport) }
+        try await waitUntil { PanelURLProtocol.heldShortRequests == 1 }
+        let second = Task { await service.refreshShortEPG(for: sport) }
+        await second.value
+        XCTAssertEqual(PanelURLProtocol.shortRequests, 1)
+        PanelURLProtocol.releaseShortGuide()
+        await first.value
+        XCTAssertEqual(service.programPair(for: sport).current?.title, "Concurrent")
+        await service.refreshShortEPG(for: sport)
+        XCTAssertEqual(PanelURLProtocol.shortRequests, 1, "fresh non-empty listings are cached")
     }
 
     func testRemovingTheProviderDuringAShortGuideDownloadPublishesNothing() async throws {

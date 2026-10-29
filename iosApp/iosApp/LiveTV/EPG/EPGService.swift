@@ -544,7 +544,11 @@ actor EPGService {
                 let fresh = EPGCacheState(providerID: providerID, sourceFingerprint: fingerprint,
                                           lastSuccessfulFetchAt: index.fetchedAt)
                 cacheStates[providerID] = fresh
-                persist(index, fingerprint: fingerprint, providerID: providerID, generation: flight.generation)
+                // Cache v2 has no completeness bit. Keep partial results in memory, but don't
+                // persist them as a successful complete feed that would look healthy next launch.
+                if !index.statistics.incomplete {
+                    persist(index, fingerprint: fingerprint, providerID: providerID, generation: flight.generation)
+                }
             }
             for continuation in flight.waiters.values { continuation.resume(returning: index) }
         case .failure(let error):

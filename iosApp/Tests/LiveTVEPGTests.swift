@@ -46,6 +46,10 @@ final class LiveTVEPGTests: XCTestCase {
         let truncated = feed([("a", -60, 60, "Kept"), ("a", 0, 60, "Also kept")]).dropLast(40)
         let document = try XMLTVParser.parse(Data(truncated.utf8))
         XCTAssertEqual(document.programs.map(\.title), ["Kept"])
+        XCTAssertTrue(document.isIncomplete)
+        let index = try EPGIndex(document: document, fetchedAt: now, now: now, limits: EPGLimits())
+        XCTAssertTrue(index.statistics.incomplete)
+        XCTAssertEqual(EPGGuideStatus.message(for: index), "Guide feed was incomplete; some listings may be missing.")
     }
 
     func testMalformedAndMissingFieldsAreCountedAndSkipped() throws {
@@ -379,13 +383,20 @@ final class LiveTVEPGTests: XCTestCase {
     func testFilterKeepsOnlyListingsThePlaylistCanShow() throws {
         let xml = """
         <tv>
-          <channel id="named.only"><display-name>Film Four</display-name></channel>
+          <channel id="Named.Only"><display-name>Film Four</display-name></channel>
         \(programmes([("kept.id", 0, 60, "By ID"), ("named.only", 0, 60, "By name"), ("dropped", 0, 60, "Dropped")]))
         </tv>
         """
         let filter = EPGChannelFilter(guideIDs: ["KEPT.id", nil], names: ["Film 4", "film four"])
         let document = try XMLTVParser.parse(Data(xml.utf8), filter: filter)
         XCTAssertEqual(document.programs.map(\.title), ["By ID", "By name"])
+    }
+
+    func testPlaylistGuideFilterIgnoresCosmeticAndCategoryChangesButTracksIDOrName() {
+        let original = EPGChannelFilter(guideIDs: [" News.One "], names: ["News One HD"])
+        XCTAssertEqual(original, EPGChannelFilter(guideIDs: ["news.one"], names: ["news one"]))
+        XCTAssertNotEqual(original, EPGChannelFilter(guideIDs: ["news.two"], names: ["News One HD"]))
+        XCTAssertNotEqual(original, EPGChannelFilter(guideIDs: ["news.one"], names: ["Other Name"]))
     }
 
     func testOutdatedAndFarFutureProgrammesAreDroppedAndLimitsBoundTheIndex() throws {

@@ -34,6 +34,8 @@ struct EPGDocument: Sendable {
     var malformedCount = 0
     /// True when the parser stopped at its programme limit.
     var isTruncated = false
+    /// True when a malformed XMLTV tail stopped parsing after usable entries were read.
+    var isIncomplete = false
 }
 
 struct EPGNowNext: Equatable, Sendable {

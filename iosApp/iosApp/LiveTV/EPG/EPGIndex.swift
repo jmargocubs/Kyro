@@ -25,7 +25,7 @@ enum EPGChannelKey {
 
 /// The guide channels a playlist can show. Generic XMLTV feeds often list far more channels than a
 /// playlist carries, so filtering while parsing keeps memory proportional to the playlist.
-struct EPGChannelFilter: Sendable {
+struct EPGChannelFilter: Sendable, Equatable {
     private let guideIDs: Set<String>
     private let names: Set<String>
 
@@ -52,6 +52,7 @@ struct EPGIndex: Sendable {
         var outsideWindow = 0
         var overLimit = 0
         var truncated = false
+        var incomplete = false
     }
 
     /// Canonical (`EPGTimestamp`), so it compares exactly with the same guide read from cache.
@@ -90,7 +91,8 @@ struct EPGIndex: Sendable {
 
     /// Builds an index from a parsed feed. Synchronous and CPU-bound; call it off the main actor.
     init(document: EPGDocument, fetchedAt: Date, now: Date, limits: EPGLimits) throws {
-        var statistics = Statistics(malformed: document.malformedCount, truncated: document.isTruncated)
+        var statistics = Statistics(malformed: document.malformedCount, truncated: document.isTruncated,
+                                    incomplete: document.isIncomplete)
         let window = Self.window(now: now, limits: limits)
         var grouped: [String: [EPGProgram]] = [:]
         for program in document.programs {
@@ -246,6 +248,13 @@ struct EPGIndex: Sendable {
             }
         }
         return map
+    }
+}
+
+enum EPGGuideStatus {
+    static func message(for index: EPGIndex) -> String? {
+        if index.statistics.incomplete { return "Guide feed was incomplete; some listings may be missing." }
+        return index.programCount == 0 ? "No guide listings are available yet." : nil
     }
 }
 

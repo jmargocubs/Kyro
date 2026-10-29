@@ -27,6 +27,7 @@ enum XMLTVParser {
            delegate.document.programs.isEmpty, delegate.document.channels.isEmpty {
             throw EPGError.malformedFeed
         }
+        if !completed, !delegate.document.isTruncated { delegate.markIncomplete() }
         return delegate.document
     }
 }
@@ -54,8 +55,10 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
     private var context: Context?
     private var depth = 0
     private var elementsSinceCancellationCheck = 0
-    /// Raw channel IDs the filter accepted from the feed's own `<channel>` list.
+    /// Normalized IDs the filter accepted from the feed's own `<channel>` list.
     private var acceptedChannelIDs = Set<String>()
+
+    func markIncomplete() { document.isIncomplete = true }
 
     init(filter: EPGChannelFilter?, window: DateInterval?, limits: EPGLimits) {
         self.filter = filter
@@ -159,7 +162,7 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
                   !id.isEmpty else { return }
             document.channels.append(EPGChannel(id: id, displayNames: current.displayNames))
             if filter?.accepts(channelID: id, displayNames: current.displayNames) == true {
-                acceptedChannelIDs.insert(id)
+                if let key = EPGChannelKey.guideID(id) { acceptedChannelIDs.insert(key) }
             }
         case .programme:
             guard let program = program(from: current) else {
@@ -181,7 +184,8 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
         guard let filter else { return true }
         // Unparseable programmes are still accepted here so they are counted as malformed.
         guard let channel = attributes["channel"]?.trimmingCharacters(in: .whitespacesAndNewlines) else { return true }
-        return acceptedChannelIDs.contains(channel) || filter.accepts(channelID: channel, displayNames: [])
+        return EPGChannelKey.guideID(channel).map(acceptedChannelIDs.contains) == true
+            || filter.accepts(channelID: channel, displayNames: [])
     }
 
     private func program(from current: Context) -> EPGProgram? {
