@@ -656,6 +656,82 @@ final class LiveTVEPGTests: XCTestCase {
         XCTAssertEqual(failing.calls, 1)
     }
 
+    func testShortGuideRetentionBoundsDistinctChannelsAndRefetchesEvictedOverlay() async throws {
+        let service = EPGService(cache: nil, loader: GateLoader(payload: Data(), released: true),
+                                  fingerprinter: .inMemory(), now: { [now] in now })
+        let provider = UUID()
+        let source = EPGFeedSource.xtream(server: "https://panel.example", username: "user", password: "pass")
+        let total = EPGService.shortGuideRetentionCapacity + 44
+        for index in 0..<total {
+            let guideID = "channel.\(index)"
+            _ = await service.replacePrograms([
+                EPGProgram(channelID: guideID, start: now, end: now.addingTimeInterval(60), title: "Show \(index)")
+            ], guideID: guideID, providerID: provider, source: source)
+        }
+
+        let stats = await service.shortGuideRetentionStats(providerID: provider)
+        XCTAssertEqual(stats.overlayCount, EPGService.shortGuideRetentionCapacity)
+        XCTAssertEqual(stats.programmeCount, EPGService.shortGuideRetentionCapacity)
+        let oldestRetained = await service.hasShortGuide(providerID: provider, guideID: "channel.0")
+        let newestRetained = await service.hasShortGuide(providerID: provider, guideID: "channel.\(total - 1)")
+        XCTAssertFalse(oldestRetained, "the oldest overlay is evicted")
+        XCTAssertTrue(newestRetained)
+
+        _ = await service.replacePrograms([
+            EPGProgram(channelID: "channel.0", start: now, end: now.addingTimeInterval(60), title: "Refetched")
+        ], guideID: "channel.0", providerID: provider, source: source)
+        let refetched = await service.hasShortGuide(providerID: provider, guideID: "channel.0")
+        let refetchedStats = await service.shortGuideRetentionStats(providerID: provider)
+        XCTAssertTrue(refetched, "an evicted overlay can be published again")
+        XCTAssertEqual(refetchedStats.overlayCount, EPGService.shortGuideRetentionCapacity)
+    }
+
+    func testShortGuideRetentionKeepsRepeatedAndEmptyResultsBounded() async throws {
+        let service = EPGService(cache: nil, loader: GateLoader(payload: Data(), released: true),
+                                  fingerprinter: .inMemory(), now: { [now] in now })
+        let provider = UUID()
+        let source = EPGFeedSource.xtream(server: "https://panel.example", username: "user", password: "pass")
+        for index in 0..<500 {
+            _ = await service.replacePrograms([], guideID: "empty.\(index)", providerID: provider, source: source)
+        }
+        let emptyStats = await service.shortGuideRetentionStats(providerID: provider)
+        XCTAssertEqual(emptyStats.overlayCount, EPGService.shortGuideRetentionCapacity)
+        XCTAssertEqual(emptyStats.programmeCount, 0)
+
+        for index in 0..<500 {
+            _ = await service.replacePrograms([
+                EPGProgram(channelID: "same", start: now, end: now.addingTimeInterval(60), title: "Update \(index)")
+            ], guideID: "same", providerID: provider, source: source)
+        }
+        let repeatedStats = await service.shortGuideRetentionStats(providerID: provider)
+        XCTAssertEqual(repeatedStats.overlayCount, EPGService.shortGuideRetentionCapacity,
+                       "the repeated channel is retained within the bounded empty-result window")
+        XCTAssertEqual(repeatedStats.programmeCount, 1)
+    }
+
+    func testShortGuideRetentionIsProviderIsolatedAndRemovalClearsOnlyThatProvider() async throws {
+        let service = EPGService(cache: nil, loader: GateLoader(payload: Data(), released: true),
+                                  fingerprinter: .inMemory(), now: { [now] in now })
+        let first = UUID(), second = UUID()
+        let source = EPGFeedSource.xtream(server: "https://panel.example", username: "user", password: "pass")
+        _ = await service.replacePrograms([
+            EPGProgram(channelID: "shared", start: now, end: now.addingTimeInterval(60), title: "First")
+        ], guideID: "shared", providerID: first, source: source)
+        _ = await service.replacePrograms([
+            EPGProgram(channelID: "shared", start: now, end: now.addingTimeInterval(60), title: "Second")
+        ], guideID: "shared", providerID: second, source: source)
+
+        let firstStats = await service.shortGuideRetentionStats(providerID: first)
+        let secondStats = await service.shortGuideRetentionStats(providerID: second)
+        XCTAssertEqual(firstStats.overlayCount, 1)
+        XCTAssertEqual(secondStats.overlayCount, 1)
+        await service.remove(providerID: first)
+        let removedStats = await service.shortGuideRetentionStats(providerID: first)
+        let keptStats = await service.shortGuideRetentionStats(providerID: second)
+        XCTAssertEqual(removedStats.overlayCount, 0)
+        XCTAssertEqual(keptStats.overlayCount, 1)
+    }
+
     func testFailedRefreshBacksOffUnlessForced() async throws {
         let loader = GateLoader(payload: Data(), released: true, failure: EPGError.providerRejected)
         let service = EPGService(cache: nil, loader: loader, fingerprinter: .inMemory(), now: { [now] in now })

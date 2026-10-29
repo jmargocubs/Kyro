@@ -221,6 +221,16 @@ struct EPGShortRequestTicket: Sendable, Equatable {
     fileprivate let sequence: Int
 }
 
+struct EPGShortGuideRetentionStats: Equatable, Sendable {
+    let overlayCount: Int
+    let programmeCount: Int
+}
+
+struct EPGShortGuideApplyResult: Sendable {
+    let index: EPGIndex
+    let evictedGuideIDs: [String]
+}
+
 /// Owns every provider's guide: loads it from cache, refreshes it from the feed, and answers
 /// freshness questions.
 ///
@@ -280,6 +290,9 @@ actor EPGService {
     /// Short-guide listings applied this process, by guide channel key. They are newer than a cached
     /// guide for the hours they cover, so they are reapplied when one loads; a full refresh supersedes them.
     private var shortGuides: [UUID: [String: (guideID: String, programs: [EPGProgram])]] = [:]
+    /// Most-recently-viewed overlay keys, one bounded list per provider.
+    private var shortGuideAccess: [UUID: [String]] = [:]
+    static let shortGuideRetentionCapacity = 256
     /// Incremented by every successful full publication. A short request issued before it is stale.
     private var publications: [UUID: Int] = [:]
     private var shortRequestSequence: [UUID: Int] = [:]
@@ -434,6 +447,11 @@ actor EPGService {
     /// Rejection changes nothing. Not persisted: the next full refresh supersedes it.
     func applyShortPrograms(_ programs: [EPGProgram], guideID: String,
                             ticket: EPGShortRequestTicket) -> EPGIndex? {
+        applyShortProgramsWithRetention(programs, guideID: guideID, ticket: ticket)?.index
+    }
+
+    func applyShortProgramsWithRetention(_ programs: [EPGProgram], guideID: String,
+                                         ticket: EPGShortRequestTicket) -> EPGShortGuideApplyResult? {
         let providerID = ticket.providerID
         guard !Task.isCancelled,
               !removedProviders.contains(providerID), !clearingProviders.contains(providerID),
@@ -447,11 +465,28 @@ actor EPGService {
         let base = indexes[providerID].flatMap { policy.freshness(of: $0, now: now()).isUsable ? $0 : nil }
             ?? .shortGuideBase(fetchedAt: now())
         let updated = base.replacingPrograms(programs, guideID: guideID, now: now(), limits: limits)
-        shortGuides[providerID, default: [:]][ticket.channelKey] = (guideID, programs)
-        appliedShortSequence[providerID, default: [:]][ticket.channelKey] = ticket.sequence
         indexes[providerID] = updated
         indexSources[providerID] = source
-        return updated
+        shortGuides[providerID, default: [:]][ticket.channelKey] = (guideID, programs)
+        let evictedGuideID = retainShortGuide(providerID: providerID, channelKey: ticket.channelKey)
+        appliedShortSequence[providerID, default: [:]][ticket.channelKey] = ticket.sequence
+        return EPGShortGuideApplyResult(index: indexes[providerID] ?? updated,
+                                        evictedGuideIDs: evictedGuideID.map { [$0] } ?? [])
+    }
+
+    func shortGuideRetentionStats(providerID: UUID) -> EPGShortGuideRetentionStats {
+        let overlays = shortGuides[providerID] ?? [:]
+        return EPGShortGuideRetentionStats(overlayCount: overlays.count,
+                                           programmeCount: overlays.values.reduce(0) { $0 + $1.programs.count })
+    }
+
+    /// Distinguishes a fresh retained overlay from one evicted from this bounded process-local store.
+    func hasShortGuide(providerID: UUID, guideID: String) -> Bool {
+        guard let key = EPGChannelKey.guideID(guideID), shortGuides[providerID]?[key] != nil else {
+            return false
+        }
+        _ = retainShortGuide(providerID: providerID, channelKey: key)
+        return true
     }
 
     /// Issues a ticket and applies the response immediately. Only safe when no await separates
@@ -486,6 +521,7 @@ actor EPGService {
         indexes[providerID] = nil
         indexSources[providerID] = nil
         shortGuides[providerID] = nil
+        shortGuideAccess[providerID] = nil
         appliedShortSequence[providerID] = nil
         shortRequestSequence[providerID] = nil
         failures[providerID] = nil
@@ -538,6 +574,7 @@ actor EPGService {
             indexSources[providerID] = flight.source
             // The full guide supersedes every short-guide overlay and every short request still in flight.
             shortGuides[providerID] = nil
+            shortGuideAccess[providerID] = nil
             publications[providerID, default: 0] += 1
             failures[providerID] = nil
             if let fingerprint = flight.sourceFingerprint {
@@ -632,6 +669,27 @@ actor EPGService {
         (shortGuides[providerID] ?? [:]).values.reduce(index) {
             $0.replacingPrograms($1.programs, guideID: $1.guideID, now: now(), limits: limits)
         }
+    }
+
+    private func retainShortGuide(providerID: UUID, channelKey: String) -> String? {
+        var access = shortGuideAccess[providerID] ?? []
+        access.removeAll { $0 == channelKey }
+        access.insert(channelKey, at: 0)
+        guard access.count > Self.shortGuideRetentionCapacity,
+              let evicted = access.popLast() else {
+            shortGuideAccess[providerID] = access
+            return nil
+        }
+        shortGuideAccess[providerID] = access
+        let evictedGuideID = shortGuides[providerID]?[evicted]?.guideID
+        shortGuides[providerID]?.removeValue(forKey: evicted)
+        if shortGuides[providerID]?.isEmpty == true { shortGuides[providerID] = nil }
+        // A short-only index has no durable base listing to preserve. Full-guide overlays remain
+        // backed by XMLTV and are therefore removed only from the retention map.
+        if let evictedGuideID, let index = indexes[providerID], index.isShortGuideOnly {
+            indexes[providerID] = index.removingPrograms(guideID: evictedGuideID)
+        }
+        return evictedGuideID
     }
 
     /// Explicit Stage D integration point. It is deliberately never called by startup or cache reads.
@@ -838,6 +896,7 @@ actor EPGService {
         indexes[providerID] = nil
         indexSources[providerID] = nil
         shortGuides[providerID] = nil
+        shortGuideAccess[providerID] = nil
         checkedCache[providerID] = nil
         verifiedCacheHeaders[providerID] = nil
         failures[providerID] = nil

@@ -490,7 +490,8 @@ final class LiveTVService {
               let providerID = UUID(uuidString: String(channel.id.prefix(36))),
               !shortEPGInFlight.contains(channel.id) else { return }
         let guideID = channel.guideID ?? String(streamID)
-        if (shortEPGFreshUntil[channel.id] ?? .distantPast) > shortEPGNow() {
+        if (shortEPGFreshUntil[channel.id] ?? .distantPast) > shortEPGNow(),
+           await epg.hasShortGuide(providerID: providerID, guideID: guideID) {
             return
         }
         guard
@@ -515,11 +516,13 @@ final class LiveTVService {
             try Task.checkCancellation()
             guard providers.contains(where: { $0.id == providerID }) else { return }
             let programs = try XtreamEPG.programs(from: data, guideID: guideID, limits: epg.limits)
-            guard let index = await epg.applyShortPrograms(programs, guideID: guideID, ticket: ticket) else {
+            guard let publication = await epg.applyShortProgramsWithRetention(programs, guideID: guideID,
+                                                                                ticket: ticket) else {
                 // Superseded by a newer full guide, a newer response for this channel, a source
                 // change, or cancelled before publication. A later selection may request it again.
                 return
             }
+            let index = publication.index
             shortEPGFreshUntil[channel.id] = shortEPGNow().addingTimeInterval(programs.isEmpty ? 5 * 60 : 15 * 60)
             if shortEPGFreshUntil.count > 256,
                let oldest = shortEPGFreshUntil.min(by: { $0.value < $1.value })?.key {
@@ -540,6 +543,13 @@ final class LiveTVService {
                 published = index
             }
             guideIndexes[providerID] = published
+            for evictedGuideID in publication.evictedGuideIDs {
+                let evictedKey = EPGChannelKey.guideID(evictedGuideID)
+                for evictedChannel in channelCatalogs[providerID] ?? []
+                    where EPGChannelKey.guideID(evictedChannel.guideID) == evictedKey {
+                    guideChannelRevisions[evictedChannel.id, default: 0] &+= 1
+                }
+            }
             guideChannelRevisions[channel.id, default: 0] &+= 1
             if selectedProviderID == providerID {
                 // An empty short response is not evidence that the full guide has no listings.

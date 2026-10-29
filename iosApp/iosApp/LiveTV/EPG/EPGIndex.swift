@@ -176,6 +176,19 @@ struct EPGIndex: Sendable {
                         statistics: statistics, isShortGuideOnly: isShortGuideOnly)
     }
 
+    /// Removes a short-guide-only channel when its overlay is evicted. Full guides never call
+    /// this: their base listings must remain available after an overlay expires.
+    func removingPrograms(guideID: String) -> EPGIndex {
+        guard isShortGuideOnly, let key = EPGChannelKey.guideID(guideID), programsByChannel[key] != nil else {
+            return self
+        }
+        var remaining = programsByChannel
+        remaining.removeValue(forKey: key)
+        return EPGIndex(fetchedAt: fetchedAt, programsByChannel: remaining,
+                        channelIDsByName: channelIDsByName, statistics: statistics,
+                        isShortGuideOnly: true)
+    }
+
     // MARK: - Building
 
     private static func window(now: Date, limits: EPGLimits) -> DateInterval {
