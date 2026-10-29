@@ -163,8 +163,11 @@ enum LiveTVGuideContentState: Equatable, Sendable {
     }
 
     /// The one-line notice above a ready grid, if any.
-    static func banner(errorMessage: String?, guideMessage: String?, isGuideStale: Bool, isGuideLoading: Bool) -> String? {
+    static func banner(errorMessage: String?, catalogNotice: String? = nil, guideMessage: String?,
+                       isGuideStale: Bool, isGuideLoading: Bool) -> String? {
+        // Hard import failures first, then soft channel-cap notices, then guide status.
         if let errorMessage { return errorMessage }
+        if let catalogNotice { return catalogNotice }
         if isGuideLoading { return nil }
         if let guideMessage { return guideMessage }
         return isGuideStale ? "Program guide unavailable" : nil

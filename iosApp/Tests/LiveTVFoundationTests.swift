@@ -46,6 +46,35 @@ final class LiveTVFoundationTests: XCTestCase {
         XCTAssertEqual(channels.map(\.name), ["Valid"])
     }
 
+    func testM3UParseResultReportsChannelLimitWithoutInventingATotal() throws {
+        let providerID = UUID()
+        func playlist(count: Int) -> String {
+            var lines = ["#EXTM3U"]
+            for index in 0..<count {
+                lines.append("#EXTINF:-1,Channel \(index)")
+                lines.append("https://stream.example.test/\(index).m3u8")
+            }
+            return lines.joined(separator: "\n")
+        }
+
+        let exact = try LiveTVM3UParser.parseResult(data: Data(playlist(count: 3).utf8),
+                                                    providerID: providerID, limit: 3)
+        XCTAssertEqual(exact.channels.count, 3)
+        XCTAssertFalse(exact.hitChannelLimit, "an exact-cap playlist is not truncated")
+
+        let over = try LiveTVM3UParser.parseResult(data: Data(playlist(count: 5).utf8),
+                                                   providerID: providerID, limit: 3)
+        XCTAssertEqual(over.channels.count, 3)
+        XCTAssertTrue(over.hitChannelLimit)
+        XCTAssertEqual(over.channels.map(\.name), ["Channel 0", "Channel 1", "Channel 2"])
+
+        let notice = LiveTVCatalogNotice.channelLimitReached(limit: 20_000)
+        XCTAssertTrue(notice.contains("20"))
+        XCTAssertTrue(notice.contains("limit"))
+        XCTAssertFalse(notice.contains("of "), "must not invent a total channel count")
+        XCTAssertNotEqual(notice, LiveTVError.responseTooLarge.localizedDescription)
+    }
+
     func testProviderURLAndGuideTokensStayOutOfUserDefaultsAndErrorsAreGeneric() throws {
         let suiteName = "LiveTVFoundationTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

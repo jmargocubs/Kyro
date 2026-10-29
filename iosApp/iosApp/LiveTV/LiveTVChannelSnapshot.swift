@@ -66,6 +66,15 @@ struct LiveTVChannelSnapshot: Codable, Equatable, Sendable {
 struct LiveTVCachedCatalog: Sendable {
     let channels: [LiveTVChannel]
     let categories: [String]
+    /// True when import stopped at the channel cap with more playlist/stream entries remaining.
+    /// Offline snapshot restores leave this false; they never invent a remote total.
+    let hitChannelLimit: Bool
+
+    init(channels: [LiveTVChannel], categories: [String], hitChannelLimit: Bool = false) {
+        self.channels = channels
+        self.categories = categories
+        self.hitChannelLimit = hitChannelLimit
+    }
 }
 
 /// Outcome of a snapshot write. Failed or refused writes leave any prior valid file untouched.
@@ -74,6 +83,15 @@ enum LiveTVChannelSnapshotSaveResult: Equatable, Sendable {
     case refusedOverChannelLimit
     case refusedOverFileLimit
     case writeFailed
+}
+
+/// Soft catalog notices that must not be confused with hard import failures such as an oversized download.
+enum LiveTVCatalogNotice {
+    /// Shown when M3U or Xtream import stops at the configured channel cap. Does not claim a total.
+    static func channelLimitReached(limit: Int) -> String {
+        let formatted = limit.formatted(.number.grouping(.automatic))
+        return "Import stopped at the \(formatted) channel limit. Additional channels were not imported."
+    }
 }
 
 /// Reads and writes channel snapshots off the main actor. Calls run one at a time, so a removal is

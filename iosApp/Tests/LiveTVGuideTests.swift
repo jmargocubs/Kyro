@@ -384,5 +384,12 @@ final class LiveTVGuideTests: XCTestCase {
         XCTAssertEqual(State.banner(errorMessage: nil, guideMessage: nil, isGuideStale: true, isGuideLoading: false),
                        "Program guide unavailable")
         XCTAssertNil(State.banner(errorMessage: nil, guideMessage: nil, isGuideStale: false, isGuideLoading: false))
+        XCTAssertEqual(
+            State.banner(errorMessage: nil, catalogNotice: "Import stopped at the 20,000 channel limit. Additional channels were not imported.",
+                         guideMessage: "No listings", isGuideStale: true, isGuideLoading: false),
+            "Import stopped at the 20,000 channel limit. Additional channels were not imported.")
+        XCTAssertEqual(
+            State.banner(errorMessage: "Down", catalogNotice: "cap", guideMessage: "Old", isGuideStale: true, isGuideLoading: false),
+            "Down")
     }
 }

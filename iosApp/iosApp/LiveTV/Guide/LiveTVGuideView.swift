@@ -114,10 +114,13 @@ struct LiveTVGuideView: View {
         case .ready:
             VStack(spacing: 0) {
                 if let banner = LiveTVGuideContentState.banner(errorMessage: service.errorMessage,
+                                                               catalogNotice: service.catalogNotice,
                                                                guideMessage: service.guideMessage,
                                                                isGuideStale: service.isGuideStale,
                                                                isGuideLoading: service.isGuideLoading) {
-                    Label(banner, systemImage: "exclamationmark.circle")
+                    let icon = service.errorMessage == nil && service.catalogNotice != nil
+                        ? "info.circle" : "exclamationmark.circle"
+                    Label(banner, systemImage: icon)
                         .font(.footnote)
                         .foregroundStyle(Color.siloSecondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)

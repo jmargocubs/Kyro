@@ -94,6 +94,13 @@ struct LiveTVView: View {
                             .foregroundStyle(Color.siloSecondaryText)
                             .listRowBackground(Color.siloSurface)
                     }
+                } else if let notice = service.catalogNotice {
+                    Section {
+                        Label(notice, systemImage: "info.circle")
+                            .font(.footnote)
+                            .foregroundStyle(Color.siloSecondaryText)
+                            .listRowBackground(Color.siloSurface)
+                    }
                 }
                 if !service.providers.isEmpty {
                     Section {

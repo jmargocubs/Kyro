@@ -11,6 +11,9 @@ final class LiveTVService {
     private(set) var selectedProviderID: UUID?
     private(set) var isLoading = false
     private(set) var errorMessage: String?
+    /// Soft notice for a successful import that hit the channel cap. Distinct from hard `errorMessage`
+    /// failures such as an oversized playlist download.
+    private(set) var catalogNotice: String?
     private(set) var guideMessage: String?
     private(set) var isGuideStale = false
     /// True while a guide download for the selected playlist is in progress.
@@ -122,6 +125,7 @@ final class LiveTVService {
         guard providers.contains(where: { $0.id == id }) else { return }
         selectedProviderID = id
         errorMessage = nil
+        catalogNotice = nil
         guideMessage = nil
         isGuideLoading = false
         updateGuideFreshness(for: id)
@@ -272,6 +276,7 @@ final class LiveTVService {
         // Status belongs to the selected provider; removing another one leaves it alone.
         guard wasSelected else { return }
         errorMessage = nil
+        catalogNotice = nil
         guideMessage = nil
         isGuideLoading = false
         if let selectedProviderID { updateGuideFreshness(for: selectedProviderID) } else { isGuideStale = true }
@@ -310,6 +315,7 @@ final class LiveTVService {
         isLoading = true
         if selectedProviderID == providerID {
             errorMessage = nil
+            catalogNotice = nil
             guideMessage = nil
         }
 
@@ -346,6 +352,11 @@ final class LiveTVService {
             providers[providerIndex].lastRefreshed = .now
             persistProviders()
         }
+        if selectedProviderID == providerID {
+            catalogNotice = loaded.hitChannelLimit
+                ? LiveTVCatalogNotice.channelLimitReached(limit: Self.maximumChannels)
+                : nil
+        }
 
         await channelSnapshotStore.save(providerID: providerID, channels: loaded.channels,
                                         secrets: LiveTVSnapshotSecrets(source: source))
@@ -360,20 +371,25 @@ final class LiveTVService {
 
     private func downloadCatalog(_ source: LiveTVSourceConfiguration, providerID: UUID) async throws -> LiveTVCachedCatalog {
         let loadedChannels: [LiveTVChannel]
+        let hitChannelLimit: Bool
         if source.kind == .m3u, let playlistURL = source.playlistURL {
             let playlistData = try await fetch(playlistURL, maximumBytes: Self.maximumPlaylistBytes)
             let channelLimit = Self.maximumChannels
-            loadedChannels = try await Task.detached(priority: .utility) {
-                try LiveTVM3UParser.parse(data: playlistData, providerID: providerID, limit: channelLimit)
+            let parsed = try await Task.detached(priority: .utility) {
+                try LiveTVM3UParser.parseResult(data: playlistData, providerID: providerID, limit: channelLimit)
             }.value
+            loadedChannels = parsed.channels
+            hitChannelLimit = parsed.hitChannelLimit
         } else {
-            loadedChannels = try await loadXtream(source, providerID: providerID)
+            let xtream = try await loadXtream(source, providerID: providerID)
+            loadedChannels = xtream.channels
+            hitChannelLimit = xtream.hitChannelLimit
         }
         guard !loadedChannels.isEmpty else { throw LiveTVError.noChannels }
         let categories = await Task.detached(priority: .utility) {
             LiveTVChannel.orderedCategories(of: loadedChannels)
         }.value
-        return LiveTVCachedCatalog(channels: loadedChannels, categories: categories)
+        return LiveTVCachedCatalog(channels: loadedChannels, categories: categories, hitChannelLimit: hitChannelLimit)
     }
 
     /// Shows the cached guide immediately, then refreshes it when the policy says it is due.
@@ -434,7 +450,7 @@ final class LiveTVService {
         return categoryCatalogs[selectedProviderID] ?? []
     }
 
-    private func loadXtream(_ source: LiveTVSourceConfiguration, providerID: UUID) async throws -> [LiveTVChannel] {
+    private func loadXtream(_ source: LiveTVSourceConfiguration, providerID: UUID) async throws -> (channels: [LiveTVChannel], hitChannelLimit: Bool) {
         guard let server = source.serverURL, let username = source.username, let password = source.password else {
             throw LiveTVError.invalidConfiguration
         }
@@ -462,12 +478,19 @@ final class LiveTVService {
         let streamsURL = try XtreamURLBuilder.apiURL(server: server, username: username, password: password, action: "get_live_streams")
         let streamsData = try await fetch(streamsURL, maximumBytes: Self.maximumPlaylistBytes)
         let maxChannels = Self.maximumChannels
-        let channels = try await Task.detached(priority: .utility) {
+        let parsed = try await Task.detached(priority: .utility) {
             let records = try XtreamResponseParser.streams(from: streamsData)
             var channels: [LiveTVChannel] = []
             channels.reserveCapacity(min(records.count, maxChannels))
             var seen = Set<Int>()
-            for record in records.prefix(maxChannels) {
+            var accepted = 0
+            var hitChannelLimit = false
+            for record in records {
+                if accepted >= maxChannels {
+                    // More stream records remain after the cap; do not invent a total count.
+                    hitChannelLimit = true
+                    break
+                }
                 guard let streamID = record.streamID, streamID > 0, seen.insert(streamID).inserted,
                       let name = record.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { continue }
                 let streamURL = try XtreamURLBuilder.streamURL(server: server, username: username, password: password,
@@ -478,11 +501,12 @@ final class LiveTVService {
                     guideID: record.epgChannelID?.nilIfEmpty ?? String(streamID), name: name, streamURL: streamURL,
                     logoURL: record.streamIcon.flatMap(Self.webURL),
                     category: record.categoryID.flatMap { categoryNames[$0] } ?? "Other", streamID: streamID))
+                accepted += 1
             }
-            return channels
+            return (channels: channels, hitChannelLimit: hitChannelLimit)
         }.value
-        guard !channels.isEmpty else { throw LiveTVError.noChannels }
-        return channels
+        guard !parsed.channels.isEmpty else { throw LiveTVError.noChannels }
+        return (channels: parsed.channels, hitChannelLimit: parsed.hitChannelLimit)
     }
 
     func refreshShortEPG(for channel: LiveTVChannel) async {

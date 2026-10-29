@@ -1046,8 +1046,19 @@ final class LiveTVControlsVisibility {
     }
 }
 
+/// Result of an M3U parse, including whether the channel cap stopped import while more entries remain.
+struct LiveTVM3UParseResult: Sendable, Equatable {
+    let channels: [LiveTVChannel]
+    /// True when the parser reached `limit` and at least one later EXTINF+URL pair was still present.
+    let hitChannelLimit: Bool
+}
+
 enum LiveTVM3UParser {
     static func parse(data: Data, providerID: UUID, limit: Int = 20_000) throws -> [LiveTVChannel] {
+        try parseResult(data: data, providerID: providerID, limit: limit).channels
+    }
+
+    static func parseResult(data: Data, providerID: UUID, limit: Int = 20_000) throws -> LiveTVM3UParseResult {
         guard limit > 0, let text = String(data: data, encoding: .utf8)
                 ?? String(data: data, encoding: .isoLatin1) else {
             throw LiveTVError.invalidPlaylist
@@ -1056,8 +1067,12 @@ enum LiveTVM3UParser {
         var channels: [LiveTVChannel] = []
         var seenIDs = Set<String>()
         var pending: (name: String, attributes: [String: String])?
-        for rawLine in text.split(whereSeparator: \.isNewline) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        var hitChannelLimit = false
+        let lines = text.split(whereSeparator: \.isNewline)
+        var index = lines.startIndex
+        while index < lines.endIndex {
+            let line = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            index = lines.index(after: index)
             if line.hasPrefix("#EXTINF:") {
                 let attributes = parseAttributes(line)
                 let name = displayName(in: line)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1067,6 +1082,12 @@ enum LiveTVM3UParser {
             guard !line.isEmpty, !line.hasPrefix("#"), let item = pending else { continue }
             pending = nil
             guard let url = webURL(line) else { continue }
+
+            if channels.count >= limit {
+                // A later valid EXTINF+URL pair proves the playlist continues past the cap.
+                hitChannelLimit = true
+                break
+            }
 
             let guideID = item.attributes["tvg-id"]?.nilIfBlank
             let stableSource = guideID?.lowercased() ?? item.name.folding(
@@ -1087,9 +1108,8 @@ enum LiveTVM3UParser {
                 logoURL: logo,
                 category: category
             ))
-            if channels.count >= limit { break }
         }
-        return channels
+        return LiveTVM3UParseResult(channels: channels, hitChannelLimit: hitChannelLimit)
     }
 
     private static func webURL(_ value: String) -> URL? {
