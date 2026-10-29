@@ -68,6 +68,14 @@ struct LiveTVCachedCatalog: Sendable {
     let categories: [String]
 }
 
+/// Outcome of a snapshot write. Failed or refused writes leave any prior valid file untouched.
+enum LiveTVChannelSnapshotSaveResult: Equatable, Sendable {
+    case saved
+    case refusedOverChannelLimit
+    case refusedOverFileLimit
+    case writeFailed
+}
+
 /// Reads and writes channel snapshots off the main actor. Calls run one at a time, so a removal is
 /// never overtaken by a write that was already running.
 actor LiveTVChannelSnapshotStore {
@@ -106,23 +114,28 @@ actor LiveTVChannelSnapshotStore {
         return LiveTVCachedCatalog(channels: channels, categories: LiveTVChannel.orderedCategories(of: channels))
     }
 
-    func save(providerID: UUID, channels: [LiveTVChannel], secrets: LiveTVSnapshotSecrets = LiveTVSnapshotSecrets()) {
+    @discardableResult
+    func save(providerID: UUID, channels: [LiveTVChannel], secrets: LiveTVSnapshotSecrets = LiveTVSnapshotSecrets()) -> LiveTVChannelSnapshotSaveResult {
         save(LiveTVChannelSnapshot(providerID: providerID, channels: channels,
                                    secrets: secrets))
     }
 
-    func save(_ snapshot: LiveTVChannelSnapshot) {
-        // A catalog that cannot be stored must not leave an older one behind to be shown offline.
-        guard snapshot.version == LiveTVChannelSnapshot.currentVersion,
-              snapshot.channels.count <= Self.maximumChannels else { return remove(providerID: snapshot.providerID) }
+    /// Writes a new snapshot only when it validates. Over-limit, oversized, or failed writes leave
+    /// the previous valid file in place so offline restore keeps working. Explicit `remove` and
+    /// load-time rejection of corrupt or wrong-provider files are unchanged.
+    @discardableResult
+    func save(_ snapshot: LiveTVChannelSnapshot) -> LiveTVChannelSnapshotSaveResult {
+        guard snapshot.version == LiveTVChannelSnapshot.currentVersion else { return .writeFailed }
+        guard snapshot.channels.count <= Self.maximumChannels else { return .refusedOverChannelLimit }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let data = try JSONEncoder().encode(snapshot.sanitized())
-            guard data.count <= Self.maximumFileBytes else { return remove(providerID: snapshot.providerID) }
+            guard data.count <= Self.maximumFileBytes else { return .refusedOverFileLimit }
             try data.write(to: file(snapshot.providerID), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            return .saved
         } catch {
-            // Cache failure must not interrupt playback or browsing, nor leave an older snapshot behind.
-            remove(providerID: snapshot.providerID)
+            // Leave any prior valid snapshot alone; browsing and playback must not depend on this write.
+            return .writeFailed
         }
     }
 

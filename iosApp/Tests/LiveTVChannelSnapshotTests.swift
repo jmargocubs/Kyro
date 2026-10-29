@@ -268,18 +268,47 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         }
     }
 
-    func testFailedReplacementWriteDeletesThePreviousSnapshot() async throws {
+    func testFailedReplacementWritePreservesThePreviousSnapshot() async throws {
         let providerID = UUID()
         let channels = try LiveTVM3UParser.parse(data: Data(playlist.utf8), providerID: providerID)
-        await snapshots.save(providerID: providerID, channels: channels)
+        let first = await snapshots.save(providerID: providerID, channels: channels)
+        XCTAssertEqual(first, .saved)
         let file = snapshots.directory.appendingPathComponent("\(providerID.uuidString).json")
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        let before = try Data(contentsOf: file)
 
         // JSONEncoder cannot encode a non-finite date, so the replacement fails to encode.
         let unencodable = LiveTVChannelSnapshot(providerID: providerID, channels: channels,
                                                 savedAt: Date(timeIntervalSinceReferenceDate: .nan))
-        await snapshots.save(unencodable)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "an outdated snapshot is not kept")
+        let failed = await snapshots.save(unencodable)
+        XCTAssertEqual(failed, .writeFailed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "a failed write leaves the last valid snapshot")
+        XCTAssertEqual(try Data(contentsOf: file), before)
+        let restored = await snapshots.loadCatalog(providerID: providerID)
+        XCTAssertEqual(restored?.channels.count, channels.count)
+    }
+
+    func testOverChannelLimitSavePreservesThePreviousSnapshot() async throws {
+        let providerID = UUID()
+        let channels = try LiveTVM3UParser.parse(data: Data(playlist.utf8), providerID: providerID)
+        let initialSave = await snapshots.save(providerID: providerID, channels: channels)
+        XCTAssertEqual(initialSave, .saved)
+        let file = snapshots.directory.appendingPathComponent("\(providerID.uuidString).json")
+        let before = try Data(contentsOf: file)
+
+        let overLimit = (0..<(LiveTVChannelSnapshotStore.maximumChannels + 1)).map { number -> LiveTVChannel in
+            let hex = String(format: "%064x", number)
+            return LiveTVChannel(id: "\(providerID.uuidString):\(hex)", guideID: nil, name: "Ch\(number)",
+                                 streamURL: URL(string: "https://stream.example/\(number).m3u8")!,
+                                 logoURL: nil, category: "News")
+        }
+        XCTAssertEqual(LiveTVChannelSnapshot(providerID: providerID, channels: overLimit).channels.count,
+                       LiveTVChannelSnapshotStore.maximumChannels + 1)
+        let result = await snapshots.save(providerID: providerID, channels: overLimit)
+        XCTAssertEqual(result, .refusedOverChannelLimit)
+        XCTAssertEqual(try Data(contentsOf: file), before)
+        let restored = await snapshots.loadCatalog(providerID: providerID)
+        XCTAssertEqual(restored?.channels.count, channels.count)
     }
 
     func testSnapshotRejectsOversizedFileAndOmitsOverlongFields() async throws {
