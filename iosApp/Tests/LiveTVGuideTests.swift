@@ -11,6 +11,17 @@ final class LiveTVGuideTests: XCTestCase {
         EPGProgram(channelID: "a", start: date(start), end: date(end), title: title)
     }
 
+    private func channel(_ id: String) -> LiveTVChannel {
+        LiveTVChannel(id: id, guideID: id, name: "Channel \(id)",
+                      streamURL: URL(string: "https://fixture.invalid/\(id).m3u8")!,
+                      logoURL: nil, category: "News")
+    }
+
+    private func cachedPrograms(for id: String, title: String = "Show") -> [EPGProgram] {
+        [EPGProgram(channelID: id, start: date("2026-01-01T12:00:00Z"),
+                    end: date("2026-01-01T13:00:00Z"), title: title)]
+    }
+
     // MARK: - Timeline
 
     func testCategoryPickerStartsAtSelectionThenRestoresLastVisibleRow() {
@@ -167,6 +178,83 @@ final class LiveTVGuideTests: XCTestCase {
         XCTAssertLessThan(built.filter(near.pinsTitle).count, 5)
         let atStart = LiveTVGuideVisibleSpan(offsetX: -50, viewportWidth: 300, bucketWidth: hour)
         XCTAssertEqual(atStart.render.lowerBound, 0, "an overscrolled start clamps to the window")
+    }
+
+    // MARK: - Cell cache
+
+    @MainActor
+    func testCellCacheEnforcesCapacityAndEvictsLeastRecentlyUsedRows() {
+        let cache = LiveTVGuideCellCache()
+        let timeline = LiveTVGuideTimeline(now: date("2026-01-01T12:00:00Z"), timeZone: utc)
+        var builds = 0
+        func load(_ id: String, revision: Int = 1) -> [LiveTVGuideCell] {
+            cache.cells(for: channel(id), revision: revision, isGuideStale: false, timeline: timeline) {
+                builds += 1
+                return cachedPrograms(for: id)
+            }
+        }
+
+        for index in 0..<LiveTVGuideCellCache.capacity { _ = load("\(index)") }
+        _ = load("0") // Promote the oldest row before inserting two more.
+        _ = load("\(LiveTVGuideCellCache.capacity)")
+        _ = load("\(LiveTVGuideCellCache.capacity + 1)")
+
+        XCTAssertEqual(cache.entryCount, LiveTVGuideCellCache.capacity)
+        XCTAssertEqual(cache.evictionCount, 2)
+        XCTAssertEqual(cache.hitCount, 1)
+        XCTAssertEqual(builds, LiveTVGuideCellCache.capacity + 2)
+
+        _ = load("1") // Row 1 was the least-recently-used row after row 0 was promoted.
+        XCTAssertEqual(cache.missCount, LiveTVGuideCellCache.capacity + 3)
+        XCTAssertEqual(cache.entryCount, LiveTVGuideCellCache.capacity)
+    }
+
+    @MainActor
+    func testCellCacheRevisionAndTimelineChangesDiscardOldProgrammeCells() {
+        let cache = LiveTVGuideCellCache()
+        let firstTimeline = LiveTVGuideTimeline(now: date("2026-01-01T12:00:00Z"), timeZone: utc)
+        let secondTimeline = LiveTVGuideTimeline(now: date("2026-01-01T13:00:00Z"), timeZone: utc)
+        let row = channel("one")
+        var builds = 0
+
+        let first = cache.cells(for: row, revision: 1, isGuideStale: false, timeline: firstTimeline) {
+            builds += 1
+            return cachedPrograms(for: row.id, title: "Old programme")
+        }
+        let revised = cache.cells(for: row, revision: 2, isGuideStale: false, timeline: firstTimeline) {
+            builds += 1
+            return cachedPrograms(for: row.id, title: "New programme")
+        }
+        let retimed = cache.cells(for: row, revision: 2, isGuideStale: false, timeline: secondTimeline) {
+            builds += 1
+            return cachedPrograms(for: row.id, title: "Retimed programme")
+        }
+
+        XCTAssertEqual(first.first?.program.title, "Old programme")
+        XCTAssertEqual(revised.first?.program.title, "New programme")
+        XCTAssertEqual(retimed.first?.program.title, "Retimed programme")
+        XCTAssertEqual(builds, 3)
+        XCTAssertEqual(cache.entryCount, 1)
+        XCTAssertEqual(cache.hitCount, 0)
+    }
+
+    @MainActor
+    func testCellCacheStoresEmptyRowsAndBoundsLargeVerticalSurfing() {
+        let cache = LiveTVGuideCellCache()
+        let timeline = LiveTVGuideTimeline(now: date("2026-01-01T12:00:00Z"), timeZone: utc)
+        for index in 0..<20_000 {
+            _ = cache.cells(for: channel("\(index)"), revision: 1, isGuideStale: false, timeline: timeline) { [] }
+        }
+
+        XCTAssertEqual(cache.entryCount, LiveTVGuideCellCache.capacity)
+        XCTAssertEqual(cache.missCount, 20_000)
+        XCTAssertEqual(cache.evictionCount, 20_000 - LiveTVGuideCellCache.capacity)
+
+        for index in (20_000 - LiveTVGuideCellCache.capacity)..<20_000 {
+            _ = cache.cells(for: channel("\(index)"), revision: 1, isGuideStale: false, timeline: timeline) { XCTFail("recent row should be cached"); return [] }
+        }
+        XCTAssertEqual(cache.hitCount, LiveTVGuideCellCache.capacity)
+        XCTAssertEqual(cache.entryCount, LiveTVGuideCellCache.capacity)
     }
 
     // MARK: - States

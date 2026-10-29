@@ -306,6 +306,10 @@ struct LiveTVGuideView: View {
 /// Not observed: it only memoizes values derived from observed service state.
 @MainActor
 final class LiveTVGuideCellCache {
+    /// A portrait iPhone 16 Plus shows roughly thirteen 64-point rows. Keeping seven
+    /// viewportfuls preserves nearby backtracking without retaining every row visited.
+    static let capacity = 96
+
     private struct Key: Equatable {
         let revision: Int
         let isGuideStale: Bool
@@ -314,6 +318,15 @@ final class LiveTVGuideCellCache {
 
     private var key: Key?
     private var storage: [String: [LiveTVGuideCell]] = [:]
+    /// Most-recently-used channel IDs first. The cache is intentionally small, so an array keeps
+    /// bookkeeping cheaper and more predictable than a linked-list allocation per row.
+    private var recency: [String] = []
+
+    private(set) var hitCount = 0
+    private(set) var missCount = 0
+    private(set) var evictionCount = 0
+
+    var entryCount: Int { storage.count }
 
     func cells(for channel: LiveTVChannel, revision: Int, isGuideStale: Bool, timeline: LiveTVGuideTimeline,
                programs: () -> [EPGProgram]) -> [LiveTVGuideCell] {
@@ -321,11 +334,27 @@ final class LiveTVGuideCellCache {
         if key != self.key {
             self.key = key
             storage.removeAll(keepingCapacity: true)
+            recency.removeAll(keepingCapacity: true)
         }
-        if let cached = storage[channel.id] { return cached }
+        if let cached = storage[channel.id] {
+            hitCount += 1
+            touch(channel.id)
+            return cached
+        }
+        missCount += 1
         let built = LiveTVGuideCell.cells(for: programs(), in: timeline)
         storage[channel.id] = built
+        touch(channel.id)
+        if storage.count > Self.capacity, let evicted = recency.popLast() {
+            storage.removeValue(forKey: evicted)
+            evictionCount += 1
+        }
         return built
+    }
+
+    private func touch(_ channelID: String) {
+        if let index = recency.firstIndex(of: channelID) { recency.remove(at: index) }
+        recency.insert(channelID, at: 0)
     }
 }
 
