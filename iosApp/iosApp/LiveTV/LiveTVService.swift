@@ -15,8 +15,12 @@ final class LiveTVService {
     private(set) var isGuideStale = false
     /// True while a guide download for the selected playlist is in progress.
     private(set) var isGuideLoading = false
-    /// Changes whenever any provider's guide listings change, so views can drop derived layout.
+    /// Changes whenever a full guide, provider, or source state changes, so views can drop
+    /// derived layout. Single-channel short-guide publications use `guideChannelRevisions`.
     private(set) var guideRevision = 0
+    /// Per-channel revisions let guide cells invalidate only the row whose short guide changed.
+    /// IDs are provider-qualified, so switching providers cannot reuse a token accidentally.
+    private(set) var guideChannelRevisions: [String: Int] = [:]
     private(set) var favoriteChannelIDs = Set<String>()
     private(set) var channelCatalogRevision = 0
 
@@ -165,7 +169,7 @@ final class LiveTVService {
               let index = await epg.index(for: providerID, source: epgSource),
               !showsFullGuide(providerID), providers.contains(where: { $0.id == providerID }) else { return }
         guideIndexes[providerID] = index
-        guideRevision &+= 1
+        invalidateAllGuideRows()
         if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
     }
 
@@ -255,7 +259,7 @@ final class LiveTVService {
         channelCatalogs[id] = nil
         categoryCatalogs[id] = nil
         guideIndexes[id] = nil
-        guideRevision &+= 1
+        invalidateAllGuideRows()
         channelCatalogRevision &+= 1
         favoriteChannelIDs = favoriteChannelIDs.filter { !$0.hasPrefix("\(id.uuidString):") }
         defaults.set(favoriteChannelIDs.sorted(), forKey: Self.favoritesKey)
@@ -378,7 +382,7 @@ final class LiveTVService {
         let feed = Self.epgFeedSource(source)
         guard let feed else {
             guideIndexes[providerID] = nil
-            guideRevision &+= 1
+            invalidateAllGuideRows()
             await epg.clear(providerID: providerID)
             guard providers.contains(where: { $0.id == providerID }) else { return }
             if selectedProviderID == providerID {
@@ -399,7 +403,7 @@ final class LiveTVService {
             guard providers.contains(where: { $0.id == providerID }) else { return }
             if let cached, !showsFullGuide(providerID) {
                 guideIndexes[providerID] = cached
-                guideRevision &+= 1
+                invalidateAllGuideRows()
                 if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
             }
         }
@@ -408,7 +412,7 @@ final class LiveTVService {
             let index = try await epg.refresh(providerID: providerID, source: feed, channels: filter, force: force)
             guard providers.contains(where: { $0.id == providerID }) else { return }
             guideIndexes[providerID] = index
-            guideRevision &+= 1
+            invalidateAllGuideRows()
             if selectedProviderID == providerID {
                 guideMessage = EPGGuideStatus.message(for: index)
             }
@@ -536,7 +540,7 @@ final class LiveTVService {
                 published = index
             }
             guideIndexes[providerID] = published
-            guideRevision &+= 1
+            guideChannelRevisions[channel.id, default: 0] &+= 1
             if selectedProviderID == providerID {
                 // An empty short response is not evidence that the full guide has no listings.
                 guideMessage = EPGGuideStatus.message(for: published)
@@ -632,6 +636,10 @@ final class LiveTVService {
         return LiveTVProgramPair(current: pair.current.map(LiveTVProgram.init), next: pair.next.map(LiveTVProgram.init))
     }
 
+    func guideChannelRevision(for channel: LiveTVChannel) -> Int {
+        guideChannelRevisions[channel.id] ?? 0
+    }
+
     /// Listings for one channel that overlap `interval`, in airing order. Empty when its guide is
     /// missing or no longer usable.
     func guidePrograms(for channel: LiveTVChannel, overlapping interval: DateInterval) -> [EPGProgram] {
@@ -699,6 +707,11 @@ final class LiveTVService {
     /// Whether the provider shows a full guide, not just Xtream short-guide listings.
     private func showsFullGuide(_ providerID: UUID) -> Bool {
         guideIndexes[providerID].map { !$0.isShortGuideOnly } ?? false
+    }
+
+    private func invalidateAllGuideRows() {
+        guideRevision &+= 1
+        guideChannelRevisions.removeAll(keepingCapacity: true)
     }
 
     private func updateGuideFreshness(for providerID: UUID) {

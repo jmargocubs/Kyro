@@ -139,8 +139,9 @@ struct LiveTVGuideView: View {
                         ForEach(rows) { channel in
                             LiveTVGuideRow(
                                 channel: channel,
-                                cells: cells.cells(for: channel, revision: service.guideRevision, isGuideStale: service.isGuideStale,
-                                                   timeline: timeline) {
+                                cells: cells.cells(for: channel, revision: service.guideRevision,
+                                                   isGuideStale: service.isGuideStale, timeline: timeline,
+                                                   channelRevision: service.guideChannelRevision(for: channel)) {
                                     service.guidePrograms(for: channel, overlapping: timeline.interval)
                                 },
                                 timeline: timeline,
@@ -316,8 +317,13 @@ final class LiveTVGuideCellCache {
         let timeline: LiveTVGuideTimeline
     }
 
+    private struct Entry {
+        let cells: [LiveTVGuideCell]
+        let channelRevision: Int
+    }
+
     private var key: Key?
-    private var storage: [String: [LiveTVGuideCell]] = [:]
+    private var storage: [String: Entry] = [:]
     /// Most-recently-used channel IDs first. The cache is intentionally small, so an array keeps
     /// bookkeeping cheaper and more predictable than a linked-list allocation per row.
     private var recency: [String] = []
@@ -325,25 +331,30 @@ final class LiveTVGuideCellCache {
     private(set) var hitCount = 0
     private(set) var missCount = 0
     private(set) var evictionCount = 0
+    private(set) var targetedInvalidationCount = 0
+    private(set) var globalInvalidationCount = 0
 
     var entryCount: Int { storage.count }
 
     func cells(for channel: LiveTVChannel, revision: Int, isGuideStale: Bool, timeline: LiveTVGuideTimeline,
+               channelRevision: Int = 0,
                programs: () -> [EPGProgram]) -> [LiveTVGuideCell] {
         let key = Key(revision: revision, isGuideStale: isGuideStale, timeline: timeline)
         if key != self.key {
+            if self.key != nil { globalInvalidationCount += 1 }
             self.key = key
             storage.removeAll(keepingCapacity: true)
             recency.removeAll(keepingCapacity: true)
         }
-        if let cached = storage[channel.id] {
+        if let cached = storage[channel.id], cached.channelRevision == channelRevision {
             hitCount += 1
             touch(channel.id)
-            return cached
+            return cached.cells
         }
+        if storage[channel.id] != nil { targetedInvalidationCount += 1 }
         missCount += 1
         let built = LiveTVGuideCell.cells(for: programs(), in: timeline)
-        storage[channel.id] = built
+        storage[channel.id] = Entry(cells: built, channelRevision: channelRevision)
         touch(channel.id)
         if storage.count > Self.capacity, let evicted = recency.popLast() {
             storage.removeValue(forKey: evicted)

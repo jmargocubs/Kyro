@@ -257,6 +257,108 @@ final class LiveTVGuideTests: XCTestCase {
         XCTAssertEqual(cache.entryCount, LiveTVGuideCellCache.capacity)
     }
 
+    @MainActor
+    func testCellCacheTargetedRevisionInvalidatesOnlyAffectedRow() {
+        let cache = LiveTVGuideCellCache()
+        let timeline = LiveTVGuideTimeline(now: date("2026-01-01T12:00:00Z"), timeZone: utc)
+        let rows = [channel("a"), channel("b"), channel("c")]
+        func load(_ row: LiveTVChannel, channelRevision: Int = 0) -> [LiveTVGuideCell] {
+            cache.cells(for: row, revision: 1, isGuideStale: false, timeline: timeline,
+                        channelRevision: channelRevision) {
+                cachedPrograms(for: row.id, title: "\(row.id)-\(channelRevision)")
+            }
+        }
+
+        rows.forEach { _ = load($0) }
+        let updated = load(rows[0], channelRevision: 1)
+        _ = load(rows[1])
+        _ = load(rows[2])
+
+        XCTAssertEqual(updated.first?.program.title, "a-1")
+        XCTAssertEqual(cache.targetedInvalidationCount, 1)
+        XCTAssertEqual(cache.globalInvalidationCount, 0)
+        XCTAssertEqual(cache.entryCount, 3)
+        XCTAssertEqual(cache.missCount, 4)
+        XCTAssertEqual(cache.hitCount, 2, "unrelated rows remain cached")
+    }
+
+    @MainActor
+    func testCellCacheMultipleChannelUpdatesAndGlobalChangesRemainBounded() {
+        let cache = LiveTVGuideCellCache()
+        let firstTimeline = LiveTVGuideTimeline(now: date("2026-01-01T12:00:00Z"), timeZone: utc)
+        let secondTimeline = LiveTVGuideTimeline(now: date("2026-01-01T13:00:00Z"), timeZone: utc)
+        let rows = [channel("a"), channel("b"), channel("c")]
+        func load(_ row: LiveTVChannel, revision: Int = 1, channelRevision: Int = 0,
+                  timeline: LiveTVGuideTimeline) {
+            _ = cache.cells(for: row, revision: revision, isGuideStale: false, timeline: timeline,
+                            channelRevision: channelRevision) {
+                cachedPrograms(for: row.id, title: "\(revision)-\(channelRevision)")
+            }
+        }
+
+        rows.forEach { load($0, timeline: firstTimeline) }
+        load(rows[0], channelRevision: 1, timeline: firstTimeline)
+        load(rows[2], channelRevision: 1, timeline: firstTimeline)
+        load(rows[1], timeline: firstTimeline) // unrelated row remains a hit
+        XCTAssertEqual(cache.targetedInvalidationCount, 2)
+        XCTAssertEqual(cache.entryCount, 3)
+        XCTAssertEqual(cache.hitCount, 1)
+
+        load(rows[0], revision: 2, timeline: firstTimeline) // full/provider refresh
+        XCTAssertEqual(cache.globalInvalidationCount, 1)
+        XCTAssertEqual(cache.entryCount, 1)
+        load(rows[0], revision: 2, timeline: secondTimeline) // timeline change is global too
+        XCTAssertEqual(cache.globalInvalidationCount, 2)
+        XCTAssertEqual(cache.entryCount, 1)
+    }
+
+    @MainActor
+    func testCellCacheTargetedInvalidationPreservesLRUOrder() {
+        let cache = LiveTVGuideCellCache()
+        let timeline = LiveTVGuideTimeline(now: date("2026-01-01T12:00:00Z"), timeZone: utc)
+        func load(_ id: String, channelRevision: Int = 0) {
+            _ = cache.cells(for: channel(id), revision: 1, isGuideStale: false, timeline: timeline,
+                            channelRevision: channelRevision) { cachedPrograms(for: id) }
+        }
+
+        for index in 0..<LiveTVGuideCellCache.capacity { load("row-\(index)") }
+        load("row-0")
+        load("row-0", channelRevision: 1) // replacement touches, but does not allocate another entry
+        load("new-row")
+        load("row-0", channelRevision: 1)
+
+        XCTAssertEqual(cache.targetedInvalidationCount, 1)
+        XCTAssertEqual(cache.evictionCount, 1)
+        XCTAssertEqual(cache.hitCount, 2)
+        XCTAssertEqual(cache.entryCount, LiveTVGuideCellCache.capacity)
+        load("row-1") // row 1 was still the least-recently-used row
+        XCTAssertEqual(cache.missCount, LiveTVGuideCellCache.capacity + 3)
+    }
+
+    @MainActor
+    func testCellCacheRepeatedShortUpdatesRetainUnrelatedRows() {
+        let cache = LiveTVGuideCellCache()
+        let timeline = LiveTVGuideTimeline(now: date("2026-01-01T12:00:00Z"), timeZone: utc)
+        let rows = (0..<LiveTVGuideCellCache.capacity).map { channel("row-\($0)") }
+        func load(_ row: LiveTVChannel, channelRevision: Int = 0) {
+            _ = cache.cells(for: row, revision: 1, isGuideStale: false, timeline: timeline,
+                            channelRevision: channelRevision) { cachedPrograms(for: row.id) }
+        }
+
+        rows.forEach { load($0) }
+        for revision in 1...100 {
+            load(rows[0], channelRevision: revision)
+            rows.dropFirst().forEach { load($0) }
+        }
+
+        XCTAssertEqual(cache.missCount, LiveTVGuideCellCache.capacity + 100,
+                       "only the changed row is reconstructed per publication")
+        XCTAssertEqual(cache.targetedInvalidationCount, 100)
+        XCTAssertEqual(cache.hitCount, 95 * 100)
+        XCTAssertEqual(cache.evictionCount, 0)
+        XCTAssertEqual(cache.entryCount, LiveTVGuideCellCache.capacity)
+    }
+
     // MARK: - States
 
     func testContentStateCoversSetupLoadingErrorsAndFilters() {
