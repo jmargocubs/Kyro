@@ -9,6 +9,9 @@ struct LiveTVGuideView: View {
     @Bindable var service: LiveTVService
     @Environment(\.timeZone) private var timeZone
     @State private var selectedCategory: String?
+    @State private var isShowingCategoryPicker = false
+    @State private var categoryPickerPosition: LiveTVGuideCategoryPickerID?
+    @State private var categoryPickerState = LiveTVGuideCategoryPickerState()
     @State private var favoritesOnly = false
     @State private var rows: [LiveTVChannel] = []
     @State private var timeline = LiveTVGuideTimeline(now: .now, timeZone: .current)
@@ -39,6 +42,11 @@ struct LiveTVGuideView: View {
                     self.detail = nil
                 }
             }
+            .sheet(isPresented: $isShowingCategoryPicker, onDismiss: rememberCategoryPickerPosition) {
+                categoryPicker
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
             .onAppear {
                 service.presentation.surfaceAppeared(.guide)
                 if timeline.timeZone != timeZone { rebuildTimeline(at: .now) }
@@ -49,6 +57,22 @@ struct LiveTVGuideView: View {
             .onChange(of: favoritesOnly) { rebuildRows() }
             .onChange(of: service.favoriteChannelIDs) { if favoritesOnly { rebuildRows() } }
             .onChange(of: service.channelCatalogRevision) { rebuildRows() }
+            .onChange(of: service.selectedProviderID) { _, providerID in
+                guard let providerID else {
+                    categoryPickerPosition = nil
+                    return
+                }
+                categoryPickerPosition = categoryPickerState.target(
+                    providerID: providerID, selectedCategory: selectedCategory, categories: service.categories)
+            }
+            .onChange(of: service.categories) { _, categories in
+                guard let providerID = service.selectedProviderID else { return }
+                categoryPickerState.reconcile(providerID: providerID, categories: categories)
+                if isShowingCategoryPicker {
+                    categoryPickerPosition = categoryPickerState.target(
+                        providerID: providerID, selectedCategory: selectedCategory, categories: categories)
+                }
+            }
             .onChange(of: timeZone) { rebuildTimeline(at: .now) }
     }
 
@@ -170,27 +194,83 @@ struct LiveTVGuideView: View {
             }
             .accessibilityLabel(favoritesOnly ? "Show all channels" : "Show favorites only")
             if !service.categories.isEmpty {
-                Menu {
-                    Button {
-                        selectedCategory = nil
-                    } label: {
-                        if selectedCategory == nil { Label("All Categories", systemImage: "checkmark") }
-                        else { Text("All Categories") }
-                    }
-                    ForEach(service.categories, id: \.self) { category in
-                        Button {
-                            selectedCategory = category
-                        } label: {
-                            if selectedCategory == category { Label(category, systemImage: "checkmark") }
-                            else { Text(category) }
-                        }
-                    }
+                Button {
+                    guard let providerID = service.selectedProviderID else { return }
+                    categoryPickerPosition = categoryPickerState.target(
+                        providerID: providerID, selectedCategory: selectedCategory, categories: service.categories)
+                    isShowingCategoryPicker = true
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease.circle\(selectedCategory == nil ? "" : ".fill")")
                 }
                 .accessibilityLabel("Filter by category")
+                .accessibilityHint("Choose which channel category the guide shows")
             }
         }
+    }
+
+    private var categoryPicker: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    categoryPickerRow(id: .allCategories, title: "All Categories", isSelected: selectedCategory == nil) {
+                        selectedCategory = nil
+                        isShowingCategoryPicker = false
+                    }
+                    ForEach(service.categories, id: \.self) { category in
+                        categoryPickerRow(id: .category(category), title: category,
+                                          isSelected: selectedCategory == category) {
+                            selectedCategory = category
+                            isShowingCategoryPicker = false
+                        }
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollPosition(id: $categoryPickerPosition, anchor: .top)
+            .scrollIndicators(.hidden)
+            .accessibilityLabel("Live TV categories")
+            .navigationTitle("Filter by category")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { isShowingCategoryPicker = false }
+                }
+            }
+        }
+        .onAppear {
+            guard let providerID = service.selectedProviderID else { return }
+            categoryPickerPosition = categoryPickerState.target(
+                providerID: providerID, selectedCategory: selectedCategory, categories: service.categories)
+        }
+    }
+
+    private func categoryPickerRow(id: LiveTVGuideCategoryPickerID, title: String, isSelected: Bool,
+                                   action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text(title)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(LiveTVAccent.orchidLight)
+                        .accessibilityHidden(true)
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 20)
+            .frame(minHeight: 52)
+        }
+        .buttonStyle(.plain)
+        .id(id)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func rememberCategoryPickerPosition() {
+        guard let providerID = service.selectedProviderID else { return }
+        categoryPickerState.remember(categoryPickerPosition, providerID: providerID, categories: service.categories)
     }
 
     private func select(_ program: EPGProgram, on channel: LiveTVChannel, at now: Date) {

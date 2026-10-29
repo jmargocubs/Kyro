@@ -13,6 +13,44 @@ final class LiveTVGuideTests: XCTestCase {
 
     // MARK: - Timeline
 
+    func testCategoryPickerStartsAtSelectionThenRestoresLastVisibleRow() {
+        let provider = UUID()
+        var state = LiveTVGuideCategoryPickerState()
+        let categories = ["News", "Sports", "Movies"]
+        XCTAssertEqual(state.target(providerID: provider, selectedCategory: "Sports", categories: categories),
+                       .category("Sports"))
+
+        state.remember(.category("Movies"), providerID: provider, categories: categories)
+        XCTAssertEqual(state.target(providerID: provider, selectedCategory: "Sports", categories: categories),
+                       .category("Movies"), "later presentations restore the prior visible row")
+    }
+
+    func testCategoryPickerKeepsProviderPositionsAndUsesDistinctAllID() {
+        let firstProvider = UUID()
+        let secondProvider = UUID()
+        var state = LiveTVGuideCategoryPickerState()
+        state.remember(.category("News"), providerID: firstProvider, categories: ["News"])
+        state.remember(.allCategories, providerID: secondProvider, categories: ["News"])
+
+        XCTAssertEqual(state.target(providerID: firstProvider, selectedCategory: nil, categories: ["News"]),
+                       .category("News"))
+        XCTAssertEqual(state.target(providerID: secondProvider, selectedCategory: "News", categories: ["News"]),
+                       .allCategories)
+        XCTAssertNotEqual(LiveTVGuideCategoryPickerID.allCategories, .category("All Categories"))
+    }
+
+    func testCategoryPickerFallsBackWhenRememberedCategoryIsRemoved() {
+        let provider = UUID()
+        var state = LiveTVGuideCategoryPickerState()
+        state.remember(.category("Sports"), providerID: provider, categories: ["News", "Sports"])
+        state.reconcile(providerID: provider, categories: ["News"])
+
+        XCTAssertEqual(state.target(providerID: provider, selectedCategory: "News", categories: ["News"]),
+                       .category("News"))
+        XCTAssertEqual(state.target(providerID: provider, selectedCategory: nil, categories: ["News"]),
+                       .allCategories)
+    }
+
     func testTimelineAlignsToLocalHalfHoursAndBoundsTheWindow() throws {
         let now = date("2026-01-01T12:17:00Z")
         let timeline = LiveTVGuideTimeline(now: now, timeZone: utc)
