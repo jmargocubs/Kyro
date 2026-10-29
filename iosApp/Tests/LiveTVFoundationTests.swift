@@ -75,6 +75,21 @@ final class LiveTVFoundationTests: XCTestCase {
         XCTAssertNotEqual(notice, LiveTVError.responseTooLarge.localizedDescription)
     }
 
+    func testEPGIndexConformsToEPGQueryingSeam() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let program = EPGProgram(channelID: "news.one", start: now.addingTimeInterval(-600),
+                                 end: now.addingTimeInterval(600), title: "Bulletin")
+        let index = try EPGIndex(document: EPGDocument(channels: [EPGChannel(id: "news.one", displayNames: ["News"])],
+                                                       programs: [program]),
+                                 fetchedAt: now, now: now, limits: EPGLimits())
+        let querying: any EPGQuerying = index
+        XCTAssertEqual(querying.programCount, 1)
+        XCTAssertEqual(querying.channelKey(guideID: "news.one", name: nil), "news.one")
+        XCTAssertEqual(querying.nowNext(channelKey: "news.one", at: now).current?.title, "Bulletin")
+        XCTAssertEqual(querying.programs(channelKey: "news.one",
+                                         overlapping: DateInterval(start: now, end: now.addingTimeInterval(60))).count, 1)
+    }
+
     func testProviderURLAndGuideTokensStayOutOfUserDefaultsAndErrorsAreGeneric() throws {
         let suiteName = "LiveTVFoundationTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

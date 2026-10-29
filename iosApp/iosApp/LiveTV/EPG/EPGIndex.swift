@@ -40,11 +40,23 @@ struct EPGChannelFilter: Sendable, Equatable {
     }
 }
 
+/// Read API shared by the in-memory guide index and a future on-disk store (Stage B SQLite).
+/// Call sites that only need lookups should depend on this protocol, not on storage details.
+protocol EPGQuerying: Sendable {
+    var fetchedAt: Date { get }
+    var programCount: Int { get }
+    var isShortGuideOnly: Bool { get }
+    func channelKey(guideID: String?, name: String?) -> String?
+    func nowNext(guideID: String?, name: String?, at date: Date) -> EPGNowNext
+    func nowNext(channelKey: String, at date: Date) -> EPGNowNext
+    func programs(channelKey: String, overlapping interval: DateInterval) -> [EPGProgram]
+}
+
 /// An immutable, query-ready guide for one provider.
 ///
 /// Each channel's programmes are sorted, deduplicated and non-overlapping, so programme end times
 /// strictly increase and every lookup is a binary search.
-struct EPGIndex: Sendable {
+struct EPGIndex: Sendable, EPGQuerying {
     struct Statistics: Equatable, Sendable {
         var malformed = 0
         var duplicates = 0
