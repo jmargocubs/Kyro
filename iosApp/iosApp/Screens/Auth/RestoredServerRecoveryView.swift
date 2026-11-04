@@ -42,7 +42,7 @@ final class RestoredServerRecoveryCoordinator {
                 let destination = await resolveDestination()
                 router.resetAfterServerResolution(to: destination)
             } else {
-                error = "Silo couldn't forget this server. Try again."
+                error = "\(AppBrand.name) couldn't forget this server. Try again."
             }
             isForgetting = false
             forgetTask = nil
@@ -157,7 +157,7 @@ struct RestoredServerRecoveryView: View {
     private var standardBody: some View {
         MarqueeStage(scrim: .bottom, frostStart: 0.45) {
             MarqueeTopBar {
-                SiloWordmarkView(width: 92)
+                AppWordmarkView(placement: .topBar)
             } trailing: { EmptyView() }
         } content: {
             serverCard
@@ -225,7 +225,7 @@ struct RestoredServerRecoveryView: View {
         case .needsSetup: return "This server isn't ready"
         case .serverNotRecognized: return "Can't open this server"
         case .serverUpdateRequired: return "Server update required"
-        case .appUpdateRequired: return "Update Silo"
+        case .appUpdateRequired: return "Update \(AppBrand.name)"
         }
     }
 
@@ -297,7 +297,7 @@ struct RestoredServerRecoveryView: View {
         case .serverRecovery(.serverUpdateRequired):
             return "This server still needs to be updated."
         case .serverRecovery(.appUpdateRequired):
-            return "This server still requires a newer version of Silo."
+            return "This server still requires a newer version of \(AppBrand.name)."
         case .indeterminate:
             return "We still can't reach this server. Your saved sign-in information is unchanged."
         case .valid, .needsLogin, .identityChanged:

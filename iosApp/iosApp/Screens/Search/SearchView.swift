@@ -167,7 +167,7 @@ struct SearchView: View {
                 Spacer(minLength: 80)
                 EmptyStateView(
                     icon: "magnifyingglass",
-                    title: "Search Silo",
+                    title: "Search \(AppBrand.name)",
                     subtitle: "Find movies, series, and people"
                 )
             }

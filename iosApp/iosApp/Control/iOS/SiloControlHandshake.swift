@@ -18,7 +18,7 @@ enum SiloControlHandoffError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .updateRequired:
-            return "Update Silo on the TV to play with your profile."
+            return "Update Kyro on the TV to play with your profile."
         case .timedOut:
             return "The TV took too long to prepare your profile."
         case .cancelled(let message):

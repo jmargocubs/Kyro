@@ -785,7 +785,7 @@ struct CreateProfileFailure: Equatable {
         case .unconfirmed:
             self.init(
                 title: "Profile May Have Been Created",
-                message: "Silo didn't get an answer from the server. Check the profile list before trying again.",
+                message: "\(AppBrand.name) didn't get an answer from the server. Check the profile list before trying again.",
                 closesForm: true
             )
             return

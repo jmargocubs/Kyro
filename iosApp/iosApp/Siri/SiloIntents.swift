@@ -8,8 +8,13 @@ import AppIntents
 /// `ShowInAppSearchResultsIntent` directly. The protocol already runs the
 /// intent in the app's foreground process.
 struct SearchInSiloIntent: ShowInAppSearchResultsIntent {
+    #if os(iOS)
+    static let title: LocalizedStringResource = "Search Kyro"
+    static let description = IntentDescription("Opens Search in Kyro with your search term.")
+    #else
     static let title: LocalizedStringResource = "Search Silo"
     static let description = IntentDescription("Opens Search in Silo with your search term.")
+    #endif
     static let searchScopes: [StringSearchScope] = [.general, .movies, .tv]
 
     @Parameter(title: "Search Term", requestValueDialog: "What do you want to search for?")

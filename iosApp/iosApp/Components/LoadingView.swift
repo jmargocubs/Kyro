@@ -14,7 +14,7 @@ struct LoadingView: View {
             }
 
             VStack(spacing: 20) {
-                SiloWordmarkView(width: 132)
+                AppWordmarkView(placement: .loading)
 
                 ProgressView()
                     .tint(.siloOnSurface)

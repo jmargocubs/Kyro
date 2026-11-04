@@ -1,5 +1,13 @@
 import Foundation
 
+/// A Silo secondary root presented on the navigation stack rather than as a
+/// global tab. Platform-neutral because Route is shared by iOS, macOS and tvOS.
+enum SecondaryDestinationID: Hashable {
+    case app(AppTab)
+    case libraryCategory(PrimaryMenuBuiltin)
+    case library(Int)
+}
+
 /// All navigable destinations in the Silo app.
 enum Route: Hashable {
     // Auth flow
@@ -8,6 +16,9 @@ enum Route: Hashable {
 
     // Main tabs
     case search
+    /// A secondary root opened from Kyro's More menu. Its identity is distinct
+    /// from the five global tab selections and it remains on the app stack.
+    case secondaryDestination(SecondaryDestinationID)
     /// Optional live-channel destination, pushed from the profile menu so it
     /// does not add a fifth or sixth item to Silo's customizable native tab bar.
     case liveTV

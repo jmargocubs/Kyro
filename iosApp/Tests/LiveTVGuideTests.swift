@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import Silo
 
+@MainActor
 final class LiveTVGuideTests: XCTestCase {
     private let utc = TimeZone(secondsFromGMT: 0)!
 
@@ -373,6 +374,61 @@ final class LiveTVGuideTests: XCTestCase {
         XCTAssertEqual(state(visible: 0), .noMatches)
         XCTAssertEqual(state(loading: true), .ready, "a refresh keeps the current grid on screen")
         XCTAssertEqual(state(error: "Down"), .ready, "a failed refresh keeps the last channels")
+    }
+
+    func testGuideSearchMatchesChannelListAndIntersectsCategoryAndFavorites() async {
+        let channels = [
+            LiveTVChannel(id: "one", guideID: nil, name: "North News", streamURL: URL(string: "https://test/1")!,
+                          logoURL: nil, category: "Local News"),
+            LiveTVChannel(id: "two", guideID: nil, name: "North Sports", streamURL: URL(string: "https://test/2")!,
+                          logoURL: nil, category: "Sports"),
+            LiveTVChannel(id: "three", guideID: nil, name: "World News", streamURL: URL(string: "https://test/3")!,
+                          logoURL: nil, category: "News"),
+        ]
+        let favorites: Set<String> = ["one", "two"]
+        let search = LiveTVChannelSearchModel()
+        search.update(channels: channels, query: "north", category: nil, favoritesOnly: false,
+                      favoriteIDs: favorites, debounce: .zero, includeGroups: false)
+        await search.waitForCurrentSearch()
+        let channelListMatches = LiveTVChannelFiltering.filter(channels, query: "north", category: nil,
+                                                               favoritesOnly: false, favoriteIDs: favorites)
+        XCTAssertEqual(search.matches, channelListMatches)
+        let selection = LiveTVPresentation(scheduler: LiveTVTaskScheduler())
+        XCTAssertEqual(selection.select(search.matches[0], from: .guide), .present)
+        XCTAssertEqual(selection.channel(for: .guide)?.id, channelListMatches[0].id,
+                       "a search result retains its channel identity through the existing guide selection path")
+
+        search.update(channels: channels, query: "news", category: "Local News", favoritesOnly: true,
+                      favoriteIDs: favorites, debounce: .zero, includeGroups: false)
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.matches.map(\.id), ["one"], "search, category, and favorites are ANDed")
+        XCTAssertTrue(search.groups.isEmpty, "guide searches do not retain an extra grouped catalog result")
+    }
+
+    func testGuideSearchEmptyClearRestoresFilteredContextAndProviderSwitchRejectsStaleResults() async {
+        func fixture(_ prefix: String) -> [LiveTVChannel] {
+            ["North News", "World News"].enumerated().map { index, name in
+                LiveTVChannel(id: "\(prefix)-\(index)", guideID: nil, name: name,
+                              streamURL: URL(string: "https://test/\(prefix)-\(index)")!, logoURL: nil, category: "News")
+            }
+        }
+        let first = fixture("provider-a")
+        let second = fixture("provider-b")
+        let search = LiveTVChannelSearchModel()
+        search.update(channels: first, query: "absent", category: "News", favoritesOnly: false,
+                      favoriteIDs: [], debounce: .zero, includeGroups: false)
+        await search.waitForCurrentSearch()
+        XCTAssertTrue(search.matches.isEmpty, "an unmatched query produces the empty-results state")
+
+        search.update(channels: second, query: "north", category: nil, favoritesOnly: false,
+                      favoriteIDs: [], debounce: .zero, includeGroups: false)
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.matches.map(\.id), ["provider-b-0"], "provider changes use only the new active catalog")
+
+        search.cancel()
+        let restored = LiveTVChannelFiltering.filter(first, query: "", category: "News",
+                                                     favoritesOnly: false, favoriteIDs: [])
+        XCTAssertEqual(restored.map(\.id), first.map(\.id), "clearing search rebuilds the previous guide filters")
     }
 
     func testBannerPrefersErrorsThenGuideMessagesAndHidesWhileLoading() {

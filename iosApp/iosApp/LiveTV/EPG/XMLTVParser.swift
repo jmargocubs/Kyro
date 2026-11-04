@@ -11,20 +11,25 @@ import Foundation
 ///
 /// Synchronous and CPU-bound: call it from a nonisolated async context, never the main actor.
 enum XMLTVParser {
+    /// - Parameter onProgram: when set, each accepted programme goes to this sink instead of
+    ///   `EPGDocument.programs`, so a large feed is never held as one programme array. A throwing
+    ///   sink aborts the parse and rethrows.
     static func parse(_ data: Data, filter: EPGChannelFilter? = nil, window: DateInterval? = nil,
-                      limits: EPGLimits = EPGLimits()) throws -> EPGDocument {
+                      limits: EPGLimits = EPGLimits(),
+                      onProgram: ((EPGProgram) throws -> Void)? = nil) throws -> EPGDocument {
         try Task.checkCancellation()
         let parser = XMLParser(data: data)
-        let delegate = XMLTVParserDelegate(filter: filter, window: window, limits: limits)
+        let delegate = XMLTVParserDelegate(filter: filter, window: window, limits: limits, sink: onProgram)
         parser.delegate = delegate
         parser.shouldResolveExternalEntities = false
         parser.shouldProcessNamespaces = false
         let completed = parser.parse()
+        if let sinkError = delegate.sinkError { throw sinkError }
         if delegate.wasCancelled || Task.isCancelled { throw CancellationError() }
         guard delegate.sawRoot else { throw EPGError.malformedFeed }
         // A truncated or corrupt tail keeps whatever parsed cleanly before it.
         if !completed, !delegate.document.isTruncated,
-           delegate.document.programs.isEmpty, delegate.document.channels.isEmpty {
+           delegate.acceptedCount == 0, delegate.document.channels.isEmpty {
             throw EPGError.malformedFeed
         }
         if !completed, !delegate.document.isTruncated { delegate.markIncomplete() }
@@ -36,6 +41,9 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
     private(set) var document = EPGDocument()
     private(set) var wasCancelled = false
     private(set) var sawRoot = false
+    private(set) var acceptedCount = 0
+    private(set) var sinkError: Error?
+    private let sink: ((EPGProgram) throws -> Void)?
 
     private enum Kind { case channel, programme, skipped }
     private struct Context {
@@ -60,7 +68,9 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
 
     func markIncomplete() { document.isIncomplete = true }
 
-    init(filter: EPGChannelFilter?, window: DateInterval?, limits: EPGLimits) {
+    init(filter: EPGChannelFilter?, window: DateInterval?, limits: EPGLimits,
+         sink: ((EPGProgram) throws -> Void)? = nil) {
+        self.sink = sink
         self.filter = filter
         self.window = window
         self.limits = limits
@@ -170,8 +180,17 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
                 return
             }
             if let window, program.end <= window.start || program.start >= window.end { return }
-            document.programs.append(program)
-            if document.programs.count >= limits.maximumParsedPrograms {
+            if let sink {
+                do { try sink(program) } catch {
+                    sinkError = error
+                    parser.abortParsing()
+                    return
+                }
+            } else {
+                document.programs.append(program)
+            }
+            acceptedCount += 1
+            if acceptedCount >= limits.maximumParsedPrograms {
                 document.isTruncated = true
                 parser.abortParsing()
             }

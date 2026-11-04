@@ -23,6 +23,11 @@ struct ContentView: View {
     #endif
     @State private var didStartInitialStateCheck = false
     @State private var didFinishStartupSplash = false
+    #if os(iOS)
+    /// Kyro's one-time introduction, decided when the first route commits.
+    /// It covers server setup until Skip or Get Started.
+    @State private var isPresentingKyroIntroduction = false
+    #endif
     @State private var serverRecoveryCoordinator = RestoredServerRecoveryCoordinator()
     #if os(iOS) || os(tvOS)
     @State private var diagnosticsModel = DiagnosticsViewModel()
@@ -87,7 +92,7 @@ struct ContentView: View {
         // The first-run backdrop lives outside the re-keyed subtree so it
         // keeps drifting while screens and servers change in front of it.
         .background {
-            if router.authState.showsMarqueeBackdrop {
+            if router.authState.showsMarqueeBackdrop && !isShowingKyroIntroduction {
                 MarqueeBackdrop()
                     .transition(.opacity)
             }
@@ -101,9 +106,15 @@ struct ContentView: View {
         #endif
         .environment(\.isStartupSplashVisible, isShowingStartupSplash)
         .overlay {
-            if isShowingStartupSplash {
-                startupSplash
+            ZStack {
+                if isShowingStartupSplash {
+                    startupSplash
+                        .transition(.opacity)
+                }
             }
+            // Kyro's splash dissolves into the same halo backdrop the
+            // introduction draws; other splashes lift without animation.
+            .animation(usesKyroStartup ? .easeOut(duration: 0.5) : nil, value: isShowingStartupSplash)
         }
         #if os(iOS) || os(tvOS)
         .modifier(WatchPartyPresentationModifier(router: router))
@@ -153,6 +164,7 @@ struct ContentView: View {
                 pendingDeepLink = link.url
                 router.prefillServerSetup(with: url)
                 router.resetToServerSetup()
+                finishKyroIntroduction()
             }, onSignIn: { server, pending in
                 // Sign in to that saved server again, then come back here.
                 deviceApprovalLink = nil
@@ -162,6 +174,9 @@ struct ContentView: View {
                 router.switchAccount(forTVApproval: pending, on: server, choosingAccount: choosingAccount)
             }, onClose: { deviceApprovalLink = nil })
         }
+        #endif
+        #if DEBUG && os(iOS)
+        .modifier(KyroDebugSettingsRouteModifier(router: router, isEnabled: !isShowingStartupSplash))
         #endif
         #if DEBUG
         .modifier(DebugPlayerPresentationModifier(
@@ -576,7 +591,7 @@ struct ContentView: View {
         // Picture in Picture's restore control needs a Live TV screen to put the player on.
         .task {
             LiveTVService.shared.presentation.navigateToLiveTV = { [router] in
-                router.navigate(to: .liveTV)
+                KyroLiveTVEntry.bringForward(router: router)
             }
         }
         #endif
@@ -819,6 +834,14 @@ struct ContentView: View {
         case .needsServerSetup:
             #if os(tvOS)
             TVServerSetupView(router: router)
+            #elseif os(iOS)
+            if isPresentingKyroIntroduction {
+                KyroIntroductionView { finishKyroIntroduction() }
+                    .transition(.opacity)
+            } else {
+                ServerSetupView(router: router)
+                    .transition(.opacity)
+            }
             #else
             ServerSetupView(router: router)
             #endif
@@ -859,6 +882,9 @@ struct ContentView: View {
                 .onboardingTourGate(router: router)
             #else
             MainTabView(router: router)
+                #if os(iOS)
+                .kyroUnifiedNavigation()
+                #endif
                 .onboardingTourGate(router: router)
             #endif
         }
@@ -870,13 +896,56 @@ struct ContentView: View {
         !didFinishStartupSplash || router.authState == .loading
     }
 
-    private var startupSplash: some View {
-        StartupSplashView {
-            #if os(iOS) || os(tvOS)
-            LaunchTimeline.recordSplashFinished()
-            #endif
-            didFinishStartupSplash = true
+    private var usesKyroStartup: Bool {
+        #if os(iOS)
+        KyroBrand.usesCinematicStartup
+        #else
+        false
+        #endif
+    }
+
+    private var isShowingKyroIntroduction: Bool {
+        #if os(iOS)
+        isPresentingKyroIntroduction && router.authState == .needsServerSetup
+        #else
+        false
+        #endif
+    }
+
+    private func finishStartupSplash() {
+        #if os(iOS) || os(tvOS)
+        LaunchTimeline.recordSplashFinished()
+        #endif
+        didFinishStartupSplash = true
+    }
+
+    /// Skip, Get Started, or a TV approval that needs a server: the
+    /// introduction is done for this install and server setup takes over.
+    private func finishKyroIntroduction() {
+        #if os(iOS)
+        guard isPresentingKyroIntroduction else { return }
+        KyroIntroduction.markCompleted()
+        withAnimation(.easeInOut(duration: 0.5)) {
+            isPresentingKyroIntroduction = false
         }
+        #endif
+    }
+
+    @ViewBuilder
+    private var startupSplashVisual: some View {
+        #if os(iOS)
+        if usesKyroStartup {
+            KyroCinematicSplashView { finishStartupSplash() }
+        } else {
+            StartupSplashView { finishStartupSplash() }
+        }
+        #else
+        StartupSplashView { finishStartupSplash() }
+        #endif
+    }
+
+    private var startupSplash: some View {
+        startupSplashVisual
         .task {
             guard !didStartInitialStateCheck else { return }
             didStartInitialStateCheck = true
@@ -1160,6 +1229,15 @@ struct ContentView: View {
     private func checkInitialState() async {
         let local = await RestoredSessionAuthResolver.resolveLocal()
         guard !Task.isCancelled, router.authState == .loading else { return }
+        #if os(iOS)
+        // Set in the same update as the route, so server setup never shows
+        // for a frame before the introduction covers it.
+        isPresentingKyroIntroduction = KyroIntroduction.resolveAtLaunch(
+            initialState: local.state,
+            hasSavedServers: !serverRegistry.entries.isEmpty,
+            isEligibleDevice: KyroBrand.usesCinematicStartup
+        )
+        #endif
         commitInitialState(local.state)
 
         guard let expectedAccount = local.restoredAccount else { return }
@@ -2207,6 +2285,17 @@ enum MainTabDestinationID: Hashable {
     case app(AppTab)
     case libraryCategory(PrimaryMenuBuiltin)
     case library(Int)
+    case liveTV
+}
+
+extension MainTabDestinationID {
+    init(_ secondary: SecondaryDestinationID) {
+        switch secondary {
+        case .app(let tab): self = .app(tab)
+        case .libraryCategory(let category): self = .libraryCategory(category)
+        case .library(let id): self = .library(id)
+        }
+    }
 }
 
 struct MainTabDestination: Identifiable, Equatable {
@@ -2218,6 +2307,24 @@ struct MainTabDestination: Identifiable, Equatable {
     static func app(_ tab: AppTab) -> MainTabDestination {
         .init(id: .app(tab), title: tab.rawValue, icon: tab.icon, selectedIcon: tab.selectedIcon)
     }
+
+    #if os(iOS)
+    static func global(_ destination: KyroGlobalDestination) -> MainTabDestination {
+        switch destination {
+        case .home:
+            .app(.home)
+        case .movies:
+            .libraryCategory(.movies)
+        case .series:
+            .libraryCategory(.series)
+        case .forYou:
+            .app(.recommendations)
+        case .liveTV:
+            .init(id: .liveTV, title: "Live TV", icon: "dot.radiowaves.left.and.right",
+                  selectedIcon: "dot.radiowaves.left.and.right")
+        }
+    }
+    #endif
 
     static func library(
         id: Int,
@@ -2242,6 +2349,76 @@ struct MainTabDestination: Identifiable, Equatable {
         )
     }
 }
+
+/// Adapts the native Silo root IDs to Kyro's five-destination selection.
+/// These identifiers deliberately reuse the existing Home, category and For
+/// You IDs so SwiftUI retains those roots when the test shell is enabled.
+#if os(iOS)
+func kyroGlobalDestination(for id: MainTabDestinationID) -> KyroGlobalDestination? {
+    switch id {
+    case .app(.home): .home
+    case .libraryCategory(.movies): .movies
+    case .libraryCategory(.series): .series
+    case .app(.recommendations): .forYou
+    case .liveTV: .liveTV
+    default: nil
+    }
+}
+
+func kyroGlobalDestinationID(_ destination: KyroGlobalDestination) -> MainTabDestinationID {
+    MainTabDestination.global(destination).id
+}
+
+#endif
+
+func kyroSecondaryRouteID(for id: MainTabDestinationID) -> SecondaryDestinationID? {
+    switch id {
+    case .app(let tab): .app(tab)
+    case .libraryCategory(let category): .libraryCategory(category)
+    case .library(let libraryId): .library(libraryId)
+    case .liveTV: nil
+    }
+}
+
+/// Current Silo-projected roots that are not one of Kyro's five fixed global
+/// destinations. Keep their server capability gates and order intact.
+#if os(iOS)
+func kyroSecondaryDestinations(from projected: [MainTabDestination]) -> [MainTabDestination] {
+    let globalIDs = Set(KyroGlobalDestination.requiredDestinations.map(kyroGlobalDestinationID))
+    return projected.filter { !globalIDs.contains($0.id) }
+}
+
+/// More is a projection of eligible secondary roots, not merely the user's
+/// customizable primary menu. Calendar is a supported app screen regardless
+/// of that menu; Downloads remains gated by the current server/profile
+/// capability check performed by DownloadManager.
+func kyroMoreDestinations(from projected: [MainTabDestination], downloadsEnabled: Bool) -> [MainTabDestination] {
+    var destinations = kyroSecondaryDestinations(from: projected)
+    if !destinations.contains(where: { $0.id == .app(.calendar) }) {
+        destinations.append(.app(.calendar))
+    }
+    if downloadsEnabled, !destinations.contains(where: { $0.id == .app(.downloads) }) {
+        destinations.append(.app(.downloads))
+    }
+    return destinations
+}
+
+/// Resolves Silo's one-shot tab request into a secondary route only when that
+/// destination is currently projected and eligible. Deep links and existing
+/// leaf-screen tab requests use the same adapter as the More menu.
+func kyroSecondaryRouteID(
+    for requestedTab: AppTab,
+    visibleDestinations: [MainTabDestination]
+) -> SecondaryDestinationID? {
+    let requested = resolvedRequestedMainTabDestination(
+        requestedTab,
+        visibleDestinations: visibleDestinations
+    )
+    guard kyroGlobalDestination(for: requested) == nil else { return nil }
+    guard visibleDestinations.contains(where: { $0.id == requested }) else { return nil }
+    return kyroSecondaryRouteID(for: requested)
+}
+#endif
 
 private struct MainTabSidebarDestination: Identifiable {
     let destination: MainTabDestination
@@ -2377,7 +2554,7 @@ func resolvedRequestedMainTabDestination(
            switch $0.id {
            case .libraryCategory, .library:
                return true
-           case .app:
+           case .app, .liveTV:
                return false
            }
        }) {
@@ -2431,7 +2608,12 @@ struct MainTabLibrarySnapshot: Equatable {
 #if !os(tvOS)
 struct MainTabView: View {
     @Bindable var router: AppRouter
-    @State private var selectedDestinationID: MainTabDestinationID = .app(.home)
+    /// Kept only for the existing production fallback when the test-gated
+    /// unified shell is off. In unified mode the global store is authoritative.
+    @State private var legacySelectedDestinationID: MainTabDestinationID = .app(.home)
+    #if os(iOS)
+    @State private var kyroNavigation = KyroGlobalNavigationStore.shared
+    #endif
     @State private var uiCustomization = UICustomizationPreferences.shared
     /// The local audiobook opt-in is a final visibility gate even when a
     /// synced/custom menu contains an Audiobooks destination.
@@ -2464,6 +2646,77 @@ struct MainTabView: View {
     /// The Siri request Search fills its field from; Search clears it.
     @State private var siriSearchRequest: AppRouter.SearchRequest?
     #endif
+
+    private var usesGlobalClassicNavigation: Bool {
+        #if os(iOS)
+        KyroUnifiedNavigation.isActive
+        #else
+        false
+        #endif
+    }
+
+    /// Native Silo adapter: one selection owner in the unified shell, with
+    /// the legacy selection retained only while the production flag is off.
+    private var selectedDestinationID: MainTabDestinationID {
+        #if os(iOS)
+        if usesGlobalClassicNavigation {
+            return kyroGlobalDestinationID(kyroNavigation.selectedDestination)
+        }
+        #endif
+        return legacySelectedDestinationID
+    }
+
+    private var selectedDestinationBinding: Binding<MainTabDestinationID> {
+        Binding(
+            get: { selectedDestinationID },
+            set: { id in
+                #if os(iOS)
+                if usesGlobalClassicNavigation, let global = kyroGlobalDestination(for: id) {
+                    kyroNavigation.selectedDestination = global
+                    return
+                }
+                #endif
+                legacySelectedDestinationID = id
+            }
+        )
+    }
+
+    private func reconcileLegacySelection() {
+        guard !usesGlobalClassicNavigation else { return }
+        legacySelectedDestinationID = resolvedVisibleMainTabDestination(
+            legacySelectedDestinationID,
+            visibleDestinations: projectedDestinations
+        )
+    }
+
+#if os(iOS)
+    private func handleGlobalShellTabRequest(_ tab: AppTab) {
+        let requested = resolvedRequestedMainTabDestination(tab, visibleDestinations: projectedDestinations)
+        if router.visiblePushedRoutes.contains(where: {
+            if case .secondaryDestination = $0 { return true }
+            return false
+        }) {
+            // Legacy tab-switch requests from a secondary screen used to
+            // replace the selected root. Pop the More route before selecting
+            // a primary tab or opening another secondary root.
+            router.popToRoot()
+        }
+        if let global = kyroGlobalDestination(for: requested) {
+            kyroNavigation.selectedDestination = global
+        } else if let routeID = kyroSecondaryRouteID(
+            for: tab,
+            visibleDestinations: projectedDestinations
+        ) {
+            // Secondary requests (notably Downloads and Calendar) stay on the
+            // existing app stack and do not perturb global tab selection.
+            router.navigate(to: .secondaryDestination(routeID))
+        } else if tab == .libraries {
+            // The old resolver intentionally falls back to Home when no
+            // accessible library root exists.
+            kyroNavigation.selectedDestination = .home
+        }
+    }
+#endif
     #if os(iOS)
     /// Whether the app's window fills its screen. Split View, Slide Over,
     /// Stage Manager, and resized windows all report `false`.
@@ -2497,7 +2750,7 @@ struct MainTabView: View {
             StatusColumnLayout(safeArea: proxy.safeAreaInsets)
         } action: { statusColumn = $0 }
         #endif
-        .tint(.siloOnSurface)
+        .tint(KyroTheme.shellTint)
         #if os(iOS)
         .overlay {
             if router.presentedItemDetail != nil {
@@ -2547,7 +2800,11 @@ struct MainTabView: View {
                   // selected while this task was waiting.
                   selectedDestinationID == .app(.home), router.requestedTab == nil
             else { return }
-            selectedDestinationID = .app(.downloads)
+            if usesGlobalClassicNavigation {
+                router.navigate(to: .secondaryDestination(.app(.downloads)))
+            } else {
+                legacySelectedDestinationID = .app(.downloads)
+            }
         }
         #endif
         #if os(iOS)
@@ -2562,10 +2819,21 @@ struct MainTabView: View {
         #endif
         .onChange(of: router.requestedTab) { _, tab in
             guard let tab else { return }
-            selectedDestinationID = resolvedRequestedMainTabDestination(
+            #if os(iOS)
+            if usesGlobalClassicNavigation {
+                handleGlobalShellTabRequest(tab)
+            } else {
+                legacySelectedDestinationID = resolvedRequestedMainTabDestination(
+                    tab,
+                    visibleDestinations: visibleDestinations
+                )
+            }
+            #else
+            legacySelectedDestinationID = resolvedRequestedMainTabDestination(
                 tab,
                 visibleDestinations: visibleDestinations
             )
+            #endif
             router.requestedTab = nil
         }
         #if os(iOS)
@@ -2575,23 +2843,14 @@ struct MainTabView: View {
         .task { openRequestedSearch() }
         #endif
         .onChange(of: uiCustomization.primaryMenu) { _, _ in
-            selectedDestinationID = resolvedVisibleMainTabDestination(
-                selectedDestinationID,
-                visibleDestinations: visibleDestinations
-            )
+            reconcileLegacySelection()
         }
         .onChange(of: navPrefs.showAudiobooks) { _, _ in
-            selectedDestinationID = resolvedVisibleMainTabDestination(
-                selectedDestinationID,
-                visibleDestinations: visibleDestinations
-            )
+            reconcileLegacySelection()
         }
         #if os(macOS)
         .onChange(of: RequestsFeatureStore.shared.isEnabled) { _, _ in
-            selectedDestinationID = resolvedVisibleMainTabDestination(
-                selectedDestinationID,
-                visibleDestinations: visibleDestinations
-            )
+            reconcileLegacySelection()
         }
         #endif
         .onChange(of: librarySnapshot) { _, _ in
@@ -2599,17 +2858,14 @@ struct MainTabView: View {
             // The fallback Libraries row gives way to the real library rows
             // once the list loads; stay in libraries instead of going Home.
             if selectedDestinationID == .app(.libraries) {
-                selectedDestinationID = resolvedRequestedMainTabDestination(
+                legacySelectedDestinationID = resolvedRequestedMainTabDestination(
                     .libraries,
                     visibleDestinations: visibleDestinations
                 )
                 return
             }
             #endif
-            selectedDestinationID = resolvedVisibleMainTabDestination(
-                selectedDestinationID,
-                visibleDestinations: visibleDestinations
-            )
+            reconcileLegacySelection()
         }
         .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) {
             notification in
@@ -2680,7 +2936,7 @@ struct MainTabView: View {
         router.dismissItemDetail()
         router.popToRoot()
         if visibleDestinations.contains(where: { $0.id == .app(.search) }) {
-            selectedDestinationID = .app(.search)
+            legacySelectedDestinationID = .app(.search)
         } else {
             router.navigate(to: .search)
         }
@@ -2763,10 +3019,22 @@ struct MainTabView: View {
     private var visibleDestinations: [MainTabDestination] {
         #if os(macOS)
         macSidebarSectionList.flatMap(\.items)
+        #elseif os(iOS)
+        usesGlobalClassicNavigation
+            ? KyroGlobalDestination.requiredDestinations
+                .filter { $0 != .liveTV }
+                .map(MainTabDestination.global)
+            : projectedDestinations
         #else
         projectedDestinations
         #endif
     }
+
+    #if os(iOS)
+    private var globalShellDestinations: [MainTabDestination] {
+        KyroGlobalDestination.requiredDestinations.map(MainTabDestination.global)
+    }
+    #endif
 
     #if os(macOS)
     /// The Mac sidebar's groups. Every library the profile can open gets its
@@ -2795,6 +3063,29 @@ struct MainTabView: View {
         }
         return destinations
     }
+
+    /// Secondary roots continue to use Silo's existing projection and
+    /// capability gates. Only the five fixed Kyro destinations are excluded.
+#if os(iOS)
+    private var moreMenuContext: KyroMoreMenuContext? {
+        guard usesGlobalClassicNavigation else { return nil }
+        let secondary = kyroMoreDestinations(
+            from: projectedDestinations,
+            downloadsEnabled: DownloadManager.shared.downloadsEnabled
+        )
+        var items = secondary.enumerated().map { index, destination in
+            KyroMoreMenuItem(
+                id: "root-\(index)-\(destination.title)",
+                title: destination.title,
+                systemImage: destination.icon
+            ) {
+                guard let routeID = kyroSecondaryRouteID(for: destination.id) else { return }
+                router.navigate(to: .secondaryDestination(routeID))
+            }
+        }
+        return KyroMoreMenuContext(items: items)
+    }
+#endif
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
         MainTabLibraryAuthority(
@@ -2825,34 +3116,32 @@ struct MainTabView: View {
     }
 
     private var sidebarTitle: String {
-        serverRegistry.activeServer?.displayName ?? "Silo"
+        serverRegistry.activeServer?.displayName ?? AppBrand.name
     }
 
     /// iPhone + iPad compact width: bottom tab bar, single navigation stack.
     private var tabLayout: some View {
         NavigationStack(path: $router.path) {
-            TabView(selection: $selectedDestinationID) {
-                ForEach(visibleDestinations) { destination in
-                    Tab(
-                        destination.title,
-                        systemImage: selectedDestinationID == destination.id
-                            ? destination.selectedIcon
-                            : destination.icon,
-                        value: destination.id
-                    ) {
-                        destinationContent(for: destination)
-                            #if os(iOS)
-                            .toolbar(statusColumn == nil ? .automatic : .hidden, for: .tabBar)
-                            #endif
-                    }
-                }
+            SiloTabBar(
+                items: visibleDestinations,
+                selection: selectedDestinationBinding,
+                title: \.title,
+                icon: \.icon,
+                selectedIcon: \.selectedIcon
+            ) { destination in
+                destinationContent(for: destination)
+                    #if os(iOS)
+                    .toolbar(statusColumn == nil ? .automatic : .hidden, for: .tabBar)
+                    #endif
             }
             .navigationDestination(for: Route.self) { route in
                 routeContent(for: route)
             }
             #if os(iOS)
+            .environment(\.kyroMoreMenu, moreMenuContext)
+            #endif
+            #if os(iOS)
             .environment(\.statusColumn, statusColumn)
-            .siloTabBarMinimizeOnScroll()
             .modifier(NowPlayingShelfAttachment(showsCard: statusColumn != nil))
             // Outside the shelf's bottom inset, which would otherwise shorten
             // the column and push its actions up into the system status.
@@ -2873,8 +3162,8 @@ struct MainTabView: View {
             if layout.edge == .trailing { Spacer(minLength: 0) }
             StatusColumnBar(
                 layout: layout,
-                destinations: visibleDestinations,
-                selection: $selectedDestinationID,
+                destinations: usesGlobalClassicNavigation ? globalShellDestinations : visibleDestinations,
+                selection: selectedDestinationBinding,
                 topBarActions: TabTopBarActions(
                     onSearch: { router.navigate(to: .search) },
                     onOpenSettings: { router.navigate(to: .settings) },
@@ -3180,7 +3469,7 @@ struct MainTabView: View {
     /// example, tapping Home while Search is open actually returns to Home.
     private func selectSidebarDestination(_ destinationID: MainTabDestinationID) {
         router.popToRoot()
-        selectedDestinationID = destinationID
+        legacySelectedDestinationID = destinationID
     }
 
     private func dismissSidebar() {
@@ -3212,6 +3501,8 @@ struct MainTabView: View {
     @ViewBuilder
     private func destinationContent(for destination: MainTabDestination) -> some View {
         switch destination.id {
+        case .liveTV:
+            LiveTVView(service: .shared)
         case .app(let tab):
             tabContent(for: tab)
         case .libraryCategory(let category):
@@ -3226,6 +3517,35 @@ struct MainTabView: View {
                 libraryAuthority: currentLibraryAuthority,
                 onLibrariesLoaded: acceptLoadedLibraries
             )
+        }
+    }
+
+    @ViewBuilder
+    private func secondaryDestinationContent(for id: MainTabDestinationID) -> some View {
+        if let destination = secondaryDestination(for: id) {
+            destinationContent(for: destination)
+        } else {
+            EmptyView()
+        }
+    }
+
+    private func secondaryDestination(for id: MainTabDestinationID) -> MainTabDestination? {
+        if let projected = projectedDestinations.first(where: { $0.id == id }) {
+            return projected
+        }
+        switch id {
+        case .app(let tab):
+            return MainTabDestination.app(tab)
+        case .libraryCategory(let category):
+            return MainTabDestination.libraryCategory(category)
+        case .library(let libraryId):
+            let library = librarySnapshot.availableLibraries(for: currentLibraryAuthority)
+                .first(where: { $0.id == libraryId })
+            return .library(id: libraryId, label: library?.name ?? "Library",
+                            icon: library?.navigationIcon ?? "rectangle.stack",
+                            selectedIcon: library?.selectedNavigationIcon ?? "rectangle.stack.fill")
+        case .liveTV:
+            return nil
         }
     }
 
@@ -3284,6 +3604,8 @@ struct MainTabView: View {
     @ViewBuilder
     private func routeContent(for route: Route) -> some View {
         switch route {
+        case .secondaryDestination(let id):
+            secondaryDestinationContent(for: MainTabDestinationID(id))
         case .liveTV:
             LiveTVView(service: .shared)
         case .libraryCollection(let libraryId, let collectionId, let title, let kind, let mediaScope):

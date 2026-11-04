@@ -122,7 +122,7 @@ enum ServerRegistryError: LocalizedError {
     case persistenceFailed
 
     var errorDescription: String? {
-        "Silo couldn't save the server list. Please try again."
+        "\(AppBrand.name) couldn't save the server list. Please try again."
     }
 }
 

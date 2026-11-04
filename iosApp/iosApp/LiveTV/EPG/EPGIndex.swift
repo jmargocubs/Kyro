@@ -46,10 +46,21 @@ protocol EPGQuerying: Sendable {
     var fetchedAt: Date { get }
     var programCount: Int { get }
     var isShortGuideOnly: Bool { get }
+    var coverageEnd: Date? { get }
     func channelKey(guideID: String?, name: String?) -> String?
     func nowNext(guideID: String?, name: String?, at date: Date) -> EPGNowNext
     func nowNext(channelKey: String, at date: Date) -> EPGNowNext
     func programs(channelKey: String, overlapping interval: DateInterval) -> [EPGProgram]
+    /// Whether a lookup for this channel can be answered from memory right now. A disk-backed guide
+    /// answers `false` until `prefetch` has loaded the channel; the in-memory index is always resident.
+    func isResident(channelKey: String) -> Bool
+    /// Loads channels into memory so later lookups never wait on disk. Call off the main actor.
+    func prefetch(channelKeys: [String])
+}
+
+extension EPGQuerying {
+    func isResident(channelKey: String) -> Bool { true }
+    func prefetch(channelKeys: [String]) {}
 }
 
 /// An immutable, query-ready guide for one provider.
@@ -72,6 +83,8 @@ struct EPGIndex: Sendable, EPGQuerying {
     /// Built only from Xtream short-guide listings, with no full guide underneath. It can be shown,
     /// but it never stands in for the full guide: it doesn't hide a cached one or make a refresh due.
     let isShortGuideOnly: Bool
+    /// In-memory mode: every channel. SQLite mode: only channels replaced by a short-guide overlay,
+    /// which take precedence over the stored listings.
     private(set) var programsByChannel: [String: [EPGProgram]]
     /// Normalized display name to normalized guide ID. Names shared by different guide channels are
     /// left out, so a name match never shows another channel's guide.
@@ -79,6 +92,8 @@ struct EPGIndex: Sendable, EPGQuerying {
     private(set) var programCount: Int
     private(set) var coverageEnd: Date?
     private(set) var statistics: Statistics
+    /// Set when the base listings live in a SQLite file instead of `programsByChannel`.
+    let sqlite: EPGSQLiteIndex?
 
     static func empty(fetchedAt: Date) -> EPGIndex {
         EPGIndex(fetchedAt: fetchedAt, programsByChannel: [:], channelIDsByName: [:], statistics: Statistics())
@@ -97,8 +112,22 @@ struct EPGIndex: Sendable, EPGQuerying {
         self.programsByChannel = programsByChannel
         self.channelIDsByName = channelIDsByName
         self.statistics = statistics
+        sqlite = nil
         programCount = programsByChannel.values.reduce(0) { $0 + $1.count }
         coverageEnd = programsByChannel.values.compactMap(\.last?.end).max()
+    }
+
+    /// A guide whose listings are stored in SQLite. Overlays added later stay in memory.
+    init(sqlite: EPGSQLiteIndex, statistics: Statistics = Statistics(), overlays: [String: [EPGProgram]] = [:],
+         programCount: Int? = nil, coverageEnd: Date?? = nil) {
+        fetchedAt = sqlite.fetchedAt
+        isShortGuideOnly = false
+        programsByChannel = overlays
+        channelIDsByName = sqlite.guide.names
+        self.statistics = statistics
+        self.sqlite = sqlite
+        self.programCount = programCount ?? sqlite.programCount
+        self.coverageEnd = coverageEnd ?? sqlite.coverageEnd
     }
 
     /// Builds an index from a parsed feed. Synchronous and CPU-bound; call it off the main actor.
@@ -136,13 +165,35 @@ struct EPGIndex: Sendable, EPGQuerying {
                   channelIDsByName: Self.nameMap(document.channels), statistics: statistics)
     }
 
-    var channelCount: Int { programsByChannel.count }
+    var channelCount: Int {
+        guard let sqlite else { return programsByChannel.count }
+        return sqlite.channelCount + programsByChannel.keys.filter { !sqlite.guide.channelKeys.contains($0) }.count
+    }
+
+    var isSQLiteBacked: Bool { sqlite != nil }
+
+    private func hasChannel(_ key: String) -> Bool {
+        programsByChannel[key] != nil || sqlite?.guide.channelKeys.contains(key) == true
+    }
+
+    /// The listings a lookup can use right now. In SQLite mode this never reads disk unless the
+    /// index was opened `.readThrough`; nil means missing or not yet loaded.
+    private func list(_ key: String) -> [EPGProgram]? {
+        if let overlay = programsByChannel[key] { return overlay }
+        return sqlite?.listings(channelKey: key)
+    }
+
+    func isResident(channelKey: String) -> Bool {
+        programsByChannel[channelKey] != nil || (sqlite?.isResident(channelKey: channelKey) ?? true)
+    }
+
+    func prefetch(channelKeys: [String]) { sqlite?.prefetch(channelKeys: channelKeys) }
 
     /// The guide channel for a playlist channel: its guide ID first, then an unambiguous display name.
     func channelKey(guideID: String?, name: String?) -> String? {
-        if let key = EPGChannelKey.guideID(guideID), programsByChannel[key] != nil { return key }
+        if let key = EPGChannelKey.guideID(guideID), hasChannel(key) { return key }
         if let nameKey = EPGChannelKey.name(name), let key = channelIDsByName[nameKey],
-           programsByChannel[key] != nil { return key }
+           hasChannel(key) { return key }
         return nil
     }
 
@@ -152,8 +203,12 @@ struct EPGIndex: Sendable, EPGQuerying {
     }
 
     func nowNext(channelKey: String, at date: Date) -> EPGNowNext {
-        guard let list = programsByChannel[channelKey] else { return .empty }
-        let index = Self.firstIndex(endingAfter: date, in: list)
+        guard let list = list(channelKey) else { return .empty }
+        return Self.nowNext(in: list, at: date)
+    }
+
+    static func nowNext(in list: [EPGProgram], at date: Date) -> EPGNowNext {
+        let index = firstIndex(endingAfter: date, in: list)
         guard index < list.count else { return .empty }
         let candidate = list[index]
         guard candidate.start <= date else { return EPGNowNext(current: nil, next: candidate) }
@@ -162,9 +217,13 @@ struct EPGIndex: Sendable, EPGQuerying {
 
     /// Programmes on one channel that overlap `interval`, in airing order.
     func programs(channelKey: String, overlapping interval: DateInterval) -> [EPGProgram] {
-        guard let list = programsByChannel[channelKey] else { return [] }
+        guard let list = list(channelKey) else { return [] }
+        return Self.programs(in: list, overlapping: interval)
+    }
+
+    static func programs(in list: [EPGProgram], overlapping interval: DateInterval) -> [EPGProgram] {
         var result: [EPGProgram] = []
-        var index = Self.firstIndex(endingAfter: interval.start, in: list)
+        var index = firstIndex(endingAfter: interval.start, in: list)
         while index < list.count, list[index].start < interval.end {
             result.append(list[index])
             index += 1
@@ -180,6 +239,22 @@ struct EPGIndex: Sendable, EPGQuerying {
         let incoming = Self.normalize(programs, window: Self.window(now: now, limits: limits), now: now,
                                       limit: limits.maximumProgramsPerChannel, statistics: &statistics)
         guard let first = incoming.first, let last = incoming.last else { return self }
+        if let sqlite {
+            // Runs on the EPG actor, never the main actor, so reading the base listings from disk is fine.
+            let existing = programsByChannel[key] ?? sqlite.guide.loadFromDisk(key)
+            let kept = existing.filter { $0.end <= first.start || $0.start >= last.end }
+            let replacement = Self.normalize(incoming + kept, window: Self.window(now: now, limits: limits),
+                                             now: now, limit: limits.maximumProgramsPerChannel,
+                                             statistics: &statistics)
+            var overlays = programsByChannel
+            overlays[key] = replacement
+            // Exact coverage: stored channels not overlaid, plus every overlay's last programme.
+            let base = sqlite.guide.coverageEnd(excluding: Set(overlays.keys))
+            let coverage = ([base] + overlays.values.map { $0.last?.end }).compactMap { $0 }.max()
+            return EPGIndex(sqlite: sqlite, statistics: statistics, overlays: overlays,
+                            programCount: programCount - existing.count + replacement.count,
+                            coverageEnd: .some(coverage))
+        }
         let kept = (programsByChannel[key] ?? []).filter { $0.end <= first.start || $0.start >= last.end }
         var merged = programsByChannel
         merged[key] = Self.normalize(incoming + kept, window: Self.window(now: now, limits: limits), now: now,
@@ -191,7 +266,7 @@ struct EPGIndex: Sendable, EPGQuerying {
     /// Removes a short-guide-only channel when its overlay is evicted. Full guides never call
     /// this: their base listings must remain available after an overlay expires.
     func removingPrograms(guideID: String) -> EPGIndex {
-        guard isShortGuideOnly, let key = EPGChannelKey.guideID(guideID), programsByChannel[key] != nil else {
+        guard isShortGuideOnly, sqlite == nil, let key = EPGChannelKey.guideID(guideID), programsByChannel[key] != nil else {
             return self
         }
         var remaining = programsByChannel
@@ -210,7 +285,7 @@ struct EPGIndex: Sendable, EPGQuerying {
 
     /// Sorts one channel, keeps the first programme at each start instant, trims a programme that
     /// runs into the next one, and bounds the list around `now`. Deterministic for a given input.
-    private static func normalize(_ programs: [EPGProgram], window: DateInterval, now: Date, limit: Int,
+    static func normalize(_ programs: [EPGProgram], window: DateInterval, now: Date, limit: Int,
                                   statistics: inout Statistics) -> [EPGProgram] {
         let ordered = programs.enumerated()
             .filter { item in
@@ -239,7 +314,7 @@ struct EPGIndex: Sendable, EPGQuerying {
     }
 
     /// At most `limit` programmes, mostly upcoming, with a little history before `now`.
-    private static func nearest(_ list: [EPGProgram], to now: Date, limit: Int,
+    static func nearest(_ list: [EPGProgram], to now: Date, limit: Int,
                                 statistics: inout Statistics) -> [EPGProgram] {
         guard list.count > limit else { return list }
         let current = firstIndex(endingAfter: now, in: list)
@@ -248,7 +323,7 @@ struct EPGIndex: Sendable, EPGQuerying {
         return Array(list[start ..< start + limit])
     }
 
-    private static func firstIndex(endingAfter date: Date, in list: [EPGProgram]) -> Int {
+    static func firstIndex(endingAfter date: Date, in list: [EPGProgram]) -> Int {
         var low = 0
         var high = list.count
         while low < high {
@@ -258,7 +333,7 @@ struct EPGIndex: Sendable, EPGQuerying {
         return low
     }
 
-    private static func nameMap(_ channels: [EPGChannel]) -> [String: String] {
+    static func nameMap(_ channels: [EPGChannel]) -> [String: String] {
         var map: [String: String] = [:]
         var ambiguous = Set<String>()
         for channel in channels {

@@ -17,6 +17,7 @@ struct IOSSettingsOverview: View {
     @State private var experimental = ExperimentalFeatures.shared
     @State private var searchText = ""
     @State private var showsSignInTV = false
+    @State private var showsKyroIntroduction = false
     @State private var accountSignIn = AccountSignInModel.live()
 
     var body: some View {
@@ -88,6 +89,15 @@ struct IOSSettingsOverview: View {
                 router.switchAccount(forTVApproval: link, on: server, choosingAccount: choosingAccount)
             }, onClose: { showsSignInTV = false })
         }
+        .fullScreenCover(isPresented: $showsKyroIntroduction) {
+            // Replay is deliberately independent of the first-launch route.
+            // In particular, do not call KyroIntroduction.markCompleted here:
+            // replay must never alter the original completion state.
+            // A fresh view each presentation, so replay always opens on page 1.
+            KyroIntroductionView(initialPage: 0) {
+                showsKyroIntroduction = false
+            }
+        }
     }
 
     @ViewBuilder
@@ -127,6 +137,9 @@ struct IOSSettingsOverview: View {
     private var playbackSection: some View {
         if matchesPlaybackSection {
             Section("Playback") {
+                NavigationLink { PlaybackHealthView() } label: {
+                    SettingsOverviewRow(title: "Playback Health", subtitle: "Local startup history and timing", systemImage: "waveform.path.ecg")
+                }
                 if matchesPlayback {
                     NavigationLink {
                         PlaybackSettingsView(viewModel: viewModel)
@@ -242,9 +255,25 @@ struct IOSSettingsOverview: View {
 
     private var aboutSection: some View {
         Section("About") {
+            // The introduction is drawn for portrait iPhone, like first launch.
+            if matchesReplayIntroduction && KyroBrand.usesCinematicStartup {
+                Button {
+                    showsKyroIntroduction = true
+                } label: {
+                    SettingsOverviewRow(
+                        title: "Replay Introduction",
+                        subtitle: "See Kyro's three-screen introduction again",
+                        systemImage: "sparkles.rectangle.stack.fill",
+                        showsChevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.replayIntroduction")
+            }
+
             SettingsOverviewRow(
                 title: "Version",
-                subtitle: "Installed Silo app version",
+                subtitle: "Installed Kyro app version",
                 systemImage: "info.circle.fill",
                 value: SettingsViewModel.versionString
             )
@@ -263,7 +292,7 @@ struct IOSSettingsOverview: View {
             } label: {
                 SettingsOverviewRow(
                     title: "Acknowledgements",
-                    subtitle: "Services Silo uses, and open source licenses",
+                    subtitle: "Services Kyro uses, and open source licenses",
                     systemImage: "curlybraces"
                 )
             }
@@ -373,8 +402,15 @@ struct IOSSettingsOverview: View {
             "AGPL",
             "credits",
             "attribution",
-            "TMDB"
+            "TMDB",
+            "replay introduction",
+            "introduction",
+            "welcome"
         )
+    }
+
+    private var matchesReplayIntroduction: Bool {
+        matches("replay introduction", "introduction", "welcome", "onboarding", "experience")
     }
 
     private var matchesExperimentalName: Bool {

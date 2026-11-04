@@ -110,7 +110,7 @@ final class SiloControlBrowser {
         guard case let .bonjour(txt) = result.metadata else { return nil }
         guard let serverId = txt["server"], !serverId.isEmpty else { return nil }
         let deviceId = txt["id"] ?? "\(result.endpoint)"
-        let name = txt["name"] ?? "Silo TV"
+        let name = txt["name"] ?? "Kyro TV"
         return SiloControlTarget(
             id: deviceId,
             name: name,

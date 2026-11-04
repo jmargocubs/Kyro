@@ -212,7 +212,7 @@ struct ProfileSelectionView: View {
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             MarqueeTopBar {
-                SiloWordmarkView(width: 92)
+                AppWordmarkView(placement: .topBar)
             } trailing: {
                 serverChip
             }

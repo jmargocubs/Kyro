@@ -135,7 +135,7 @@ struct HomeView: View {
                 // It occupies the same 44pt row as the icon buttons so its
                 // centre lines up with theirs.
                 #if !os(macOS)
-                SiloWordmarkView(width: 72)
+                AppWordmarkView(placement: .compactHeader)
                     .frame(height: SiloTheme.topBarIconHitSize)
                     .pageChromeBacking(
                         scrollState: chromeScrollState,

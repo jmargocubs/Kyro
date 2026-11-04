@@ -167,6 +167,7 @@ final class AetherPlaybackController {
         didSet { if isRestoringTransport != oldValue { publish(.transportIntentChanged) } }
     }
     private var transportObservations: [NSKeyValueObservation] = []
+    private var itemStatusObservation: NSKeyValueObservation?
     private var itemStallSubscription: AnyCancellable?
     private var itemErrorSubscription: AnyCancellable?
 
@@ -462,6 +463,9 @@ final class AetherPlaybackController {
     }
 
     func play() {
+        #if os(iOS)
+        KyroPiPDiagnostics.record("transport_intent", state: "play")
+        #endif
         shouldPlayWhenReady = true
         isAudioSessionInterrupted = false
         // `beginLoad` installs spec/epoch before `engine.load` returns, and
@@ -528,6 +532,9 @@ final class AetherPlaybackController {
     }
 
     func pause() {
+        #if os(iOS)
+        KyroPiPDiagnostics.record("transport_intent", state: "manual_pause")
+        #endif
         shouldPlayWhenReady = false
         transportIntentGeneration &+= 1
         transportRestoreTask?.cancel()
@@ -833,6 +840,9 @@ final class AetherPlaybackController {
     }
 
     func stop() {
+        #if os(iOS)
+        KyroPiPDiagnostics.record("player_stop", state: "intent=\(shouldPlayWhenReady ? "play" : "paused")")
+        #endif
         invalidateActiveLoad()
         shouldPlayWhenReady = false
         // Leaving video is the app's last use of the shared `AVAudioSession` unless an
@@ -1046,7 +1056,15 @@ final class AetherPlaybackController {
 
         engine.$errorInfo
             .compactMap { $0 }
-            .sink { [weak self] error in self?.publish(.failure(error)) }
+            .sink { [weak self] error in
+                #if os(iOS)
+                KyroPiPDiagnostics.record(
+                    "playback_error",
+                    state: "kind=\(String(describing: error.kind)) code=\(error.underlyingCode.map(String.init) ?? "none")"
+                )
+                #endif
+                self?.publish(.failure(error))
+            }
             .store(in: &subscriptions)
 
         engine.sourceAuthorizationRefused
@@ -1160,6 +1178,16 @@ final class AetherPlaybackController {
             .sink { [weak self] notification in
                 guard let self else { return }
                 let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+                #if os(iOS)
+                let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
+                let typeLabel = raw == AVAudioSession.InterruptionType.began.rawValue ? "began"
+                    : (raw == AVAudioSession.InterruptionType.ended.rawValue ? "ended" : "unknown")
+                let session = AVAudioSession.sharedInstance()
+                KyroPiPDiagnostics.record(
+                    "audio_interruption",
+                    state: "type=\(typeLabel) options=\(options.map(String.init) ?? "none") intent=\(self.shouldPlayWhenReady ? "play" : "paused") category=\(session.category.rawValue) mode=\(session.mode.rawValue) otherAudio=\(session.isOtherAudioPlaying) secondarySilenced=\(session.secondaryAudioShouldBeSilencedHint)"
+                )
+                #endif
                 if raw == AVAudioSession.InterruptionType.began.rawValue {
                     isAudioSessionInterrupted = true
                 } else if let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
@@ -1229,19 +1257,65 @@ final class AetherPlaybackController {
     private func bindNativeTransport(to player: AVPlayer?) {
         transportObservations.forEach { $0.invalidate() }
         transportObservations = []
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
         defer { publish(.nativeTransportChanged) }
         guard let player else { return }
         let changed: (AVPlayer) -> Void = { [weak self] player in
             Task { @MainActor [weak self, weak player] in
                 guard let self, let player, self.observedPlayer === player else { return }
                 self.publish(.nativeTransportChanged)
+                #if os(iOS)
+                self.recordPiPTransportState("avplayer_transport", player: player)
+                #endif
             }
         }
         transportObservations = [
             player.observe(\.timeControlStatus, options: [.new]) { player, _ in changed(player) },
+            player.observe(\.rate, options: [.new]) { player, _ in changed(player) },
             player.observe(\.reasonForWaitingToPlay, options: [.new]) { player, _ in changed(player) },
-            player.observe(\.currentItem, options: [.new]) { player, _ in changed(player) },
         ]
+        transportObservations.append(player.observe(\.currentItem, options: [.new]) { [weak self, weak player] _, _ in
+            Task { @MainActor [weak self, weak player] in
+                guard let self, let player, self.observedPlayer === player else { return }
+                self.observePiPItemReadiness(player.currentItem)
+                self.recordPiPTransportState("avplayer_item_changed", player: player)
+                self.publish(.nativeTransportChanged)
+            }
+        })
+        observePiPItemReadiness(player.currentItem)
+        #if os(iOS)
+        recordPiPTransportState("avplayer_bound", player: player)
+        #endif
+    }
+
+    private func observePiPItemReadiness(_ item: AVPlayerItem?) {
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = item?.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item else { return }
+                let status = switch item.status {
+                case .unknown: "unknown"
+                case .readyToPlay: "ready"
+                case .failed: "failed"
+                @unknown default: "future"
+                }
+                KyroPiPDiagnostics.record("avplayer_item_readiness", state: "status=\(status)")
+                self.recordPiPTransportState("avplayer_item_state")
+            }
+        }
+    }
+
+    private func recordPiPTransportState(_ event: String, player suppliedPlayer: AVPlayer? = nil) {
+        let player = suppliedPlayer ?? engine.currentAVPlayer
+        let status = player.map { String(describing: $0.timeControlStatus) } ?? "no_player"
+        let rate = player.map { String(format: "%.3g", $0.rate) } ?? "0"
+        let itemStatus = player?.currentItem.map { String(describing: $0.status) } ?? "no_item"
+        let ready = player?.currentItem?.isPlaybackLikelyToKeepUp ?? false
+        KyroPiPDiagnostics.record(
+            event,
+            state: "timeControl=\(status) rate=\(rate) item=\(itemStatus) ready=\(ready) intent=\(shouldPlayWhenReady ? "play" : "paused")"
+        )
     }
 
     private func bindItemStalls(to item: AVPlayerItem?) {

@@ -26,7 +26,7 @@ struct ServerSetupView: View {
     var body: some View {
         MarqueeStage(scrim: .bottom, frostStart: 0.30) {
             MarqueeTopBar {
-                SiloWordmarkView(width: 92)
+                AppWordmarkView(placement: .topBar)
             } trailing: { EmptyView() }
         } content: {
             MarqueeHeadline(title: "Connect to\nyour server", lead: "Type the address you use for Silo.")

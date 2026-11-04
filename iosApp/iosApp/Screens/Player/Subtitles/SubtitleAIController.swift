@@ -1007,5 +1007,5 @@ final class SubtitleAIController {
     private static let genericSubmitFailure = "Couldn't start subtitle translation."
 
     static let lostTrackMessage =
-        "Silo lost track of this subtitle job. If it finishes, the subtitles will appear in the subtitle list."
+        "\(AppBrand.name) lost track of this subtitle job. If it finishes, the subtitles will appear in the subtitle list."
 }

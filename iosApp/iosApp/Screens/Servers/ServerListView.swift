@@ -274,7 +274,7 @@ struct ServerListView: View {
             isResolvingServer = false
             removeTarget = nil
             guard removed else {
-                router.accountActionError = "Silo couldn't remove the saved server. Please try again."
+                router.accountActionError = "\(AppBrand.name) couldn't remove the saved server. Please try again."
                 if wasActive { refreshAuthState() }
                 return
             }

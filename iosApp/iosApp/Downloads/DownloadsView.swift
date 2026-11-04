@@ -231,7 +231,7 @@ struct DownloadsView: View {
                     }
                     #if os(iOS)
                     if !isSelecting {
-                        Text("Downloads keep going when you leave Silo or lock your phone. Closing Silo from the app switcher pauses them until you open it again.")
+                        Text("Downloads keep going when you leave \(AppBrand.name) or lock your phone. Closing \(AppBrand.name) from the app switcher pauses them until you open it again.")
                             .font(.footnote)
                             .foregroundColor(.siloSecondaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)

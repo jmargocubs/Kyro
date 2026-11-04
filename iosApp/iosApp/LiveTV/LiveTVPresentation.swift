@@ -6,6 +6,9 @@ import Observation
 enum LiveTVPresenter: Hashable, Sendable {
     case list
     case guide
+    /// Kyro's unified navigation: the app shell, over whatever the user has open, when no Live TV
+    /// screen can come forward without closing it. Never counted as a visible screen.
+    case shell
 }
 
 /// What a channel selection means right now.
@@ -162,6 +165,21 @@ final class LiveTVPresentation {
         switch phase {
         case .presented, .restoring: return
         case .idle, .pictureInPicture: visible.remove(presenter)
+        }
+    }
+
+    /// Kyro's unified navigation: no Live TV screen can come forward without closing what the user
+    /// has open (a pushed Media Server screen), so the player waiting for one opens over it instead.
+    func presentOverCurrentScreen() {
+        switch phase {
+        case .restoring(let channel, nil):
+            lastPresenter = .shell
+            phase = .restoring(channel, .shell)
+        case .presented(let channel, let presenter) where !visible.contains(presenter):
+            lastPresenter = .shell
+            phase = .presented(channel, .shell)
+        case .idle, .presented, .pictureInPicture, .restoring:
+            break
         }
     }
 

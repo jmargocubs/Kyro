@@ -499,6 +499,7 @@ struct PlayerView: View {
         // PiP on backgrounding keeps this cover, so coming back to the app
         // lands on the player itself; end PiP into it.
         .onChange(of: scenePhase) { _, phase in
+            KyroPiPDiagnostics.record("scene_phase", state: String(describing: phase))
             if phase == .active {
                 PlayerScreenBrightness.shared.resume()
                 pictureInPicture.stopForReturnToPresentedPlayer(owner: viewModel)

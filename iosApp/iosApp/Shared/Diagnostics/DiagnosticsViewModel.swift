@@ -516,7 +516,7 @@ final class DiagnosticsViewModel {
             }
             return "Collector rejected the report; the local copy was kept."
         case .keptRetryable:
-            return "Report kept; Silo will retry."
+            return "Report kept; \(AppBrand.name) will retry."
         case .keptNeedsServerUpdate:
             return "Report kept; your server needs an update."
         case .keptTooLarge:

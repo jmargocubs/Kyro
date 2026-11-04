@@ -12,8 +12,15 @@ final class AetherLiveTVEngine: LiveTVEngineDriving {
     var onPhase: ((LiveTVEnginePhase) -> Void)?
     var onLiveSourceReset: (() -> Void)?
     var onSystemInterruption: (() -> Void)?
+    var onSystemInterruptionEnded: (() -> Void)?
+    var onAudioRouteLost: (() -> Void)?
     private var cancellables: Set<AnyCancellable> = []
     private let systemObservers = LiveTVNotificationTokens()
+    private var runtimeCancellables: Set<AnyCancellable> = []
+    private var runtimeSession: RuntimeAudioDiagnosticSession?
+    private var runtimeID: UUID?
+    private var runtimeGeneration = 0
+    private var runtimeRoute = "unknown"
 
     init() throws {
         engine = try AetherEngine()
@@ -50,6 +57,7 @@ final class AetherLiveTVEngine: LiveTVEngineDriving {
     func pause() { engine.pause() }
 
     func stop(final: Bool, releaseAudioSession: Bool) {
+        finishRuntimeDiagnostics(phase: "stopped")
         // Silo's ownership rule: release only when no other Silo engine holds audio. Across
         // engines the release still belongs to the last one out (AetherEngine's shared output book).
         engine.deactivatesAudioSessionOnStop = releaseAudioSession
@@ -68,7 +76,95 @@ final class AetherLiveTVEngine: LiveTVEngineDriving {
         // `errorInfo` is assigned before the state it describes.
         case .error: .failed(Self.failure(engine.errorInfo), detail: Self.detail(engine.errorInfo))
         }
+        if case .playing = phase {
+            if runtimeSession == nil { beginRuntimeDiagnostics() }
+            else { captureRuntimeSnapshot() }
+        } else if runtimeSession != nil {
+            captureRuntimeSnapshot()
+            switch phase {
+            case .ended: finishRuntimeDiagnostics(phase: "ended")
+            case .error: finishRuntimeDiagnostics(phase: "error")
+            default: break
+            }
+        }
         onPhase?(mapped)
+    }
+
+    /// Selection metadata contains only an opaque UUID, generation and the app's route enum.
+    func prepareRuntimeDiagnostics(sessionID: UUID, generation: Int, route: LiveTVStreamRoute) {
+        finishRuntimeDiagnostics(phase: "replaced")
+        runtimeID = sessionID
+        runtimeGeneration = generation
+        runtimeRoute = route == .hls ? "hls" : "transport_stream"
+    }
+
+    private func beginRuntimeDiagnostics() {
+        guard let runtimeID else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        runtimeSession = RuntimeAudioDiagnosticSession(sessionID: runtimeID, generation: runtimeGeneration,
+            route: runtimeRoute, startedAt: now, initial: runtimeSnapshot())
+        persistRuntime()
+        engine.$audioDelivery.sink { [weak self] _ in self?.captureRuntimeSnapshot() }.store(in: &runtimeCancellables)
+        engine.$activeAudioDecoder.sink { [weak self] _ in self?.captureRuntimeSnapshot() }.store(in: &runtimeCancellables)
+        engine.$audioTracks.sink { [weak self] _ in self?.captureRuntimeSnapshot() }.store(in: &runtimeCancellables)
+        engine.$activeAudioTrackIndex.sink { [weak self] _ in self?.captureRuntimeSnapshot() }.store(in: &runtimeCancellables)
+    }
+
+    private func runtimeSnapshot() -> RuntimeAudioDiagnosticSession.Snapshot {
+        let phase: String = switch engine.playbackPhase {
+        case .idle: "idle"
+        case .loading: "loading"
+        case .playing: "playing"
+        case .paused: "paused"
+        case .seeking: "seeking"
+        case .rebuffering: "rebuffering"
+        case .stalled: "stalled"
+        case .ended: "ended"
+        case .error: "error"
+        }
+        return .init(phase: phase, delivery: engine.audioDelivery.rawValue,
+            decoder: safeDecoderLabel(engine.activeAudioDecoder), selectedTrack: engine.activeAudioTrackIndex,
+            trackCount: engine.audioTracks.count)
+    }
+
+    private func safeDecoderLabel(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .+-_/()")
+        let normalized = String(value.unicodeScalars.map { allowed.contains($0) ? Character($0) : " " })
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return normalized.isEmpty ? nil : String(normalized.prefix(80))
+    }
+
+    private func captureRuntimeSnapshot() {
+        guard var runtimeSession else { return }
+        guard runtimeSession.observe(runtimeSnapshot(), now: ProcessInfo.processInfo.systemUptime) else { return }
+        self.runtimeSession = runtimeSession
+        persistRuntime()
+    }
+
+    private func recordSystemAudioEvent(_ name: String, value: String) {
+        guard var runtimeSession else { return }
+        runtimeSession.systemEvent(name, value: value, now: ProcessInfo.processInfo.systemUptime)
+        self.runtimeSession = runtimeSession
+        persistRuntime()
+    }
+
+    private func finishRuntimeDiagnostics(phase: String) {
+        guard var runtimeSession else { runtimeID = nil; return }
+        runtimeSession.end(phase: phase, now: ProcessInfo.processInfo.systemUptime)
+        self.runtimeSession = nil
+        runtimeCancellables.removeAll()
+        persist(runtimeSession.record)
+        runtimeID = nil
+    }
+
+    private func persistRuntime() {
+        guard let runtimeSession else { return }
+        persist(runtimeSession.record)
+    }
+
+    private func persist(_ record: RuntimeAudioDiagnosticRecord) {
+        PlaybackDiagnosticsStore.shared.appendRuntime(record)
     }
 
     private static func failure(_ info: PlaybackErrorInfo?) -> LiveTVPlaybackFailure {
@@ -87,15 +183,31 @@ final class AetherLiveTVEngine: LiveTVEngineDriving {
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
         ) { [weak self] notification in
             let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-            guard type == AVAudioSession.InterruptionType.began.rawValue else { return }
-            MainActor.assumeIsolated { self?.onSystemInterruption?() }
+            let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
+            let typeLabel = type == AVAudioSession.InterruptionType.began.rawValue ? "began"
+                : (type == AVAudioSession.InterruptionType.ended.rawValue ? "ended" : "unknown")
+            let audioSession = AVAudioSession.sharedInstance()
+            KyroPiPDiagnostics.record(
+                "live_tv_audio_interruption",
+                state: "type=\(typeLabel) options=\(options.map(String.init) ?? "none") category=\(audioSession.category.rawValue) mode=\(audioSession.mode.rawValue) otherAudio=\(audioSession.isOtherAudioPlaying) secondarySilenced=\(audioSession.secondaryAudioShouldBeSilencedHint)"
+            )
+            if let type { MainActor.assumeIsolated { self?.recordSystemAudioEvent("audio_interruption", value: type == AVAudioSession.InterruptionType.began.rawValue ? "began" : "ended") } }
+            if type == AVAudioSession.InterruptionType.began.rawValue {
+                MainActor.assumeIsolated { self?.onSystemInterruption?() }
+            } else if type == AVAudioSession.InterruptionType.ended.rawValue,
+                      let raw = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
+                      AVAudioSession.InterruptionOptions(rawValue: raw).contains(.shouldResume) {
+                MainActor.assumeIsolated { self?.onSystemInterruptionEnded?() }
+            }
         })
         systemObservers.add(center.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
         ) { [weak self] notification in
             let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            KyroPiPDiagnostics.record("live_tv_audio_route_change", state: "reason=\(reason.map(String.init) ?? "unknown")")
+            if let reason { MainActor.assumeIsolated { self?.recordSystemAudioEvent("audio_route_change", value: String(reason)) } }
             guard reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
-            MainActor.assumeIsolated { self?.onSystemInterruption?() }
+            MainActor.assumeIsolated { self?.onAudioRouteLost?() }
         })
         #endif
     }
@@ -279,8 +391,12 @@ struct LiveTVPlayerView: View {
         .statusBarHidden()
         #endif
         .task {
-            session.play(channel)
-            service?.attachPictureInPicture()
+            if let service {
+                service.playPresentedChannel(channel)
+                service.attachPictureInPicture()
+            } else {
+                session.play(channel)
+            }
         }
         .onAppear {
             service?.presentation.playerDidAppear(channel)
@@ -303,6 +419,7 @@ struct LiveTVPlayerView: View {
         // Automatic Picture in Picture on leaving the app keeps this cover, so coming back lands on
         // the player itself; end the window into it.
         .onChange(of: scenePhase) { _, phase in
+            KyroPiPDiagnostics.record("live_tv_scene_phase", state: String(describing: phase))
             if phase == .active { pictureInPicture.stopForReturnToPresentedPlayer(owner: session) }
         }
         #endif
