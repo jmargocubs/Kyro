@@ -13,14 +13,29 @@ enum EPGSQLiteError: Error, Equatable, Sendable {
 
 /// Internal switch for SQLite guide storage. Off unless the owner enables it in the internal test
 /// build. The production UI does not expose this preference.
+///
+/// Only builds compiled with `KYRO_INTERNAL_EPG_STORAGE_TOGGLE` read the preference. Every other
+/// build uses the in-memory guide, even when an earlier internal build left the preference on,
+/// because those builds have no switch to turn it off.
 enum EPGStorageMode: Sendable, Equatable {
     case memory
     case sqlite
 
     static let defaultsKey = "kyro.internal.epg.sqliteStorage"
 
+    /// Whether this build includes the internal SQLite switch.
+    #if KYRO_INTERNAL_EPG_STORAGE_TOGGLE
+    static let isInternalToggleCompiled = true
+    #else
+    static let isInternalToggleCompiled = false
+    #endif
+
     static func current(defaults: UserDefaults = .standard) -> EPGStorageMode {
-        defaults.bool(forKey: defaultsKey) ? .sqlite : .memory
+        resolve(preferenceEnabled: defaults.bool(forKey: defaultsKey), toggleCompiled: isInternalToggleCompiled)
+    }
+
+    static func resolve(preferenceEnabled: Bool, toggleCompiled: Bool) -> EPGStorageMode {
+        toggleCompiled && preferenceEnabled ? .sqlite : .memory
     }
 }
 

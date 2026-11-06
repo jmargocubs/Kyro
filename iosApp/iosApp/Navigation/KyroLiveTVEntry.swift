@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Where Kyro's Live TV entry points lead. With the unified navigation
-/// prototype on (iPhone, `KyroUnifiedNavigation`), Live TV is a tab and is
-/// never pushed, so exactly one Live TV screen exists. Otherwise Live TV is
-/// pushed onto the main stack, as in Build 17.
+/// Where Kyro's Live TV entry points lead. Under the unified navigation
+/// (the iPhone default, `KyroUnifiedNavigation`), Live TV is a tab and is
+/// never pushed, so exactly one Live TV screen exists. Otherwise (iPad, or the
+/// legacy opt-out) Live TV is pushed onto the main stack, as in Build 17.
 @MainActor
 enum KyroLiveTVEntry {
     /// The profile menu's Live TV item.

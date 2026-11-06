@@ -12,7 +12,9 @@ final class KyroClassicNavigationUITests: XCTestCase {
 
     private func launch(style: String?, _ extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyroDebugLiveTVFixture",
+        // These tests cover the earlier navigation, which the unified shell replaced on iPhone.
+        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyro.navigation.legacyShell", "YES",
+                                "-kyroDebugLiveTVFixture",
                                 "-kyroDebugLiveTVNavReset", "-kyroDebugLiveTVNavIdle", "stayVisible"]
         if let style { app.launchArguments += ["-kyroDebugLiveTVNavStyle", style] }
         app.launchArguments += extra

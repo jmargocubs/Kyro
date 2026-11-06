@@ -18,7 +18,9 @@ final class KyroPaletteCaptureUITests: XCTestCase {
 
     private func launchLiveTV(style: String) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyroDebugLiveTVFixture",
+        // The Build 15 palette captures used the earlier navigation's styles.
+        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyro.navigation.legacyShell", "YES",
+                                "-kyroDebugLiveTVFixture",
                                 "-kyroDebugLiveTVNavReset", "-kyroDebugLiveTVNavIdle", "stayVisible",
                                 "-kyroDebugLiveTVNavStyle", style]
         app.launch()

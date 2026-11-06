@@ -213,8 +213,10 @@ final class UnifiedSearchCoordinatorTests: XCTestCase {
 
     private func makeCoordinator(silo: FakeSiloSearchSource,
                                  catalog: FakeIPTVCatalog,
-                                 identities: FakeIdentityBox = FakeIdentityBox(.init(serverID: "server", accountID: "account", profileID: "profile"))) -> UnifiedSearchCoordinator {
-        UnifiedSearchCoordinator(
+                                 identities: FakeIdentityBox? = nil) -> UnifiedSearchCoordinator {
+        // Built here, on the main actor: a default argument is evaluated outside the class's isolation.
+        let identities = identities ?? FakeIdentityBox(.init(serverID: "server", accountID: "account", profileID: "profile"))
+        return UnifiedSearchCoordinator(
             silo: silo,
             indexStore: LiveTVChannelSearchIndexStore(),
             catalogSnapshot: { catalog.value },

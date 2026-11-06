@@ -79,7 +79,7 @@ private struct KyroDebugLiveTVFixtureStack: View {
     }
 }
 
-/// With `-kyro.unifiedNavigation.enabled YES`, exercises the five global
+/// On iPhone by default (not with `-kyro.navigation.legacyShell YES`), exercises the five global
 /// destinations, one selection store, and secondary More routes.
 /// `-kyroDebugUnifiedMiniPlayer` attaches a stand-in to the tab bar's bottom
 /// accessory, where `NowPlayingShelfAttachment` puts the real Now Playing

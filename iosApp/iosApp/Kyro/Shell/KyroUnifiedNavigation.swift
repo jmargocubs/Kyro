@@ -1,26 +1,34 @@
 import SwiftUI
 import UIKit
 
-/// Kyro's unified Classic shell, currently gated for testing. The production
-/// feature-flag behavior remains unchanged until rollout is approved.
+/// Kyro's unified Classic shell: Live TV as a tab of the Media Server's own
+/// tab bar. The default on iPhone since Build 27; iPad keeps the earlier
+/// navigation, where Live TV is pushed over the Media Server tabs.
 ///
-/// Off by default. It is read once at launch from the
-/// `kyro.unifiedNavigation.enabled` default (`-kyro.unifiedNavigation.enabled YES`
-/// on the command line), so the Build 17 navigation stays the shipping one.
+/// Read once at launch. The earlier navigation stays available for debugging
+/// and tests through the `kyro.navigation.legacyShell` default
+/// (`-kyro.navigation.legacyShell YES` on the command line, or the Debug
+/// switch below). The Build 26 setting `kyro.unifiedNavigation.enabled` is no
+/// longer read, so a `false` left by an earlier test build cannot bring the
+/// earlier navigation back.
 enum KyroUnifiedNavigation {
-    static let defaultsKey = "kyro.unifiedNavigation.enabled"
+    /// Opt-out: true shows the earlier navigation on iPhone.
+    static let legacyShellKey = "kyro.navigation.legacyShell"
 
-#if KYRO_UNIFIED_NAV_FORCE_ON
-    /// Dedicated iPhone validation builds force the shell on so a stale
-    /// UserDefaults value cannot make the build appear to be the fallback.
-    /// Production builds do not define this condition.
     @MainActor
-    static let isActive: Bool = UIDevice.current.userInterfaceIdiom == .phone
-#else
-    @MainActor
-    static let isActive: Bool = UserDefaults.standard.bool(forKey: defaultsKey)
-        && UIDevice.current.userInterfaceIdiom == .phone
-#endif
+    static let isActive: Bool = resolveIsActive(isPhone: UIDevice.current.userInterfaceIdiom == .phone,
+                                                defaults: .standard)
+
+    /// Whether the unified shell runs, for a device idiom and settings.
+    /// `KYRO_UNIFIED_NAV_FORCE_ON` is the Build 26 validation recipe; it is no
+    /// longer needed, still accepted, and ignores the opt-out.
+    static func resolveIsActive(isPhone: Bool, defaults: UserDefaults) -> Bool {
+        #if KYRO_UNIFIED_NAV_FORCE_ON
+        return isPhone
+        #else
+        return isPhone && !defaults.bool(forKey: legacyShellKey)
+        #endif
+    }
 
     /// Native iPhone tab bars display four ordinary items and place the fifth
     /// here. The four media roots remain in their original order.
@@ -56,27 +64,33 @@ enum KyroUnifiedNavigation {
 }
 
 #if DEBUG || KYRO_UNIFIED_NAV_TOGGLE
-/// Device testing only: turns the unified navigation on or off for the next
-/// launch. Compiled into Debug builds and into Release builds made with
+/// Device testing only: switches between the unified navigation and the
+/// earlier one for the next launch. Compiled into Debug builds and into
+/// Release builds made with
 /// `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) KYRO_UNIFIED_NAV_TOGGLE'`
 /// on the command line; the project never sets it, so shipping builds have no
-/// switch and keep the Build 17 navigation. Off unless the tester turns it on.
+/// switch and always use the unified navigation on iPhone. On unless the
+/// tester turns it off.
 struct KyroUnifiedNavigationTestSection: View {
-    @AppStorage(KyroUnifiedNavigation.defaultsKey) private var isEnabled = false
+    @AppStorage(KyroUnifiedNavigation.legacyShellKey) private var usesLegacyShell = false
+
+    private var isEnabled: Binding<Bool> {
+        Binding(get: { !usesLegacyShell }, set: { usesLegacyShell = !$0 })
+    }
 
     var body: some View {
         Section {
-            Toggle("Live TV as a Tab", isOn: $isEnabled)
+            Toggle("Live TV as a Tab", isOn: isEnabled)
                 .accessibilityIdentifier("kyroUnifiedNavigationToggle")
-            if isEnabled != KyroUnifiedNavigation.isActive && UIDevice.current.userInterfaceIdiom == .phone {
+            if isEnabled.wrappedValue != KyroUnifiedNavigation.isActive && UIDevice.current.userInterfaceIdiom == .phone {
                 Label("Close and reopen Kyro to apply.", systemImage: "arrow.clockwise")
                     .font(.footnote)
                     .foregroundStyle(KyroTheme.accentInk)
             }
         } header: {
-            Text("Experimental")
+            Text("Testing")
         } footer: {
-            Text("Test build only. Puts Live TV in the app's tab bar on iPhone. Takes effect the next time Kyro opens.")
+            Text("Test build only. Turn off to use the earlier navigation on iPhone, where Live TV opens over the Media Server tabs. Takes effect the next time Kyro opens.")
         }
     }
 }

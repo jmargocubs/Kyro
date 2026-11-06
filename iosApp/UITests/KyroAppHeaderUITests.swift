@@ -7,7 +7,7 @@ final class KyroAppHeaderUITests: XCTestCase {
 
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyro.unifiedNavigation.enabled", "YES",
+        app.launchArguments += ["-kyro.c3.introduction.completed", "YES",
                                 "-kyroDebugLiveTVFixture", "-kyroDebugLiveTVNavReset"]
         app.launch()
         XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 30), "Unified shell loaded")

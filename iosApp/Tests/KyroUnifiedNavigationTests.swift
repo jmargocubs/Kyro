@@ -114,6 +114,29 @@ final class KyroUnifiedNavigationTests: XCTestCase {
                        "Back returns to Live TV Home, never to Kyro Home")
     }
 
+    // MARK: Default and opt-out
+
+    func testTheUnifiedShellIsTheIPhoneDefaultAndIPadKeepsTheEarlierNavigation() {
+        let defaults = UserDefaults(suiteName: "KyroUnifiedNavigationTests-\(UUID().uuidString)")!
+        XCTAssertTrue(KyroUnifiedNavigation.resolveIsActive(isPhone: true, defaults: defaults))
+        XCTAssertFalse(KyroUnifiedNavigation.resolveIsActive(isPhone: false, defaults: defaults))
+    }
+
+    #if !KYRO_UNIFIED_NAV_FORCE_ON
+    func testTheLegacyOptOutShowsTheEarlierNavigationOnIPhone() {
+        let defaults = UserDefaults(suiteName: "KyroUnifiedNavigationTests-\(UUID().uuidString)")!
+        defaults.set(true, forKey: KyroUnifiedNavigation.legacyShellKey)
+        XCTAssertFalse(KyroUnifiedNavigation.resolveIsActive(isPhone: true, defaults: defaults))
+        XCTAssertFalse(KyroUnifiedNavigation.resolveIsActive(isPhone: false, defaults: defaults))
+    }
+    #endif
+
+    func testAStaleBuild26SettingNoLongerTurnsTheUnifiedShellOff() {
+        let defaults = UserDefaults(suiteName: "KyroUnifiedNavigationTests-\(UUID().uuidString)")!
+        defaults.set(false, forKey: "kyro.unifiedNavigation.enabled")
+        XCTAssertTrue(KyroUnifiedNavigation.resolveIsActive(isPhone: true, defaults: defaults))
+    }
+
     func testTheProfileMenuOffersLiveTVOnlyWhereItIsNotAlreadyATab() {
         XCTAssertFalse(KyroLiveTVEntry.profileMenuOffersLiveTV(unifiedShell: true),
                        "Under the unified shell Live TV is a tab; the menu item would duplicate it")

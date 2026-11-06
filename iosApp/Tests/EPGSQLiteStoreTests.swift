@@ -304,7 +304,9 @@ final class EPGSQLiteStoreTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "EPGSQLiteStoreTests-\(UUID().uuidString)")!
         XCTAssertEqual(EPGStorageMode.current(defaults: defaults), .memory)
         defaults.set(true, forKey: EPGStorageMode.defaultsKey)
-        XCTAssertEqual(EPGStorageMode.current(defaults: defaults), .sqlite)
+        XCTAssertEqual(EPGStorageMode.current(defaults: defaults),
+                       EPGStorageMode.isInternalToggleCompiled ? .sqlite : .memory,
+                       "only the internal test build reads the SQLite preference")
 
         let directory = tempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -316,6 +318,13 @@ final class EPGSQLiteStoreTests: XCTestCase {
         XCTAssertFalse(index.isSQLiteBacked)
         XCTAssertEqual(files(directory, ".guide.sqlite"), [])
         XCTAssertEqual(files(directory, ".v2.epgcache").count, 1)
+    }
+
+    func testAPreferenceLeftByAnInternalBuildDoesNotEnableSQLiteElsewhere() {
+        XCTAssertEqual(EPGStorageMode.resolve(preferenceEnabled: true, toggleCompiled: false), .memory)
+        XCTAssertEqual(EPGStorageMode.resolve(preferenceEnabled: false, toggleCompiled: false), .memory)
+        XCTAssertEqual(EPGStorageMode.resolve(preferenceEnabled: false, toggleCompiled: true), .memory)
+        XCTAssertEqual(EPGStorageMode.resolve(preferenceEnabled: true, toggleCompiled: true), .sqlite)
     }
 
     func testSQLiteServiceRefreshPersistsAndANewServiceRestoresOffline() async throws {

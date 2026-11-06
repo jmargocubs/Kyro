@@ -16,7 +16,9 @@ final class KyroNavigationDragUITests: XCTestCase {
 
     private func launch(style: String, _ extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyroDebugLiveTVFixture",
+        // The floating styles belong to the earlier navigation, which the unified shell replaced on iPhone.
+        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyro.navigation.legacyShell", "YES",
+                                "-kyroDebugLiveTVFixture",
                                 "-kyroDebugLiveTVNavReset", "-kyroDebugLiveTVNavIdle", "stayVisible",
                                 "-kyroDebugLiveTVNavStyle", style] + extra
         app.launch()
@@ -106,8 +108,8 @@ final class KyroNavigationDragUITests: XCTestCase {
             app.terminate()
 
             let again = XCUIApplication()
-            again.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyroDebugLiveTVFixture",
-                                      "-kyroDebugLiveTVNavStyle", style]
+            again.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyro.navigation.legacyShell", "YES",
+                                      "-kyroDebugLiveTVFixture", "-kyroDebugLiveTVNavStyle", style]
             again.launch()
             XCTAssertTrue(handle(again).waitForExistence(timeout: 25))
             XCTAssertTrue(again.staticTexts["liveTVHomeFavoritesHeader"].waitForExistence(timeout: 15))

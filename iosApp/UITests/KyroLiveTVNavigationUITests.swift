@@ -16,7 +16,9 @@ final class KyroLiveTVNavigationUITests: XCTestCase {
     private func launch(reset: Bool = true, idle: String = "stayVisible", expanded: Bool = false,
                         _ extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyroDebugLiveTVFixture"]
+        // The floating styles belong to the earlier navigation, which the unified shell replaced on iPhone.
+        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyro.navigation.legacyShell", "YES",
+                                "-kyroDebugLiveTVFixture"]
         if reset { app.launchArguments += ["-kyroDebugLiveTVNavReset", "-kyroDebugLiveTVNavIdle", idle] }
         // Classic is the default since Build 16; these tests cover the floating styles.
         if !extra.contains("-kyroDebugLiveTVNavStyle") { app.launchArguments += ["-kyroDebugLiveTVNavStyle", "glassDock"] }

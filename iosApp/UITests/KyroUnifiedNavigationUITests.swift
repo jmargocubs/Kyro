@@ -1,7 +1,7 @@
 import XCTest
 
 /// Kyro's unified navigation: Live TV as a top-level tab of the Media Server's
-/// own tab bar, behind `-kyro.unifiedNavigation.enabled`. Uses the Debug
+/// own tab bar, the iPhone default since Build 27. Uses the Debug
 /// fixture's unified shell, which has `MainTabView`'s shape: one stack over
 /// `SiloTabBar`, Live TV provided by the shell's environment.
 ///
@@ -13,7 +13,7 @@ final class KyroUnifiedNavigationUITests: XCTestCase {
 
     private func launch(_ extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyro.unifiedNavigation.enabled", "YES",
+        app.launchArguments += ["-kyro.c3.introduction.completed", "YES",
                                 "-kyroDebugLiveTVFixture", "-kyroDebugLiveTVNavReset",
                                 "-kyroDebugLiveTVNavIdle", "stayVisible"]
         app.launchArguments += extra
