@@ -54,8 +54,8 @@ struct KyroMoreMenuButton: View {
 enum KyroMoreEligibility {
     static func isEligible(_ destination: MainTabDestination, among libraries: [Library]) -> Bool {
         switch destination.id {
-        case .liveTV:
-            // A tab of the shell, and it has no secondary route to open.
+        case .liveTV, .kyroRoot:
+            // Tabs of the shell, with no secondary route to open.
             return false
         case .app, .libraryCategory:
             return true

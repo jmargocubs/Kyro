@@ -20,7 +20,13 @@ struct RecommendationsView: View {
     @State private var chromeScrollState = PageChromeScrollState()
     /// Set when Kyro's shell draws the one header. For You then leaves a runway for it instead of
     /// drawing a title and its own action cluster, and reports its scroll to the shell.
-    @Environment(\.kyroShellHeader) private var shellHeader
+    @Environment(\.kyroShellHeader) private var environmentShellHeader
+    /// Set when For You is pushed (from Kyro's profile menu) instead of shown as a tab. The page then
+    /// keeps the navigation bar for Back and draws no header of its own.
+    @Environment(\.secondaryDestinationTitle) private var secondaryTitle
+    private var shellHeader: KyroShellHeaderContext? {
+        KyroShellHeader.hosted(environmentShellHeader, secondaryTitle: secondaryTitle)
+    }
     private var activeChromeScrollState: PageChromeScrollState {
         shellHeader?.scrollState(for: .forYou) ?? chromeScrollState
     }
@@ -67,7 +73,7 @@ struct RecommendationsView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let shellHeader {
                     Color.clear.frame(height: shellHeader.runway)
-                } else {
+                } else if secondaryTitle == nil {
                     topChrome
                         .background {
                             PageChromeGlass(scrollState: chromeScrollState)
@@ -76,7 +82,7 @@ struct RecommendationsView: View {
             }
         .siloPageBackground()
         #if os(iOS)
-        .toolbar(.hidden, for: .navigationBar)
+        .rootPageNavigationBar()
         #endif
         #endif
     }

@@ -31,7 +31,7 @@ final class KyroSettingsIntegrationTests: XCTestCase {
     func testSettingsOpensFromAllFiveTabsAndLeavesTheSelectedTabAlone() throws {
         let (defaults, cleanup) = try ephemeralDefaults()
         defer { cleanup() }
-        for destination in KyroGlobalDestination.requiredDestinations {
+        for destination in KyroGlobalDestination.tabDestinations(fourthTab: .default) {
             let store = KyroGlobalNavigationStore(defaults: defaults)
             let router = AppRouter()
             store.selectedDestination = destination

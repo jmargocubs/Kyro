@@ -2286,6 +2286,14 @@ enum MainTabDestinationID: Hashable {
     case libraryCategory(PrimaryMenuBuiltin)
     case library(Int)
     case liveTV
+    /// A root only Kyro's iPhone shell shows as a tab (its chosen fourth tab).
+    case kyroRoot(KyroRootPage)
+}
+
+/// Fourth-tab roots that have no Silo `AppTab` of their own.
+enum KyroRootPage: Hashable {
+    case sports
+    case favorites
 }
 
 extension MainTabDestinationID {
@@ -2319,10 +2327,19 @@ struct MainTabDestination: Identifiable, Equatable {
             .libraryCategory(.series)
         case .forYou:
             .app(.recommendations)
+        case .sports:
+            .kyroRoot(.sports, choice: .sports)
+        case .favorites:
+            .kyroRoot(.favorites, choice: .favorites)
         case .liveTV:
             .init(id: .liveTV, title: "Live TV", icon: "dot.radiowaves.left.and.right",
                   selectedIcon: "dot.radiowaves.left.and.right")
         }
+    }
+
+    private static func kyroRoot(_ page: KyroRootPage, choice: KyroFourthTab) -> MainTabDestination {
+        .init(id: .kyroRoot(page), title: choice.title, icon: choice.systemImage,
+              selectedIcon: choice.selectedSystemImage)
     }
     #endif
 
@@ -2360,6 +2377,8 @@ func kyroGlobalDestination(for id: MainTabDestinationID) -> KyroGlobalDestinatio
     case .libraryCategory(.movies): .movies
     case .libraryCategory(.series): .series
     case .app(.recommendations): .forYou
+    case .kyroRoot(.sports): .sports
+    case .kyroRoot(.favorites): .favorites
     case .liveTV: .liveTV
     default: nil
     }
@@ -2376,15 +2395,16 @@ func kyroSecondaryRouteID(for id: MainTabDestinationID) -> SecondaryDestinationI
     case .app(let tab): .app(tab)
     case .libraryCategory(let category): .libraryCategory(category)
     case .library(let libraryId): .library(libraryId)
-    case .liveTV: nil
+    case .liveTV, .kyroRoot: nil
     }
 }
 
-/// Current Silo-projected roots that are not one of Kyro's five fixed global
-/// destinations. Keep their server capability gates and order intact.
+/// Current Silo-projected roots that are not one of Kyro's global
+/// destinations. Keep their server capability gates and order intact. For You
+/// is left out even when it is not a tab: the profile menu offers it.
 #if os(iOS)
 func kyroSecondaryDestinations(from projected: [MainTabDestination]) -> [MainTabDestination] {
-    let globalIDs = Set(KyroGlobalDestination.requiredDestinations.map(kyroGlobalDestinationID))
+    let globalIDs = Set(KyroGlobalDestination.allCases.map(kyroGlobalDestinationID))
     return projected.filter { !globalIDs.contains($0.id) }
 }
 
@@ -2562,7 +2582,7 @@ func resolvedRequestedMainTabDestination(
            switch $0.id {
            case .libraryCategory, .library:
                return true
-           case .app, .liveTV:
+           case .app, .liveTV, .kyroRoot:
                return false
            }
        }) {
@@ -2682,7 +2702,7 @@ struct MainTabView: View {
             set: { id in
                 #if os(iOS)
                 if usesGlobalClassicNavigation, let global = kyroGlobalDestination(for: id) {
-                    kyroNavigation.selectedDestination = global
+                    kyroNavigation.selectIfTab(global)
                     return
                 }
                 #endif
@@ -2711,8 +2731,12 @@ struct MainTabView: View {
             // a primary tab or opening another secondary root.
             router.popToRoot()
         }
-        if let global = kyroGlobalDestination(for: requested) {
-            kyroNavigation.selectedDestination = global
+        if let global = kyroGlobalDestination(for: requested),
+           kyroNavigation.selectIfTab(global) {
+            // Selected the tab.
+        } else if kyroGlobalDestination(for: requested) == .forYou {
+            // For You is not the fourth tab: open it as a pushed page.
+            router.navigate(to: .secondaryDestination(.app(.recommendations)))
         } else if let routeID = kyroSecondaryRouteID(
             for: tab,
             visibleDestinations: projectedDestinations
@@ -3031,7 +3055,7 @@ struct MainTabView: View {
         macSidebarSectionList.flatMap(\.items)
         #elseif os(iOS)
         usesGlobalClassicNavigation
-            ? KyroGlobalDestination.requiredDestinations
+            ? kyroNavigation.tabDestinations
                 .filter { $0 != .liveTV }
                 .map(MainTabDestination.global)
             : projectedDestinations
@@ -3042,7 +3066,7 @@ struct MainTabView: View {
 
     #if os(iOS)
     private var globalShellDestinations: [MainTabDestination] {
-        KyroGlobalDestination.requiredDestinations.map(MainTabDestination.global)
+        kyroNavigation.tabDestinations.map(MainTabDestination.global)
     }
     #endif
 
@@ -3201,6 +3225,9 @@ struct MainTabView: View {
                     onSearch: { router.navigate(to: .search) },
                     onOpenSettings: { router.navigate(to: .settings) },
                     onOpenRequests: { router.navigate(to: .requestsHub) },
+                    onOpenForYou: usesGlobalClassicNavigation
+                        ? { KyroShellHeader.openForYou(router: router, store: kyroNavigation) }
+                        : nil,
                     onSwitchProfile: { router.switchProfile() },
                     onSwitchServer: { router.navigate(to: .serverList) },
                     onSignOut: { router.signOutAndReset() },
@@ -3536,6 +3563,12 @@ struct MainTabView: View {
         switch destination.id {
         case .liveTV:
             LiveTVView(service: .shared)
+        case .kyroRoot(let page):
+            #if os(iOS)
+            KyroRootPageView(page: page)
+            #else
+            EmptyView()
+            #endif
         case .app(let tab):
             tabContent(for: tab)
         case .libraryCategory(let category):
@@ -3578,7 +3611,7 @@ struct MainTabView: View {
             return .library(id: libraryId, label: library?.name ?? "Library",
                             icon: library?.navigationIcon ?? "rectangle.stack",
                             selectedIcon: library?.selectedNavigationIcon ?? "rectangle.stack.fill")
-        case .liveTV:
+        case .liveTV, .kyroRoot:
             return nil
         }
     }

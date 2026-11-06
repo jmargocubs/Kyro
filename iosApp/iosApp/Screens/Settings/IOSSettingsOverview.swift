@@ -40,6 +40,11 @@ struct IOSSettingsOverview: View {
 
             if hasSearchResults {
                 preferencesSection
+
+                if matchesNavigation {
+                    KyroNavigationSettingsSection()
+                }
+
                 playbackSection
 
                 if matchesLiveTV {
@@ -433,6 +438,11 @@ struct IOSSettingsOverview: View {
 
     private var matchesLiveTV: Bool { KyroLiveTVSettingsEntry.matches(searchText) }
 
+    /// The fourth-tab choice applies only to the unified iPhone shell.
+    private var matchesNavigation: Bool {
+        KyroUnifiedNavigation.isActive && KyroNavigationSettingsEntry.matches(searchText)
+    }
+
     private var matchesPlaybackSection: Bool {
         matchesPlayback || matchesSubtitles || matchesDownloads
     }
@@ -442,6 +452,7 @@ struct IOSSettingsOverview: View {
             || matchesInterface
             || matchesPlaybackSection
             || matchesLiveTV
+            || matchesNavigation
             || (diagnosticsModel.shouldShowSettings && matchesDiagnostics)
             || matchesAccountSignIn
             || matchesConnectionSection

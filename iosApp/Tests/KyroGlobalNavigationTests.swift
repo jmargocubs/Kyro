@@ -3,11 +3,63 @@ import XCTest
 @testable import Silo
 
 final class KyroGlobalNavigationTests: XCTestCase {
-    func testGlobalDestinationIdentityIsTheRequiredFive() {
-        XCTAssertEqual(KyroGlobalDestination.allCases, [.home, .movies, .series, .forYou, .liveTV])
-        XCTAssertEqual(KyroGlobalDestination.requiredDestinations, [.home, .movies, .series, .forYou, .liveTV])
-        XCTAssertEqual(Set(KyroGlobalDestination.allCases.map(\.id)).count, 5)
+    func testTheTabBarIsFiveTabsWithSportsFourthByDefault() {
+        XCTAssertEqual(KyroFourthTab.default, .sports)
+        XCTAssertEqual(KyroGlobalDestination.tabDestinations(fourthTab: .default), [.home, .movies, .series, .sports, .liveTV])
+        XCTAssertEqual(Set(KyroGlobalDestination.allCases.map(\.id)).count, KyroGlobalDestination.allCases.count)
         XCTAssertEqual(KyroGlobalDestination.liveTV.id, "liveTV")
+    }
+
+    func testEveryFourthTabChoiceKeepsTheOtherFourTabsInPlace() {
+        XCTAssertEqual(KyroFourthTab.allCases, [.sports, .forYou, .favorites])
+        for choice in KyroFourthTab.allCases {
+            XCTAssertEqual(KyroGlobalDestination.tabDestinations(fourthTab: choice),
+                           [.home, .movies, .series, choice.destination, .liveTV])
+        }
+        XCTAssertEqual(KyroFourthTab.sports.systemImage, "trophy")
+    }
+
+    @MainActor
+    func testFourthTabPersistsAndOlderSavedPreferencesReadAsSports() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+
+        // Saved before the fourth tab existed.
+        defaults.set(Data(#"{"schemaVersion":1,"style":"classic"}"#.utf8), forKey: KyroGlobalNavigationStore.defaultsKey)
+        let store = KyroGlobalNavigationStore(defaults: defaults)
+        XCTAssertEqual(store.preferences.fourthTab, .sports)
+
+        store.preferences.fourthTab = .favorites
+        XCTAssertEqual(KyroGlobalNavigationStore(defaults: defaults).preferences.fourthTab, .favorites)
+
+        defaults.set(Data(#"{"schemaVersion":1,"fourthTab":"unknown"}"#.utf8), forKey: KyroGlobalNavigationStore.defaultsKey)
+        XCTAssertEqual(KyroGlobalNavigationStore(defaults: defaults).preferences.fourthTab, .sports)
+
+        defaults.set(Data(#"{"schemaVersion":1,"style":"thumbFan","fourthTab":"collections"}"#.utf8),
+                     forKey: KyroGlobalNavigationStore.defaultsKey)
+        let retiredCollections = KyroGlobalNavigationStore(defaults: defaults).preferences
+        XCTAssertEqual(retiredCollections.fourthTab, .sports, "the retired Collections choice falls back safely")
+        XCTAssertEqual(retiredCollections.style, .thumbFan, "other saved preferences survive the fallback")
+    }
+
+    @MainActor
+    func testChangingTheFourthTabMovesTheSelectionOnlyWhenItLeavesTheBar() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+
+        let store = KyroGlobalNavigationStore(defaults: defaults)
+        store.selectedDestination = .sports
+        store.preferences.fourthTab = .forYou
+        XCTAssertEqual(store.selectedDestination, .forYou, "the slot keeps its place")
+
+        store.selectedDestination = .series
+        store.preferences.fourthTab = .favorites
+        XCTAssertEqual(store.selectedDestination, .series)
+
+        XCTAssertFalse(store.selectIfTab(.forYou), "For You is not a tab now")
+        XCTAssertEqual(store.selectedDestination, .series)
+        XCTAssertTrue(store.selectIfTab(.favorites))
+        XCTAssertEqual(store.selectedDestination, .favorites)
     }
 
     @MainActor
@@ -117,8 +169,10 @@ final class KyroGlobalNavigationTests: XCTestCase {
         let defaults = KyroGlobalNavigationPreferences()
         XCTAssertEqual(defaults.schemaVersion, KyroGlobalNavigationPreferences.currentSchemaVersion)
         XCTAssertEqual(defaults.style, .classic)
-        XCTAssertEqual(KyroGlobalDestination.requiredDestinations.count, 5)
-        XCTAssertEqual(Set(KyroGlobalDestination.requiredDestinations), Set(KyroGlobalDestination.allCases))
+        XCTAssertEqual(defaults.fourthTab, .sports)
+        for choice in KyroFourthTab.allCases {
+            XCTAssertEqual(Set(KyroGlobalDestination.tabDestinations(fourthTab: choice)).count, 5)
+        }
 
         let encoded = try JSONEncoder().encode(defaults)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])

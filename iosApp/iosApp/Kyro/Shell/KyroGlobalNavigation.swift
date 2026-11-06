@@ -1,19 +1,70 @@
 import Foundation
 import Observation
 
-/// The five destinations shared by every Kyro global navigation presentation.
-/// Live TV's Guide, Search, Favorites, and Channels remain contextual screens,
-/// not global destinations.
+/// Every root Kyro's global navigation can show. The tab bar always shows five:
+/// Home, Movies, Series, the user's chosen fourth tab, and Live TV. Live TV's
+/// Guide, Search, Favorites, and Channels remain contextual screens, not
+/// global destinations.
 enum KyroGlobalDestination: String, Codable, CaseIterable, Identifiable, Sendable {
     case home
     case movies
     case series
+    case sports
     case forYou
+    case favorites
     case liveTV
 
     var id: String { rawValue }
 
-    static let requiredDestinations: [Self] = [.home, .movies, .series, .forYou, .liveTV]
+    /// The five tabs, in order, for a fourth-tab choice.
+    static func tabDestinations(fourthTab: KyroFourthTab) -> [Self] {
+        [.home, .movies, .series, fourthTab.destination, .liveTV]
+    }
+}
+
+/// The user's choice for the tab between Series and Live TV. Sports by
+/// default; whichever is not chosen stays reachable elsewhere (For You from
+/// the profile menu and Favorites from its usual screens).
+enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
+    case sports
+    case forYou
+    case favorites
+
+    static let `default`: Self = .sports
+
+    var id: String { rawValue }
+
+    var destination: KyroGlobalDestination {
+        switch self {
+        case .sports: .sports
+        case .forYou: .forYou
+        case .favorites: .favorites
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .sports: "Sports"
+        case .forYou: "For You"
+        case .favorites: "Favorites"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .sports: "trophy"
+        case .forYou: "sparkles"
+        case .favorites: "heart"
+        }
+    }
+
+    var selectedSystemImage: String {
+        switch self {
+        case .sports: "trophy.fill"
+        case .forYou: "sparkles"
+        case .favorites: "heart.fill"
+        }
+    }
 }
 
 /// Global navigation presentation. This choice applies to the whole app.
@@ -27,9 +78,11 @@ enum KyroNavigationPresentationStyle: String, Codable, CaseIterable, Identifiabl
     var isFloating: Bool { self != .classic }
 }
 
-/// Device-local global navigation preferences. Version 1 deliberately has no
-/// per-destination visibility or ordering: all five product destinations are
-/// required. The schema version is also stored in the preference key.
+/// Device-local global navigation preferences. Version 1 has no per-destination
+/// visibility or ordering; only the fourth tab is chosen. A missing
+/// `fourthTab` (saved before it existed) or an unsupported retired value reads
+/// as the default, so no schema bump is needed. The schema version is also
+/// stored in the preference key.
 struct KyroGlobalNavigationPreferences: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
 
@@ -41,6 +94,7 @@ struct KyroGlobalNavigationPreferences: Codable, Equatable, Sendable {
     var thumbScrubbing = true
     var allowsDragging = true
     var startingEdge: KyroNavigationEdge = .right
+    var fourthTab: KyroFourthTab = .default
     private var dockAnchor: KyroNavigationAnchor?
     private var fanAnchor: KyroNavigationAnchor?
 
@@ -90,7 +144,7 @@ struct KyroGlobalNavigationPreferences: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, style, autoCollapse, idleBehavior, hapticsEnabled,
-             thumbScrubbing, allowsDragging, startingEdge, dockAnchor, fanAnchor
+             thumbScrubbing, allowsDragging, startingEdge, fourthTab, dockAnchor, fanAnchor
     }
 
     init(from decoder: Decoder) throws {
@@ -110,6 +164,7 @@ struct KyroGlobalNavigationPreferences: Codable, Equatable, Sendable {
         thumbScrubbing = value(.thumbScrubbing) ?? defaults.thumbScrubbing
         allowsDragging = value(.allowsDragging) ?? defaults.allowsDragging
         startingEdge = value(.startingEdge) ?? defaults.startingEdge
+        fourthTab = value(.fourthTab) ?? defaults.fourthTab
         dockAnchor = value(.dockAnchor)
         fanAnchor = value(.fanAnchor)
     }
@@ -124,6 +179,7 @@ struct KyroGlobalNavigationPreferences: Codable, Equatable, Sendable {
         try values.encode(thumbScrubbing, forKey: .thumbScrubbing)
         try values.encode(allowsDragging, forKey: .allowsDragging)
         try values.encode(startingEdge, forKey: .startingEdge)
+        try values.encode(fourthTab, forKey: .fourthTab)
         try values.encodeIfPresent(dockAnchor, forKey: .dockAnchor)
         try values.encodeIfPresent(fanAnchor, forKey: .fanAnchor)
     }
@@ -142,8 +198,26 @@ final class KyroGlobalNavigationStore {
 
     var preferences: KyroGlobalNavigationPreferences {
         didSet {
-            if preferences != oldValue { savePreferences() }
+            guard preferences != oldValue else { return }
+            savePreferences()
+            // The old fourth tab left the bar: keep the user on that slot.
+            if !tabDestinations.contains(selectedDestination) {
+                selectedDestination = preferences.fourthTab.destination
+            }
         }
+    }
+
+    /// The five tabs the bar shows now.
+    var tabDestinations: [KyroGlobalDestination] {
+        KyroGlobalDestination.tabDestinations(fourthTab: preferences.fourthTab)
+    }
+
+    /// Selects a destination only if it is one of the visible tabs.
+    @discardableResult
+    func selectIfTab(_ destination: KyroGlobalDestination) -> Bool {
+        guard tabDestinations.contains(destination) else { return false }
+        selectedDestination = destination
+        return true
     }
 
     @ObservationIgnored private let defaults: UserDefaults

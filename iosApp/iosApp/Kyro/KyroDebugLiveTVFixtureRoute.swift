@@ -11,6 +11,7 @@ import SwiftUI
 ///
 /// Optional arguments set the navigation up before the screen appears:
 /// `-kyroDebugLiveTVNavReset`, `-kyroDebugLiveTVNavStyle classic|glassDock|thumbFan`,
+/// `-kyroDebugGlobalNavigationReset`, `-kyroDebugFourthTab sports|forYou|favorites`,
 /// `-kyroDebugLiveTVNavEdge left|right|top|bottom`,
 /// `-kyroDebugLiveTVNavPosition 0…1`,
 /// `-kyroDebugLiveTVNavIdle stayVisible|collapse|collapseAndFade`, `-kyroDebugLiveTVNavNoDrag`
@@ -48,6 +49,7 @@ struct KyroDebugLiveTVFixtureRouteModifier: ViewModifier {
                 guard enabled, !didPresent, CommandLine.arguments.contains(Self.launchArgument) else { return }
                 didPresent = true
                 KyroDebugLiveTVFixture.applyNavigationArguments(to: .shared)
+                KyroDebugLiveTVFixture.applyGlobalNavigationArguments(to: .shared)
                 service = KyroDebugLiveTVFixture.makeService()
             }
     }
@@ -144,7 +146,7 @@ private struct KyroDebugUnifiedShell: View {
     @State private var siloControl = SiloControlClient()
 
     private var items: [MainTabDestination] {
-        KyroGlobalDestination.requiredDestinations
+        store.tabDestinations
             .filter { $0 != .liveTV }
             .map(MainTabDestination.global)
     }
@@ -154,7 +156,7 @@ private struct KyroDebugUnifiedShell: View {
             get: { kyroGlobalDestinationID(store.selectedDestination) },
             set: { id in
                 if let destination = kyroGlobalDestination(for: id) {
-                    store.selectedDestination = destination
+                    store.selectIfTab(destination)
                 }
             }
         )
@@ -177,6 +179,8 @@ private struct KyroDebugUnifiedShell: View {
                        selectedIcon: \.selectedIcon) { destination in
                 if destination.id == .liveTV {
                     LiveTVView(service: service)
+                } else if case .kyroRoot(let page) = destination.id {
+                    KyroRootPageView(page: page)
                 } else {
                     KyroDebugUnifiedMediaPage(title: destination.title) { path.append(1) }
                 }
@@ -225,7 +229,7 @@ private struct KyroDebugUnifiedShell: View {
         switch target {
         case .home: store.selectedDestination = .home
         case .libraries: store.selectedDestination = .movies
-        case .recommendations: store.selectedDestination = .forYou
+        case .recommendations: store.selectIfTab(.forYou)
         default: break
         }
     }
@@ -358,6 +362,19 @@ enum KyroDebugLiveTVFixture {
         if arguments.contains("-kyroDebugLiveTVNavExpanded") {
             store.preferences.idleBehavior = .stayVisible
             store.isExpanded = true
+        }
+    }
+
+    @MainActor
+    static func applyGlobalNavigationArguments(to store: KyroGlobalNavigationStore) {
+        let arguments = CommandLine.arguments
+        if arguments.contains("-kyroDebugGlobalNavigationReset") {
+            store.preferences.fourthTab = .default
+            store.selectedDestination = .home
+        }
+        if let fourthTab = value(after: "-kyroDebugFourthTab").flatMap(KyroFourthTab.init(rawValue:)) {
+            store.preferences.fourthTab = fourthTab
+            store.selectedDestination = .home
         }
     }
 

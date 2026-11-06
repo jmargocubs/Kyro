@@ -1,7 +1,7 @@
 import XCTest
 
-/// Kyro's unified navigation: Live TV as a top-level tab of the Media Server's
-/// own tab bar, the iPhone default since Build 27. Uses the Debug
+/// Kyro's unified navigation: Sports and Live TV in the app's five fixed
+/// top-level tabs, the iPhone default since Build 27. Uses the Debug
 /// fixture's unified shell, which has `MainTabView`'s shape: one stack over
 /// `SiloTabBar`, Live TV provided by the shell's environment.
 ///
@@ -15,6 +15,7 @@ final class KyroUnifiedNavigationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-kyro.c3.introduction.completed", "YES",
                                 "-kyroDebugLiveTVFixture", "-kyroDebugLiveTVNavReset",
+                                "-kyroDebugGlobalNavigationReset",
                                 "-kyroDebugLiveTVNavIdle", "stayVisible"]
         app.launchArguments += extra
         app.launch()
@@ -66,7 +67,8 @@ final class KyroUnifiedNavigationUITests: XCTestCase {
         let bar = app.tabBars.firstMatch
         let names = bar.buttons.allElementsBoundByIndex.map(\.label)
         note("tabs: \(names)")
-        XCTAssertEqual(names, ["Home", "Libraries", "For You", "Calendar", "Live TV"], "Media tabs intact, Live TV fifth")
+        XCTAssertEqual(names, ["Home", "Movies", "Series", "Sports", "Live TV"],
+                       "the fixed tabs stay intact and Sports is fourth")
         XCTAssertTrue(app.otherElements["kyroDebugMediaPage.Home"].exists || app.staticTexts["Home row 0"].exists)
         let mediaBarFrame = bar.frame
         capture("p0-media-home", app)
@@ -200,11 +202,11 @@ final class KyroUnifiedNavigationUITests: XCTestCase {
 
     /// `MainTabView` moves its selection for a deep link or Siri; that must leave Live TV.
     func testAMediaTabRequestLeavesLiveTV() {
-        let app = launch(["-kyroDebugUnifiedStartOnLiveTV", "-kyroDebugUnifiedSelectAfter", "12", "Calendar"])
+        let app = launch(["-kyroDebugUnifiedStartOnLiveTV", "-kyroDebugUnifiedSelectAfter", "12", "Libraries"])
         XCTAssertTrue(app.staticTexts["liveTVHomeFavoritesHeader"].waitForExistence(timeout: 20), "Started on Live TV")
         XCTAssertTrue(tab("Live TV", app).isSelected)
-        XCTAssertTrue(app.staticTexts["Calendar row 0"].waitForExistence(timeout: 20), "The request opened Calendar")
-        XCTAssertTrue(tab("Calendar", app).isSelected)
+        XCTAssertTrue(app.staticTexts["Movies row 0"].waitForExistence(timeout: 20), "The request opened Movies")
+        XCTAssertTrue(tab("Movies", app).isSelected)
         XCTAssertFalse(tab("Live TV", app).isSelected)
         capture("p1-request-left-livetv", app)
     }
@@ -374,7 +376,7 @@ final class KyroUnifiedNavigationUITests: XCTestCase {
         XCTAssertEqual(app.tabBars.count, 1, "The global tab bar never left")
         XCTAssertTrue(tab("Live TV", app).isSelected)
         XCTAssertEqual(app.tabBars.firstMatch.buttons.allElementsBoundByIndex.map(\.label),
-                       ["Home", "Libraries", "For You", "Calendar", "Live TV"], "Global tabs unchanged")
+                       ["Home", "Movies", "Series", "Sports", "Live TV"], "Global tabs unchanged")
     }
 
     func testFavoritesListsStarredChannelsAndUnstarringRemovesOne() {
@@ -427,25 +429,12 @@ final class KyroUnifiedNavigationUITests: XCTestCase {
 
     // MARK: More, mini player, floating styles
 
-    func testMoreThanFiveDestinationsKeepLiveTVInTheBar() {
-        for extra in 1...3 {
-            let app = launch(["-kyroDebugUnifiedExtraTabs", "\(extra)"])
-            let names = app.tabBars.firstMatch.buttons.allElementsBoundByIndex.map(\.label)
-            note("\(5 + extra) destinations: \(names)")
-            XCTAssertEqual(names, ["Home", "Libraries", "For You", "Live TV", "More"], "\(5 + extra) destinations")
-            XCTAssertTrue(tab("Live TV", app).isHittable, "Live TV is in the bar, not More")
-            capture("p1-overflow-\(5 + extra)", app)
-            tab("More", app).tap()
-            sleep(2)
-            let rows = app.staticTexts.allElementsBoundByIndex.map(\.label)
-                .filter { ["Calendar", "Downloads", "Search", "Requests", "Live TV"].contains($0) }
-            note("\(5 + extra) destinations, More holds: \(rows)")
-            XCTAssertFalse(rows.contains("Live TV"), "Live TV never in More")
-            XCTAssertTrue(rows.contains("Calendar"), "Displaced Media tabs stay reachable in More")
-            capture("p1-overflow-\(5 + extra)-more", app)
-            openLiveTV(app)
-            app.terminate()
-        }
+    func testTheUnifiedShellAlwaysKeepsExactlyFiveGlobalTabs() {
+        let app = launch()
+        let names = app.tabBars.firstMatch.buttons.allElementsBoundByIndex.map(\.label)
+        XCTAssertEqual(names, ["Home", "Movies", "Series", "Sports", "Live TV"])
+        XCTAssertTrue(tab("Live TV", app).isHittable)
+        XCTAssertFalse(tab("More", app).exists, "secondary destinations belong to Kyro's More menu")
     }
 
     func testMiniPlayerAccessoryStaysAboveTheBarOnLiveTV() {

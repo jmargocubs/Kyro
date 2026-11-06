@@ -26,9 +26,9 @@ final class KyroUnifiedNavigationTests: XCTestCase {
     // MARK: Global selection and secondary routes
 
     func testNativeShellAdapterMapsTheFiveRequiredDestinationsOneToOne() {
-        XCTAssertEqual(KyroGlobalDestination.requiredDestinations,
-                       [.home, .movies, .series, .forYou, .liveTV])
-        for destination in KyroGlobalDestination.requiredDestinations {
+        XCTAssertEqual(KyroGlobalDestination.tabDestinations(fourthTab: .default),
+                       [.home, .movies, .series, .sports, .liveTV])
+        for destination in KyroGlobalDestination.tabDestinations(fourthTab: .default) {
             let root = MainTabDestination.global(destination)
             XCTAssertEqual(kyroGlobalDestination(for: root.id), destination)
         }
@@ -37,10 +37,42 @@ final class KyroUnifiedNavigationTests: XCTestCase {
         XCTAssertEqual(MainTabDestination.global(.movies).id, .libraryCategory(.movies))
         XCTAssertEqual(MainTabDestination.global(.series).id, .libraryCategory(.series))
         XCTAssertEqual(MainTabDestination.global(.forYou).id, .app(.recommendations))
+        XCTAssertEqual(MainTabDestination.global(.sports).id, .kyroRoot(.sports))
+        XCTAssertEqual(MainTabDestination.global(.sports).title, "Sports")
+        XCTAssertEqual(MainTabDestination.global(.sports).icon, "trophy")
+        for destination in KyroGlobalDestination.allCases {
+            XCTAssertEqual(kyroGlobalDestination(for: MainTabDestination.global(destination).id), destination)
+        }
+    }
+
+    func testForYouStaysOutOfMoreWhenItIsNotATab() {
+        let projected = KyroGlobalDestination.tabDestinations(fourthTab: .default).map(MainTabDestination.global)
+            + [.app(.recommendations), .app(.calendar)]
+        XCTAssertEqual(kyroSecondaryDestinations(from: projected).map(\.id), [.app(.calendar)],
+                       "For You is in the profile menu, not a second time in More")
+    }
+
+    @MainActor
+    func testProfileMenuForYouSelectsTheTabOrPushesForYou() throws {
+        let suite = "KyroForYouEntry.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = KyroGlobalNavigationStore(defaults: defaults)
+
+        let router = AppRouter()
+        KyroShellHeader.openForYou(router: router, store: store)
+        XCTAssertEqual(router.visiblePushedRoutes, [.secondaryDestination(.app(.recommendations))])
+        XCTAssertEqual(store.selectedDestination, .home, "pushing For You leaves the tab alone")
+
+        store.preferences.fourthTab = .forYou
+        let tabRouter = AppRouter()
+        KyroShellHeader.openForYou(router: tabRouter, store: store)
+        XCTAssertTrue(tabRouter.visiblePushedRoutes.isEmpty)
+        XCTAssertEqual(store.selectedDestination, .forYou)
     }
 
     func testMoviesAndSeriesRemainPrimaryWhenNoMatchingLibrariesAreAvailable() {
-        let globalRoots = KyroGlobalDestination.requiredDestinations.map(MainTabDestination.global)
+        let globalRoots = KyroGlobalDestination.tabDestinations(fourthTab: .default).map(MainTabDestination.global)
         XCTAssertEqual(globalRoots.count, 5)
         XCTAssertTrue(globalRoots.contains { $0.id == .libraryCategory(.movies) })
         XCTAssertTrue(globalRoots.contains { $0.id == .libraryCategory(.series) })
@@ -49,7 +81,7 @@ final class KyroUnifiedNavigationTests: XCTestCase {
     }
 
     func testMoreProjectionKeepsSecondarySiloRootsOutOfGlobalTabs() {
-        let projected = KyroGlobalDestination.requiredDestinations.map(MainTabDestination.global)
+        let projected = KyroGlobalDestination.tabDestinations(fourthTab: .default).map(MainTabDestination.global)
             + [.app(.downloads), .app(.calendar), .library(id: 42, label: "Kids")]
         let secondary = kyroSecondaryDestinations(from: projected)
         XCTAssertEqual(secondary.map(\.id), [.app(.downloads), .app(.calendar), .library(42)])
@@ -57,7 +89,7 @@ final class KyroUnifiedNavigationTests: XCTestCase {
     }
 
     func testMoreAddsCalendarIndependentOfPrimaryMenuAndDownloadsOnlyWhenEnabled() {
-        let onlyGlobalTabs = KyroGlobalDestination.requiredDestinations.map(MainTabDestination.global)
+        let onlyGlobalTabs = KyroGlobalDestination.tabDestinations(fourthTab: .default).map(MainTabDestination.global)
 
         let withoutDownloads = kyroMoreDestinations(from: onlyGlobalTabs, downloadsEnabled: false)
         XCTAssertEqual(withoutDownloads.map(\.id), [.app(.calendar)])
@@ -65,18 +97,18 @@ final class KyroUnifiedNavigationTests: XCTestCase {
         let withDownloads = kyroMoreDestinations(from: onlyGlobalTabs, downloadsEnabled: true)
         XCTAssertEqual(withDownloads.map(\.id), [.app(.calendar), .app(.downloads)])
         XCTAssertFalse(withDownloads.contains { $0.title == "Collections" })
-        XCTAssertEqual(KyroGlobalDestination.requiredDestinations.count, 5)
+        XCTAssertEqual(KyroGlobalDestination.tabDestinations(fourthTab: .default).count, 5)
     }
 
     func testMorePreservesEligibleSecondaryRootsWithoutDuplicatingCalendarOrDownloads() {
-        let projected = KyroGlobalDestination.requiredDestinations.map(MainTabDestination.global)
+        let projected = KyroGlobalDestination.tabDestinations(fourthTab: .default).map(MainTabDestination.global)
             + [.app(.calendar), .app(.downloads), .library(id: 42, label: "Kids")]
         XCTAssertEqual(kyroMoreDestinations(from: projected, downloadsEnabled: true).map(\.id),
                        [.app(.calendar), .app(.downloads), .library(42)])
     }
 
     func testDownloadsDeepLinkAndCalendarTabRequestsResolveToSecondaryRoutes() {
-        let projected = KyroGlobalDestination.requiredDestinations.map(MainTabDestination.global)
+        let projected = KyroGlobalDestination.tabDestinations(fourthTab: .default).map(MainTabDestination.global)
             + [.app(.downloads), .app(.calendar)]
 
         XCTAssertEqual(
@@ -92,7 +124,7 @@ final class KyroUnifiedNavigationTests: XCTestCase {
     }
 
     func testIneligibleSecondaryRequestFailsClosed() {
-        let projected = KyroGlobalDestination.requiredDestinations.map(MainTabDestination.global)
+        let projected = KyroGlobalDestination.tabDestinations(fourthTab: .default).map(MainTabDestination.global)
         XCTAssertNil(kyroSecondaryRouteID(for: .downloads, visibleDestinations: projected))
     }
 

@@ -6,7 +6,7 @@ import SwiftUI
 //
 // The context types are not iOS-only so the shared pages compile on every platform; the view is.
 
-/// Scroll state for each of the five global destinations. A page reports its scroll offset to its
+/// Scroll state for each global destination. A page reports its scroll offset to its
 /// own destination's state and the shell's header reads the selected one, so the glass strip
 /// reacts to the page on screen and each tab keeps the offset it was left at.
 @MainActor
@@ -57,7 +57,20 @@ enum KyroShellHeader {
     static func headerDrawsGlass(for destination: KyroGlobalDestination) -> Bool {
         switch destination {
         case .movies, .series: false
-        case .home, .forYou, .liveTV: true
+        case .home, .sports, .forYou, .favorites, .liveTV: true
+        }
+    }
+
+    /// The profile menu's For You. It selects the For You tab when that is the fourth tab, and
+    /// otherwise pushes For You onto the app's stack like a More destination, so Back returns to
+    /// the tab the user came from.
+    @MainActor
+    static func openForYou(router: AppRouter, store: KyroGlobalNavigationStore) {
+        if store.tabDestinations.contains(.forYou) {
+            router.popToRoot()
+            store.selectedDestination = .forYou
+        } else {
+            router.navigate(to: .secondaryDestination(.app(.recommendations)))
         }
     }
 
@@ -112,6 +125,7 @@ struct KyroAppHeader: View {
                 onSearch: { KyroShellHeader.openSearch(router: router) },
                 onOpenSettings: { KyroShellHeader.openSettings(router: router) },
                 onOpenRequests: { router.navigate(to: .requestsHub) },
+                onOpenForYou: { KyroShellHeader.openForYou(router: router, store: store) },
                 onSwitchProfile: { router.switchProfile() },
                 onSwitchServer: { router.navigate(to: .serverList) },
                 onSignOut: { router.signOutAndReset() }

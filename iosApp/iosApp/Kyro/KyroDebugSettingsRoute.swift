@@ -35,6 +35,7 @@ struct KyroDebugSettingsRouteModifier: ViewModifier {
                 guard enabled, !didPresent,
                       CommandLine.arguments.contains(Self.launchArgument) else { return }
                 didPresent = true
+                KyroDebugLiveTVFixture.applyGlobalNavigationArguments(to: .shared)
                 isPresented = true
             }
     }

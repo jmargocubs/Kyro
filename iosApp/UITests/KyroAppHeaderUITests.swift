@@ -8,7 +8,8 @@ final class KyroAppHeaderUITests: XCTestCase {
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-kyro.c3.introduction.completed", "YES",
-                                "-kyroDebugLiveTVFixture", "-kyroDebugLiveTVNavReset"]
+                                "-kyroDebugLiveTVFixture", "-kyroDebugLiveTVNavReset",
+                                "-kyroDebugGlobalNavigationReset"]
         app.launch()
         XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 30), "Unified shell loaded")
         sleep(2)
@@ -30,7 +31,7 @@ final class KyroAppHeaderUITests: XCTestCase {
     func testOneHeaderIsShownOnAllFiveTabsAtTheSamePlace() {
         let app = launch()
         var frames: [CGRect] = []
-        for name in ["Home", "Movies", "Series", "For You", "Live TV"] {
+        for name in ["Home", "Movies", "Series", "Sports", "Live TV"] {
             tab(name, app).tap()
             sleep(1)
             XCTAssertEqual(headerCount(app), 1, "exactly one header on \(name)")
@@ -40,6 +41,33 @@ final class KyroAppHeaderUITests: XCTestCase {
         }
         XCTAssertEqual(Set(frames.map { $0.minY.rounded() }).count, 1, "same top edge on every tab")
         XCTAssertEqual(Set(frames.map { $0.height.rounded() }).count, 1, "same height on every tab")
+    }
+
+    func testSportsHubAndProfileMenuForYouAreReachable() {
+        let app = launch()
+        tab("Sports", app).tap()
+        XCTAssertTrue(app.otherElements["kyroSportsHub"].waitForExistence(timeout: 10), "Sports opens the S1 hub")
+
+        app.buttons["Profile menu"].tap()
+        let forYou = app.buttons["kyroProfileMenuForYou"]
+        XCTAssertTrue(forYou.waitForExistence(timeout: 5), "For You stays in the profile menu")
+        XCTAssertLessThan(forYou.frame.minY, app.buttons["Settings"].frame.minY, "For You appears above Settings")
+    }
+
+    func testNavigationSettingsOffersOnlySupportedFourthTabs() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyroDebugSettingsRoute",
+                                "-kyroDebugGlobalNavigationReset"]
+        app.launch()
+
+        let navigation = app.buttons["kyroSettingsNavigation"]
+        XCTAssertTrue(navigation.waitForExistence(timeout: 30), "Settings shows Navigation")
+        navigation.tap()
+
+        for choice in ["sports", "forYou", "favorites"] {
+            XCTAssertTrue(app.buttons["kyroFourthTab-\(choice)"].waitForExistence(timeout: 5), choice)
+        }
+        XCTAssertFalse(app.buttons["kyroFourthTab-collections"].exists, "Collections stays inside Movies and Series")
     }
 
     func testLiveTVHasNoOwnHeaderOrFiveDestinationRow() {

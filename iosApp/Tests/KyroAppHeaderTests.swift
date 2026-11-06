@@ -14,10 +14,10 @@ final class KyroAppHeaderTests: XCTestCase {
 
     func testEveryGlobalDestinationHasItsOwnScrollStateTheShellHeaderReads() {
         let states = KyroShellScrollStates()
-        let all = KyroGlobalDestination.requiredDestinations.map { states.state(for: $0) }
+        let all = KyroGlobalDestination.tabDestinations(fourthTab: .default).map { states.state(for: $0) }
         XCTAssertEqual(all.count, 5)
         XCTAssertEqual(Set(all.map(ObjectIdentifier.init)).count, 5, "each tab keeps its own scroll offset")
-        for destination in KyroGlobalDestination.requiredDestinations {
+        for destination in KyroGlobalDestination.tabDestinations(fourthTab: .default) {
             XCTAssertTrue(states.state(for: destination) === states.state(for: destination),
                           "the page and the shell's header must read the same state")
         }
@@ -27,14 +27,14 @@ final class KyroAppHeaderTests: XCTestCase {
         let ctx = context()
         ctx.scrollState(for: .home).update(40)
         XCTAssertEqual(ctx.scrollState(for: .home).offset, 40)
-        for other in KyroGlobalDestination.requiredDestinations where other != .home {
+        for other in KyroGlobalDestination.tabDestinations(fourthTab: .default) where other != .home {
             XCTAssertEqual(ctx.scrollState(for: other).offset, 0, "\(other) must not follow Home's scroll")
         }
     }
 
     func testPagesHostedByTheShellSkipTheirOwnHeaderOnEveryTab() {
         let ctx = context()
-        for destination in KyroGlobalDestination.requiredDestinations {
+        for destination in KyroGlobalDestination.tabDestinations(fourthTab: .default) {
             XCTAssertNotNil(KyroShellHeader.hosted(ctx, secondaryTitle: nil),
                             "\(destination) leaves its header to the shell")
         }
@@ -58,6 +58,7 @@ final class KyroAppHeaderTests: XCTestCase {
     func testTheHeaderDrawsGlassExceptWhereTheLibraryPanelAlreadyDoes() {
         XCTAssertTrue(KyroShellHeader.headerDrawsGlass(for: .home))
         XCTAssertTrue(KyroShellHeader.headerDrawsGlass(for: .forYou))
+        XCTAssertTrue(KyroShellHeader.headerDrawsGlass(for: .sports))
         XCTAssertTrue(KyroShellHeader.headerDrawsGlass(for: .liveTV))
         XCTAssertFalse(KyroShellHeader.headerDrawsGlass(for: .movies))
         XCTAssertFalse(KyroShellHeader.headerDrawsGlass(for: .series))
@@ -81,6 +82,6 @@ final class KyroAppHeaderTests: XCTestCase {
     }
 
     func testLiveTVIsStillOneOfTheFiveTabsAndThereforeUsesTheSharedHeader() {
-        XCTAssertEqual(KyroGlobalDestination.requiredDestinations, [.home, .movies, .series, .forYou, .liveTV])
+        XCTAssertEqual(KyroGlobalDestination.tabDestinations(fourthTab: .default), [.home, .movies, .series, .sports, .liveTV])
     }
 }

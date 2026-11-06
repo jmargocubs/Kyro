@@ -15,6 +15,8 @@ struct TabTopBarActions: View {
     /// Opens the media-requests hub. The menu row only renders when the
     /// server reports `requests_enabled`, so the closure is inert otherwise.
     let onOpenRequests: () -> Void
+    /// Kyro's unified shell only: For You in the profile menu, beside Requests.
+    var onOpenForYou: (() -> Void)? = nil
     let onSwitchProfile: () -> Void
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
@@ -79,6 +81,7 @@ struct TabTopBarActions: View {
                 profile: profileStore.profile,
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
+                onOpenForYou: onOpenForYou,
                 onSwitchProfile: onSwitchProfile,
                 onSwitchServer: onSwitchServer,
                 onSignOut: onSignOut
@@ -127,6 +130,8 @@ struct ProfileAvatarMenu: View {
     var showsName = false
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
+    /// Shown only when supplied (Kyro's unified shell).
+    var onOpenForYou: (() -> Void)? = nil
     let onSwitchProfile: () -> Void
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
@@ -168,13 +173,22 @@ struct ProfileAvatarMenu: View {
                 Button(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3") { router.navigate(to: .watchParty) }
             }
             #endif
+            if let onOpenForYou {
+                Button {
+                    onOpenForYou()
+                } label: {
+                    Label("For You", systemImage: "wand.and.stars")
+                }
+                .accessibilityIdentifier("kyroProfileMenuForYou")
+            }
             if requestsEnabled {
                 Button {
                     onOpenRequests()
                 } label: {
                     Label("Requests", systemImage: "sparkles")
                 }
-
+            }
+            if onOpenForYou != nil || requestsEnabled {
                 Divider()
             }
 
