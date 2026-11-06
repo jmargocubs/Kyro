@@ -22,6 +22,12 @@ struct HomeView: View {
     #if !os(tvOS)
     /// Feeds the glass strip behind the floating header as rows scroll under it.
     @State private var chromeScrollState = PageChromeScrollState()
+    /// Set when Kyro's shell draws the one header (see `KyroAppHeader`). Home then skips its own
+    /// copy and reports its scroll to the shell's Home state, which the shell's glass strip reads.
+    @Environment(\.kyroShellHeader) private var shellHeader
+    private var activeChromeScrollState: PageChromeScrollState {
+        shellHeader?.scrollState(for: .home) ?? chromeScrollState
+    }
     #if os(iOS)
     /// Breathing room between the status-bar safe area and the floating
     /// header. Uses the same value as the Libraries and For You top chrome so
@@ -128,6 +134,7 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+            if shellHeader == nil {
             HStack(alignment: .center, spacing: 12) {
                 SidebarToggleButton()
                 // The wordmark is pinned with the utilities so it stays put
@@ -135,7 +142,7 @@ struct HomeView: View {
                 // It occupies the same 44pt row as the icon buttons so its
                 // centre lines up with theirs.
                 #if !os(macOS)
-                SiloWordmarkView(width: 72)
+                AppWordmarkView(placement: .compactHeader)
                     .frame(height: SiloTheme.topBarIconHitSize)
                     .pageChromeBacking(
                         scrollState: chromeScrollState,
@@ -170,6 +177,7 @@ struct HomeView: View {
             // underneath.
             .background {
                 PageChromeGlass(scrollState: chromeScrollState)
+            }
             }
 
             if ConnectionMonitor.shared.isOffline, !viewModel.sections.isEmpty {
@@ -250,7 +258,7 @@ struct HomeView: View {
             }
             .padding(.bottom, HomeFeedMetrics.bottomRunway)
         }
-        .reportsPageChromeScroll(to: chromeScrollState)
+        .reportsPageChromeScroll(to: activeChromeScrollState)
     }
 
     /// The displayed rows in feed order. The Mac draws the first featured

@@ -266,7 +266,7 @@ final class CollectionsViewModelTests: XCTestCase {
         stub.release()
         await create.value
 
-        XCTAssertEqual(model.createError, "Silo couldn't confirm this was created. Check the list before trying again.")
+        XCTAssertEqual(model.createError, "\(AppBrand.name) couldn't confirm this was created. Check the list before trying again.")
         XCTAssertEqual(requests("POST", path: "/api/v2/collections").count, 1)
         XCTAssertEqual(requests("GET", path: "/api/v2/collections").count, 1, "the list is read again")
         XCTAssertEqual(model.collections.map(\.id), ["c1"])

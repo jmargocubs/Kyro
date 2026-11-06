@@ -59,6 +59,7 @@ struct EPGCacheStore: Sendable {
     private static let v1Extension = "epgcache"
     private static let fileExtension = v1Extension
     private static let v2Suffix = ".v2.epgcache"
+    private static let abandonedSQLiteGenerationAge: TimeInterval = 24 * 60 * 60
 
     init(directory: URL, legacyReadDirectory: URL? = nil) {
         self.directory = directory
@@ -175,6 +176,7 @@ struct EPGCacheStore: Sendable {
         defer { Self.diskTransactionLock.unlock() }
         sweep(directory, keeping: providerIDs, extensions: [Self.v1Extension, "state"])
         sweepV2(in: directory, keeping: providerIDs)
+        sweepSQLite(in: directory, keeping: providerIDs)
         sweepStages(in: directory)
         if let legacyReadDirectory, legacyReadDirectory != directory {
             sweep(legacyReadDirectory, keeping: providerIDs, extensions: [Self.v1Extension])
@@ -222,6 +224,7 @@ struct EPGCacheStore: Sendable {
     /// `loadVerified`, also returning the validated v2 header so state can be checked against the
     /// same file without decoding it again.
     func loadVerifiedGuide(providerID: UUID, fingerprint: Data,
+                           preferSQLite: Bool = false, sqliteReadPolicy: EPGSQLiteReadPolicy = .cachedOnly,
                            isCurrent: @Sendable () -> Bool = { true }) -> VerifiedGuide? {
         Self.diskTransactionLock.lock()
         defer { Self.diskTransactionLock.unlock() }
@@ -231,6 +234,11 @@ struct EPGCacheStore: Sendable {
         }
 #endif
         guard fingerprint.count == EPGCacheFormat.fingerprintLength else { return nil }
+        // SQLite first when enabled; a missing, foreign, corrupt or incompatible file falls through to v2.
+        if preferSQLite, let index = loadSQLite(providerID: providerID, fingerprint: fingerprint,
+                                                 readPolicy: sqliteReadPolicy) {
+            return VerifiedGuide(index: index, header: nil)
+        }
         if let data = try? Data(contentsOf: v2URL(providerID), options: .mappedIfSafe),
            let decoded = try? EPGCacheFormat.decode(data, providerID: providerID, limits: formatLimits),
            decoded.header.sourceFingerprint == fingerprint {
@@ -456,6 +464,8 @@ struct EPGCacheStore: Sendable {
         try? FileManager.default.removeItem(at: fileURL(providerID))
         for url in legacyURLs(providerID: providerID) { try? FileManager.default.removeItem(at: url) }
         try? FileManager.default.removeItem(at: v2URL(providerID))
+        try? FileManager.default.removeItem(at: sqlitePointerURL(providerID))
+        for url in sqliteFiles(providerID: providerID) { removeSQLiteIfUnleased(url) }
         for stage in stageURLs(providerID: providerID) { try? FileManager.default.removeItem(at: stage) }
         removeState(providerID: providerID)
     }
@@ -471,10 +481,13 @@ struct EPGCacheStore: Sendable {
         } ?? []
     }
 
-    private func providerIDForFile(_ file: URL) -> UUID? {
+    fileprivate func providerIDForFile(_ file: URL) -> UUID? {
         let name = file.lastPathComponent
         if name.hasSuffix(Self.v2Suffix) {
             return UUID(uuidString: String(name.dropLast(Self.v2Suffix.count)))
+        }
+        if name.hasSuffix(Self.sqliteSuffix) || name.hasSuffix(Self.sqlitePointerSuffix) {
+            return UUID(uuidString: String(name.prefix { $0 != "." }))
         }
         let v1Suffix = ".v1.epgcache"
         if name.hasSuffix(v1Suffix) { return UUID(uuidString: String(name.dropLast(v1Suffix.count))) }
@@ -489,7 +502,7 @@ struct EPGCacheStore: Sendable {
         directory.appendingPathComponent(providerID.uuidString).appendingPathExtension("state")
     }
 
-    private func prepareDirectory() throws {
+    fileprivate func prepareDirectory() throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 #if os(iOS) || os(macOS)
         var values = URLResourceValues()
@@ -597,6 +610,150 @@ struct EPGCacheStore: Sendable {
               legacyReadDirectory.resolvingSymlinksInPath().standardizedFileURL.path
                 != directory.resolvingSymlinksInPath().standardizedFileURL.path else { return nil }
         return legacyReadDirectory
+    }
+}
+
+// MARK: - SQLite guides (optional; see `EPGStorageMode`)
+
+extension EPGCacheStore {
+    fileprivate static let sqliteSuffix = ".guide.sqlite"
+    fileprivate static let sqlitePointerSuffix = ".guide-current"
+
+    /// The current generation URL (or the fixed-name Stage B database for backward compatibility).
+    func sqliteURL(_ providerID: UUID) -> URL {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+        return activeSQLiteURL(providerID) ?? directory.appendingPathComponent("\(providerID.uuidString)\(Self.sqliteSuffix)")
+    }
+
+    private func sqlitePointerURL(_ providerID: UUID) -> URL {
+        directory.appendingPathComponent("\(providerID.uuidString)\(Self.sqlitePointerSuffix)")
+    }
+
+    private func activeSQLiteURL(_ providerID: UUID) -> URL? {
+        guard let name = try? String(contentsOf: sqlitePointerURL(providerID), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              name.hasPrefix("\(providerID.uuidString)."), name.hasSuffix(Self.sqliteSuffix),
+              !name.contains("/"), !name.contains("\\") else { return nil }
+        let url = directory.appendingPathComponent(name)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// A private, unique build path. Stages share the `.stage` naming, so the existing stage sweep
+    /// and provider removal clean them up too.
+    func sqliteStageURL(providerID: UUID) throws -> URL {
+        try prepareDirectory()
+        // The builder writes directly to an immutable generation path. Publishing changes only a
+        // tiny text pointer, never the vnode underneath an open SQLite connection.
+        return directory.appendingPathComponent("\(providerID.uuidString).\(UUID().uuidString)\(Self.sqliteSuffix)")
+    }
+
+    /// Opens the provider's promoted SQLite guide when it carries this provider and source fingerprint.
+    /// A rejected file is left alone, like a rejected v2 file; the next verified write replaces it.
+    func loadSQLite(providerID: UUID, fingerprint: Data, readPolicy: EPGSQLiteReadPolicy = .cachedOnly) -> EPGIndex? {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+        let pointer = sqlitePointerURL(providerID)
+        let url = FileManager.default.fileExists(atPath: pointer.path)
+            ? activeSQLiteURL(providerID)
+            : directory.appendingPathComponent("\(providerID.uuidString)\(Self.sqliteSuffix)")
+        guard let url else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path),
+              let guide = try? EPGSQLiteGuide.open(url, providerID: providerID, fingerprint: fingerprint) else {
+            return nil
+        }
+        return EPGIndex(sqlite: EPGSQLiteIndex(guide: guide, readPolicy: readPolicy))
+    }
+
+    /// Atomically activates a fully built, immutable generation by replacing only a text pointer.
+    /// Existing SQLite readers retain their generation path; no live database vnode is renamed,
+    /// replaced or unlinked. Failure leaves both the previous pointer and guide intact.
+    func promoteSQLite(stage: URL, guide: EPGSQLiteGuide, providerID: UUID,
+                       isCurrent: @Sendable () -> Bool) throws {
+        Self.diskTransactionLock.lock()
+        defer { Self.diskTransactionLock.unlock() }
+        guard isCurrent() else { throw CancellationError() }
+        let name = stage.lastPathComponent
+        guard stage.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL,
+              name.hasPrefix("\(providerID.uuidString)."), name.hasSuffix(Self.sqliteSuffix),
+              guide.url.standardizedFileURL == stage.standardizedFileURL,
+              FileManager.default.fileExists(atPath: stage.path) else { throw EPGSQLiteError.mismatchedIdentity }
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                                               ofItemAtPath: stage.path)
+        let pointerStage = directory.appendingPathComponent("\(providerID.uuidString).\(UUID().uuidString).stage")
+        defer { try? FileManager.default.removeItem(at: pointerStage) }
+        try stageWriter(Data(name.utf8), pointerStage)
+        guard isCurrent() else { throw CancellationError() }
+        try promoter(pointerStage, sqlitePointerURL(providerID))
+        guide.markPublished()
+        evictSQLite(keeping: providerID)
+    }
+
+    /// Bounds SQLite guides by the same entry and byte budget as v2 guides, oldest first, never the
+    /// provider just written. Deletes only on a complete inventory.
+    private func evictSQLite(keeping providerID: UUID) {
+        guard let files = try? directoryLister(directory) else { return }
+        var entries: [(url: URL, size: Int, modified: Date)] = []
+        for file in files where file.lastPathComponent.hasSuffix(Self.sqliteSuffix) {
+            guard let metadata = try? fileMetadataReader(file), let size = metadata.size,
+                  let modified = metadata.modified else { return }
+            entries.append((file, size, modified))
+        }
+        var bytes = entries.reduce(0) { $0 + $1.size }
+        var count = entries.count
+        let keep = sqliteURL(providerID).lastPathComponent
+        for victim in entries.sorted(by: { $0.modified < $1.modified }) where victim.url.lastPathComponent != keep {
+            let id = providerIDForFile(victim.url)
+            let wasActive = id.map { activeSQLiteURL($0) == victim.url } ?? false
+            let retiredGeneration = id == providerID && !wasActive
+            guard retiredGeneration || count > maximumEntries || bytes > maximumTotalBytes else { continue }
+            guard !EPGSQLiteFileLeases.isLeased(victim.url) else { continue }
+            removeSQLiteIfUnleased(victim.url)
+            if wasActive, let id {
+                try? FileManager.default.removeItem(at: sqlitePointerURL(id))
+            }
+            count -= 1
+            bytes -= victim.size
+        }
+    }
+
+    fileprivate func sweepSQLite(in directory: URL, keeping providerIDs: Set<UUID>) {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+            return
+        }
+        for file in files where file.lastPathComponent.hasSuffix(Self.sqlitePointerSuffix) {
+            guard let id = providerIDForFile(file), !providerIDs.contains(id) else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+        for file in files where file.lastPathComponent.hasSuffix(Self.sqliteSuffix) {
+            guard let id = providerIDForFile(file) else { continue }
+            if !providerIDs.contains(id) {
+                removeSQLiteIfUnleased(file)
+                continue
+            }
+            // A crashed build can leave an unactivated generation. Do not reap a live reader, and
+            // never remove a legacy fixed-name database solely because it lacks a pointer.
+            let isLegacy = file.lastPathComponent == "\(id.uuidString)\(Self.sqliteSuffix)"
+            let isActive = activeSQLiteURL(id) == file
+            guard !isLegacy, !isActive,
+                  let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  modified < Date().addingTimeInterval(-Self.abandonedSQLiteGenerationAge) else { continue }
+            removeSQLiteIfUnleased(file)
+        }
+    }
+
+    private func sqliteFiles(providerID: UUID) -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil))?.filter {
+            $0.lastPathComponent.hasPrefix("\(providerID.uuidString).") && $0.lastPathComponent.hasSuffix(Self.sqliteSuffix)
+        } ?? []
+    }
+
+    private func removeSQLiteIfUnleased(_ url: URL) {
+        guard !EPGSQLiteFileLeases.isLeased(url) else { return }
+        try? FileManager.default.removeItem(at: url)
+        for suffix in ["-wal", "-shm", "-journal"] {
+            try? FileManager.default.removeItem(atPath: url.path + suffix)
+        }
     }
 }
 

@@ -18,6 +18,12 @@ struct RecommendationsView: View {
     /// Feeds the shared glass strip behind the pinned header as rows scroll
     /// under it, matching Home and the Library tab.
     @State private var chromeScrollState = PageChromeScrollState()
+    /// Set when Kyro's shell draws the one header. For You then leaves a runway for it instead of
+    /// drawing a title and its own action cluster, and reports its scroll to the shell.
+    @Environment(\.kyroShellHeader) private var shellHeader
+    private var activeChromeScrollState: PageChromeScrollState {
+        shellHeader?.scrollState(for: .forYou) ?? chromeScrollState
+    }
     #endif
     @Environment(AppRouter.self) private var router
 
@@ -57,12 +63,16 @@ struct RecommendationsView: View {
         // safe-area inset with the shared glass strip behind it (same
         // structure as `LibrariesTabView`).
         pageContent
-            .environment(chromeScrollState)
+            .environment(activeChromeScrollState)
             .safeAreaInset(edge: .top, spacing: 0) {
-                topChrome
-                    .background {
-                        PageChromeGlass(scrollState: chromeScrollState)
-                    }
+                if let shellHeader {
+                    Color.clear.frame(height: shellHeader.runway)
+                } else {
+                    topChrome
+                        .background {
+                            PageChromeGlass(scrollState: chromeScrollState)
+                        }
+                }
             }
         .siloPageBackground()
         #if os(iOS)

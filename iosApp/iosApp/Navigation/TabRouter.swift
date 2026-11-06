@@ -76,3 +76,40 @@ enum AppTab: String, CaseIterable, Identifiable {
         }
     }
 }
+
+extension EnvironmentValues {
+    /// Set when a Silo root (Calendar, Downloads, a library) is pushed from
+    /// Kyro's More menu instead of shown as a tab: the title its navigation
+    /// bar shows. Nil for a root shown as a tab or in the sidebar.
+    @Entry var secondaryDestinationTitle: String? = nil
+}
+
+extension View {
+    /// A root page draws its own header and hides the navigation bar. Pushed
+    /// from More it keeps the bar, so the system Back and the edge swipe
+    /// return to the tab it was opened from.
+    func rootPageNavigationBar() -> some View {
+        modifier(RootPageNavigationBar())
+    }
+}
+
+private struct RootPageNavigationBar: ViewModifier {
+    @Environment(\.secondaryDestinationTitle) private var secondaryTitle
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+        #else
+        if let secondaryTitle {
+            content
+                .navigationTitle(secondaryTitle)
+                #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+                #endif
+                .toolbar(.visible, for: .navigationBar)
+        } else {
+            content.toolbar(.hidden, for: .navigationBar)
+        }
+        #endif
+    }
+}

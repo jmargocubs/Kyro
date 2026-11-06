@@ -63,7 +63,7 @@ struct CalendarView: View {
         phoneContent
             .siloPageBackground()
         #if os(iOS)
-            .toolbar(.hidden, for: .navigationBar)
+            .rootPageNavigationBar()
         #endif
         #endif
     }

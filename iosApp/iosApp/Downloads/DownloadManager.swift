@@ -26,11 +26,11 @@ enum DownloadError: LocalizedError {
         case .registrationAlreadyInFlight: return "This download is already being prepared."
         case .scopeChangedDuringRegistration: return "The active profile changed before the download could start."
         case .registryChanged: return "This download changed on the server. Try again."
-        case .registrationUncertain: return "Silo couldn't confirm the download started. It will appear in Downloads if the server created it."
+        case .registrationUncertain: return "\(AppBrand.name) couldn't confirm the download started. It will appear in Downloads if the server created it."
         case .monitoringScopeChanged: return "The active profile changed before monitoring could be saved."
         case .monitorChanged: return "Monitoring for this series changed on the server. Try again."
         case .monitorRemoved: return "This series is no longer monitored."
-        case .monitoringUncertain: return "Silo couldn't confirm the monitoring change. Check this series again once you're back online."
+        case .monitoringUncertain: return "\(AppBrand.name) couldn't confirm the monitoring change. Check this series again once you're back online."
         }
     }
 }

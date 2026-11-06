@@ -40,11 +40,11 @@ enum ProfileLaunchBehavior: String, Codable, CaseIterable, Identifiable, Sendabl
         case .automatic:
             return "Use the last profile selected on this device. A protected profile can reopen without asking for its PIN."
         case .askEveryLaunch:
-            return "Show Who's Watching whenever you return to Silo."
+            return "Show Who's Watching whenever you return to \(AppBrand.name)."
         case .afterOneHour:
-            return "Show Who's Watching when you've been away from Silo for 1 hour."
+            return "Show Who's Watching when you've been away from \(AppBrand.name) for 1 hour."
         case .afterTwelveHours:
-            return "Show Who's Watching when you've been away from Silo for 12 hours."
+            return "Show Who's Watching when you've been away from \(AppBrand.name) for 12 hours."
         }
     }
 

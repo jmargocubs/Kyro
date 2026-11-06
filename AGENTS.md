@@ -35,6 +35,7 @@ reasonable build recovery are part of an authorized run; ask only for an ambiguo
 target or a change that would lose protected state. Unsigned compilation with
 `CODE_SIGNING_ALLOWED=NO` is compile-only evidence; do not install that artifact
 for an authenticated run. See `docs/mac-builder.md` for setup and background.
+Build recovery must follow the Mac Resource Limits in global instructions (no clean builds, DerivedData deletion, or extra simulators without approval).
 
 ## Coding Style & Naming Conventions
 

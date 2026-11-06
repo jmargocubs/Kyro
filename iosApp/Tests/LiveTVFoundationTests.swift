@@ -510,6 +510,212 @@ final class LiveTVFoundationTests: XCTestCase {
         session.stop()
     }
 
+    func testPlayingReadyCallbackIsGenerationCheckedAndDeduplicated() async {
+        let engine = LiveTVTestEngine()
+        let session = makeSession(engine)
+        let first = LiveTVChannel(id: "first", guideID: nil, name: "First",
+            streamURL: URL(string: "https://fixture.invalid/first.ts")!, logoURL: nil, category: "News")
+        let next = LiveTVChannel(id: "next", guideID: nil, name: "Next",
+            streamURL: URL(string: "https://fixture.invalid/next.ts")!, logoURL: nil, category: "News")
+        var ready: [(String, Int)] = []
+        session.onPlayingReady = { ready.append(($0, $1)) }
+
+        session.play(first)
+        let staleGeneration = session.controller.generation
+        session.play(next)
+        session.controller.phaseChanged(.playing, generation: staleGeneration)
+        XCTAssertTrue(ready.isEmpty)
+
+        engine.onPhase?(.playing)
+        await settle()
+        XCTAssertEqual(ready.count, 1)
+        XCTAssertEqual(ready.first?.0, next.id)
+        XCTAssertEqual(ready.first?.1, session.controller.generation)
+
+        engine.onPhase?(.playing)
+        await settle()
+        XCTAssertEqual(ready.count, 1, "Repeated ready callbacks for one generation must not be reported twice")
+        session.stop()
+    }
+
+    func testSystemInterruptionResumesOnlyPreviousPlaybackAndPiPPlayCanRecoverSameEngine() async {
+        let engine = LiveTVTestEngine()
+        let session = makeSession(engine)
+        let channel = LiveTVChannel(id: "interrupt", guideID: nil, name: "Interrupt",
+            streamURL: URL(string: "https://fixture.invalid/interrupt.ts")!, logoURL: nil, category: "News")
+        session.play(channel)
+        await settle()
+        let generation = session.controller.generation
+        session.controller.phaseChanged(.playing, generation: generation)
+
+        session.controller.pauseForSystemInterruption()
+        XCTAssertEqual(session.state, .paused)
+        session.controller.resumeAfterSystemInterruption()
+        XCTAssertEqual(engine.resumeCount, 1, "A permitted interruption end resumes the existing engine")
+        XCTAssertEqual(session.state, .playing)
+
+        session.controller.pauseForSystemInterruption()
+        session.controller.phaseChanged(.playing, generation: generation)
+        XCTAssertEqual(session.state, .playing, "PiP Play may recover after an interruption with no ended event")
+        XCTAssertEqual(engine.loads.count, 1, "Recovery must not replace the player or restart the stream")
+
+        session.controller.togglePlayback()
+        session.controller.phaseChanged(.playing, generation: generation)
+        XCTAssertEqual(session.state, .paused, "An intentional pause still wins over engine playback")
+        XCTAssertGreaterThan(engine.pauseCount, 0)
+        session.stop()
+    }
+
+    // MARK: Picture in Picture transport
+
+    private let windowChannel = LiveTVChannel(id: "window", guideID: nil, name: "Window",
+        streamURL: URL(string: "https://fixture.invalid/window.ts")!, logoURL: nil, category: "News")
+
+    private func makeWindowSession(_ engine: LiveTVTestEngine, _ window: PictureInPictureWindowStub)
+        async -> LiveTVPlayerSession {
+        let session = LiveTVPlayerSession(scheduler: LiveTVTestScheduler(), makeEngine: { engine },
+                                          isOtherVideoActive: { false },
+                                          isOwnPictureInPictureEngaged: { window.isEngaged })
+        session.play(windowChannel)
+        await settle()
+        engine.onPhase?(.playing)
+        await settle()
+        XCTAssertEqual(session.state, .playing)
+        return session
+    }
+
+    /// Build 21: PiP Play reaches the engine directly. After a pause made in the window the
+    /// controller took that motion for the engine resuming itself and paused it again.
+    func testPiPPlayAfterAPauseInTheWindowResumesTheSameStream() async {
+        let engine = LiveTVTestEngine()
+        let window = PictureInPictureWindowStub()
+        let session = await makeWindowSession(engine, window)
+        window.isEngaged = true
+
+        engine.onPhase?(.paused) // PiP Pause
+        await settle()
+        XCTAssertEqual(session.state, .paused)
+        let pauses = engine.pauseCount
+
+        engine.onPhase?(.playing) // PiP Play
+        await settle()
+        XCTAssertEqual(session.state, .playing)
+        XCTAssertEqual(engine.pauseCount, pauses, "Nothing pauses the window's Play again")
+        XCTAssertEqual(engine.loads.count, 1, "The same stream resumes, without a reload")
+        XCTAssertEqual(engine.resumeCount, 0, "AVKit already resumed the engine; Live TV adds no second play")
+        session.stop()
+    }
+
+    func testPiPPlayAfterAPauseMadeInTheAppResumes() async {
+        let engine = LiveTVTestEngine()
+        let window = PictureInPictureWindowStub()
+        let session = await makeWindowSession(engine, window)
+        window.isEngaged = true
+
+        session.togglePlayback()
+        XCTAssertEqual(session.state, .paused)
+        engine.onPhase?(.playing)
+        await settle()
+        XCTAssertEqual(session.state, .playing)
+        session.stop()
+    }
+
+    func testPiPPlayAfterAnInterruptionResumesWithoutAnEndedEvent() async {
+        let engine = LiveTVTestEngine()
+        let window = PictureInPictureWindowStub()
+        let session = await makeWindowSession(engine, window)
+        window.isEngaged = true
+
+        engine.onSystemInterruption?()
+        await settle()
+        XCTAssertEqual(session.state, .paused)
+        engine.onPhase?(.playing)
+        await settle()
+        XCTAssertEqual(session.state, .playing)
+        XCTAssertEqual(engine.loads.count, 1)
+        session.stop()
+    }
+
+    func testAPauseInTheWindowIsTheViewersAndAnInterruptionEndDoesNotUndoIt() async {
+        let engine = LiveTVTestEngine()
+        let window = PictureInPictureWindowStub()
+        let session = await makeWindowSession(engine, window)
+        window.isEngaged = true
+
+        engine.onPhase?(.paused) // PiP Pause
+        await settle()
+        engine.onSystemInterruption?()
+        engine.onSystemInterruptionEnded?() // .shouldResume
+        await settle()
+        XCTAssertEqual(session.state, .paused)
+        XCTAssertEqual(engine.resumeCount, 0)
+        session.stop()
+    }
+
+    func testOnceTheWindowClosesTheViewersPauseWinsOverEngineMotionAgain() async {
+        let engine = LiveTVTestEngine()
+        let window = PictureInPictureWindowStub()
+        let session = await makeWindowSession(engine, window)
+
+        session.togglePlayback()
+        let pauses = engine.pauseCount
+        engine.onPhase?(.playing) // no window: an engine resuming on its own
+        await settle()
+        XCTAssertEqual(session.state, .paused)
+        XCTAssertGreaterThan(engine.pauseCount, pauses)
+        session.stop()
+    }
+
+    func testRouteLossDoesNotAutomaticallyResumeAndManualPauseCannotArmResume() {
+        let engine = LiveTVTestEngine()
+        let session = makeSession(engine)
+        let channel = LiveTVChannel(id: "route", guideID: nil, name: "Route",
+            streamURL: URL(string: "https://fixture.invalid/route.ts")!, logoURL: nil, category: "News")
+        session.play(channel)
+        let generation = session.controller.generation
+        session.controller.phaseChanged(.playing, generation: generation)
+        session.controller.pauseForSystemInterruption(canResumeAutomatically: false)
+        session.controller.resumeAfterSystemInterruption()
+        XCTAssertEqual(engine.resumeCount, 0)
+
+        session.controller.togglePlayback() // viewer explicitly resumes
+        session.controller.togglePlayback() // viewer explicitly pauses
+        session.controller.resumeAfterSystemInterruption()
+        XCTAssertEqual(session.state, .paused)
+        session.stop()
+    }
+
+    func testFailedStartupNeverEmitsPlayingReady() async {
+        let engine = LiveTVTestEngine()
+        let session = makeSession(engine)
+        let channel = LiveTVChannel(id: "candidate", guideID: nil, name: "Candidate",
+            streamURL: URL(string: "https://fixture.invalid/candidate.ts")!, logoURL: nil, category: "News")
+        var readyCount = 0
+        session.onPlayingReady = { _, _ in readyCount += 1 }
+
+        session.play(channel)
+        engine.onPhase?(.failed(.network, detail: nil))
+        await settle()
+        XCTAssertEqual(readyCount, 0)
+        XCTAssertEqual(session.state, .failed)
+        session.stop()
+    }
+
+    func testCancelledStartupAndLatePlayingEventNeverEmitPlayingReady() async {
+        let engine = LiveTVTestEngine()
+        let session = makeSession(engine)
+        let channel = LiveTVChannel(id: "candidate", guideID: nil, name: "Candidate",
+            streamURL: URL(string: "https://fixture.invalid/candidate.ts")!, logoURL: nil, category: "News")
+        var readyCount = 0
+        session.onPlayingReady = { _, _ in readyCount += 1 }
+
+        session.play(channel)
+        session.stop()
+        engine.onPhase?(.playing)
+        await settle()
+        XCTAssertEqual(readyCount, 0)
+    }
+
     func testLiveAudioClaimTracksActiveSessionWithoutChangingAudioPolicy() {
         var liveTVIsActive = true
         let liveTVClaim = AetherAudioSessionOwnership.Claim(isHoldingAudio: { liveTVIsActive })
@@ -700,13 +906,23 @@ private final class LiveTVTestEngine: LiveTVEngineDriving {
     var onPhase: ((LiveTVEnginePhase) -> Void)?
     var onLiveSourceReset: (() -> Void)?
     var onSystemInterruption: (() -> Void)?
+    var onSystemInterruptionEnded: (() -> Void)?
+    var onAudioRouteLost: (() -> Void)?
     private(set) var loads: [URL] = []
     private(set) var finalStops = 0
+    private(set) var pauseCount = 0
+    private(set) var resumeCount = 0
     func load(_ url: URL, route: LiveTVStreamRoute) async throws { loads.append(url) }
     func recoverLiveSource() -> Bool { true }
-    func play() {}
-    func pause() {}
+    func play() { resumeCount += 1 }
+    func pause() { pauseCount += 1 }
     func stop(final: Bool, releaseAudioSession: Bool) { if final { finalStops += 1 } }
+}
+
+/// Whether Live TV's own Picture in Picture window holds the stream.
+@MainActor
+private final class PictureInPictureWindowStub {
+    var isEngaged = false
 }
 
 @MainActor

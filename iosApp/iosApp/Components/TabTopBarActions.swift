@@ -64,6 +64,7 @@ struct TabTopBarActions: View {
             ? AnyLayout(HStackLayout(spacing: SiloTheme.topBarIconSpacing))
             : AnyLayout(VStackLayout(spacing: 6))
         return layout {
+            KyroMoreMenuButton()
             TopBarIconButton(
                 systemImage: "magnifyingglass",
                 accessibilityLabel: "Search",
@@ -152,13 +153,15 @@ struct ProfileAvatarMenu: View {
 
     var body: some View {
         Menu {
-            Button {
-                router.navigate(to: .liveTV)
-            } label: {
-                Label("Live TV", systemImage: "dot.radiowaves.left.and.right")
-            }
+            if KyroLiveTVEntry.profileMenuOffersLiveTV {
+                Button {
+                    KyroLiveTVEntry.open(router: router)
+                } label: {
+                    Label("Live TV", systemImage: "dot.radiowaves.left.and.right")
+                }
 
-            Divider()
+                Divider()
+            }
 
             #if os(iOS) || os(tvOS)
             if WatchPartyEntry.isAvailable {

@@ -262,6 +262,10 @@ actor EPGService {
     private let fingerprinter: EPGSourceFingerprinter
     nonisolated let policy: EPGRefreshPolicy
     nonisolated let limits: EPGLimits
+    /// `.memory` (the default) keeps today's in-memory index and v2 cache. `.sqlite` builds and
+    /// restores guides through SQLite and falls back to the memory path whenever SQLite fails.
+    nonisolated let storage: EPGStorageMode
+    nonisolated let sqliteReadPolicy: EPGSQLiteReadPolicy
     private let now: @Sendable () -> Date
 
     private var indexes: [UUID: EPGIndex] = [:]
@@ -311,7 +315,10 @@ actor EPGService {
 
     init(cache: EPGCacheStore?, loader: any EPGFeedLoading, fingerprinter: EPGSourceFingerprinter = EPGSourceFingerprinter(),
          policy: EPGRefreshPolicy = EPGRefreshPolicy(),
-         limits: EPGLimits = EPGLimits(), now: @escaping @Sendable () -> Date = { Date() }) {
+         limits: EPGLimits = EPGLimits(), storage: EPGStorageMode = .memory,
+         sqliteReadPolicy: EPGSQLiteReadPolicy = .cachedOnly, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.storage = storage
+        self.sqliteReadPolicy = sqliteReadPolicy
         self.cache = cache
         self.loader = loader
         self.fingerprinter = fingerprinter
@@ -552,11 +559,12 @@ actor EPGService {
         flights[providerID] = Flight(id: flightID, source: source, sourceFingerprint: sourceFingerprint,
                                      generation: generation, waiters: [waiterID: continuation])
         let loader = loader, limits = limits, fetchedAt = now()
+        let sqlitePlan = sqliteBuildPlan(providerID: providerID, fingerprint: sourceFingerprint)
         flights[providerID]?.task = Task {
             let result: Result<EPGIndex, Error>
             do {
                 result = .success(try await Self.build(source: source, channels: channels, loader: loader,
-                                                       limits: limits, fetchedAt: fetchedAt))
+                                                       limits: limits, fetchedAt: fetchedAt, sqlite: sqlitePlan))
             } catch {
                 result = .failure(error)
             }
@@ -587,6 +595,10 @@ actor EPGService {
                     persist(index, fingerprint: fingerprint, providerID: providerID, generation: flight.generation)
                 }
             }
+            // A SQLite guide that will not be promoted (incomplete feed, no fingerprint, no cache) must not
+            // leave its stage on disk: unlinking keeps the open connection readable and a crash leaves nothing.
+            let willPersist = cache != nil && flight.sourceFingerprint != nil && !index.statistics.incomplete
+            if let sqlite = index.sqlite, !willPersist { try? FileManager.default.removeItem(at: sqlite.guide.url) }
             for continuation in flight.waiters.values { continuation.resume(returning: index) }
         case .failure(let error):
             if !(error is CancellationError) {
@@ -737,6 +749,7 @@ actor EPGService {
             guard self.canWrite(providerID: providerID, generation: generation) else { return nil }
             let gate = self.diskGenerationGate
             return await Self.readVerifiedCache(cache, providerID: providerID, fingerprint: fingerprint,
+                                                storage: self.storage, readPolicy: self.sqliteReadPolicy,
                                                 isCurrent: { gate.isCurrent(providerID, generation: generation) })
         }
         pendingWrites[providerID] = (id, Task {
@@ -808,7 +821,20 @@ actor EPGService {
                 return
             }
             let gate = self.diskGenerationGate
-            if let contentID = await Self.writeV2Cache(cache, index: index, providerID: providerID,
+            if let sqlite = index.sqlite {
+                // SQLite identity lives in the file itself; the state stays unlinked, which the
+                // state reader accepts without a v2 file.
+                if await Self.promoteSQLite(cache, stage: sqlite.guide.url, guide: sqlite.guide, providerID: providerID,
+                                            isCurrent: { gate.isCurrent(providerID, generation: generation) }) {
+                    let state = EPGCacheState(providerID: providerID, sourceFingerprint: fingerprint,
+                                              lastSuccessfulFetchAt: index.fetchedAt)
+                    if !(await Self.writeState(cache, state: state)) {
+                        self.recordCacheWriteFailure("state metadata write")
+                    }
+                } else if self.canWrite(providerID: providerID, generation: generation) {
+                    self.recordCacheWriteFailure("SQLite guide write")
+                }
+            } else if let contentID = await Self.writeV2Cache(cache, index: index, providerID: providerID,
                                                        fingerprint: fingerprint,
                                                        isCurrent: { gate.isCurrent(providerID, generation: generation) }) {
                 let state = EPGCacheState(providerID: providerID, sourceFingerprint: fingerprint,
@@ -909,15 +935,38 @@ actor EPGService {
 
     // MARK: - Off-actor work
 
+    private struct SQLiteBuildPlan: Sendable {
+        let providerID: UUID
+        let fingerprint: Data
+        let cache: EPGCacheStore?
+        let readPolicy: EPGSQLiteReadPolicy
+    }
+
+    private func sqliteBuildPlan(providerID: UUID, fingerprint: Data?) -> SQLiteBuildPlan? {
+        guard storage == .sqlite else { return nil }
+        return SQLiteBuildPlan(providerID: providerID, fingerprint: fingerprint ?? Data(repeating: 0, count: 32),
+                               cache: cache, readPolicy: sqliteReadPolicy)
+    }
+
     private nonisolated static func build(source: EPGFeedSource, channels: EPGChannelFilter?,
                                           loader: any EPGFeedLoading, limits: EPGLimits,
-                                          fetchedAt: Date) async throws -> EPGIndex {
+                                          fetchedAt: Date, sqlite: SQLiteBuildPlan?) async throws -> EPGIndex {
         let url = try source.feedURL()
         let download = try await loader.load(url, maximumBytes: limits.maximumDownloadBytes,
                                              maximumDecodedBytes: limits.maximumXMLBytes)
         try Task.checkCancellation()
         let xml = try EPGPayloadDecoder.xmlData(from: download, maximumBytes: limits.maximumXMLBytes)
         try Task.checkCancellation()
+        if let sqlite {
+            do {
+                return try buildSQLite(xml: xml, channels: channels, limits: limits, fetchedAt: fetchedAt, plan: sqlite)
+            } catch let error where error is CancellationError || error is EPGError {
+                throw error
+            } catch {
+                // Disk full, SQLite failure, unwritable directory: the same feed builds in memory.
+                cacheLogger.error("EPG SQLite build failed; using the in-memory index")
+            }
+        }
         let window = DateInterval(start: fetchedAt.addingTimeInterval(-limits.pastRetention),
                                   end: fetchedAt.addingTimeInterval(limits.futureHorizon))
         let document = try XMLTVParser.parse(xml, filter: channels, window: window, limits: limits)
@@ -925,10 +974,28 @@ actor EPGService {
         return try EPGIndex(document: document, fetchedAt: fetchedAt, now: fetchedAt, limits: limits)
     }
 
+    private nonisolated static func buildSQLite(xml: Data, channels: EPGChannelFilter?, limits: EPGLimits,
+                                                fetchedAt: Date, plan: SQLiteBuildPlan) throws -> EPGIndex {
+        let stage = try plan.cache?.sqliteStageURL(providerID: plan.providerID)
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).stage")
+        let built = try EPGSQLiteBuilder.build(xml: xml, filter: channels, limits: limits, fetchedAt: fetchedAt,
+                                               providerID: plan.providerID, fingerprint: plan.fingerprint,
+                                               destination: stage, readPolicy: plan.readPolicy)
+        return EPGIndex(sqlite: built.index, statistics: built.statistics)
+    }
+
     private nonisolated static func readVerifiedCache(_ cache: EPGCacheStore, providerID: UUID,
-                                                      fingerprint: Data,
+                                                      fingerprint: Data, storage: EPGStorageMode,
+                                                      readPolicy: EPGSQLiteReadPolicy,
                                                       isCurrent: @Sendable () -> Bool) async -> EPGCacheStore.VerifiedGuide? {
-        cache.loadVerifiedGuide(providerID: providerID, fingerprint: fingerprint, isCurrent: isCurrent)
+        cache.loadVerifiedGuide(providerID: providerID, fingerprint: fingerprint, preferSQLite: storage == .sqlite,
+                                sqliteReadPolicy: readPolicy, isCurrent: isCurrent)
+    }
+
+    private nonisolated static func promoteSQLite(_ cache: EPGCacheStore, stage: URL, guide: EPGSQLiteGuide, providerID: UUID,
+                                                  isCurrent: @Sendable () -> Bool) async -> Bool {
+        do { try cache.promoteSQLite(stage: stage, guide: guide, providerID: providerID, isCurrent: isCurrent) } catch { return false }
+        return true
     }
 
     private nonisolated static func sweepCache(_ cache: EPGCacheStore, keeping providerIDs: Set<UUID>) async {

@@ -1030,18 +1030,18 @@ final class AppRouter {
             #endif
             var durable = outcome != .localOnly
             if outcome == .diagnosticsCleanupFailed {
-                accountActionError = "You're signed out, but Silo couldn't erase local diagnostics. Remove this server from the server list to retry cleanup."
+                accountActionError = "You're signed out, but \(AppBrand.name) couldn't erase local diagnostics. Remove this server from the server list to retry cleanup."
             }
             if removingServer, let serverID {
                 let removed = await ServerRegistry.shared.remove(serverId: serverID, resolveFallbackProfile: true)
                 durable = durable || removed
                 if removed { accountActionError = nil }
                 if !removed {
-                    accountActionError = "Silo couldn't remove the saved server. Please try again."
+                    accountActionError = "\(AppBrand.name) couldn't remove the saved server. Please try again."
                 }
             }
             if !durable, accountActionError == nil {
-                accountActionError = "Silo couldn't clear the saved sign-in on this device. Please try signing out again."
+                accountActionError = "\(AppBrand.name) couldn't clear the saved sign-in on this device. Please try signing out again."
             }
             let state: AuthState
             if !ServerRegistry.shared.hasActiveServer {
@@ -1205,6 +1205,8 @@ private extension Route {
             return "serverNeedsSetup"
         case .search:
             return "search"
+        case .secondaryDestination(let destination):
+            return "secondaryDestination:\(destination)"
         case .liveTV:
             return "liveTV"
         case .libraryCollection:

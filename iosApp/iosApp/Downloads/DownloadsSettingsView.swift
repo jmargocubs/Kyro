@@ -36,7 +36,7 @@ struct DownloadsSettingsView: View {
     private var heldProgressFooter: String {
         let count = manager.heldProgressCount
         let subject = count == 1 ? "1 offline watch position" : "\(count) offline watch positions"
-        return "\(subject) may not have reached the server. Silo won't send them again. Playing the download again replaces them."
+        return "\(subject) may not have reached the server. \(AppBrand.name) won't send them again. Playing the download again replaces them."
     }
 
     /// The server on this device the group belongs to, if any.
@@ -51,7 +51,7 @@ struct DownloadsSettingsView: View {
     private func detail(for group: DownloadStorageReclaim.OtherStorage) -> String {
         if group.isActiveServer { return "Other profiles on this server" }
         if server(for: group) != nil { return "Another server you've added" }
-        return group.serverURL == nil ? "Not used by this version of Silo" : "A server no longer on this device"
+        return group.serverURL == nil ? "Not used by this version of \(AppBrand.name)" : "A server no longer on this device"
     }
 
     /// Spells out when the data belongs to a profile or server the user can
@@ -169,7 +169,7 @@ struct DownloadsSettingsView: View {
                 } header: {
                     Text("Other Download Data")
                 } footer: {
-                    Text("Saved for other servers, other profiles, or by other versions of Silo. It doesn't appear in Downloads for this profile.")
+                    Text("Saved for other servers, other profiles, or by other versions of \(AppBrand.name). It doesn't appear in Downloads for this profile.")
                 }
                 .listRowBackground(Color.siloGroupedCell)
             }

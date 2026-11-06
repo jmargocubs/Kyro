@@ -693,6 +693,7 @@ final class BufferingQualityPlayerTests: XCTestCase {
         let ended = AVAudioSession.InterruptionType.ended.rawValue
         center.post(name: AVAudioSession.interruptionNotification, object: nil,
                     userInfo: [AVAudioSessionInterruptionTypeKey: began])
+        XCTAssertTrue(controller.shouldPlayWhenReady, "An interruption must not erase active playback intent")
         XCTAssertTrue(controller.isAudioSessionInterrupted)
         center.post(name: AVAudioSession.interruptionNotification, object: nil,
                     userInfo: [AVAudioSessionInterruptionTypeKey: ended, AVAudioSessionInterruptionOptionKey: UInt(0)])
@@ -705,6 +706,19 @@ final class BufferingQualityPlayerTests: XCTestCase {
                     userInfo: [AVAudioSessionInterruptionTypeKey: began])
         controller.play()
         XCTAssertFalse(controller.isAudioSessionInterrupted, "the viewer played")
+    }
+
+    func testInterruptionDoesNotOverrideAnIntentionalPause() throws {
+        let controller = try AetherPlaybackController()
+        controller.pause()
+        let center = NotificationCenter.default
+        center.post(name: AVAudioSession.interruptionNotification, object: nil,
+                    userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
+        center.post(name: AVAudioSession.interruptionNotification, object: nil,
+                    userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
+                               AVAudioSessionInterruptionOptionKey: AVAudioSession.InterruptionOptions.shouldResume.rawValue])
+        XCTAssertFalse(controller.shouldPlayWhenReady)
+        XCTAssertFalse(controller.isAudioSessionInterrupted)
     }
 
     /// A Restore answered while a start is out owes its clear to that start,

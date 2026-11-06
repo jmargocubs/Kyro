@@ -8610,6 +8610,12 @@ class PlayerViewModel {
 
     func cleanup() {
         guard !isDisposed else { return }
+        #if os(iOS)
+        KyroPiPDiagnostics.record(
+            "player_cleanup",
+            state: "intent=\(aetherPlaybackController.shouldPlayWhenReady ? "play" : "paused")"
+        )
+        #endif
         let partyAdapter = watchPartyAdapter
         watchPartyAdapter = nil
         partyAdapter?.playerDidExit()
@@ -8826,6 +8832,9 @@ class PlayerViewModel {
     deinit {
         print("[CMP-LIFE] deinit PlayerViewModel")
         MainActor.assumeIsolated {
+            #if os(iOS)
+            KyroPiPDiagnostics.record("player_view_model_deinit")
+            #endif
             Self.logger.info("PlayerViewModel.deinit")
             isDisposed = true
             if let systemCaptionObserverToken {

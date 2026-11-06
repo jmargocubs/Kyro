@@ -181,6 +181,23 @@ final class PictureInPictureCoordinator {
             }
             .store(in: &subscriptions)
 
+        // Sample-buffer PiP draws Play/Pause from `isPlaybackPaused`, which AVKit
+        // reads again only when told the state changed. Without this, a pause
+        // made in the app or by an interruption leaves the window showing Pause,
+        // and the next press asks for the pause that already happened. `@Published`
+        // emits before the value is stored, so the refresh waits a turn.
+        engine.$state
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak engine] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let engine, self.engine === engine,
+                          self.sourceKind == .software else { return }
+                    self.controller?.invalidatePlaybackState()
+                }
+            }
+            .store(in: &subscriptions)
+
         // A track can change while video is already in PiP or on an external
         // display. Re-assert native ownership after both the selection and the
         // native rendition table settle so the newly selected track, rather
@@ -256,6 +273,7 @@ final class PictureInPictureCoordinator {
     func endSessionForIdentityChange() {
         guard lifecycleOwner != nil || engagedOwner != nil else { return }
         Self.logger.info("Ending the PiP session for an identity boundary")
+        KyroPiPDiagnostics.record("pip_owner_teardown", state: "identity_boundary")
         tearDownBoundSession(continuingOwner: nil)
     }
 
@@ -282,6 +300,7 @@ final class PictureInPictureCoordinator {
     /// Close the window if one is up or starting, without ever starting one. `toggle()` starts when
     /// nothing is active, which a caller that only wants it closed must not do.
     func stopPictureInPicture() {
+        KyroPiPDiagnostics.record("pip_stop_requested", state: isEngaged ? "engaged" : "inactive")
         if let controller, controller.isPictureInPictureActive || isActive {
             controller.stopPictureInPicture()
         } else if isTransitioning {
@@ -293,6 +312,7 @@ final class PictureInPictureCoordinator {
     func toggle() {
         guard let controller else { return }
         if controller.isPictureInPictureActive || isActive {
+            KyroPiPDiagnostics.record("pip_user_toggle", state: "stop")
             controller.stopPictureInPicture()
         } else {
             guard controller.isPictureInPicturePossible else {
@@ -300,6 +320,7 @@ final class PictureInPictureCoordinator {
                 onStartFailure?(.notReady)
                 return
             }
+            KyroPiPDiagnostics.record("pip_user_toggle", state: "start")
             isStartingFromControl = true
             controller.startPictureInPicture()
         }
@@ -632,6 +653,7 @@ final class PictureInPictureCoordinator {
     // MARK: - AVKit delegate callbacks
 
     fileprivate func handleWillStart() {
+        KyroPiPDiagnostics.record("pip_will_start", state: sourceKind == .native ? "native" : "software")
         // This callback is synchronous on the main thread. Set Aether first so
         // its did-enter-background observer sees PiP as a keepalive reason.
         engine?.pictureInPictureActive = true
@@ -647,6 +669,7 @@ final class PictureInPictureCoordinator {
         isActive = true
         syncNativeSubtitleRendering()
         Self.logger.info("PiP started")
+        KyroPiPDiagnostics.record("pip_did_start", state: "active")
         let startedFromControl = isStartingFromControl
         isStartingFromControl = false
         let stopsForForegroundReturn = shouldStopForForegroundReturn
@@ -663,6 +686,7 @@ final class PictureInPictureCoordinator {
     /// `handleDidStop` reads the outcome to decide whether the engagement — and
     /// with it the deferred `cleanup()` — has to end.
     fileprivate func handleRestoreRequested(completion: @escaping (Bool) -> Void) {
+        KyroPiPDiagnostics.record("pip_restore_requested", state: isActive ? "active" : "transitioning")
         isRestoringUserInterface = false
         guard let onRestoreUserInterface else {
             // Without an owner nothing can come back, so report failure.
@@ -676,8 +700,10 @@ final class PictureInPictureCoordinator {
             guard !hasAnswered else { return }
             hasAnswered = true
             if didRestore {
+                KyroPiPDiagnostics.record("pip_restore_completed", state: "restored")
                 self?.isRestoringUserInterface = true
             } else {
+                KyroPiPDiagnostics.record("pip_restore_completed", state: "not_restored")
                 Self.logger.error("PiP restore could not re-present the player")
             }
             completion(didRestore)
@@ -698,6 +724,7 @@ final class PictureInPictureCoordinator {
         Self.logger.info(
             "PiP stopped restored=\(didRestoreUserInterface ? 1 : 0, privacy: .public)"
         )
+        KyroPiPDiagnostics.record("pip_did_stop", state: didRestoreUserInterface ? "restored" : "closed")
 
         if pendingRebind {
             pendingRebind = false
@@ -723,6 +750,7 @@ final class PictureInPictureCoordinator {
         Self.logger.error(
             "PiP failed to start: \(MediaLogRedactor.sanitize(error), privacy: .public)"
         )
+        KyroPiPDiagnostics.record("pip_start_failed", state: "failed")
         onStartFailure?(.failed(error))
         if pendingRebind {
             pendingRebind = false

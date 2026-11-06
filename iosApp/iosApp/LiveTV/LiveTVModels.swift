@@ -9,16 +9,19 @@ struct LiveTVProvider: Codable, Hashable, Identifiable, Sendable {
     var lastRefreshed: Date?
     var kind: LiveTVProviderKind = .m3u
     var allowedOutputFormats: [String] = []
+    /// Nil means the provider predates persisted import completeness metadata.
+    var catalogWasTruncated: Bool?
 
-    private enum CodingKeys: String, CodingKey { case id, name, channelCount, lastRefreshed, kind, allowedOutputFormats }
+    private enum CodingKeys: String, CodingKey { case id, name, channelCount, lastRefreshed, kind, allowedOutputFormats, catalogWasTruncated }
 
-    init(id: UUID, name: String, channelCount: Int, lastRefreshed: Date?, kind: LiveTVProviderKind = .m3u, allowedOutputFormats: [String] = []) {
+    init(id: UUID, name: String, channelCount: Int, lastRefreshed: Date?, kind: LiveTVProviderKind = .m3u, allowedOutputFormats: [String] = [], catalogWasTruncated: Bool? = nil) {
         self.id = id
         self.name = name
         self.channelCount = channelCount
         self.lastRefreshed = lastRefreshed
         self.kind = kind
         self.allowedOutputFormats = Self.normalizedOutputFormats(allowedOutputFormats)
+        self.catalogWasTruncated = catalogWasTruncated
     }
 
     init(from decoder: Decoder) throws {
@@ -29,6 +32,7 @@ struct LiveTVProvider: Codable, Hashable, Identifiable, Sendable {
         lastRefreshed = try values.decodeIfPresent(Date.self, forKey: .lastRefreshed)
         kind = try values.decodeIfPresent(LiveTVProviderKind.self, forKey: .kind) ?? .m3u
         allowedOutputFormats = Self.normalizedOutputFormats((try? values.decode([String].self, forKey: .allowedOutputFormats)) ?? [])
+        catalogWasTruncated = try values.decodeIfPresent(Bool.self, forKey: .catalogWasTruncated)
     }
 
     static func normalizedOutputFormats(_ formats: [String]) -> [String] {
@@ -38,6 +42,71 @@ struct LiveTVProvider: Codable, Hashable, Identifiable, Sendable {
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+enum LiveTVCatalogStatus: String, Equatable, Sendable {
+    case complete = "Complete"
+    case truncated = "Truncated at import limit"
+    case unknown = "Unknown"
+
+    init(truncated: Bool?) {
+        switch truncated {
+        case .some(true): self = .truncated
+        case .some(false): self = .complete
+        case .none: self = .unknown
+        }
+    }
+}
+
+struct LiveTVBrowserFilters: Equatable, Sendable {
+    var query: String = ""
+    var category: String?
+    var favoritesOnly = false
+
+    static func search(query: String) -> Self { Self(query: query) }
+    static let favorites = Self(favoritesOnly: true)
+    static func category(_ category: String) -> Self { Self(category: category) }
+    static let channels = Self()
+}
+
+enum LiveTVHomeErrorPresentation {
+    /// Import/playback errors remain a separate, visible status even when cached channels make
+    /// the browser itself ready. Nil is the only hidden state.
+    static func message(_ errorMessage: String?) -> String? { errorMessage }
+}
+
+/// What the Favorites destination shows. Resolved from values the browser already holds, so the
+/// empty state never flashes while the first filtering pass for the screen is still running.
+enum LiveTVFavoritesState: Equatable {
+    /// The catalog isn't ready (setup, loading, failed, or no channels); the browser status says why.
+    case unavailable
+    /// The first pass for the current filters is still running.
+    case loading
+    case empty
+    case populated(Int)
+
+    static let emptyDescription = "Tap the star next to any channel to add it to Favorites."
+
+    static func resolve(contentState: LiveTVChannelListContentState, visibleCount: Int,
+                        isSearching: Bool) -> Self {
+        guard case .ready = contentState else { return .unavailable }
+        if visibleCount > 0 { return .populated(visibleCount) }
+        return isSearching ? .loading : .empty
+    }
+}
+
+enum LiveTVHomeHeaderAction: CaseIterable, Hashable {
+    case search
+    case guide
+    case settings
+
+    func activate(search: () -> Void, guide: () -> Void, settings: () -> Void) {
+        switch self {
+        case .search: search()
+        case .guide: guide()
+        case .settings: settings()
+        }
+    }
 }
 
 enum LiveTVProviderKind: String, Codable, Sendable {
@@ -110,6 +179,7 @@ struct LiveTVProgram: Hashable, Identifiable, Sendable {
     let title: String
     let startsAt: Date
     let endsAt: Date
+    var summary: String? = nil
 
     func isCurrent(at date: Date = .now) -> Bool { startsAt <= date && date < endsAt }
 }
@@ -117,13 +187,28 @@ struct LiveTVProgram: Hashable, Identifiable, Sendable {
 extension LiveTVProgram {
     init(_ program: EPGProgram) {
         self.init(id: program.id, channelID: program.channelID, title: program.title,
-                  startsAt: program.start, endsAt: program.end)
+                  startsAt: program.start, endsAt: program.end, summary: program.summary)
     }
 }
 
 struct LiveTVProgramPair: Equatable {
     let current: LiveTVProgram?
     let next: LiveTVProgram?
+}
+
+/// Small, deterministic view selections used by the Live TV home. Inputs are already resolved
+/// against the active provider, so this layer never reaches across catalogs or starts I/O.
+enum LiveTVHomeSelection {
+    static func hero(from recentlyWatched: [LiveTVChannel]) -> LiveTVChannel? { recentlyWatched.first }
+    static func lineup(from favorites: [LiveTVChannel], limit: Int = 12) -> [LiveTVChannel] {
+        Array(favorites.prefix(max(0, limit)))
+    }
+    static func recents(from recentlyWatched: [LiveTVChannel], limit: Int = 10) -> [LiveTVChannel] {
+        Array(recentlyWatched.prefix(max(0, limit)))
+    }
+    static func categories(from categories: [String], limit: Int = 8) -> [String] {
+        Array(categories.prefix(max(0, limit)))
+    }
 }
 
 enum LiveTVChannelFiltering {
@@ -146,28 +231,50 @@ enum LiveTVChannelFiltering {
         _ channels: [LiveTVChannel], query: String, category: String?, favoritesOnly: Bool,
         favoriteIDs: Set<String>
     ) -> [String: [LiveTVChannel]] {
+        searchResults(channels, query: query, category: category, favoritesOnly: favoritesOnly,
+                      favoriteIDs: favoriteIDs, includeGroups: true).groups
+    }
+
+    static func searchResults(
+        _ channels: [LiveTVChannel], query: String, category: String?, favoritesOnly: Bool,
+        favoriteIDs: Set<String>, includeGroups: Bool
+    ) -> LiveTVChannelSearchResults {
         var groups: [String: [LiveTVChannel]] = [:]
+        var matches: [LiveTVChannel] = []
         for (index, channel) in channels.enumerated() {
-            if index.isMultiple(of: 256), Task.isCancelled { return [:] }
+            if index.isMultiple(of: 256), Task.isCancelled { return LiveTVChannelSearchResults(groups: [:], matches: []) }
             guard (!favoritesOnly || favoriteIDs.contains(channel.id)),
                   (category == nil || category == channel.category),
                   (query.isEmpty || channel.name.localizedStandardContains(query)
                     || channel.category.localizedStandardContains(query)) else { continue }
-            groups[channel.category, default: []].append(channel)
+            if includeGroups {
+                groups[channel.category, default: []].append(channel)
+            } else {
+                matches.append(channel)
+            }
         }
-        return groups
+        return LiveTVChannelSearchResults(groups: groups, matches: matches)
     }
+}
+
+struct LiveTVChannelSearchResults: Sendable {
+    let groups: [String: [LiveTVChannel]]
+    let matches: [LiveTVChannel]
 }
 
 @MainActor
 @Observable
 final class LiveTVChannelSearchModel {
     private(set) var groups: [String: [LiveTVChannel]] = [:]
+    private(set) var matches: [LiveTVChannel] = []
     private(set) var orderedCategories: [String] = []
     private(set) var resultCount = 0
+    /// True from a pass being scheduled until its results land or the model is cancelled, so a
+    /// screen can tell "no results yet" from "no results".
+    private(set) var isSearching = false
     private var generation = 0
     private var debounceTask: Task<Void, Never>?
-    private var worker: Task<[String: [LiveTVChannel]], Never>?
+    private var worker: Task<LiveTVChannelSearchResults, Never>?
     /// Last query accepted by `update`. Nil after `cancel`, so the next pass is a fresh population.
     private var scheduledQuery: String?
     /// True only while a non-empty query edit is waiting. Category changes and the first population leave this false.
@@ -179,9 +286,10 @@ final class LiveTVChannelSearchModel {
     }
 
     func update(channels: [LiveTVChannel], query: String, category: String?, favoritesOnly: Bool,
-                favoriteIDs: Set<String>, debounce: Duration = .milliseconds(180)) {
+                favoriteIDs: Set<String>, debounce: Duration = .milliseconds(180), includeGroups: Bool = true) {
         generation += 1
         let current = generation
+        isSearching = true
         debounceTask?.cancel()
         worker?.cancel()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -191,7 +299,7 @@ final class LiveTVChannelSearchModel {
         // population, a repeated query, favorites, and a catalog refresh start immediately too.
         let textEdited = scheduledQuery != nil && scheduledQuery != trimmed && !trimmed.isEmpty
         scheduledQuery = trimmed
-        let snapshots = (channels, trimmed, category, favoritesOnly, favoriteIDs)
+        let snapshots = (channels, trimmed, category, favoritesOnly, favoriteIDs, includeGroups)
         let wait: Duration = textEdited ? debounce : .zero
         isDebouncingTextInput = wait > .zero
         debounceTask = Task {
@@ -202,20 +310,25 @@ final class LiveTVChannelSearchModel {
             }
             guard !Task.isCancelled, current == generation else { return }
             let work = Task.detached(priority: .userInitiated) {
-                LiveTVChannelFiltering.grouped(snapshots.0, query: snapshots.1, category: snapshots.2,
-                                               favoritesOnly: snapshots.3, favoriteIDs: snapshots.4)
+                LiveTVChannelFiltering.searchResults(snapshots.0, query: snapshots.1, category: snapshots.2,
+                                                     favoritesOnly: snapshots.3, favoriteIDs: snapshots.4,
+                                                     includeGroups: snapshots.5)
             }
             guard !Task.isCancelled, current == generation else {
                 work.cancel()
                 return
             }
             worker = work
-            let grouped = await work.value
+            let results = await work.value
             guard !Task.isCancelled, current == generation else { return }
-            groups = grouped
-            orderedCategories = grouped.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-            resultCount = grouped.values.reduce(0) { $0 + $1.count }
+            groups = results.groups
+            matches = results.matches
+            orderedCategories = results.groups.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            resultCount = snapshots.5
+                ? results.groups.values.reduce(0) { $0 + $1.count }
+                : results.matches.count
             worker = nil
+            isSearching = false
         }
     }
 
@@ -227,7 +340,9 @@ final class LiveTVChannelSearchModel {
         worker = nil
         scheduledQuery = nil
         isDebouncingTextInput = false
+        isSearching = false
         groups = [:]
+        matches = []
         orderedCategories = []
         resultCount = 0
     }
@@ -475,6 +590,8 @@ protocol LiveTVEngineDriving: AnyObject {
     var onPhase: ((LiveTVEnginePhase) -> Void)? { get set }
     var onLiveSourceReset: (() -> Void)? { get set }
     var onSystemInterruption: (() -> Void)? { get set }
+    var onSystemInterruptionEnded: (() -> Void)? { get set }
+    var onAudioRouteLost: (() -> Void)? { get set }
     /// Throws `CancellationError` when superseded and `LiveTVEngineLoadError` for a real failure.
     func load(_ url: URL, route: LiveTVStreamRoute) async throws
     /// The engine's in-place live source renewal. False means a full load is needed.
@@ -573,6 +690,15 @@ final class LiveTVPlaybackController {
     @ObservationIgnored private var lastRetuneAt: Double?
     @ObservationIgnored private var deferredRetune: LiveTVTimerHandle?
     @ObservationIgnored private var sourceLostWhilePaused = false
+    /// Distinguishes an interruption pause from the viewer's explicit pause.
+    /// A PiP Play request can then recover the same live engine without
+    /// replacing its stream or overriding a manual pause.
+    @ObservationIgnored private var systemPauseAwaitingResume = false
+    @ObservationIgnored private var interruptionMayResumeAutomatically = false
+    /// True while Live TV's own Picture in Picture window holds the stream. AVKit's Play and
+    /// Pause there drive the engine directly, never through this controller, so motion over a
+    /// pause is the viewer pressing Play in the window rather than an engine resuming itself.
+    @ObservationIgnored var isTransportInPictureInPicture: @MainActor () -> Bool = { false }
 
     init(scheduler: any LiveTVScheduling) {
         self.scheduler = scheduler
@@ -605,11 +731,14 @@ final class LiveTVPlaybackController {
     func togglePlayback() {
         switch state {
         case .playing, .buffering:
+            systemPauseAwaitingResume = false
+            interruptionMayResumeAutomatically = false
             cancelStallTimer()
             state = .paused
             output?.pause()
         case .paused:
             if hasStartedPlayback && !sourceLostWhilePaused {
+                systemPauseAwaitingResume = false
                 state = .playing
                 output?.resume()
             } else if let channelID = activeChannelID, let url = activeURL {
@@ -629,6 +758,8 @@ final class LiveTVPlaybackController {
         activeChannelID = nil
         activeURL = nil
         hasStartedPlayback = false
+        systemPauseAwaitingResume = false
+        interruptionMayResumeAutomatically = false
         state = .stopped
         errorMessage = nil
         failureDetail = nil
@@ -636,11 +767,24 @@ final class LiveTVPlaybackController {
 
     /// An audio interruption began or the output route disappeared. Live TV stays paused until
     /// the viewer resumes it, the same explicit-resume rule Silo applies to its transports.
-    func pauseForSystemInterruption() {
+    func pauseForSystemInterruption(canResumeAutomatically: Bool = true) {
         switch state {
-        case .connecting, .playing, .buffering: pauseForSystem()
+        case .connecting, .playing, .buffering:
+            systemPauseAwaitingResume = state != .connecting
+            interruptionMayResumeAutomatically = systemPauseAwaitingResume && canResumeAutomatically
+            pauseForSystem()
         case .stopped, .paused, .failed: break
         }
+    }
+
+    /// Resume only a stream that was playing before a standard interruption
+    /// and only when AVAudioSession explicitly permits resumption.
+    func resumeAfterSystemInterruption() {
+        guard interruptionMayResumeAutomatically, systemPauseAwaitingResume, state == .paused else { return }
+        systemPauseAwaitingResume = false
+        interruptionMayResumeAutomatically = false
+        state = .playing
+        output?.resume()
     }
 
     // MARK: Engine events, tagged with the generation current when the engine published them
@@ -651,8 +795,16 @@ final class LiveTVPlaybackController {
         case .playing:
             if state == .paused {
                 // The viewer's pause stands, including over an engine's automatic resume.
-                output?.pause()
-                return
+                guard systemPauseAwaitingResume || isTransportInPictureInPicture() else {
+                    output?.pause()
+                    return
+                }
+                // AVKit's PiP Play reached the engine directly: after an interruption with no
+                // ended event, or after a pause made in the window or in the app. The motion
+                // shows the source is still alive.
+                systemPauseAwaitingResume = false
+                interruptionMayResumeAutomatically = false
+                sourceLostWhilePaused = false
             }
             hasStartedPlayback = true
             isRetuneInFlight = false
@@ -847,32 +999,42 @@ final class LiveTVPlayerSession: LiveTVPlaybackOutput {
     @ObservationIgnored private let isOtherVideoActive: @MainActor () -> Bool
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var audioSessionClaim: AetherAudioSessionOwnership.Claim?
+    @ObservationIgnored private var startupTrace: LiveTVStartupTrace?
+    @ObservationIgnored private var playingReadyGeneration: Int?
+    /// Fired only after the controller accepts a playing transition for its current generation.
+    @ObservationIgnored var onPlayingReady: ((String, Int) -> Void)?
 
     init(scheduler: any LiveTVScheduling,
          makeEngine: @escaping @MainActor () throws -> any LiveTVEngineDriving,
-         isOtherVideoActive: @escaping @MainActor () -> Bool) {
+         isOtherVideoActive: @escaping @MainActor () -> Bool,
+         isOwnPictureInPictureEngaged: @escaping @MainActor () -> Bool = { false }) {
         let controller = LiveTVPlaybackController(scheduler: scheduler)
         self.controller = controller
         self.makeEngine = makeEngine
         self.isOtherVideoActive = isOtherVideoActive
         controller.output = self
+        controller.isTransportInPictureInPicture = isOwnPictureInPictureEngaged
         audioSessionClaim = AetherAudioSessionOwnership.Claim(isHoldingAudio: { [weak controller] in
             controller?.holdsAudio ?? false
         })
     }
 
-    func play(_ channel: LiveTVChannel) {
+    func play(_ channel: LiveTVChannel, startupTrace: LiveTVStartupTrace? = nil) {
         if controller.activeChannelID == channel.id, controller.holdsAudio { return }
+        self.startupTrace?.finish(.incomplete)
         // Only one video engine plays at a time: a Silo movie in Picture in Picture keeps its own.
         guard !isOtherVideoActive() else {
+            startupTrace?.record("player_request_rejected_other_video_active")
             controller.refuse(channelID: channel.id, url: channel.streamURL, failure: .otherVideoActive)
             return
         }
+        self.startupTrace = startupTrace
         controller.play(channelID: channel.id, url: channel.streamURL)
     }
 
     func retry() {
         guard controller.canRetry, let channelID = controller.activeChannelID, let url = controller.activeURL else { return }
+        startupTrace?.finish(.incomplete)
         guard !isOtherVideoActive() else {
             controller.refuse(channelID: channelID, url: url, failure: .otherVideoActive)
             return
@@ -884,20 +1046,28 @@ final class LiveTVPlayerSession: LiveTVPlaybackOutput {
         if controller.state == .failed { retry() } else { controller.togglePlayback() }
     }
 
-    func stop() { controller.stop() }
+    func stop() { startupTrace?.finish(.incomplete); startupTrace = nil; controller.stop() }
 
     // MARK: LiveTVPlaybackOutput
 
     func load(_ url: URL, generation: Int) {
+        startupTrace?.record("player_initialization_requested")
+        let isEngineWarm = (engine != nil)
         guard let engine = resolveEngine() else {
+            startupTrace?.record("player_engine_initialization_failed")
+            startupTrace = nil
             controller.loadFailed(LiveTVEngineLoadError(failure: .engineUnavailable, detail: nil), generation: generation)
             return
         }
+        startupTrace?.record("player_engine_ready", detail: isEngineWarm ? "engine_warm" : "engine_cold_initialized")
         loadTask?.cancel()
         // Stop the outgoing stream first so nothing it publishes while the load task is being
         // scheduled is tagged with the new generation.
         engine.stop(final: false, releaseAudioSession: false)
         let route = LiveTVStreamRoute(url: url)
+        if let liveTVEngine = engine as? AetherLiveTVEngine {
+            liveTVEngine.prepareRuntimeDiagnostics(sessionID: startupTrace?.id ?? UUID(), generation: generation, route: route)
+        }
         loadTask = Task { @MainActor [weak self] in
             do {
                 try await engine.load(url, route: route)
@@ -906,8 +1076,12 @@ final class LiveTVPlayerSession: LiveTVPlaybackOutput {
                 // A newer load or a stop superseded this one; the successor owns the session.
             } catch let error as LiveTVEngineLoadError {
                 self?.controller.loadFailed(error, generation: generation)
+                self?.startupTrace?.record("playback_failed")
+                self?.startupTrace = nil
             } catch {
                 self?.controller.loadFailed(LiveTVEngineLoadError(failure: .unknown, detail: nil), generation: generation)
+                self?.startupTrace?.record("playback_failed")
+                self?.startupTrace = nil
             }
         }
     }
@@ -936,13 +1110,35 @@ final class LiveTVPlayerSession: LiveTVPlaybackOutput {
         if let engine { return engine }
         guard let created = try? makeEngine() else { return nil }
         created.onPhase = { [weak self] phase in
-            self?.deliver { controller, generation in controller.phaseChanged(phase, generation: generation) }
+            self?.deliver { [weak self] controller, generation in
+                let previous = controller.state
+                controller.phaseChanged(phase, generation: generation)
+                if phase == .playing, previous != .playing, controller.state == .playing {
+                    self?.startupTrace?.record("playing_motion_ready")
+                    self?.startupTrace = nil
+                    if let channelID = controller.activeChannelID,
+                       self?.playingReadyGeneration != generation {
+                        self?.playingReadyGeneration = generation
+                        self?.onPlayingReady?(channelID, generation)
+                    }
+                }
+                if controller.state == .failed {
+                    self?.startupTrace?.record("playback_failed")
+                    self?.startupTrace = nil
+                }
+            }
         }
         created.onLiveSourceReset = { [weak self] in
             self?.deliver { controller, generation in controller.liveSourceReset(generation: generation) }
         }
         created.onSystemInterruption = { [weak self] in
             self?.deliver { controller, _ in controller.pauseForSystemInterruption() }
+        }
+        created.onSystemInterruptionEnded = { [weak self] in
+            self?.deliver { controller, _ in controller.resumeAfterSystemInterruption() }
+        }
+        created.onAudioRouteLost = { [weak self] in
+            self?.deliver { controller, _ in controller.pauseForSystemInterruption(canResumeAutomatically: false) }
         }
         engine = created
         enginesCreated += 1

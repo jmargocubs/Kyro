@@ -25,11 +25,29 @@ final class LiveTVService {
     /// IDs are provider-qualified, so switching providers cannot reuse a token accidentally.
     private(set) var guideChannelRevisions: [String: Int] = [:]
     private(set) var favoriteChannelIDs = Set<String>()
+    private(set) var recentlyWatchedRecords: [LiveTVRecentChannel] = []
     private(set) var channelCatalogRevision = 0
+    private(set) var homeFavoriteChannels: [LiveTVChannel] = []
+    private(set) var homeRecentChannels: [LiveTVChannel] = []
+    private(set) var homeUpNext: [LiveTVUpNextItem] = []
 
     private var channelCatalogs: [UUID: [LiveTVChannel]] = [:]
     private var guideIndexes: [UUID: EPGIndex] = [:]
     private var categoryCatalogs: [UUID: [String]] = [:]
+    /// Bumps whenever SQLite-backed guide listings finish loading, so channel rows read fresh data.
+    private(set) var guideResidencyRevision = 0
+    @ObservationIgnored private var residencyPending: [String: Set<String>] = [:]
+    @ObservationIgnored private var residencyProviderID: UUID?
+    @ObservationIgnored private var residencyGuideID: UUID?
+    @ObservationIgnored private var residencyFailed = Set<String>()
+    @ObservationIgnored private var residencyInFlight = Set<String>()
+    @ObservationIgnored private var residencyTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingStartupTraces: [String: LiveTVStartupTrace] = [:]
+#if DEBUG
+    @ObservationIgnored var residencyPrefetchHookForTesting: (@Sendable (EPGIndex, [String]) async -> Void)?
+#endif
+    private static let warmGuideChannels = 96
+    private static let residencyBatch = 64
     private var shortEPGInFlight = Set<String>()
     private var shortEPGFreshUntil: [String: Date] = [:]
     private let shortEPGNow: () -> Date
@@ -37,19 +55,36 @@ final class LiveTVService {
     private let secretStore: LiveTVSecretStore
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private let epg: EPGService
+    /// Backend selected when this service was created. Internal preference changes take effect on
+    /// the next app launch, never midway through a guide session.
+    var activeEPGStorageMode: EPGStorageMode { epg.storage }
     @ObservationIgnored private let channelSnapshotStore: LiveTVChannelSnapshotStore
+    @ObservationIgnored private let recentHistoryStore: LiveTVRecentHistoryStore
     /// The one playlist download in flight. Removing its provider cancels it and clears this, so a
     /// late result can no longer be applied.
     @ObservationIgnored private var playlistRefresh: (providerID: UUID, token: UUID, task: Task<LiveTVCachedCatalog, Error>)?
     /// Cached channel and guide restores, kept after they finish so each provider is read from disk once.
     @ObservationIgnored private var cacheRestores: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var guideCacheOrphanSweep: Task<Void, Never>?
+    @ObservationIgnored private var homePreviewTask: Task<Void, Never>?
+    @ObservationIgnored private var homePreviewWork: Task<LiveTVHomeChannelPreview.Result, Never>?
+    @ObservationIgnored private var homePreviewGeneration = 0
+    /// Provider whose previews are currently published; nil while they are empty.
+    @ObservationIgnored private var homePreviewProviderID: UUID?
+    @ObservationIgnored private var upNextTask: Task<Void, Never>?
+    @ObservationIgnored private var upNextGeneration = 0
     /// Providers whose channels came from a playlist download in this process, so they can play.
     @ObservationIgnored private var liveCatalogs = Set<UUID>()
     @ObservationIgnored private var automaticRefreshAttempts: [UUID: Date] = [:]
     /// The one Live TV player session for the process, created on first playback. Views read it
     /// from here so a SwiftUI redraw never allocates a player or registers an audio claim.
-    @ObservationIgnored private(set) lazy var playerSession = LiveTVPlayerSession.makeDefault()
+    @ObservationIgnored private(set) lazy var playerSession: LiveTVPlayerSession = {
+        let session = LiveTVPlayerSession.makeDefault()
+        session.onPlayingReady = { [weak self] channelID, generation in
+            self?.recordPlayingReady(channelID: channelID, generation: generation)
+        }
+        return session
+    }()
     /// One full-screen player presentation and Picture in Picture hand-off, shared by the channel
     /// list and the guide.
     @ObservationIgnored let presentation = LiveTVPresentation(scheduler: LiveTVTaskScheduler())
@@ -72,15 +107,19 @@ final class LiveTVService {
         session: URLSession? = nil,
         epg: EPGService? = nil,
         channelSnapshotStore: LiveTVChannelSnapshotStore = LiveTVChannelSnapshotStore(),
+        recentHistoryStore: LiveTVRecentHistoryStore? = nil,
         shortEPGNow: @escaping () -> Date = { Date() }
     ) {
         self.defaults = defaults
         self.secretStore = secretStore ?? KeychainLiveTVSecretStore()
         self.channelSnapshotStore = channelSnapshotStore
+        self.recentHistoryStore = recentHistoryStore ?? LiveTVRecentHistoryStore(defaults: defaults)
+        self.recentlyWatchedRecords = self.recentHistoryStore.read()
         self.shortEPGNow = shortEPGNow
         self.epg = epg ?? EPGService(
             cache: .makeDefault(),
-            loader: session.map { URLSessionEPGFeedLoader(session: $0) } ?? URLSessionEPGFeedLoader.makeDefault())
+            loader: session.map { URLSessionEPGFeedLoader(session: $0) } ?? URLSessionEPGFeedLoader.makeDefault(),
+            storage: EPGStorageMode.current(defaults: defaults))
         if let session {
             self.session = session
         } else {
@@ -113,8 +152,17 @@ final class LiveTVService {
         return channelCatalogs[selectedProviderID] ?? []
     }
 
-    var favoriteChannels: [LiveTVChannel] {
-        channels.filter { favoriteChannelIDs.contains($0.id) }
+    /// True once this provider's channels (cached or live) are in memory. Saved browsing state must
+    /// wait for its own provider: `channelCatalogRevision` also changes when another provider loads.
+    func hasCatalog(for providerID: UUID) -> Bool {
+        channelCatalogs[providerID] != nil
+    }
+
+    var favoriteChannels: [LiveTVChannel] { homeFavoriteChannels }
+
+    /// Only history that resolves to the active provider's current catalog is shown.
+    var recentlyWatchedChannels: [LiveTVChannel] {
+        homeRecentChannels
     }
 
     var selectedProvider: LiveTVProvider? {
@@ -124,6 +172,7 @@ final class LiveTVService {
     func selectProvider(_ id: UUID) {
         guard providers.contains(where: { $0.id == id }) else { return }
         selectedProviderID = id
+        scheduleHomePreviewRebuild()
         errorMessage = nil
         catalogNotice = nil
         guideMessage = nil
@@ -165,7 +214,9 @@ final class LiveTVService {
            channelCatalogs[providerID] == nil, providers.contains(where: { $0.id == providerID }) {
             channelCatalogs[providerID] = cached.channels
             categoryCatalogs[providerID] = cached.categories
+            pruneRecentHistory(for: providerID, validChannels: cached.channels)
             channelCatalogRevision &+= 1
+            if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
         }
         // The guide cache is keyed by provider and only returned while still usable. Short-guide
         // listings alone never stand in for it.
@@ -174,6 +225,7 @@ final class LiveTVService {
               !showsFullGuide(providerID), providers.contains(where: { $0.id == providerID }) else { return }
         guideIndexes[providerID] = index
         invalidateAllGuideRows()
+        warmGuideWindow(providerID)
         if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
     }
 
@@ -236,6 +288,7 @@ final class LiveTVService {
         }
         providers.append(LiveTVProvider(id: id, name: name, channelCount: 0, lastRefreshed: nil, kind: kind))
         selectedProviderID = id
+        scheduleHomePreviewRebuild()
         persistProviders()
         return id
     }
@@ -263,15 +316,25 @@ final class LiveTVService {
         channelCatalogs[id] = nil
         categoryCatalogs[id] = nil
         guideIndexes[id] = nil
+        if residencyProviderID == id {
+            residencyTask?.cancel()
+            residencyPending.removeAll()
+            residencyInFlight.removeAll()
+            residencyFailed.removeAll()
+        }
         invalidateAllGuideRows()
         channelCatalogRevision &+= 1
         favoriteChannelIDs = favoriteChannelIDs.filter { !$0.hasPrefix("\(id.uuidString):") }
         defaults.set(favoriteChannelIDs.sorted(), forKey: Self.favoritesKey)
+        recentlyWatchedRecords = LiveTVRecentHistory.pruning(recentlyWatchedRecords, providerID: id,
+                                                             validChannelIDs: [])
+        recentHistoryStore.save(recentlyWatchedRecords)
         shortEPGInFlight = shortEPGInFlight.filter { !$0.hasPrefix("\(id.uuidString):") }
         shortEPGFreshUntil = shortEPGFreshUntil.filter { !$0.key.hasPrefix("\(id.uuidString):") }
         _ = secretStore.remove(account: Self.secretAccount(id))
         let wasSelected = selectedProviderID == id
         if wasSelected { selectedProviderID = providers.first?.id }
+        if wasSelected { scheduleHomePreviewRebuild() }
         persistProviders()
         // Status belongs to the selected provider; removing another one leaves it alone.
         guard wasSelected else { return }
@@ -345,11 +408,14 @@ final class LiveTVService {
         let guideFilterChanged = !previousChannels.isEmpty && previousFilter != updatedFilter
         channelCatalogs[providerID] = loaded.channels
         categoryCatalogs[providerID] = loaded.categories
+        pruneRecentHistory(for: providerID, validChannels: loaded.channels)
         channelCatalogRevision &+= 1
+        if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
         liveCatalogs.insert(providerID)
         if let providerIndex = providers.firstIndex(where: { $0.id == providerID }) {
             providers[providerIndex].channelCount = loaded.channels.count
             providers[providerIndex].lastRefreshed = .now
+            providers[providerIndex].catalogWasTruncated = loaded.hitChannelLimit
             persistProviders()
         }
         if selectedProviderID == providerID {
@@ -395,6 +461,16 @@ final class LiveTVService {
     /// Shows the cached guide immediately, then refreshes it when the policy says it is due.
     private func refreshGuide(providerID: UUID, source: LiveTVSourceConfiguration, force: Bool = false) async {
         guard providers.contains(where: { $0.id == providerID }) else { return }
+        let refreshID = UUID()
+        let refreshStartedAt = ProcessInfo.processInfo.systemUptime
+        LiveTVStartupTrace.recordEPG("guide_refresh_started", operationID: refreshID,
+                                     startedAt: refreshStartedAt,
+                                     backend: activeEPGStorageMode == .sqlite ? "sqlite" : "memory")
+        defer {
+            LiveTVStartupTrace.recordEPG("guide_refresh_finished", operationID: refreshID,
+                                         startedAt: refreshStartedAt,
+                                         backend: activeEPGStorageMode == .sqlite ? "sqlite" : "memory")
+        }
         let feed = Self.epgFeedSource(source)
         guard let feed else {
             guideIndexes[providerID] = nil
@@ -420,6 +496,7 @@ final class LiveTVService {
             if let cached, !showsFullGuide(providerID) {
                 guideIndexes[providerID] = cached
                 invalidateAllGuideRows()
+                warmGuideWindow(providerID)
                 if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
             }
         }
@@ -429,6 +506,7 @@ final class LiveTVService {
             guard providers.contains(where: { $0.id == providerID }) else { return }
             guideIndexes[providerID] = index
             invalidateAllGuideRows()
+            warmGuideWindow(providerID)
             if selectedProviderID == providerID {
                 guideMessage = EPGGuideStatus.message(for: index)
             }
@@ -526,6 +604,16 @@ final class LiveTVService {
               let username = source.username, let password = source.password else { return }
         shortEPGInFlight.insert(channel.id)
         defer { shortEPGInFlight.remove(channel.id) }
+        let shortRefreshID = UUID()
+        let shortRefreshStartedAt = ProcessInfo.processInfo.systemUptime
+        LiveTVStartupTrace.recordEPG("short_refresh_started", operationID: shortRefreshID,
+                                     startedAt: shortRefreshStartedAt,
+                                     backend: activeEPGStorageMode == .sqlite ? "sqlite" : "memory")
+        defer {
+            LiveTVStartupTrace.recordEPG("short_refresh_finished", operationID: shortRefreshID,
+                                         startedAt: shortRefreshStartedAt,
+                                         backend: activeEPGStorageMode == .sqlite ? "sqlite" : "memory")
+        }
         // The ticket is issued before the request is sent. A full refresh, source change or removal
         // that happens while the request is in flight makes the response stale, and EPGService drops it.
         guard let epgSource = Self.epgFeedSource(source),
@@ -623,23 +711,45 @@ final class LiveTVService {
     /// A channel was chosen in the list or the guide. Opens the player, or retunes the Picture in
     /// Picture window in place.
     func choose(_ channel: LiveTVChannel, from presenter: LiveTVPresenter) {
-        guard isPlayable(channel) else { rejectCachedPlayback(); return }
+        let startupTrace = LiveTVStartupTrace(channelID: channel.id,
+                                              backend: activeEPGStorageMode == .sqlite ? "sqlite" : "memory")
+        startupTrace.record("channel_tap_received")
+        guard isPlayable(channel) else { startupTrace.record("playback_failed"); rejectCachedPlayback(); return }
+        startupTrace.record("stream_url_available_and_validated")
         Task { await refreshShortEPG(for: channel) }
-        if presentation.select(channel, from: presenter) == .playInPlace {
-            playerSession.play(channel)
+        let selection = presentation.select(channel, from: presenter)
+        if selection == .playInPlace {
+            playerSession.play(channel, startupTrace: startupTrace)
+        } else if selection == .present {
+            pendingStartupTraces.values.forEach { $0.finish(.incomplete) }
+            pendingStartupTraces = [channel.id: startupTrace]
         }
+    }
+
+    /// Called by the presented player task after SwiftUI creates the cover. This records the
+    /// player request boundary rather than treating presentation as playback initialization.
+    func playPresentedChannel(_ channel: LiveTVChannel) {
+        let trace = pendingStartupTraces.removeValue(forKey: channel.id)
+        playerSession.play(channel, startupTrace: trace)
     }
 
     /// Shared validation and session route for channel-picker retunes inside the player.
     @discardableResult
     func playFromPlayerPicker(_ channel: LiveTVChannel) -> Bool {
-        guard isPlayable(channel) else { rejectCachedPlayback(); return false }
+        let startupTrace = LiveTVStartupTrace(channelID: channel.id,
+                                              backend: activeEPGStorageMode == .sqlite ? "sqlite" : "memory")
+        startupTrace.record("channel_tap_received")
+        guard isPlayable(channel) else { startupTrace.record("playback_failed"); rejectCachedPlayback(); return false }
+        startupTrace.record("stream_url_available_and_validated")
         Task { await refreshShortEPG(for: channel) }
         errorMessage = nil
         presentation.playerChannelChanged(to: channel)
-        playerSession.play(channel)
+        playerSession.play(channel, startupTrace: startupTrace)
         return true
     }
+
+    /// The playback gate, for surfaces that should only offer channels playback will accept.
+    func canPlay(_ channel: LiveTVChannel) -> Bool { isPlayable(channel) }
 
     private func isPlayable(_ channel: LiveTVChannel) -> Bool {
         guard let providerID = UUID(uuidString: String(channel.id.prefix(36))),
@@ -655,23 +765,157 @@ final class LiveTVService {
     func toggleFavorite(_ channel: LiveTVChannel) {
         if !favoriteChannelIDs.insert(channel.id).inserted { favoriteChannelIDs.remove(channel.id) }
         defaults.set(favoriteChannelIDs.sorted(), forKey: Self.favoritesKey)
+        if UUID(uuidString: String(channel.id.prefix(36))) == selectedProviderID { scheduleHomePreviewRebuild() }
     }
 
     func isFavorite(_ channel: LiveTVChannel) -> Bool {
         favoriteChannelIDs.contains(channel.id)
     }
 
+    /// Called only after the player session accepts a playing-ready transition for its current
+    /// generation. The exact channel must still resolve in its provider's current catalog.
+    private func recordPlayingReady(channelID: String, generation: Int) {
+        let session = playerSession
+        let providerID = UUID(uuidString: String(channelID.prefix(36)))
+        guard let entry = LiveTVRecentHistory.playingReadyEntry(
+                  channelID: channelID, generation: generation,
+                  currentGeneration: session.controller.generation, activeChannelID: session.activeChannelID,
+                  isPlaying: session.state == .playing,
+                  providerIsPresent: providerID.map { id in providers.contains(where: { $0.id == id }) } ?? false,
+                  validChannelIDs: providerID.flatMap { channelCatalogs[$0] }.map { Set($0.map(\.id)) } ?? []),
+              recentlyWatchedRecords.first != entry else { return }
+        recentlyWatchedRecords = LiveTVRecentHistory.inserting(entry, into: recentlyWatchedRecords)
+        recentHistoryStore.save(recentlyWatchedRecords)
+        if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
+    }
+
+    private func pruneRecentHistory(for providerID: UUID, validChannels: [LiveTVChannel]) {
+        let validIDs = Set(validChannels.map(\.id))
+        let updated = LiveTVRecentHistory.pruning(recentlyWatchedRecords, providerID: providerID,
+                                                  validChannelIDs: validIDs)
+        guard updated != recentlyWatchedRecords else { return }
+        recentlyWatchedRecords = updated
+        recentHistoryStore.save(updated)
+    }
+
+    /// Rebuild only when the active provider's catalog, favorites, or recents change. The scan
+    /// runs off-main, retains only the bounded Home selections, and rejects stale generations.
+    /// Same-provider rebuilds leave the current rails on screen until the replacement lands; a
+    /// provider change or a missing catalog clears them at once.
+    private func scheduleHomePreviewRebuild() {
+        homePreviewGeneration &+= 1
+        let generation = homePreviewGeneration
+        homePreviewTask?.cancel()
+        homePreviewWork?.cancel()
+        guard let providerID = selectedProviderID, let catalog = channelCatalogs[providerID] else {
+            publishHomePreview(.empty, providerID: nil)
+            return
+        }
+        if homePreviewProviderID != providerID { publishHomePreview(.empty, providerID: nil) }
+        let favoriteIDs = favoriteChannelIDs
+        let records = recentlyWatchedRecords
+        let work = Task.detached(priority: .utility) {
+            LiveTVHomeChannelPreview.resolve(catalog: catalog, favoriteIDs: favoriteIDs,
+                                             recentRecords: records, providerID: providerID)
+        }
+        homePreviewWork = work
+        homePreviewTask = Task { [weak self] in
+            let result = await work.value
+            guard !Task.isCancelled, let self,
+                  self.homePreviewGeneration == generation,
+                  self.selectedProviderID == providerID,
+                  self.channelCatalogs[providerID] != nil else { return }
+            self.publishHomePreview(result, providerID: providerID)
+        }
+    }
+
+    /// Both rails change in one main-actor turn, and unchanged rails are not reassigned, so views
+    /// see one consistent update rather than an intermediate half-built state.
+    private func publishHomePreview(_ result: LiveTVHomeChannelPreview.Result, providerID: UUID?) {
+        homePreviewProviderID = providerID
+        if homeFavoriteChannels != result.favorites { homeFavoriteChannels = result.favorites }
+        if homeRecentChannels != result.recents { homeRecentChannels = result.recents }
+        scheduleUpNextRebuild()
+    }
+
+#if DEBUG
+    /// Test-only: waits for the Home preview rebuild scheduled most recently, if any.
+    func homePreviewRebuildForTesting() async {
+        await homePreviewTask?.value
+    }
+#endif
+
+    /// Resolves only the active provider's bounded Home favorites. SQLite misses are prefetched
+    /// inside the detached task, so guide disk reads never block the main actor.
+    private func scheduleUpNextRebuild() {
+        upNextGeneration &+= 1
+        let generation = upNextGeneration
+        upNextTask?.cancel()
+
+        guard let providerID = selectedProviderID,
+              !isGuideStale,
+              let index = guideIndexes[providerID],
+              !homeFavoriteChannels.isEmpty else {
+            homeUpNext = []
+            return
+        }
+
+        let favorites = homeFavoriteChannels
+        let now = Date()
+        let interval = DateInterval(start: now, end: now.addingTimeInterval(7 * 24 * 60 * 60))
+        let task = Task.detached(priority: .utility) {
+            var candidates: [LiveTVUpNextResolver.Candidate] = []
+            candidates.reserveCapacity(favorites.count)
+            for channel in favorites {
+                guard let key = index.channelKey(guideID: channel.guideID, name: channel.name) else { continue }
+                if !index.isResident(channelKey: key) { index.prefetch(channelKeys: [key]) }
+                candidates.append(.init(channel: channel, programs: index.programs(channelKey: key, overlapping: interval)))
+            }
+            return LiveTVUpNextResolver.resolve(candidates: candidates, providerID: providerID, now: now)
+        }
+        upNextTask = Task { [weak self] in
+            let result = await task.value
+            guard !Task.isCancelled, let self,
+                  self.upNextGeneration == generation,
+                  self.selectedProviderID == providerID,
+                  !self.isGuideStale else { return }
+            self.homeUpNext = result
+        }
+    }
+
+#if DEBUG
+    func upNextRebuildForTesting() async {
+        await upNextTask?.value
+    }
+#endif
+
     func programPair(for channel: LiveTVChannel, at date: Date = .now) -> LiveTVProgramPair {
         guard let providerID = UUID(uuidString: String(channel.id.prefix(36))) else {
             return LiveTVProgramPair(current: nil, next: nil)
         }
         guard let index = guideIndexes[providerID] else { return LiveTVProgramPair(current: nil, next: nil) }
+        if index.isSQLiteBacked {
+            _ = guideResidencyRevision
+            requestResidencyIfNeeded(index, providerID: providerID, channel: channel)
+        }
         let pair = index.nowNext(guideID: channel.guideID, name: channel.name, at: date)
         return LiveTVProgramPair(current: pair.current.map(LiveTVProgram.init), next: pair.next.map(LiveTVProgram.init))
     }
 
     func guideChannelRevision(for channel: LiveTVChannel) -> Int {
         guideChannelRevisions[channel.id] ?? 0
+    }
+
+    /// True while a known SQLite channel is waiting for, or undergoing, its background load.
+    /// This distinguishes a transient empty resident-window lookup from a genuinely empty guide.
+    func isGuideChannelLoading(_ channel: LiveTVChannel) -> Bool {
+        _ = guideResidencyRevision
+        guard let providerID = UUID(uuidString: String(channel.id.prefix(36))),
+              let index = guideIndexes[providerID], index.isSQLiteBacked,
+              let key = index.channelKey(guideID: channel.guideID, name: channel.name),
+              !index.isResident(channelKey: key) else { return false }
+        return !residencyFailed.contains(key) &&
+            (residencyPending[key] != nil || residencyInFlight.contains(key))
     }
 
     /// Listings for one channel that overlap `interval`, in airing order. Empty when its guide is
@@ -681,8 +925,119 @@ final class LiveTVService {
               let providerID = UUID(uuidString: String(channel.id.prefix(36))),
               let index = guideIndexes[providerID],
               let key = index.channelKey(guideID: channel.guideID, name: channel.name) else { return [] }
+        if index.isSQLiteBacked, !index.isResident(channelKey: key) {
+            queueResidency(index, providerID: providerID, key: key, channelID: channel.id)
+        }
         return index.programs(channelKey: key, overlapping: interval)
     }
+
+    // MARK: SQLite-backed guide residency
+    //
+    // A SQLite guide answers lookups from a bounded in-memory window and never reads disk on the
+    // main actor. A channel outside the window reads as empty, is queued here, loaded on a background
+    // task, and its row is then invalidated (the same targeted invalidation short guides use).
+
+    private func requestResidencyIfNeeded(_ index: EPGIndex, providerID: UUID, channel: LiveTVChannel) {
+        guard let key = index.channelKey(guideID: channel.guideID, name: channel.name),
+              !index.isResident(channelKey: key) else { return }
+        queueResidency(index, providerID: providerID, key: key, channelID: channel.id)
+    }
+
+    private func queueResidency(_ index: EPGIndex, providerID: UUID, key: String, channelID: String) {
+        guard let guideID = index.sqlite?.guide.id else { return }
+        if residencyGuideID != guideID {
+            residencyGuideID = guideID
+            residencyFailed.removeAll()
+            residencyPending.removeAll()
+            residencyInFlight.removeAll()
+        }
+        guard !residencyFailed.contains(key), residencyPending.count < 512 || residencyPending[key] != nil else { return }
+        residencyProviderID = providerID
+        residencyPending[key, default: []].insert(channelID)
+        guard residencyTask == nil else { return }
+        residencyTask = Task { [weak self] in await self?.drainResidency() }
+    }
+
+    private func drainResidency() async {
+        while !Task.isCancelled, !residencyPending.isEmpty {
+            guard let providerID = residencyProviderID, let index = guideIndexes[providerID],
+                  let guideID = index.sqlite?.guide.id, guideID == residencyGuideID else {
+                residencyPending.removeAll()
+                break
+            }
+            let batch = Array(residencyPending.prefix(Self.residencyBatch))
+            for (key, _) in batch { residencyPending[key] = nil }
+            residencyInFlight.formUnion(batch.map(\.key))
+            let keys = batch.map(\.key)
+            let prefetchID = UUID()
+            let prefetchStartedAt = ProcessInfo.processInfo.systemUptime
+            LiveTVStartupTrace.recordEPG("prefetch_started", operationID: prefetchID,
+                                         startedAt: prefetchStartedAt, count: keys.count,
+                                         backend: "sqlite")
+#if DEBUG
+            if let residencyPrefetchHookForTesting {
+                await residencyPrefetchHookForTesting(index, keys)
+            } else {
+                await Task.detached(priority: .userInitiated) { index.prefetch(channelKeys: keys) }.value
+            }
+#else
+            await Task.detached(priority: .userInitiated) { index.prefetch(channelKeys: keys) }.value
+#endif
+            LiveTVStartupTrace.recordEPG("prefetch_finished", operationID: prefetchID,
+                                         startedAt: prefetchStartedAt, count: keys.count,
+                                         backend: "sqlite")
+            residencyInFlight.subtract(keys)
+            guard !Task.isCancelled else {
+                residencyPending.removeAll()
+                residencyInFlight.removeAll()
+                residencyTask = nil
+                return
+            }
+            guard residencyProviderID == providerID, residencyGuideID == guideID,
+                  guideIndexes[providerID]?.sqlite?.guide.id == guideID else { continue }
+            for (key, channelIDs) in batch {
+                if index.isResident(channelKey: key) {
+                    for id in channelIDs { guideChannelRevisions[id, default: 0] &+= 1 }
+                } else {
+                    residencyFailed.insert(key)
+                }
+            }
+            guideResidencyRevision &+= 1
+            if selectedProviderID == providerID { scheduleUpNextRebuild() }
+        }
+        residencyTask = nil
+    }
+
+    /// Loads the first screenful of channels so a restored or refreshed SQLite guide paints complete.
+    private func warmGuideWindow(_ providerID: UUID) {
+        guard let index = guideIndexes[providerID], index.isSQLiteBacked else { return }
+        for channel in (channelCatalogs[providerID] ?? []).prefix(Self.warmGuideChannels) {
+            requestResidencyIfNeeded(index, providerID: providerID, channel: channel)
+        }
+    }
+
+#if DEBUG
+    /// Narrow test seam: installs a guide into the service and leaves its real residency request,
+    /// batching, de-duplication, revision and stale-result logic untouched.
+    func installGuideForResidencyTesting(_ index: EPGIndex, providerID: UUID, channels: [LiveTVChannel],
+                                         selectProvider: Bool = true) {
+        if !providers.contains(where: { $0.id == providerID }) {
+            providers.append(LiveTVProvider(id: providerID, name: "Residency test", channelCount: channels.count,
+                                            lastRefreshed: nil, kind: .m3u))
+        }
+        if selectProvider { selectedProviderID = providerID; scheduleHomePreviewRebuild() }
+        channelCatalogs[providerID] = channels
+        guideIndexes[providerID] = index
+        isGuideStale = false
+        residencyFailed.removeAll()
+    }
+
+    func waitForResidencyForTesting() async {
+        while let task = residencyTask { await task.value }
+    }
+
+    var pendingResidencyCountForTesting: Int { residencyPending.count }
+#endif
 
     private func fetch(_ address: String, maximumBytes: Int) async throws -> Data {
         guard let url = URL(string: address), Self.isWebURL(address) else {
@@ -752,9 +1107,11 @@ final class LiveTVService {
         guard selectedProviderID == providerID else { return }
         guard let index = guideIndexes[providerID] else {
             isGuideStale = true
+            scheduleUpNextRebuild()
             return
         }
         isGuideStale = !epg.policy.freshness(of: index, now: .now).isUsable
+        scheduleUpNextRebuild()
     }
 
     private static func secretAccount(_ id: UUID) -> String { "provider.\(id.uuidString)" }

@@ -43,7 +43,7 @@ struct SiloControlTargetPickerView: View {
     private var searchingState: some View {
         VStack(spacing: 16) {
             ProgressView()
-            Text("Searching for Silo TVs…")
+            Text("Searching for Kyro TVs…")
                 .font(.headline)
                 .foregroundStyle(Color.siloSecondaryText)
         }
@@ -52,7 +52,7 @@ struct SiloControlTargetPickerView: View {
 
     private var emptyState: some View {
         ContentUnavailableView(
-            "No Silo TVs Found",
+            "No Kyro TVs Found",
             systemImage: "tv",
             description: Text("Foreground Apple TVs on this server appear here.")
         )
@@ -80,7 +80,7 @@ struct SiloControlTargetPickerView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(target.name).font(.headline)
                         if request != nil, target.protocolVersion < 2 {
-                            Text("Update Silo on this TV to use your profile")
+                            Text("Update Kyro on this TV to use your profile")
                                 .font(.subheadline)
                                 .foregroundStyle(Color.siloSecondaryText)
                         } else if target.isPlaying {

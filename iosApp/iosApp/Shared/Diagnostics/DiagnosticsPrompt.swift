@@ -21,30 +21,30 @@ struct DiagnosticsPrompt: Identifiable, Equatable {
         if types.count == 1, let type = types.first {
             switch type {
             case .crash, .nativeCrash:
-                return "Silo crashed \(count) times. You can review the reports before sending them to \(recipient)."
+                return "\(AppBrand.name) crashed \(count) times. You can review the reports before sending them to \(recipient)."
             case .hang, .anr:
-                return "Silo was not responding \(count) times. You can review the reports before sending them to \(recipient)."
+                return "\(AppBrand.name) was not responding \(count) times. You can review the reports before sending them to \(recipient)."
             case .abnormalExit:
-                return "Silo did not shut down cleanly \(count) times. You can review the reports before sending them to \(recipient)."
+                return "\(AppBrand.name) did not shut down cleanly \(count) times. You can review the reports before sending them to \(recipient)."
             case .manual:
-                return "Silo has \(count) pending diagnostics reports."
+                return "\(AppBrand.name) has \(count) pending diagnostics reports."
             }
         }
 
         let descriptions = types.map(Self.shortDescription(for:)).sorted().joined(separator: ", ")
-        return "Silo has \(count) pending reports covering \(descriptions). You can review them before sending."
+        return "\(AppBrand.name) has \(count) pending reports covering \(descriptions). You can review them before sending."
     }
 
     private static func singleMessage(for type: ReportType, recipient: String) -> String {
         switch type {
         case .crash, .nativeCrash:
-            return "Silo crashed recently. Sending a diagnostics report can help \(recipient) understand what happened."
+            return "\(AppBrand.name) crashed recently. Sending a diagnostics report can help \(recipient) understand what happened."
         case .hang, .anr:
-            return "Silo was not responding recently. Sending a diagnostics report can help \(recipient) understand what happened."
+            return "\(AppBrand.name) was not responding recently. Sending a diagnostics report can help \(recipient) understand what happened."
         case .abnormalExit:
-            return "Silo did not shut down cleanly last time. Sending a diagnostics report can help \(recipient) understand what happened."
+            return "\(AppBrand.name) did not shut down cleanly last time. Sending a diagnostics report can help \(recipient) understand what happened."
         case .manual:
-            return "Silo has a pending diagnostics report."
+            return "\(AppBrand.name) has a pending diagnostics report."
         }
     }
 
@@ -53,7 +53,7 @@ struct DiagnosticsPrompt: Identifiable, Equatable {
         case .crash, .nativeCrash:
             return "a crash"
         case .hang, .anr:
-            return "a period when Silo was not responding"
+            return "a period when \(AppBrand.name) was not responding"
         case .abnormalExit:
             return "an unclean shutdown"
         case .manual:

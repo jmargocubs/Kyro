@@ -257,6 +257,17 @@ struct LibrariesTabView: View {
     #if os(iOS)
     @Environment(\.statusColumn) private var statusColumn
     #endif
+    @Environment(\.kyroShellHeader) private var shellHeader
+    @Environment(\.secondaryDestinationTitle) private var secondaryTitle
+
+    /// The shell's header context when it draws the header for this page: a Movies or Series
+    /// tab under the unified shell. Nil for a library root pushed from More and everywhere the
+    /// shell draws no header, where this page keeps its own top bar.
+    private var hostedHeader: (context: KyroShellHeaderContext, state: PageChromeScrollState)? {
+        guard let destination = KyroShellHeader.destination(forCategory: category),
+              let context = KyroShellHeader.hosted(shellHeader, secondaryTitle: secondaryTitle) else { return nil }
+        return (context, context.scrollState(for: destination))
+    }
 
     init(
         category: PrimaryMenuBuiltin? = nil,
@@ -295,7 +306,7 @@ struct LibrariesTabView: View {
         }
         .siloPageBackground()
         #if !os(macOS)
-        .toolbar(.hidden, for: .navigationBar)
+        .rootPageNavigationBar()
         #endif
         .task(id: libraryRootScopeID(
             category: category,
@@ -343,18 +354,19 @@ struct LibrariesTabView: View {
             // Forces the whole tab subtree to reset when switching
             // libraries, so stale content never flashes on screen.
             .id("\(activeLibrary.id):\(videoScope(for: activeLibrary)?.rawValue ?? "all")")
-            .environment(chromeScrollState)
+            .environment(hostedHeader?.state ?? chromeScrollState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 topChrome(activeLibrary: activeLibrary)
                     // The title and tab selector share one rounded panel.
                     .pageChromeBacking(
-                        scrollState: chromeScrollState,
+                        scrollState: hostedHeader?.state ?? chromeScrollState,
                         outset: EdgeInsets(top: 0, leading: -8, bottom: -8, trailing: -8)
                     )
                     // Same scroll-driven glass as the Detail page chrome so
-                    // the selector and actions stay legible over posters.
+                    // the selector and actions stay legible over posters. Under the shell's
+                    // header this panel reaches up behind it, so the header adds no second strip.
                     .background {
-                        PageChromeGlass(scrollState: chromeScrollState)
+                        PageChromeGlass(scrollState: hostedHeader?.state ?? chromeScrollState)
                     }
             }
     }
@@ -389,6 +401,21 @@ struct LibrariesTabView: View {
 
     private func headerStack(activeLibrary: Library, scrollsTabs: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let hosted = hostedHeader {
+                // The shell's one header sits in this runway; the library selector is page
+                // content directly beneath it.
+                Color.clear.frame(height: hosted.context.runway)
+                HStack(spacing: 12) {
+                    LibrarySelectorButton(
+                        library: activeLibrary,
+                        canSwitch: canSwitchLibraries,
+                        onTap: { showPicker = true }
+                    )
+                    Spacer(minLength: 8)
+                }
+                .padding(.horizontal, SiloTheme.padding)
+                .padding(.bottom, SiloTheme.smallPadding)
+            } else {
             LibrariesTopBar(
                 activeLibrary: activeLibrary,
                 canSwitch: canSwitchLibraries,
@@ -405,6 +432,7 @@ struct LibrariesTabView: View {
             .padding(.horizontal, SiloTheme.padding)
             .padding(.top, centersHeader ? SiloTheme.padding : SiloTheme.smallPadding)
             .padding(.bottom, SiloTheme.smallPadding)
+            }
 
             if activeLibrary.isMixedLibrary && category != .movies && category != .series {
                 LibraryVideoScopePicker(selection: $selectedVideoScope)

@@ -406,7 +406,7 @@ class CollectionsViewModel {
             if Self.outcomeIsUncertain(err) {
                 Self.logger.warning("Collection edit outcome unknown: \(String(describing: err), privacy: .public)")
                 editorNeedsReload = true
-                groupError = "Silo couldn't confirm this change. Reload to check whether it was saved before trying again."
+                groupError = "\(AppBrand.name) couldn't confirm this change. Reload to check whether it was saved before trying again."
             } else {
                 groupError = groupErrorMessage(err, fallback: fallback)
             }
@@ -427,7 +427,7 @@ class CollectionsViewModel {
     private func createFailureMessage(_ err: Error, fallback: String) -> String {
         if Self.outcomeIsUncertain(err) {
             Self.logger.warning("Collection create outcome unknown: \(String(describing: err), privacy: .public)")
-            return "Silo couldn't confirm this was created. Check the list before trying again."
+            return "\(AppBrand.name) couldn't confirm this was created. Check the list before trying again."
         }
         return groupErrorMessage(err, fallback: fallback)
     }

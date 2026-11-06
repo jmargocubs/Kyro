@@ -822,6 +822,103 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         XCTAssertEqual(PlaylistURLProtocol.requests, 0)
     }
 
+    // MARK: - Provider readiness and Home previews
+
+    func testCatalogReadinessIsPerProviderEvenAfterAnotherProviderLoaded() async throws {
+        let writer = makeService()
+        let first = try addProvider(to: writer, name: "First")
+        let second = try addProvider(to: writer, name: "Second")
+        try await seedCache(providerID: first)
+        try await seedCache(providerID: second)
+
+        let service = makeService()
+        XCTAssertEqual(service.selectedProviderID, first)
+        await service.restoreCachedState(for: first)
+        XCTAssertTrue(service.hasCatalog(for: first))
+        XCTAssertGreaterThan(service.channelCatalogRevision, 0)
+        service.selectProvider(second)
+        XCTAssertFalse(service.hasCatalog(for: second),
+                       "the global revision is already positive, but this provider's catalog is still loading")
+        await service.restoreCachedState(for: second)
+        XCTAssertTrue(service.hasCatalog(for: second))
+    }
+
+    func testHomePreviewKeepsRailsVisibleWhileTheSameProviderRebuilds() async throws {
+        let writer = makeService()
+        let providerID = try addProvider(to: writer)
+        try await seedCache(providerID: providerID)
+        let channels = try LiveTVM3UParser.parse(data: Data(playlist.utf8), providerID: providerID)
+        let news = try XCTUnwrap(channels.first { $0.name == "News One" })
+        let sport = try XCTUnwrap(channels.first { $0.name == "Sport" })
+        writer.toggleFavorite(news)
+        let history = LiveTVRecentHistoryStore(defaults: defaults)
+        history.save([try XCTUnwrap(LiveTVRecentChannel(providerID: providerID, channelID: sport.id))])
+        history.flush()
+
+        let service = makeService()
+        await service.restoreCachedState(for: providerID)
+        await service.homePreviewRebuildForTesting()
+        XCTAssertEqual(service.homeFavoriteChannels.map(\.id), [news.id])
+        XCTAssertEqual(service.homeRecentChannels.map(\.id), [sport.id])
+
+        service.toggleFavorite(sport)
+        XCTAssertEqual(service.homeFavoriteChannels.map(\.id), [news.id], "the lineup stays on screen while it rebuilds")
+        XCTAssertEqual(service.homeRecentChannels.map(\.id), [sport.id], "the hero and recents stay on screen too")
+        await service.homePreviewRebuildForTesting()
+        XCTAssertEqual(service.homeFavoriteChannels.map(\.id), [news.id, sport.id])
+        XCTAssertEqual(service.homeRecentChannels.map(\.id), [sport.id])
+    }
+
+    func testHomePreviewClearsOnProviderChangeAndNeverPublishesTheOlderProvidersScan() async throws {
+        let writer = makeService()
+        let first = try addProvider(to: writer, name: "First")
+        let second = try addProvider(to: writer, name: "Second")
+        try await seedCache(providerID: first)
+        try await seedCache(providerID: second)
+        let firstChannels = try LiveTVM3UParser.parse(data: Data(playlist.utf8), providerID: first)
+        let secondChannels = try LiveTVM3UParser.parse(data: Data(playlist.utf8), providerID: second)
+        writer.toggleFavorite(firstChannels[0])
+        writer.toggleFavorite(secondChannels[1])
+
+        let service = makeService()
+        await service.restoreCachedState(for: first)
+        await service.homePreviewRebuildForTesting()
+        XCTAssertEqual(service.homeFavoriteChannels.map(\.id), [firstChannels[0].id])
+
+        service.toggleFavorite(firstChannels[1])  // schedules a scan of the first provider
+        service.selectProvider(second)            // supersedes it before it can publish
+        XCTAssertTrue(service.homeFavoriteChannels.isEmpty, "a provider change clears the rails at once")
+        XCTAssertTrue(service.homeRecentChannels.isEmpty)
+        await service.homePreviewRebuildForTesting()
+        XCTAssertFalse(service.homeFavoriteChannels.contains { LiveTVRecentChannel.belongs($0.id, to: first) },
+                       "the superseded scan of the first provider is never published")
+
+        await service.restoreCachedState(for: second)
+        await service.homePreviewRebuildForTesting()
+        XCTAssertEqual(service.homeFavoriteChannels.map(\.id), [secondChannels[1].id])
+    }
+
+    func testRefreshReplacesCachedPreviewChannelsWithPlayableOnes() async throws {
+        let writer = makeService()
+        let providerID = try addProvider(to: writer)
+        try await seedCache(providerID: providerID)
+        let news = try XCTUnwrap(LiveTVM3UParser.parse(data: Data(playlist.utf8), providerID: providerID)
+            .first { $0.name == "News One" })
+        writer.toggleFavorite(news)
+
+        let service = makeService()
+        await service.restoreCachedState(for: providerID)
+        await service.homePreviewRebuildForTesting()
+        XCTAssertEqual(service.homeFavoriteChannels.first?.streamURL.scheme, "about", "cached rows are browse-only")
+
+        PlaylistURLProtocol.reset(body: playlist)
+        await service.refresh(providerID: providerID)
+        await service.homePreviewRebuildForTesting()
+        XCTAssertEqual(service.homeFavoriteChannels.map(\.id), [news.id])
+        XCTAssertEqual(service.homeFavoriteChannels.first?.streamURL.scheme, "https",
+                       "the rebuilt rail holds the refreshed, playable channel rather than the cached one")
+    }
+
     private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
         for _ in 0..<200 where !condition() { try await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertTrue(condition())

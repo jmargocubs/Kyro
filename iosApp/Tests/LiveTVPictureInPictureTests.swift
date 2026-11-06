@@ -406,6 +406,8 @@ private final class FakeEngine: LiveTVEngineDriving {
     var onPhase: ((LiveTVEnginePhase) -> Void)?
     var onLiveSourceReset: (() -> Void)?
     var onSystemInterruption: (() -> Void)?
+    var onSystemInterruptionEnded: (() -> Void)?
+    var onAudioRouteLost: (() -> Void)?
     private(set) var loads = 0
 
     func load(_ url: URL, route: LiveTVStreamRoute) async throws { loads += 1 }

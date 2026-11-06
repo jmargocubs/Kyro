@@ -167,7 +167,7 @@ private enum ProfileManagementError: LocalizedError {
         case .primaryProfileUnavailable:
             return "Couldn't find the primary profile needed to manage household profiles."
         case .temporaryContextCleanupFailed:
-            return "Silo couldn't finish creating the profile. Please try selecting it again."
+            return "\(AppBrand.name) couldn't finish creating the profile. Please try selecting it again."
         }
     }
 }

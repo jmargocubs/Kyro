@@ -153,6 +153,44 @@ class SearchViewModel {
         await performSearch(reset: true)
     }
 
+    /// Coordinator entry point: the coordinator already owns the shared debounce, so this starts
+    /// the existing paged title/people search immediately rather than adding a second 300 ms wait.
+    func performCoordinatedSearch(query: String) async {
+        searchTask?.cancel()
+        searchTask = nil
+        self.query = query
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+            resetState()
+            return
+        }
+        await performSearch(reset: true)
+    }
+
+    /// People results intentionally load in parallel with the title page. The coordinator awaits
+    /// this only to publish the final combined source status after both existing searches settle.
+    func waitForCoordinatedPeopleSearch() async {
+        await peopleTask?.value
+    }
+
+    /// Drops results owned by an earlier server/account/profile. Search capabilities are also
+    /// server-specific, so an identity boundary must not reuse the prior server's cached features.
+    func resetForCoordinatedIdentityChange() {
+        searchTask?.cancel()
+        searchTask = nil
+        searchFeaturesTask?.cancel()
+        searchFeaturesTask = nil
+        searchFeatures = nil
+        resetState()
+    }
+
+    /// Cancels only query-owned work while keeping server-level search capabilities cached for
+    /// subsequent keystrokes from the same authenticated identity.
+    func cancelCoordinatedSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        resetState()
+    }
+
     func loadMore() async {
         guard hasMore, !isSearching else { return }
         await performSearch(reset: false)

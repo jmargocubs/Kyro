@@ -247,7 +247,7 @@ final class SettingsViewModel {
         if let profileName = activeProfile?.name, !profileName.isEmpty {
             return profileName
         }
-        return userInfo?.username ?? "Silo"
+        return userInfo?.username ?? AppBrand.name
     }
 
     var accountSubtitle: String {
