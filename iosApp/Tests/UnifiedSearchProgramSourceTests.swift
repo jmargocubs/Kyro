@@ -268,6 +268,35 @@ final class UnifiedSearchProgramSourceTests: XCTestCase {
         XCTAssertNil(afterChange)
     }
 
+    /// A valid provider channel with no logo still publishes its programme and resolves at tap time.
+    func testValidChannelWithoutALogoReturnsTheProgrammeAndResolves() async throws {
+        let world = World(provider: nil)
+        world.setCatalog(provider: providerA, revision: 1, title: "Quiet Logo", logoURL: nil)
+        let coordinator = world.makeCoordinator()
+        coordinator.onQueryChanged("quiet")
+        try await waitUntil { coordinator.programState.phase == .loaded }
+
+        let program = try XCTUnwrap(world.currentGuide?.programsByChannel["g0"]?.first)
+        let channelID = "\(providerA.uuidString):g0"
+        XCTAssertEqual(coordinator.programState, UnifiedSearchSourceStatus(phase: .loaded, resultCount: 1))
+        XCTAssertEqual(coordinator.programResults.count, 1)
+        let result = try XCTUnwrap(coordinator.programResults.first)
+        XCTAssertEqual(result.id, "\(channelID)|\(program.id)")
+        XCTAssertEqual(result.programID, program.id)
+        XCTAssertEqual(result.channelID, channelID)
+        XCTAssertEqual(result.channelKey, "g0")
+        XCTAssertEqual(result.channelName, "Channel 0")
+        XCTAssertNil(result.logoURL)
+        XCTAssertEqual(result.title, "Quiet Logo")
+
+        let resolved = await coordinator.resolveProgram(for: result)
+        let pair = try XCTUnwrap(resolved)
+        XCTAssertNil(pair.channel.logoURL)
+        XCTAssertEqual(pair.channel.id, channelID)
+        XCTAssertEqual(pair.program.id, program.id)
+        XCTAssertEqual(pair.program.title, "Quiet Logo")
+    }
+
     func testUnchangedGuideIdentityNeverRebuildsAcrossQueriesOrNotifications() async throws {
         let world = World(provider: providerA, titles: ["Morning News", "Night News"])
         let coordinator = world.makeCoordinator()
@@ -339,6 +368,14 @@ final class UnifiedSearchProgramSourceTests: XCTestCase {
             setGuide(titles: titles, generation: guide.value.guideGeneration + 1)
         }
 
+        /// One programme on a provider-qualified channel. `logoURL` may be nil.
+        func setCatalog(provider: UUID, revision: Int, title: String, logoURL: URL?) {
+            let channels = [channel(provider, "Channel 0", guideID: "g0", logoURL: logoURL)]
+            catalog.value = UnifiedSearchIPTVCatalogSnapshot(providerID: provider, catalogRevision: revision, hasProvider: true,
+                                                             isLoading: false, errorMessage: nil, channels: channels)
+            setGuide(titles: [title], generation: guide.value.guideGeneration + 1)
+        }
+
         func setGuide(titles: [String], generation: Int) {
             var programs: [String: [EPGProgram]] = [:]
             for (offset, title) in titles.enumerated() {
@@ -372,9 +409,14 @@ final class UnifiedSearchProgramSourceTests: XCTestCase {
         }
 
         private func channel(_ provider: UUID, _ name: String, guideID: String) -> LiveTVChannel {
+            channel(provider, name, guideID: guideID,
+                    logoURL: URL(string: "https://fixture.invalid/logo/\(guideID).png?token=secret")!)
+        }
+
+        private func channel(_ provider: UUID, _ name: String, guideID: String, logoURL: URL?) -> LiveTVChannel {
             LiveTVChannel(id: "\(provider.uuidString):\(guideID)", guideID: guideID, name: name,
                           streamURL: URL(string: "https://fixture.invalid/stream/\(guideID)?token=secret")!,
-                          logoURL: URL(string: "https://fixture.invalid/logo/\(guideID).png?token=secret")!,
+                          logoURL: logoURL,
                           category: "TV")
         }
     }

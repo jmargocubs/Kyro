@@ -70,6 +70,9 @@ final class UnifiedProgramSearchPresentationTests: XCTestCase {
         let upcoming = program(startOffset: 3_600, duration: 1_800, title: "Late News")
         XCTAssertEqual(normalized(UnifiedProgramSearchPresentation.accessibilityLabel(upcoming, now: now, calendar: utc, locale: english)),
                        "Late News, Sports One, 9:00 AM to 9:30 AM, Upcoming")
+        let nextDay = program(startOffset: 26 * 3_600, duration: 1_800, title: "Saturday Match")
+        XCTAssertEqual(normalized(UnifiedProgramSearchPresentation.accessibilityLabel(nextDay, now: now, calendar: utc, locale: english)),
+                       "Saturday Match, Sports One, Sat 10:00 AM to 10:30 AM, Upcoming")
     }
 
     func testEmptyStatesAreSourceSpecificAndDistinct() {

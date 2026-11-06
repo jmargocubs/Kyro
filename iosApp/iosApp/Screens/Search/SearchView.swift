@@ -619,16 +619,21 @@ struct SearchView: View {
                         .lineLimit(1)
                     // Badge and time share a line when both fit on it; otherwise the badge sits above
                     // the time, so the time is never cut off and wraps only as a last resort.
-                    ViewThatFits(in: .horizontal) {
-                        if !dynamicTypeSize.isAccessibilitySize {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 3) {
+                            programStatusBadge(state: state, tint: statusTint)
+                            programTimeRange(result, now: now, allowsWrap: true)
+                        }
+                    } else {
+                        ViewThatFits(in: .horizontal) {
                             HStack(spacing: 6) {
                                 programStatusBadge(state: state, tint: statusTint)
                                 programTimeRange(result, now: now, allowsWrap: false)
                             }
-                        }
-                        VStack(alignment: .leading, spacing: 3) {
-                            programStatusBadge(state: state, tint: statusTint)
-                            programTimeRange(result, now: now, allowsWrap: true)
+                            VStack(alignment: .leading, spacing: 3) {
+                                programStatusBadge(state: state, tint: statusTint)
+                                programTimeRange(result, now: now, allowsWrap: true)
+                            }
                         }
                     }
                 }

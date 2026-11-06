@@ -32,31 +32,43 @@ enum UnifiedProgramSearchPresentation {
     /// Local start and end, with the weekday when the program does not start today.
     static func timeRange(_ result: UnifiedProgramSearchResult, now: Date,
                           calendar: Calendar = .current, locale: Locale = .current) -> String {
-        var time = Date.FormatStyle(date: .omitted, time: .shortened)
-        time.timeZone = calendar.timeZone
-        time.locale = locale
+        let time = localTimeFormat(calendar: calendar, locale: locale)
         let start = result.start.formatted(time)
         let end = result.end.formatted(time)
         guard !calendar.isDate(result.start, inSameDayAs: now) else { return "\(start) – \(end)" }
-        var day = Date.FormatStyle().weekday(.abbreviated)
-        day.timeZone = calendar.timeZone
-        day.locale = locale
+        let day = weekdayFormat(calendar: calendar, locale: locale)
         return "\(result.start.formatted(day)) \(start) – \(end)"
     }
 
     /// The Guide's spoken form ("Title, 8:00 PM to 9:00 PM, On now"), plus subtitle and channel.
     static func accessibilityLabel(_ result: UnifiedProgramSearchResult, now: Date,
                                    calendar: Calendar = .current, locale: Locale = .current) -> String {
-        var time = Date.FormatStyle(date: .omitted, time: .shortened)
-        time.timeZone = calendar.timeZone
-        time.locale = locale
+        let time = localTimeFormat(calendar: calendar, locale: locale)
         let status = switch state(of: result, at: now) {
         case .ended: "Ended"
         case .live: "On now"
         case .upcoming: "Upcoming"
         }
         let title = [result.title, result.subtitle].compactMap { $0 }.joined(separator: ", ")
-        return "\(title), \(result.channelName), \(result.start.formatted(time)) to \(result.end.formatted(time)), \(status)"
+        let start = result.start.formatted(time)
+        let spokenStart = calendar.isDate(result.start, inSameDayAs: now)
+            ? start
+            : "\(result.start.formatted(weekdayFormat(calendar: calendar, locale: locale))) \(start)"
+        return "\(title), \(result.channelName), \(spokenStart) to \(result.end.formatted(time)), \(status)"
+    }
+
+    private static func localTimeFormat(calendar: Calendar, locale: Locale) -> Date.FormatStyle {
+        var format = Date.FormatStyle(date: .omitted, time: .shortened)
+        format.timeZone = calendar.timeZone
+        format.locale = locale
+        return format
+    }
+
+    private static func weekdayFormat(calendar: Calendar, locale: Locale) -> Date.FormatStyle {
+        var format = Date.FormatStyle().weekday(.abbreviated)
+        format.timeZone = calendar.timeZone
+        format.locale = locale
+        return format
     }
 
     static func sectionTitle(_ section: UnifiedSearchResultsSection, filter: UnifiedSearchFilter) -> String {
