@@ -15,7 +15,13 @@ struct EPGProgram: Codable, Hashable, Sendable {
     var episode: String?
 
     /// Stable identity: a channel airs one programme per start instant.
-    var id: String { "\(channelID):\(Int64(start.timeIntervalSince1970.rounded()))" }
+    var id: String { Self.id(channelID: channelID, start: start) }
+
+    /// The `id` of the programme on `channelID` starting at `start`, for callers that keep only
+    /// those two values (program search).
+    static func id(channelID: String, start: Date) -> String {
+        "\(channelID):\(Int64(start.timeIntervalSince1970.rounded()))"
+    }
 
     func isAiring(at date: Date) -> Bool { start <= date && date < end }
 }

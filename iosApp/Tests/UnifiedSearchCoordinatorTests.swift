@@ -56,7 +56,11 @@ final class UnifiedSearchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(silo: silo, catalog: catalog)
 
         coordinator.onQueryChanged("sports")
-        try await waitUntil { silo.startedQuery == "sports" }
+        try await waitUntil {
+            silo.startedQuery == "sports"
+                && coordinator.liveTVState.phase == .loaded
+                && coordinator.liveTVState.resultCount == 1
+        }
         XCTAssertEqual(coordinator.liveTVState.phase, .loaded)
         try await waitUntil { coordinator.siloState.phase == .failed }
         XCTAssertEqual(coordinator.siloState.message, "Silo offline")
@@ -162,10 +166,10 @@ final class UnifiedSearchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(silo: silo, catalog: catalog)
 
         coordinator.onQueryChanged("old")
-        try await waitUntil { silo.startedQuery == "old" }
+        await silo.waitUntilStarted("old")
         coordinator.onQueryChanged("new")
-        try await waitUntil { silo.queries.last == "new" && coordinator.siloState.phase == .loaded }
-        try await Task.sleep(for: .milliseconds(120))
+        try await waitUntil { silo.queries == ["old", "new"] && coordinator.siloState.phase == .loaded }
+        try await waitUntil { silo.completedQueries.contains("old") }
         XCTAssertEqual(silo.queries, ["old", "new"])
         XCTAssertEqual(coordinator.query, "new")
         XCTAssertEqual(coordinator.siloState.phase, .loaded)
@@ -271,8 +275,10 @@ private final class FakeSiloSearchSource: UnifiedSearchSiloServing {
     var errorMessage: String?
     var startedQuery: String?
     var queries: [String] = []
+    var completedQueries: [String] = []
     var cancelCount = 0
     var resetCount = 0
+    private var startedWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     var searchBehavior: @MainActor (String, FakeSiloSearchSource) async -> Void = { _, source in
         source.hasSearched = true
     }
@@ -280,11 +286,37 @@ private final class FakeSiloSearchSource: UnifiedSearchSiloServing {
     func performSearch(query: String) async {
         queries.append(query)
         startedQuery = query
+        resumeStartedWaiters(for: query)
+        defer { completedQueries.append(query) }
         isLoading = true
         errorMessage = nil
         await searchBehavior(query, self)
         guard !Task.isCancelled else { isLoading = false; return }
         isLoading = false
+    }
+
+    /// Returns once `performSearch` has been entered for `query`: an event, not a poll, so a slow
+    /// machine delays the test instead of failing it. The deadline only turns a search that never
+    /// starts into a failure instead of a hung test.
+    func waitUntilStarted(_ query: String, deadline: Duration = .seconds(30)) async {
+        if queries.contains(query) { return }
+        let watchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: deadline)
+            self?.resumeStartedWaiters(for: query)
+        }
+        await withCheckedContinuation { continuation in
+            if queries.contains(query) {
+                continuation.resume()
+            } else {
+                startedWaiters[query, default: []].append(continuation)
+            }
+        }
+        watchdog.cancel()
+        if !queries.contains(query) { XCTFail("Search for \(query) never started") }
+    }
+
+    private func resumeStartedWaiters(for query: String) {
+        for waiter in startedWaiters.removeValue(forKey: query) ?? [] { waiter.resume() }
     }
 
     func loadMore() async {}

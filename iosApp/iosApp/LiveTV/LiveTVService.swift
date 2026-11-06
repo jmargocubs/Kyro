@@ -24,6 +24,9 @@ final class LiveTVService {
     /// Per-channel revisions let guide cells invalidate only the row whose short guide changed.
     /// IDs are provider-qualified, so switching providers cannot reuse a token accidentally.
     private(set) var guideChannelRevisions: [String: Int] = [:]
+    /// Changes whenever a provider's guide index is installed, replaced or removed, including
+    /// short-guide overlays, which leave `guideRevision` alone. Program search keys on it.
+    private(set) var guideGenerations = EPGGuideGenerations()
     private(set) var favoriteChannelIDs = Set<String>()
     private(set) var recentlyWatchedRecords: [LiveTVRecentChannel] = []
     private(set) var channelCatalogRevision = 0
@@ -223,7 +226,7 @@ final class LiveTVService {
         guard !showsFullGuide(providerID), let epgSource,
               let index = await epg.index(for: providerID, source: epgSource),
               !showsFullGuide(providerID), providers.contains(where: { $0.id == providerID }) else { return }
-        guideIndexes[providerID] = index
+        setGuideIndex(index, for: providerID)
         invalidateAllGuideRows()
         warmGuideWindow(providerID)
         if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
@@ -315,7 +318,7 @@ final class LiveTVService {
         providers.removeAll { $0.id == id }
         channelCatalogs[id] = nil
         categoryCatalogs[id] = nil
-        guideIndexes[id] = nil
+        setGuideIndex(nil, for: id)
         if residencyProviderID == id {
             residencyTask?.cancel()
             residencyPending.removeAll()
@@ -473,7 +476,7 @@ final class LiveTVService {
         }
         let feed = Self.epgFeedSource(source)
         guard let feed else {
-            guideIndexes[providerID] = nil
+            setGuideIndex(nil, for: providerID)
             invalidateAllGuideRows()
             await epg.clear(providerID: providerID)
             guard providers.contains(where: { $0.id == providerID }) else { return }
@@ -494,7 +497,7 @@ final class LiveTVService {
             // fall through and start a network refresh after that await.
             guard providers.contains(where: { $0.id == providerID }) else { return }
             if let cached, !showsFullGuide(providerID) {
-                guideIndexes[providerID] = cached
+                setGuideIndex(cached, for: providerID)
                 invalidateAllGuideRows()
                 warmGuideWindow(providerID)
                 if selectedProviderID == providerID { updateGuideFreshness(for: providerID) }
@@ -504,7 +507,7 @@ final class LiveTVService {
         do {
             let index = try await epg.refresh(providerID: providerID, source: feed, channels: filter, force: force)
             guard providers.contains(where: { $0.id == providerID }) else { return }
-            guideIndexes[providerID] = index
+            setGuideIndex(index, for: providerID)
             invalidateAllGuideRows()
             warmGuideWindow(providerID)
             if selectedProviderID == providerID {
@@ -654,7 +657,7 @@ final class LiveTVService {
             } else {
                 published = index
             }
-            guideIndexes[providerID] = published
+            setGuideIndex(published, for: providerID)
             for evictedGuideID in publication.evictedGuideIDs {
                 let evictedKey = EPGChannelKey.guideID(evictedGuideID)
                 for evictedChannel in channelCatalogs[providerID] ?? []
@@ -1027,7 +1030,7 @@ final class LiveTVService {
         }
         if selectProvider { selectedProviderID = providerID; scheduleHomePreviewRebuild() }
         channelCatalogs[providerID] = channels
-        guideIndexes[providerID] = index
+        setGuideIndex(index, for: providerID)
         isGuideStale = false
         residencyFailed.removeAll()
     }
@@ -1096,6 +1099,20 @@ final class LiveTVService {
     /// Whether the provider shows a full guide, not just Xtream short-guide listings.
     private func showsFullGuide(_ providerID: UUID) -> Bool {
         guideIndexes[providerID].map { !$0.isShortGuideOnly } ?? false
+    }
+
+    /// The provider's current guide generation; see `guideGenerations`.
+    func guideGeneration(for providerID: UUID) -> Int { guideGenerations.generation(for: providerID) }
+
+    /// The provider's published guide index, for read-only consumers such as program search.
+    func guideIndex(for providerID: UUID) -> EPGIndex? { guideIndexes[providerID] }
+
+    /// The only writer of `guideIndexes`, so no install, replacement or removal can skip
+    /// `guideGenerations`. Clearing a provider that has no guide changes nothing.
+    private func setGuideIndex(_ index: EPGIndex?, for providerID: UUID) {
+        guard index != nil || guideIndexes[providerID] != nil else { return }
+        guideIndexes[providerID] = index
+        guideGenerations.advance(providerID)
     }
 
     private func invalidateAllGuideRows() {

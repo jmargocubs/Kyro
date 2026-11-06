@@ -57,7 +57,7 @@ enum UnifiedSearchFilter: String, CaseIterable, Identifiable, Sendable {
     func seeAllFilter(for section: UnifiedSearchResultsSection) -> Self {
         switch section {
         case .moviesAndTV: .moviesAndTV
-        case .liveTV: .liveTV
+        case .liveTV, .programs: .liveTV
         }
     }
 }
@@ -65,6 +65,8 @@ enum UnifiedSearchFilter: String, CaseIterable, Identifiable, Sendable {
 enum UnifiedSearchResultsSection: Sendable {
     case moviesAndTV
     case liveTV
+    /// TV programs. Shown under All and under Live TV, always after channels, never mixed in.
+    case programs
 
     static let combinedPreviewLimit = 6
     static let liveTVPageSize = 60
@@ -98,6 +100,52 @@ struct UnifiedSearchIPTVCatalogSnapshot: Sendable {
 
     var identity: LiveTVChannelSearchIndex.Identity? {
         providerID.map { LiveTVChannelSearchIndex.Identity(providerID: $0, catalogRevision: catalogRevision) }
+    }
+}
+
+/// One TV program found by search. Like `UnifiedLiveTVSearchResult` it carries display metadata
+/// only (no stream URL, credentials or full channel record); `resolveProgram(for:)` turns it into a
+/// playable channel and guide entry at tap time.
+struct UnifiedProgramSearchResult: Equatable, Sendable, Identifiable {
+    let id: String
+    let programID: String
+    let channelID: String
+    let channelKey: String
+    let channelName: String
+    let channelOrdinal: Int
+    let logoURL: URL?
+    let title: String
+    let subtitle: String?
+    let start: Date
+    let end: Date
+    /// Airing when the search ran. Views should re-derive with `isLive(at:)` as time passes.
+    let wasLiveAtSearch: Bool
+
+    func isLive(at date: Date) -> Bool { start <= date && date < end }
+}
+
+/// The selected provider's guide as program search sees it. `EPGIndex` holds no URLs.
+struct UnifiedSearchGuideSnapshot: Sendable {
+    let guideGeneration: Int
+    let guide: EPGIndex?
+    let isGuideLoading: Bool
+    let isGuideStale: Bool
+
+    static let none = UnifiedSearchGuideSnapshot(guideGeneration: 0, guide: nil, isGuideLoading: false, isGuideStale: false)
+}
+
+/// Program search wiring. The coordinator searches programs only when given one; Search passes
+/// `.live` once it can show program results.
+struct UnifiedSearchProgramSource {
+    let store: EPGProgramSearchIndexStore
+    let guideSnapshot: @MainActor (UUID) -> UnifiedSearchGuideSnapshot
+
+    @MainActor static func live(service: LiveTVService) -> UnifiedSearchProgramSource {
+        UnifiedSearchProgramSource(store: .shared) { service.unifiedSearchGuideSnapshot(providerID: $0) }
+    }
+
+    @MainActor static var live: UnifiedSearchProgramSource {
+        .live(service: .shared)
     }
 }
 
@@ -169,6 +217,15 @@ extension LiveTVService {
             channels: channels
         )
     }
+
+    /// Guide state for program search. Loading and staleness describe the selected provider only.
+    func unifiedSearchGuideSnapshot(providerID: UUID) -> UnifiedSearchGuideSnapshot {
+        let isSelected = selectedProviderID == providerID
+        return UnifiedSearchGuideSnapshot(guideGeneration: guideGeneration(for: providerID),
+                                          guide: guideIndex(for: providerID),
+                                          isGuideLoading: isSelected && isGuideLoading,
+                                          isGuideStale: isSelected && isGuideStale)
+    }
 }
 
 /// Owns the shared query debounce and independent source lifecycles. Results/status are transient;
@@ -180,6 +237,10 @@ final class UnifiedSearchCoordinator {
     private(set) var siloState: UnifiedSearchSourceStatus = .idle
     private(set) var liveTVState: UnifiedSearchSourceStatus = .idle
     private(set) var liveTVResults: [UnifiedLiveTVSearchResult] = []
+    /// TV programs from the selected provider's in-memory guide. Stays `.idle` with no results when
+    /// the coordinator was created without a program source.
+    private(set) var programState: UnifiedSearchSourceStatus = .idle
+    private(set) var programResults: [UnifiedProgramSearchResult] = []
 
     let silo: any UnifiedSearchSiloServing
 
@@ -203,6 +264,14 @@ final class UnifiedSearchCoordinator {
     @ObservationIgnored private var indexBuildTask: Task<Bool, Never>?
     @ObservationIgnored private var resumeAfterDismissal = false
 
+    @ObservationIgnored private let programs: UnifiedSearchProgramSource?
+    @ObservationIgnored private var programGeneration = 0
+    @ObservationIgnored private var programTask: Task<Void, Never>?
+    /// The program source state the current program search and results belong to.
+    @ObservationIgnored private var observedProgramSource: ProgramSourceKey?
+    /// The identity `programResults` were published under; tap-time resolution requires it.
+    @ObservationIgnored private var publishedProgramIdentity: EPGProgramSearchIndex.Identity?
+
     init(
         silo: any UnifiedSearchSiloServing,
         indexStore: LiveTVChannelSearchIndexStore = .shared,
@@ -212,6 +281,7 @@ final class UnifiedSearchCoordinator {
         siloIdentityProvider: @escaping @MainActor () -> UnifiedSiloIdentity? = {
             UnifiedSiloIdentity(SessionOwner.current())
         },
+        programs: UnifiedSearchProgramSource? = nil,
         debounceDuration: Duration = .milliseconds(300),
         waitForDebounce: @escaping @MainActor (Duration) async -> Void = { duration in
             try? await Task.sleep(for: duration)
@@ -221,6 +291,7 @@ final class UnifiedSearchCoordinator {
         self.indexStore = indexStore
         self.catalogSnapshot = catalogSnapshot
         self.siloIdentityProvider = siloIdentityProvider
+        self.programs = programs
         self.debounceDuration = debounceDuration
         self.waitForDebounce = waitForDebounce
         siloIdentity = siloIdentityProvider()
@@ -231,6 +302,8 @@ final class UnifiedSearchCoordinator {
         observedCatalogIdentity = initialCatalog.identity
         observedHasProvider = initialCatalog.hasProvider
         updateLiveTVAvailability(initialCatalog)
+        observedProgramSource = programSourceKey(initialCatalog)
+        updateProgramAvailability(initialCatalog)
     }
 
     /// Call for every text edit. Both sources are cancelled/cleared immediately; one debounce then
@@ -248,13 +321,16 @@ final class UnifiedSearchCoordinator {
         liveTVTask?.cancel()
         silo.cancelForQueryChange()
         liveTVResults = []
+        clearProgramSearch()
 
         guard !newQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             debounceTask = nil
             siloState = siloIdentity == nil
                 ? UnifiedSearchSourceStatus(phase: .unavailable, message: "Sign in to search Silo.")
                 : .idle
-            updateLiveTVAvailability(catalogSnapshot())
+            let catalog = catalogSnapshot()
+            updateLiveTVAvailability(catalog)
+            updateProgramAvailability(catalog)
             return
         }
 
@@ -262,6 +338,7 @@ final class UnifiedSearchCoordinator {
             ? UnifiedSearchSourceStatus(phase: .unavailable, message: "Sign in to search Silo.")
             : UnifiedSearchSourceStatus(phase: .debouncing)
         liveTVState = UnifiedSearchSourceStatus(phase: .debouncing)
+        if programs != nil { programState = UnifiedSearchSourceStatus(phase: .debouncing) }
         debounceTask = Task { [weak self] in
             guard let self else { return }
             await waitForDebounce(debounceDuration)
@@ -304,7 +381,7 @@ final class UnifiedSearchCoordinator {
     /// Stops source work when Search leaves the active navigation surface. Completed results stay
     /// available when a detail presentation returns; an interrupted search is restarted on reentry.
     func cancelForDismissal() {
-        let wasPending = [siloState.phase, liveTVState.phase].contains { phase in
+        let wasPending = [siloState.phase, liveTVState.phase, programState.phase].contains { phase in
             phase == .loading || phase == .debouncing
         }
         guard wasPending else { return }
@@ -323,10 +400,13 @@ final class UnifiedSearchCoordinator {
         buildingCatalogIdentity = nil
         silo.cancelForQueryChange()
         liveTVResults = []
+        clearProgramSearch()
         siloState = siloIdentity == nil
             ? UnifiedSearchSourceStatus(phase: .unavailable, message: "Sign in to search Silo.")
             : .idle
-        updateLiveTVAvailability(catalogSnapshot())
+        let catalog = catalogSnapshot()
+        updateLiveTVAvailability(catalog)
+        updateProgramAvailability(catalog)
     }
 
     func resumeAfterDismissalIfNeeded() {
@@ -362,10 +442,15 @@ final class UnifiedSearchCoordinator {
         return resolved
     }
 
-    /// Call when the active IPTV provider/catalog changes. A same-identity snapshot reuses the
-    /// existing index. A new revision/provider cancels the old query, rebuilds once, then searches
-    /// the still-current query without adding a second text debounce.
+    /// Call when the active IPTV provider/catalog or its guide changes (guide generation, loading or
+    /// staleness). A same-identity snapshot reuses the existing indexes. A changed source cancels its
+    /// old query, rebuilds once, then searches the still-current query without a second debounce.
     func catalogDidChange() async {
+        programSourceDidChange()
+        await channelCatalogDidChange()
+    }
+
+    private func channelCatalogDidChange() async {
         let snapshot = catalogSnapshot()
         guard snapshot.identity != observedCatalogIdentity || snapshot.hasProvider != observedHasProvider else {
             if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -428,6 +513,51 @@ final class UnifiedSearchCoordinator {
         }
     }
 
+    func retryPrograms() {
+        guard programs != nil, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        clearProgramSearch()
+        observedProgramSource = programSourceKey(catalogSnapshot())
+        launchProgramSearch(query: query, queryToken: queryGeneration)
+    }
+
+    /// Resolves a displayed program to its channel (with stream URL) and guide entry at tap time,
+    /// against the current catalog and guide. Nil if the result is no longer displayed, or the
+    /// provider, catalog, guide or guide freshness changed since it was found.
+    func resolveProgram(for result: UnifiedProgramSearchResult) async -> (channel: LiveTVChannel, program: EPGProgram)? {
+        guard programs != nil, programResults.contains(where: { $0.id == result.id }),
+              let published = publishedProgramIdentity else { return nil }
+        let catalog = catalogSnapshot()
+        guard let key = programSourceKey(catalog), key.identity == published, key.isReady,
+              let guide = programGuide(catalog)?.guide else { return nil }
+        let channels = catalog.channels
+        let providerID = published.providerID
+        let worker = Task.detached(priority: .userInitiated) { () -> (channel: LiveTVChannel, program: EPGProgram)? in
+            var found: LiveTVChannel?
+            for (offset, channel) in channels.enumerated() {
+                if offset.isMultiple(of: 256), Task.isCancelled { return nil }
+                if channel.id == result.channelID, LiveTVRecentChannel.belongs(channel.id, to: providerID) {
+                    found = channel
+                    break
+                }
+            }
+            guard let channel = found,
+                  guide.channelKey(guideID: channel.guideID, name: channel.name) == result.channelKey else { return nil }
+            let window = DateInterval(start: result.start, end: max(result.end, result.start.addingTimeInterval(1)))
+            guard let program = guide.programs(channelKey: result.channelKey, overlapping: window)
+                .first(where: { $0.id == result.programID }) else { return nil }
+            return (channel, program)
+        }
+        let resolved = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+        guard !Task.isCancelled, programSourceKey(catalogSnapshot()) == key,
+              publishedProgramIdentity == published,
+              programResults.contains(where: { $0.id == result.id }) else { return nil }
+        return resolved
+    }
+
     /// Keeps the catalog source's existing continuation/paging behavior available to the
     /// Movies & TV section. Paging never starts another request for the current query while a new
     /// query or Silo identity is pending.
@@ -466,6 +596,7 @@ final class UnifiedSearchCoordinator {
             await runLiveTVSearch(query: query, queryToken: generation,
                                   liveToken: liveToken, expected: snapshot.identity)
         }
+        launchProgramSearch(query: query, queryToken: generation)
     }
 
     private func launchSiloSearch(query: String, queryToken: Int,
@@ -626,6 +757,209 @@ final class UnifiedSearchCoordinator {
             liveTVState = UnifiedSearchSourceStatus(phase: .loading)
         } else {
             liveTVState = UnifiedSearchSourceStatus(phase: .loaded, resultCount: 0)
+        }
+    }
+
+    // MARK: - TV programs
+
+    /// What a program search depends on. Any difference means old program work is stale.
+    private struct ProgramSourceKey: Equatable {
+        let identity: EPGProgramSearchIndex.Identity
+        let hasGuide: Bool
+        /// Loading only while no guide is installed: a refresh of a guide that is still shown
+        /// changes nothing until it publishes (and so changes the guide generation).
+        let isGuideLoading: Bool
+        let isGuideStale: Bool
+        let isSQLiteBacked: Bool
+        let hasChannels: Bool
+
+        var isReady: Bool { hasGuide && !isGuideStale && !isSQLiteBacked && hasChannels }
+    }
+
+    private func programGuide(_ catalog: UnifiedSearchIPTVCatalogSnapshot) -> UnifiedSearchGuideSnapshot? {
+        guard let programs, let providerID = catalog.providerID else { return nil }
+        return programs.guideSnapshot(providerID)
+    }
+
+    private func programSourceKey(_ catalog: UnifiedSearchIPTVCatalogSnapshot) -> ProgramSourceKey? {
+        guard let providerID = catalog.providerID, let guide = programGuide(catalog) else { return nil }
+        return ProgramSourceKey(
+            identity: .init(providerID: providerID, catalogRevision: catalog.catalogRevision,
+                            guideGeneration: guide.guideGeneration),
+            hasGuide: guide.guide != nil, isGuideLoading: guide.guide == nil && guide.isGuideLoading,
+            isGuideStale: guide.isGuideStale,
+            isSQLiteBacked: guide.guide?.isSQLiteBacked ?? false, hasChannels: !catalog.channels.isEmpty)
+    }
+
+    /// Cancels program work and drops its results; any late completion fails its token check.
+    private func clearProgramSearch() {
+        programGeneration &+= 1
+        programTask?.cancel()
+        programTask = nil
+        programResults = []
+        publishedProgramIdentity = nil
+    }
+
+    /// Starts a program search against the source as it is now; a change before it publishes is
+    /// caught by `runProgramSearch`'s checks before and after the store call.
+    private func launchProgramSearch(query: String, queryToken: Int) {
+        guard programs != nil else { return }
+        programTask?.cancel()
+        observedProgramSource = programSourceKey(catalogSnapshot())
+        let token = programGeneration
+        let expected = observedProgramSource
+        programState = UnifiedSearchSourceStatus(phase: .loading)
+        programTask = Task { [weak self] in
+            guard let self else { return }
+            await runProgramSearch(query: query, queryToken: queryToken, programToken: token, expected: expected)
+        }
+    }
+
+    /// Called from `catalogDidChange`. A changed program source (provider, catalog revision, guide
+    /// generation, loading, staleness or storage) cancels old work and searches again.
+    private func programSourceDidChange() {
+        guard programs != nil else { return }
+        let catalog = catalogSnapshot()
+        let key = programSourceKey(catalog)
+        guard key != observedProgramSource else { return }
+        observedProgramSource = key
+        clearProgramSearch()
+        updateProgramAvailability(catalog)
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, debounceTask == nil {
+            launchProgramSearch(query: query, queryToken: queryGeneration)
+        }
+    }
+
+    private func runProgramSearch(query: String, queryToken: Int, programToken: Int,
+                                  expected: ProgramSourceKey?) async {
+        guard let programs, queryToken == queryGeneration, programToken == programGeneration else { return }
+        let catalog = catalogSnapshot()
+        let key = programSourceKey(catalog)
+        guard key == expected else {
+            rejectChangedProgramSource(queryToken: queryToken)
+            return
+        }
+        guard let key, key.isReady, let guide = programGuide(catalog)?.guide else {
+            updateProgramAvailability(catalog)
+            return
+        }
+
+        programState = UnifiedSearchSourceStatus(phase: .loading)
+        let input = EPGProgramSearchIndexStore.Input(identity: key.identity, guide: guide, channels: catalog.channels)
+        let outcome = await programs.store.search(query: query, input: input)
+        guard !Task.isCancelled, queryToken == queryGeneration, programToken == programGeneration else { return }
+        let current = catalogSnapshot()
+        guard programSourceKey(current) == key else {
+            rejectChangedProgramSource(queryToken: queryToken)
+            return
+        }
+
+        let matches: [EPGProgramSearchIndex.Match]
+        switch outcome {
+        case .results(let found):
+            matches = found
+        case .queryTooShort:
+            programState = .idle
+            return
+        case .noGuide:
+            programState = UnifiedSearchSourceStatus(phase: .unavailable, message: "No TV guide is available.")
+            return
+        case .unsupportedStorage:
+            programState = UnifiedSearchSourceStatus(phase: .unavailable,
+                                                     message: "TV program search isn't available for this guide.")
+            return
+        case nil:
+            programState = UnifiedSearchSourceStatus(phase: .failed,
+                                                     message: "TV program search was canceled or became outdated.")
+            return
+        }
+
+        // Attach logos from the same catalog snapshot off-main. Only safe metadata crosses back.
+        let providerID = key.identity.providerID
+        let searchedAt = Date()
+        let worker = Task.detached(priority: .userInitiated) { () -> [UnifiedProgramSearchResult]? in
+            var logos: [String: URL?] = [:]
+            logos.reserveCapacity(matches.count)
+            let wanted = Set(matches.map(\.channelID))
+            for (offset, channel) in current.channels.enumerated() {
+                if offset.isMultiple(of: 256), Task.isCancelled { return nil }
+                guard wanted.contains(channel.id), logos[channel.id] == nil,
+                      LiveTVRecentChannel.belongs(channel.id, to: providerID) else { continue }
+                logos[channel.id] = Self.safeLogoURL(channel.logoURL)
+            }
+            var resolved: [UnifiedProgramSearchResult] = []
+            resolved.reserveCapacity(matches.count)
+            for match in matches {
+                guard let logo = logos[match.channelID] else { continue }
+                resolved.append(UnifiedProgramSearchResult(
+                    id: "\(match.channelID)|\(match.programID)", programID: match.programID,
+                    channelID: match.channelID, channelKey: match.channelKey, channelName: match.channelName,
+                    channelOrdinal: match.channelOrdinal, logoURL: logo, title: match.title, subtitle: match.subtitle,
+                    start: match.start, end: match.end, wasLiveAtSearch: match.start <= searchedAt && searchedAt < match.end))
+            }
+            return Task.isCancelled ? nil : resolved
+        }
+        let resolved = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+        guard !Task.isCancelled, queryToken == queryGeneration, programToken == programGeneration,
+              let resolved else { return }
+        guard programSourceKey(catalogSnapshot()) == key else {
+            rejectChangedProgramSource(queryToken: queryToken)
+            return
+        }
+        guard resolved.count == matches.count else {
+            programResults = []
+            programState = UnifiedSearchSourceStatus(phase: .failed, message: "The Live TV catalog changed; search again.")
+            return
+        }
+        programResults = resolved
+        publishedProgramIdentity = key.identity
+        programState = UnifiedSearchSourceStatus(phase: .loaded, resultCount: resolved.count)
+    }
+
+    /// The source changed under a running search: adopt the new state and search it once.
+    private func rejectChangedProgramSource(queryToken: Int) {
+        guard queryToken == queryGeneration else { return }
+        let catalog = catalogSnapshot()
+        observedProgramSource = programSourceKey(catalog)
+        clearProgramSearch()
+        updateProgramAvailability(catalog)
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            launchProgramSearch(query: query, queryToken: queryToken)
+        }
+    }
+
+    private func updateProgramAvailability(_ catalog: UnifiedSearchIPTVCatalogSnapshot) {
+        guard programs != nil else {
+            programState = .idle
+            return
+        }
+        guard catalog.hasProvider, let key = programSourceKey(catalog) else {
+            programState = UnifiedSearchSourceStatus(phase: .unavailable, message: "No Live TV provider is configured.")
+            return
+        }
+        if !key.hasChannels {
+            if let error = catalog.errorMessage {
+                programState = UnifiedSearchSourceStatus(phase: .failed, message: error)
+            } else if catalog.isLoading {
+                programState = UnifiedSearchSourceStatus(phase: .loading)
+            } else {
+                programState = UnifiedSearchSourceStatus(phase: .loaded, resultCount: 0)
+            }
+        } else if !key.hasGuide {
+            programState = key.isGuideLoading
+                ? UnifiedSearchSourceStatus(phase: .loading, message: "Loading the TV guide…")
+                : UnifiedSearchSourceStatus(phase: .unavailable, message: "No TV guide is available.")
+        } else if key.isGuideStale {
+            programState = UnifiedSearchSourceStatus(phase: .unavailable, message: "The TV guide is out of date.")
+        } else if key.isSQLiteBacked {
+            programState = UnifiedSearchSourceStatus(phase: .unavailable,
+                                                     message: "TV program search isn't available for this guide.")
+        } else {
+            programState = UnifiedSearchSourceStatus(phase: .loaded, resultCount: 0)
         }
     }
 

@@ -5,13 +5,26 @@ struct SearchView: View {
     @State private var coordinator: UnifiedSearchCoordinator
     @State private var selectedFilter: UnifiedSearchFilter = .all
     @State private var liveTVVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit
-    @State private var liveTVService = LiveTVService.shared
+    @State private var programVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit
+    #if os(iOS)
+    /// The program whose Guide detail sheet is up, resolved at tap time.
+    @State private var programDetail: SearchProgramDetail?
+    /// Set by the sheet's Watch button; played only after the sheet has gone and the program is
+    /// resolved again, so a guide change while the sheet was up can never start a stale channel.
+    @State private var pendingProgramWatch: UnifiedProgramSearchResult?
+    @State private var programDetailInvalidated = false
+    @State private var isProgramUnavailable = false
+    #endif
+    @State private var liveTVService: LiveTVService
     @State private var serverRegistry = ServerRegistry.shared
     @Environment(AppRouter.self) private var router
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     #if os(iOS)
     @FocusState private var isSearchFieldFocused: Bool
     #endif
     private let usesTVTopMenuInset: Bool
+    /// Whether this screen lists TV programs: iPhone and iPad only, and off for a "before" capture.
+    private let showsPrograms: Bool
     /// A query handed over by Siri. Search replaces whatever the field held
     /// with it, then clears it so no later Search picks it up again.
     @Binding private var seededQuery: AppRouter.SearchRequest?
@@ -25,19 +38,35 @@ struct SearchView: View {
     @MainActor
     init(
         usesTVTopMenuInset: Bool = true,
-        seededQuery: Binding<AppRouter.SearchRequest?> = .constant(nil)
+        seededQuery: Binding<AppRouter.SearchRequest?> = .constant(nil),
+        liveTVService: LiveTVService = .shared,
+        programSearchEnabled: Bool = true
     ) {
         let searchModel = SearchViewModel(includesPeople: true, includesEpisodes: true)
         // The unified search has only All / Movies & TV / Live TV filters. Its Silo scope is video
         // with episodes, not audiobooks, regardless of the device's optional audiobook tab.
         searchModel.audiobooksEnabled = false
         let requestModel = RequestSearchSectionViewModel()
+        // TV program search is shown on iPhone and iPad only; elsewhere it never runs.
+        #if os(iOS)
+        let programs: UnifiedSearchProgramSource? = programSearchEnabled ? .live(service: liveTVService) : nil
+        #else
+        let programs: UnifiedSearchProgramSource? = nil
+        #endif
         _coordinator = State(initialValue: UnifiedSearchCoordinator(
             silo: UnifiedSearchSiloAdapter(searchModel: searchModel,
-                                           requestSearchModel: requestModel)
+                                           requestSearchModel: requestModel),
+            catalogSnapshot: { liveTVService.unifiedSearchCatalogSnapshot() },
+            programs: programs
         ))
         self.usesTVTopMenuInset = usesTVTopMenuInset
+        #if os(iOS)
+        self.showsPrograms = programSearchEnabled
+        #else
+        self.showsPrograms = false
+        #endif
         self._seededQuery = seededQuery
+        self._liveTVService = State(initialValue: liveTVService)
     }
 
     var body: some View {
@@ -114,6 +143,37 @@ struct SearchView: View {
         .onChange(of: liveTVService.channelCatalogRevision) { _, _ in
             Task { await coordinator.catalogDidChange() }
         }
+        // A new, removed or refreshed guide, or a change in its freshness or loading, drops finished
+        // program results at once and searches again; an unchanged guide reuses its index.
+        .onChange(of: liveTVService.guideGenerations) { _, _ in
+            Task { await coordinator.catalogDidChange() }
+        }
+        .onChange(of: liveTVService.isGuideStale) { _, _ in
+            Task { await coordinator.catalogDidChange() }
+        }
+        .onChange(of: liveTVService.isGuideLoading) { _, _ in
+            Task { await coordinator.catalogDidChange() }
+        }
+        #if os(iOS)
+        .sheet(item: $programDetail, onDismiss: programDetailDismissed) { item in
+            LiveTVProgramDetailView(detail: item.detail) {
+                pendingProgramWatch = item.result
+                programDetail = nil
+            }
+        }
+        .onChange(of: coordinator.programResults) { _, results in
+            // The guide or catalog changed under an open detail sheet: close it, then explain.
+            guard let item = programDetail, !results.contains(where: { $0.id == item.result.id }) else { return }
+            pendingProgramWatch = nil
+            programDetailInvalidated = true
+            programDetail = nil
+        }
+        .alert("Program Unavailable", isPresented: $isProgramUnavailable) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The TV guide changed, so this listing is no longer current. Check the updated results.")
+        }
+        #endif
     }
 
     private var searchText: Binding<String> {
@@ -122,6 +182,7 @@ struct SearchView: View {
             set: { value in
                 viewModel.query = value
                 liveTVVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit
+                programVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit
                 coordinator.onQueryChanged(value)
             }
         )
@@ -196,6 +257,10 @@ struct SearchView: View {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
                 if selectedFilter.showsMoviesAndTV { moviesAndTVSection }
                 if selectedFilter.showsLiveTV { liveTVSection }
+                #if os(iOS)
+                // Without a provider the channel section already says so; programs stay out of the way.
+                if showsPrograms, selectedFilter.showsLiveTV, !liveTVService.providers.isEmpty { programSection }
+                #endif
             }
         }
     }
@@ -270,7 +335,7 @@ struct SearchView: View {
 
         return VStack(alignment: .leading, spacing: SiloTheme.smallPadding) {
             sectionHeader(
-                title: "Live TV",
+                title: UnifiedProgramSearchPresentation.sectionTitle(.liveTV, filter: selectedFilter),
                 count: catalogIsCurrent ? coordinator.liveTVState.resultCount : 0,
                 showsSeeAll: isCombined && hasMore,
                 seeAll: {
@@ -376,19 +441,7 @@ struct SearchView: View {
             openLiveTVResult(result)
         } label: {
             HStack(spacing: 12) {
-                if let logoURL = result.logoURL {
-                    AsyncImageView(url: logoURL.absoluteString,
-                                   targetSize: CGSize(width: 56, height: 42),
-                                   contentMode: .fit, placeholderStyle: .surface,
-                                   placeholderSymbol: "tv")
-                        .frame(width: 56, height: 42)
-                } else {
-                    Image(systemName: "tv")
-                        .font(.title3)
-                        .foregroundStyle(KyroTheme.accentInk)
-                        .frame(width: 56, height: 42)
-                        .background(Color.siloSurfaceElevated, in: RoundedRectangle(cornerRadius: 8))
-                }
+                liveTVLogo(result.logoURL)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(result.name)
                         .font(.siloBody.weight(.semibold))
@@ -422,6 +475,24 @@ struct SearchView: View {
         .accessibilityLabel("Play Live TV channel \(result.name), \(result.category)")
     }
 
+    /// A channel's logo (credential-free URL) or the Live TV placeholder; shared by channel and program rows.
+    @ViewBuilder
+    private func liveTVLogo(_ logoURL: URL?) -> some View {
+        if let logoURL {
+            AsyncImageView(url: logoURL.absoluteString,
+                           targetSize: CGSize(width: 56, height: 42),
+                           contentMode: .fit, placeholderStyle: .surface,
+                           placeholderSymbol: "tv")
+                .frame(width: 56, height: 42)
+        } else {
+            Image(systemName: "tv")
+                .font(.title3)
+                .foregroundStyle(KyroTheme.accentInk)
+                .frame(width: 56, height: 42)
+                .background(Color.siloSurfaceElevated, in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
     private func openLiveTVResult(_ result: UnifiedLiveTVSearchResult) {
         Task { @MainActor in
             guard let channel = await coordinator.resolveChannel(for: result),
@@ -429,21 +500,207 @@ struct SearchView: View {
                 await coordinator.catalogDidChange()
                 return
             }
-            #if os(iOS)
-            if KyroUnifiedNavigation.isActive {
-                liveTVService.choose(channel, from: .shell)
-            } else {
-                // Classic navigation owns its Live TV player cover on the list presenter.
-                // Selecting first is safe: the pushed Live TV surface observes the shared presentation.
-                liveTVService.choose(channel, from: .list)
-                KyroLiveTVEntry.open(router: router)
-            }
-            #else
-            liveTVService.choose(channel, from: .list)
-            KyroLiveTVEntry.open(router: router)
-            #endif
+            playLiveTVChannel(channel)
         }
     }
+
+    /// The one playback entry from Search, for channel results and a program's Watch action.
+    private func playLiveTVChannel(_ channel: LiveTVChannel) {
+        #if os(iOS)
+        if KyroUnifiedNavigation.isActive {
+            liveTVService.choose(channel, from: .shell)
+        } else {
+            // Classic navigation owns its Live TV player cover on the list presenter.
+            // Selecting first is safe: the pushed Live TV surface observes the shared presentation.
+            liveTVService.choose(channel, from: .list)
+            KyroLiveTVEntry.open(router: router)
+        }
+        #else
+        liveTVService.choose(channel, from: .list)
+        KyroLiveTVEntry.open(router: router)
+        #endif
+    }
+
+    #if os(iOS)
+    // MARK: - TV programs
+
+    /// Programs after channels, never mixed in. Status, the ended-program cut-off and the header
+    /// count follow the clock each minute; the coordinator and index are not touched by the tick.
+    private var programSection: some View {
+        TimelineView(.everyMinute) { context in
+            programSectionContent(now: context.date)
+        }
+    }
+
+    private func programSectionContent(now: Date) -> some View {
+        let isCombined = selectedFilter == .all
+        let available = UnifiedProgramSearchPresentation.visible(coordinator.programResults, at: now)
+        let limit = isCombined ? UnifiedSearchResultsSection.combinedPreviewLimit : programVisibleLimit
+        let shown = Array(available.prefix(limit))
+        let hasMore = UnifiedSearchResultsSection.hasAdditionalResults(total: available.count, visible: shown.count)
+        let title = UnifiedProgramSearchPresentation.sectionTitle(.programs, filter: selectedFilter)
+
+        return VStack(alignment: .leading, spacing: SiloTheme.smallPadding) {
+            sectionHeader(
+                title: title,
+                count: available.count,
+                showsSeeAll: isCombined && hasMore,
+                seeAll: {
+                    selectedFilter = UnifiedSearchFilter.all.seeAllFilter(for: .programs)
+                    programVisibleLimit = min(UnifiedSearchResultsSection.liveTVPageSize, available.count)
+                }
+            )
+
+            if !shown.isEmpty {
+                LazyVStack(spacing: SiloTheme.smallPadding) {
+                    ForEach(shown) { result in
+                        programResultRow(result, now: now)
+                    }
+                }
+                if !isCombined && hasMore {
+                    Button("Load More Programs") {
+                        programVisibleLimit = UnifiedSearchResultsSection.nextVisibleLimit(
+                            current: programVisibleLimit,
+                            total: available.count
+                        )
+                    }
+                    .font(.siloBody.weight(.semibold))
+                    .foregroundStyle(KyroTheme.accentInk)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                }
+            } else {
+                programEmptyOrStatus
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var programEmptyOrStatus: some View {
+        let status = coordinator.programState
+        if let message = UnifiedProgramSearchPresentation.emptyMessage(for: status) {
+            switch status.phase {
+            case .debouncing, .loading:
+                HStack(spacing: 10) {
+                    ProgressView().tint(KyroTheme.accentInk)
+                    Text(message.text).font(.siloBody).foregroundStyle(Color.siloSecondaryText)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, SiloTheme.smallPadding)
+            case .failed, .partialFailure:
+                sourceMessage(message.text, symbol: message.symbol, retry: coordinator.retryPrograms)
+            default:
+                sourceMessage(message.text, symbol: message.symbol)
+            }
+        }
+    }
+
+    private func programResultRow(_ result: UnifiedProgramSearchResult, now: Date) -> some View {
+        let state = UnifiedProgramSearchPresentation.state(of: result, at: now)
+        let statusTint = state == .live ? KyroTheme.accentInk : Color.siloSecondaryText
+        return Button {
+            openProgramResult(result)
+        } label: {
+            HStack(spacing: 12) {
+                liveTVLogo(result.logoURL)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(result.title)
+                        .font(.siloBody.weight(.semibold))
+                        .foregroundStyle(Color.siloOnSurface)
+                        .lineLimit(1)
+                    if let subtitle = result.subtitle {
+                        Text(subtitle)
+                            .font(.siloCaption)
+                            .foregroundStyle(Color.siloSecondaryText)
+                            .lineLimit(1)
+                    }
+                    Text(result.channelName)
+                        .font(.siloCaption)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .lineLimit(1)
+                    // Badge and time share a line when both fit on it; otherwise the badge sits above
+                    // the time, so the time is never cut off and wraps only as a last resort.
+                    ViewThatFits(in: .horizontal) {
+                        if !dynamicTypeSize.isAccessibilitySize {
+                            HStack(spacing: 6) {
+                                programStatusBadge(state: state, tint: statusTint)
+                                programTimeRange(result, now: now, allowsWrap: false)
+                            }
+                        }
+                        VStack(alignment: .leading, spacing: 3) {
+                            programStatusBadge(state: state, tint: statusTint)
+                            programTimeRange(result, now: now, allowsWrap: true)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+                Image(systemName: state == .live ? "play.circle" : "info.circle")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(KyroTheme.accentInk)
+            }
+            .padding(.horizontal, SiloTheme.smallPadding)
+            .padding(.vertical, 8)
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .background(Color.siloSurfaceElevated.opacity(0.45),
+                        in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(UnifiedProgramSearchPresentation.accessibilityLabel(result, now: now))
+        .accessibilityHint("Shows program details")
+    }
+
+    private func programStatusBadge(state: UnifiedProgramSearchPresentation.AiringState, tint: Color) -> some View {
+        Text(UnifiedProgramSearchPresentation.badge(for: state))
+            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.12), in: Capsule())
+    }
+
+    private func programTimeRange(_ result: UnifiedProgramSearchResult, now: Date, allowsWrap: Bool) -> some View {
+        Text(UnifiedProgramSearchPresentation.timeRange(result, now: now))
+            .font(.siloCaption)
+            .foregroundStyle(Color.siloSecondaryText)
+            .lineLimit(allowsWrap ? 2 : 1)
+            .minimumScaleFactor(allowsWrap ? 0.8 : 1)
+    }
+
+    /// Resolves against the current provider, catalog and guide, then shows the Guide's sheet.
+    private func openProgramResult(_ result: UnifiedProgramSearchResult) {
+        Task { @MainActor in
+            guard let resolved = await coordinator.resolveProgram(for: result) else {
+                isProgramUnavailable = true
+                await coordinator.catalogDidChange()
+                return
+            }
+            isSearchFieldFocused = false
+            programDetail = SearchProgramDetail(result: result,
+                                                detail: LiveTVGuideDetail(channel: resolved.channel,
+                                                                          program: resolved.program))
+        }
+    }
+
+    /// Runs once the sheet is gone. Watch plays only a program that still resolves and a channel
+    /// that playback accepts; anything else explains itself instead of starting a stale stream.
+    private func programDetailDismissed() {
+        if programDetailInvalidated {
+            programDetailInvalidated = false
+            isProgramUnavailable = true
+            return
+        }
+        guard let result = pendingProgramWatch else { return }
+        pendingProgramWatch = nil
+        Task { @MainActor in
+            guard let resolved = await coordinator.resolveProgram(for: result),
+                  liveTVService.canPlay(resolved.channel) else {
+                isProgramUnavailable = true
+                await coordinator.catalogDidChange()
+                return
+            }
+            playLiveTVChannel(resolved.channel)
+        }
+    }
+    #endif
 
     /// A new search with nothing to show yet: reuse the existing catalog grid's loading skeleton.
     @ViewBuilder
@@ -529,6 +786,16 @@ struct SearchView: View {
     }
     #endif
 }
+
+#if os(iOS)
+/// A Guide detail opened from Search, with the result it came from. Like the Guide's own detail
+/// it holds the resolved channel only while the sheet is up.
+private struct SearchProgramDetail: Identifiable {
+    let result: UnifiedProgramSearchResult
+    let detail: LiveTVGuideDetail
+    var id: String { result.id }
+}
+#endif
 
 private extension CastMember {
     /// A people search result shown on a cast rail: no role, just the person.

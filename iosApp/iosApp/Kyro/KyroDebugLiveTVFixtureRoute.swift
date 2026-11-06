@@ -28,7 +28,9 @@ struct KyroDebugLiveTVFixtureRouteModifier: ViewModifier {
             .fullScreenCover(isPresented: Binding(get: { service != nil }, set: { if !$0 { service = nil } })) {
                 if let service {
                     Group {
-                        if KyroUnifiedNavigation.isActive {
+                        if CommandLine.arguments.contains("-kyroDebugSearchFixture") {
+                            KyroDebugSearchFixtureStack(service: service)
+                        } else if KyroUnifiedNavigation.isActive {
                             KyroDebugUnifiedShell(service: service)
                         } else {
                             KyroDebugLiveTVFixtureStack(service: service)
@@ -36,7 +38,8 @@ struct KyroDebugLiveTVFixtureRouteModifier: ViewModifier {
                     }
                     .task {
                         // `-kyroDebugLiveTVNoFavorites` leaves the lineup empty, for the empty state.
-                        guard !CommandLine.arguments.contains("-kyroDebugLiveTVNoFavorites") else { return }
+                        guard !CommandLine.arguments.contains("-kyroDebugLiveTVNoFavorites"),
+                              !CommandLine.arguments.contains("-kyroDebugSearchFixture") else { return }
                         await KyroDebugLiveTVFixture.seedFavorites(in: service)
                     }
                 }
@@ -47,6 +50,49 @@ struct KyroDebugLiveTVFixtureRouteModifier: ViewModifier {
                 KyroDebugLiveTVFixture.applyNavigationArguments(to: .shared)
                 service = KyroDebugLiveTVFixture.makeService()
             }
+    }
+}
+
+private struct KyroDebugSearchFixtureStack: View {
+    let service: LiveTVService
+    @State private var router = AppRouter()
+    /// Set from the first frame, so Search shows results instead of focusing its field (and keyboard).
+    @State private var seededQuery = KyroDebugLiveTVFixture.value(after: "-kyroDebugSearchQuery")
+        .map { AppRouter.SearchRequest(query: $0) }
+
+    var body: some View {
+        NavigationStack {
+            SearchView(
+                seededQuery: $seededQuery,
+                liveTVService: service,
+                programSearchEnabled: !CommandLine.arguments.contains("-kyroDebugSearchNoPrograms")
+            )
+            .environment(router)
+            .tint(KyroTheme.shellTint)
+            .overlay(alignment: .topLeading) {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("kyroDebugSearchWatching")
+                    .accessibilityLabel(service.presentation.activeChannel?.name ?? "none")
+                    .allowsHitTesting(false)
+            }
+        }
+        .task {
+            // What Live TV does on appear: load the fixture playlist and guide. Search re-runs the
+            // seeded query when the catalog and guide arrive.
+            await service.prepareSelectedProvider()
+            await removeProviderIfRequested()
+        }
+    }
+
+    @MainActor
+    private func removeProviderIfRequested() async {
+        guard let seconds = KyroDebugLiveTVFixture.value(after: "-kyroDebugSearchRemoveProviderAfter")
+                .flatMap(Double.init) else { return }
+        try? await Task.sleep(for: .seconds(seconds))
+        guard let providerID = service.selectedProviderID else { return }
+        await service.removeProvider(providerID)
     }
 }
 
@@ -387,7 +433,12 @@ private final class KyroFixtureURLProtocol: URLProtocol {
         let body: String
         switch url.lastPathComponent {
         case "playlist.m3u": body = KyroDebugLiveTVFixture.playlist
-        case "guide.xml": body = KyroDebugLiveTVFixture.guide()
+        case "guide.xml":
+            guard !CommandLine.arguments.contains("-kyroDebugSearchNoGuide") else {
+                client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
+                return
+            }
+            body = KyroDebugLiveTVFixture.guide()
         default:
             client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
             return
