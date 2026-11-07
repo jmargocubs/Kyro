@@ -350,7 +350,8 @@ enum KyroSportsGameBucket: String, CaseIterable, Identifiable, Sendable {
     /// Finished games from earlier days, so they never read as upcoming.
     case recent
     case upcoming
-    /// Known games beyond the initial 14-day dashboard horizon.
+    /// Known scheduled games outside the visible dashboard window. Kept in the
+    /// section model so later weeks remain available without listing them.
     case future
 
     var id: String { rawValue }
@@ -423,16 +424,20 @@ enum KyroSportsDashboard {
         from sections: [KyroSportsGameSection],
         now: Date
     ) -> KyroSportsGame? {
-        let games = uniqueGames(in: sections)
+        // Live first, then the next kickoff inside the visible schedule only.
+        // Games parked in `.future` never become the hero while a current-week
+        // or rolling-window matchup exists.
+        let visibleSchedule = sections.filter { $0.bucket == .liveNow || $0.bucket == .today || $0.bucket == .upcoming }
+        let visibleGames = uniqueGames(in: visibleSchedule)
 
-        if let live = games
+        if let live = visibleGames
             .filter({ $0.status.isLive })
             .sorted(by: KyroSportsReconciler.deterministicOrder)
             .first {
             return live
         }
 
-        if let upcoming = games
+        if let upcoming = visibleGames
             .filter({ game in
                 guard let start = game.startTime, start >= now else { return false }
                 return game.status.isScheduled || game.status.isUnknown
@@ -442,7 +447,7 @@ enum KyroSportsDashboard {
             return upcoming
         }
 
-        return games
+        return uniqueGames(in: sections)
             .filter({ $0.status.isFinal })
             .sorted(by: mostRecentFirst)
             .first
@@ -454,17 +459,14 @@ enum KyroSportsDashboard {
 
     static func visibleSections(
         from sections: [KyroSportsGameSection],
-        mode: KyroSportsDashboardMode,
-        includesFuture: Bool = false
+        mode: KyroSportsDashboardMode
     ) -> [KyroSportsGameSection] {
         sections.filter { section in
             switch mode {
             case .live:
                 section.bucket == .liveNow
             case .upcoming:
-                section.bucket == .today
-                    || section.bucket == .upcoming
-                    || (includesFuture && section.bucket == .future)
+                section.bucket == .today || section.bucket == .upcoming
             case .results:
                 section.bucket == .recent
             }
@@ -473,10 +475,9 @@ enum KyroSportsDashboard {
 
     static func emptyState(
         for mode: KyroSportsDashboardMode,
-        in sections: [KyroSportsGameSection],
-        includesFuture: Bool = false
+        in sections: [KyroSportsGameSection]
     ) -> KyroSportsDashboardEmptyState? {
-        guard visibleSections(from: sections, mode: mode, includesFuture: includesFuture).isEmpty else {
+        guard visibleSections(from: sections, mode: mode).isEmpty else {
             return nil
         }
         switch mode {
@@ -501,6 +502,8 @@ enum KyroSportsDashboard {
         }
     }
 
+    /// True when sectioning retained later-week / beyond-window games that the
+    /// dashboard intentionally does not list.
     static func hasFutureGames(in sections: [KyroSportsGameSection]) -> Bool {
         sections.contains { $0.bucket == .future && !$0.games.isEmpty }
     }

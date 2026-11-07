@@ -28,9 +28,11 @@ struct ESPNSportsProvider: KyroSportsProviding {
             value: -KyroSportsSectioning.recentDayCount,
             to: startOfToday
         ) ?? now.addingTimeInterval(-7 * 86_400)
+        // Fetch farther than the visible NFL week so later weeks stay cached;
+        // dashboard sectioning filters presentation to the current week.
         let windowEnd = calendar.date(
             byAdding: .day,
-            value: KyroSportsSectioning.upcomingDayCount + 1,
+            value: KyroSportsSectioning.providerFetchUpcomingDayCount + 1,
             to: startOfToday
         ) ?? now.addingTimeInterval(15 * 86_400)
 

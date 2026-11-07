@@ -35,7 +35,6 @@ final class KyroSportsHubStore {
     private(set) var sections: [KyroSportsGameSection] = []
     private(set) var featuredEvent: KyroSportsGame?
     private(set) var selectedDashboardMode: KyroSportsDashboardMode = .upcoming
-    private(set) var showsFutureSchedule = false
     /// True when the rendered games came from cache after a failed refresh.
     private(set) var isShowingStaleData = false
     /// Set when a refresh failed but earlier data is still on screen, so the
@@ -50,7 +49,6 @@ final class KyroSportsHubStore {
             sections = []
             featuredEvent = nil
             selectedDashboardMode = .upcoming
-            showsFutureSchedule = false
             hasResolvedInitialDashboardMode = false
             phase = .idle
             isShowingStaleData = false
@@ -64,21 +62,15 @@ final class KyroSportsHubStore {
     var visibleSections: [KyroSportsGameSection] {
         KyroSportsDashboard.visibleSections(
             from: sections,
-            mode: selectedDashboardMode,
-            includesFuture: showsFutureSchedule
+            mode: selectedDashboardMode
         )
     }
 
     var dashboardEmptyState: KyroSportsDashboardEmptyState? {
         KyroSportsDashboard.emptyState(
             for: selectedDashboardMode,
-            in: sections,
-            includesFuture: showsFutureSchedule
+            in: sections
         )
-    }
-
-    var hasFutureSchedule: Bool {
-        KyroSportsDashboard.hasFutureGames(in: sections)
     }
 
     // MARK: Dependencies
@@ -139,11 +131,6 @@ final class KyroSportsHubStore {
         selectedDashboardMode = mode
     }
 
-    func toggleFutureSchedule() {
-        guard hasFutureSchedule else { return }
-        showsFutureSchedule.toggle()
-    }
-
     /// Load or refresh the hub for the selected league.
     ///
     /// - Parameter force: bypasses the cached section data and refetches, used
@@ -173,8 +160,18 @@ final class KyroSportsHubStore {
             guard generation == self.generation, !Task.isCancelled else { return }
             let games = result.games
             let groupingCalendar = calendar
+            let scheduleContext = KyroSportsScheduleContext(
+                league: .nfl,
+                currentWeek: result.week,
+                currentSeason: result.season
+            )
             let grouped = try await sportsDetachedValue {
-                KyroSportsSectioning.sections(from: games, now: groupingDate, calendar: groupingCalendar)
+                KyroSportsSectioning.sections(
+                    from: games,
+                    now: groupingDate,
+                    calendar: groupingCalendar,
+                    context: scheduleContext
+                )
             }
             guard generation == self.generation, !Task.isCancelled else { return }
 
@@ -189,9 +186,6 @@ final class KyroSportsHubStore {
             if !hasResolvedInitialDashboardMode {
                 if selectedDashboardMode != initialMode { selectedDashboardMode = initialMode }
                 hasResolvedInitialDashboardMode = true
-            }
-            if showsFutureSchedule, !KyroSportsDashboard.hasFutureGames(in: grouped) {
-                showsFutureSchedule = false
             }
             if phase != .loaded { phase = .loaded }
             if isShowingStaleData != result.isStale { isShowingStaleData = result.isStale }

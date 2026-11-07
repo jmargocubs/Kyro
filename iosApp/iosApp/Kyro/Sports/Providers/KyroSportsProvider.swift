@@ -218,22 +218,36 @@ enum KyroSportsReconciler {
 
 // MARK: - Provider-independent sectioning
 
+/// Presentation window for dashboard upcoming rows. Providers may still fetch
+/// and cache a wider horizon; only this policy decides what the hub lists.
+struct KyroSportsScheduleContext: Equatable, Sendable {
+    var league: KyroSportLeague = .nfl
+    /// Authoritative NFL week from ESPN/Sleeper state. Nil falls back to the
+    /// local Thursday–Monday calendar span around `now`.
+    var currentWeek: Int? = nil
+    var currentSeason: Int? = nil
+}
+
 enum KyroSportsSectioning {
     static let recentDayCount = 7
-    static let upcomingDayCount = 14
+    /// Rolling upcoming window for non-NFL leagues (today inclusive).
+    static let otherLeagueUpcomingDayCount = 7
+    /// How far providers may fetch ahead so later weeks remain cached.
+    static let providerFetchUpcomingDayCount = 14
+    /// Compatibility alias for provider fetch windows.
+    static var upcomingDayCount: Int { providerFetchUpcomingDayCount }
     static let recentGameLimit = 12
 
     static func sections(
         from input: [KyroSportsGame],
         now: Date,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        context: KyroSportsScheduleContext = KyroSportsScheduleContext()
     ) -> [KyroSportsGameSection] {
         let games = KyroSportsReconciler.deduplicated(input)
         let startOfToday = calendar.startOfDay(for: now)
         let recentStart = calendar.date(byAdding: .day, value: -recentDayCount, to: startOfToday)
             ?? now.addingTimeInterval(-Double(recentDayCount) * 86_400)
-        let upcomingEnd = calendar.date(byAdding: .day, value: upcomingDayCount + 1, to: startOfToday)
-            ?? now.addingTimeInterval(Double(upcomingDayCount + 1) * 86_400)
 
         let live = games.filter { $0.status.isLive }
             .sorted(by: KyroSportsReconciler.deterministicOrder)
@@ -258,7 +272,7 @@ enum KyroSportsSectioning {
             if (game.status.isScheduled || isUnknown(game.status)), start < now.addingTimeInterval(-5 * 3600) {
                 return false
             }
-            return true
+            return isInsideVisibleUpcomingWindow(game, now: now, calendar: calendar, context: context)
         }
         .sorted(by: KyroSportsReconciler.deterministicOrder)
 
@@ -268,17 +282,19 @@ enum KyroSportsSectioning {
             }
             return !calendar.isDate(start, inSameDayAs: now)
                 && start > now
-                && start < upcomingEnd
+                && isInsideVisibleUpcomingWindow(game, now: now, calendar: calendar, context: context)
         }
         .sorted(by: KyroSportsReconciler.deterministicOrder)
 
-        // Keep known dates beyond the initial 14-day window available behind
-        // an explicit expansion instead of silently throwing them away.
+        // Keep known later games in the section model / cache surface without
+        // listing them in the default dashboard. Presentation never expands them.
+        let visibleIDs = Set(today.map(\.id)).union(upcoming.map(\.id))
         let future = games.filter { game in
             guard !game.status.isLive, !game.status.isFinal, let start = game.startTime else {
                 return false
             }
-            return start >= upcomingEnd
+            guard start > now || calendar.isDate(start, inSameDayAs: now) else { return false }
+            return !visibleIDs.contains(game.id)
         }
         .sorted(by: KyroSportsReconciler.deterministicOrder)
 
@@ -295,6 +311,79 @@ enum KyroSportsSectioning {
         }
         sections.append(contentsOf: dateSections(for: future, bucket: .future, calendar: calendar))
         return sections
+    }
+
+    /// NFL: authoritative week metadata (Thursday–Monday slate). Other leagues:
+    /// rolling seven local calendar days including today.
+    static func isInsideVisibleUpcomingWindow(
+        _ game: KyroSportsGame,
+        now: Date,
+        calendar: Calendar,
+        context: KyroSportsScheduleContext
+    ) -> Bool {
+        guard let start = game.startTime else { return false }
+        switch context.league {
+        case .nfl:
+            return belongsToCurrentNFLWeek(game, start: start, now: now, calendar: calendar, context: context)
+        case .nba, .nhl, .mlb, .collegeFootball:
+            let startOfToday = calendar.startOfDay(for: now)
+            guard let upcomingEnd = calendar.date(
+                byAdding: .day,
+                value: otherLeagueUpcomingDayCount,
+                to: startOfToday
+            ) else {
+                return false
+            }
+            return start >= startOfToday && start < upcomingEnd
+        }
+    }
+
+    /// Local Thursday 00:00 through the following Tuesday 00:00 (exclusive),
+    /// covering TNF through MNF for the NFL week that contains `date`.
+    static func nflGameWeekBounds(
+        containing date: Date,
+        calendar: Calendar
+    ) -> (start: Date, endExclusive: Date) {
+        let startOfDay = calendar.startOfDay(for: date)
+        let weekday = calendar.component(.weekday, from: startOfDay) // Sun=1 … Sat=7
+        // Days since the Thursday that opens this NFL week.
+        // Sun…Wed after MNF belong to the week that started the previous Thursday
+        // until authoritative state advances; Tue/Wed before TNF still map to
+        // that same Thursday so late Monday games stay in-window.
+        let daysSinceThursday: Int
+        switch weekday {
+        case 1: daysSinceThursday = 3 // Sunday
+        case 2: daysSinceThursday = 4 // Monday
+        case 3: daysSinceThursday = 5 // Tuesday
+        case 4: daysSinceThursday = 6 // Wednesday
+        case 5: daysSinceThursday = 0 // Thursday
+        case 6: daysSinceThursday = 1 // Friday
+        default: daysSinceThursday = 2 // Saturday
+        }
+        let start = calendar.date(byAdding: .day, value: -daysSinceThursday, to: startOfDay) ?? startOfDay
+        let endExclusive = calendar.date(byAdding: .day, value: 5, to: start) // Tue 00:00 after MNF
+            ?? start.addingTimeInterval(5 * 86_400)
+        return (start, endExclusive)
+    }
+
+    private static func belongsToCurrentNFLWeek(
+        _ game: KyroSportsGame,
+        start: Date,
+        now: Date,
+        calendar: Calendar,
+        context: KyroSportsScheduleContext
+    ) -> Bool {
+        if let currentWeek = context.currentWeek {
+            if let gameWeek = game.week {
+                if let currentSeason = context.currentSeason, let season = game.season,
+                   season != currentSeason {
+                    return false
+                }
+                return gameWeek == currentWeek
+            }
+        }
+        let bounds = nflGameWeekBounds(containing: now, calendar: calendar)
+        return start >= bounds.start && start < bounds.endExclusive
     }
 
     private static func dateSections(

@@ -166,12 +166,6 @@ struct KyroSportsHubView: View {
                             KyroSportsSectionHeader(section: section)
                         }
                     }
-                    if store.selectedDashboardMode == .upcoming, store.hasFutureSchedule {
-                        KyroSportsFutureScheduleButton(
-                            isExpanded: store.showsFutureSchedule,
-                            action: store.toggleFutureSchedule
-                        )
-                    }
                 }
             }
         }
@@ -278,27 +272,6 @@ private struct KyroSportsDashboardNavigation: View {
         .kyroSportsCardChrome(Capsule())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("kyroSportsDashboardNavigation")
-    }
-}
-
-private struct KyroSportsFutureScheduleButton: View {
-    let isExpanded: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Label(
-                isExpanded ? "Hide Later Games" : "Show Later Games",
-                systemImage: isExpanded ? "calendar.badge.minus" : "calendar.badge.plus"
-            )
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(KyroTheme.accentInk)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-        }
-        .buttonStyle(.plain)
-        .kyroSportsCardChrome(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .accessibilityIdentifier("kyroSportsFutureScheduleToggle")
     }
 }
 
