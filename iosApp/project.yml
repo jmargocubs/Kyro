@@ -45,7 +45,7 @@ targetTemplates:
     settings:
       base:
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 27
+        CURRENT_PROJECT_VERSION: 31
         # Surfaced to the app as the `SiloBuildChannel` Info.plist key and
         # reported to the server as X-Silo-Client-Channel. The unsigned
         # sideload lanes override this to `sideload`; DEBUG builds report
@@ -361,6 +361,9 @@ targets:
         buildPhase: none
       - path: Tests/Fixtures/DiagnosticsContract/SOURCE
         buildPhase: none
+      # Provenance note for the Sleeper fixtures, not a fixture itself.
+      - path: Tests/Fixtures/Sleeper/SOURCE
+        buildPhase: none
       - path: Tests/Fixtures/ASS/README.md
         buildPhase: none
       - path: Tests/Fixtures/ASS/generate-font.py
@@ -427,6 +430,13 @@ targets:
           - "SiloControlTests.swift"
           # OnboardingTourViewModel / OnboardingTourAPI are declared under #if !os(tvOS).
           - "OnboardingInvitationTests.swift"
+          # Kyro/Sports is excluded from the SiloTV target (Kyro/** is iPhone-only),
+          # so the Sports Hub and its provider clients do not exist on tvOS.
+          - "KyroSportsDecodingTests.swift"
+          - "KyroSportsCacheTests.swift"
+          - "KyroSportsHubStoreTests.swift"
+          - "KyroSportsDashboardTests.swift"
+          - "KyroESPNProviderTests.swift"
           # AutoDownloadRules / AutoDownloadSchedule are declared under #if !os(tvOS).
           - "AutoDownloadStatusTests.swift"
           # Same non-fixture files as SiloTests, re-added below with no phase.
@@ -442,6 +452,8 @@ targets:
       - path: Tests/Fixtures/APIv2/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/DiagnosticsContract/SOURCE
+        buildPhase: none
+      - path: Tests/Fixtures/Sleeper/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/ASS/README.md
         buildPhase: none

@@ -213,6 +213,8 @@ private struct KyroDebugUnifiedShell: View {
         .environment(\.kyroShellTab, .liveTV(store: store, service: service))
         .onAppear {
             if CommandLine.arguments.contains("-kyroDebugUnifiedStartOnLiveTV") { store.selectedDestination = .liveTV }
+            // Opens the real Sports Hub tab (the fixture shell hosts `KyroRootPageView`).
+            if CommandLine.arguments.contains("-kyroDebugUnifiedStartOnSports") { store.selectIfTab(.sports) }
         }
         .task { await selectLater() }
         .onChange(of: store.selectedDestination) { _, selected in
