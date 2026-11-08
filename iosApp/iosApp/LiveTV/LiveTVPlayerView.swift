@@ -259,6 +259,8 @@ struct LiveTVPlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var channel: LiveTVChannel
     @State private var isShowingChannelPicker = false
+    /// Sports Hub only: the event's other streams.
+    @State private var isShowingOtherStreams = false
     @State private var controls = LiveTVControlsVisibility(scheduler: LiveTVTaskScheduler())
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
@@ -350,6 +352,23 @@ struct LiveTVPlayerView: View {
                     }
                     #endif
 
+                    #if os(iOS)
+                    if let sports = sportsPlayback {
+                        Button {
+                            controls.interact()
+                            isShowingOtherStreams = true
+                        } label: {
+                            Image(systemName: "sportscourt")
+                                .font(.headline.weight(.semibold))
+                                .frame(width: 44, height: 44)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                        .accessibilityLabel("Other streams")
+                        .accessibilityHint("Shows other broadcasts of \(sports.context.map { $0.game.away.team.nickname + " and " + $0.game.home.team.nickname } ?? "this event")")
+                        .accessibilityIdentifier("kyroSportsOtherStreamsButton")
+                    }
+                    #endif
+
                     Button {
                         controls.interact()
                         isShowingChannelPicker = true
@@ -432,6 +451,7 @@ struct LiveTVPlayerView: View {
         #endif
         .onChange(of: session.state) { syncControls() }
         .onChange(of: isShowingChannelPicker) { syncControls() }
+        .onChange(of: isShowingOtherStreams) { syncControls() }
         .onDisappear {
             controls.cancel()
             // A cover closed for Picture in Picture leaves the stream playing in the window.
@@ -454,6 +474,15 @@ struct LiveTVPlayerView: View {
             }
         }
         #if os(iOS)
+        .sheet(isPresented: $isShowingOtherStreams) {
+            if let sports = sportsPlayback ?? service?.sportsPlayback {
+                KyroSportsOtherStreamsSheet(coordinator: sports, select: { match in
+                    guard sports.switchTo(match) else { return }
+                    channel = match.channel
+                    isShowingOtherStreams = false
+                }, dismiss: { isShowingOtherStreams = false })
+            }
+        }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
             orientationCoordinator.refreshInterfaceOrientation()
         }
@@ -461,8 +490,19 @@ struct LiveTVPlayerView: View {
     }
 
     private func syncControls() {
-        controls.update(state: session.state, isOverlayPresented: isShowingChannelPicker)
+        controls.update(state: session.state, isOverlayPresented: isShowingChannelPicker || isShowingOtherStreams)
     }
+
+    /// The Sports Hub event this player is showing, when it has more than one stream. Ordinary
+    /// Live TV playback has no event context and shows no Other Streams control.
+    #if os(iOS)
+    private var sportsPlayback: KyroSportsPlaybackCoordinator? {
+        guard let service, service.sportsPlayback.phase == .presented,
+              let context = service.sportsPlayback.context,
+              context.alternatives.count + context.broadcasters.count > 1 else { return nil }
+        return service.sportsPlayback
+    }
+    #endif
 
     /// Pause only while there is something to pause; play only when paused. Connecting and
     /// failed show no transport control, so a failure never looks like active playback.

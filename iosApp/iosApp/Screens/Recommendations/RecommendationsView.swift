@@ -18,17 +18,23 @@ struct RecommendationsView: View {
     /// Feeds the shared glass strip behind the pinned header as rows scroll
     /// under it, matching Home and the Library tab.
     @State private var chromeScrollState = PageChromeScrollState()
-    /// Set when Kyro's shell draws the one header. For You then leaves a runway for it instead of
-    /// drawing a title and its own action cluster, and reports its scroll to the shell.
+    /// Set when Kyro's iPhone shell draws the one header.
+    #if os(iOS)
     @Environment(\.kyroShellHeader) private var environmentShellHeader
+    #endif
     /// Set when For You is pushed (from Kyro's profile menu) instead of shown as a tab. The page then
     /// keeps the navigation bar for Back and draws no header of its own.
     @Environment(\.secondaryDestinationTitle) private var secondaryTitle
-    private var shellHeader: KyroShellHeaderContext? {
-        KyroShellHeader.hosted(environmentShellHeader, secondaryTitle: secondaryTitle)
+    private var hostedHeader: (runway: CGFloat, scrollState: PageChromeScrollState)? {
+        #if os(iOS)
+        guard let context = KyroShellHeader.hosted(environmentShellHeader, secondaryTitle: secondaryTitle) else { return nil }
+        return (context.runway, context.scrollState(for: .forYou))
+        #else
+        return nil
+        #endif
     }
     private var activeChromeScrollState: PageChromeScrollState {
-        shellHeader?.scrollState(for: .forYou) ?? chromeScrollState
+        hostedHeader?.scrollState ?? chromeScrollState
     }
     #endif
     @Environment(AppRouter.self) private var router
@@ -71,8 +77,8 @@ struct RecommendationsView: View {
         pageContent
             .environment(activeChromeScrollState)
             .safeAreaInset(edge: .top, spacing: 0) {
-                if let shellHeader {
-                    Color.clear.frame(height: shellHeader.runway)
+                if let hostedHeader {
+                    Color.clear.frame(height: hostedHeader.runway)
                 } else if secondaryTitle == nil {
                     topChrome
                         .background {

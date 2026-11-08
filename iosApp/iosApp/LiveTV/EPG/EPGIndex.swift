@@ -221,6 +221,51 @@ struct EPGIndex: Sendable, EPGQuerying {
         return Self.programs(in: list, overlapping: interval)
     }
 
+    /// Matching-only range lookup. Unlike ordinary guide-cell reads, a matcher
+    /// must be able to inspect a SQLite-backed channel that is not resident yet.
+    /// It reads one bounded channel from the immutable guide and never changes
+    /// the normal cached-only residency policy.
+    func matchingPrograms(channelKey: String, overlapping interval: DateInterval) -> [EPGProgram] {
+        if let overlay = programsByChannel[channelKey] {
+            return Self.programs(in: overlay, overlapping: interval)
+        }
+        if let sqlite {
+            let list = sqlite.guide.loadFromDisk(channelKey)
+            return Self.programs(in: list, overlapping: interval)
+        }
+        return programs(channelKey: channelKey, overlapping: interval)
+    }
+
+    /// Event matching: programmes on any guide channel that overlap `interval` and whose title,
+    /// subtitle or summary opening may mention one of `anchors` (folded, lowercase words). One
+    /// bounded pass over the guide instead of one lookup per playlist channel. SQLite-backed guides
+    /// answer with a single query; short-guide overlays replace their stored channel.
+    func windowPrograms(overlapping interval: DateInterval, anchors: [String],
+                        limit: Int = 2_000) -> [(key: String, program: EPGProgram)] {
+        let words = Array(Set(anchors.filter { !$0.isEmpty })).sorted()
+        guard !words.isEmpty, limit > 0 else { return [] }
+        var rows: [(key: String, program: EPGProgram)] = []
+        let scanner = EPGAnchorScanner(words: words)
+        func mayMention(_ program: EPGProgram) -> Bool {
+            scanner.mayMention(program.title) || scanner.mayMention(program.subtitle)
+                || scanner.mayMention(program.summary, prefix: 280)
+        }
+        for (key, list) in programsByChannel {
+            for program in Self.programs(in: list, overlapping: interval) where mayMention(program) {
+                rows.append((key, program))
+                if rows.count >= limit { return rows }
+            }
+        }
+        if let sqlite {
+            let overlays = Set(programsByChannel.keys)
+            for row in sqlite.guide.windowPrograms(overlapping: interval, anchors: words, limit: limit - rows.count)
+            where !overlays.contains(row.key) {
+                rows.append(row)
+            }
+        }
+        return rows
+    }
+
     static func programs(in list: [EPGProgram], overlapping interval: DateInterval) -> [EPGProgram] {
         var result: [EPGProgram] = []
         var index = firstIndex(endingAfter: interval.start, in: list)
@@ -362,5 +407,45 @@ private extension EPGProgram {
     func ending(at date: Date) -> EPGProgram {
         EPGProgram(channelID: channelID, start: start, end: date, title: title, subtitle: subtitle,
                    summary: summary, category: category, episode: episode)
+    }
+}
+
+/// Case-insensitive word prefilter for guide text. ASCII text (nearly every guide) is scanned
+/// byte by byte; anything else is folded like the matcher folds it, so no programme is missed.
+struct EPGAnchorScanner {
+    private let words: [String]
+    private let asciiWords: [[UInt8]]
+
+    init(words: [String]) {
+        self.words = words
+        asciiWords = words.map { Array($0.utf8) }
+    }
+
+    func mayMention(_ text: String?, prefix: Int = .max) -> Bool {
+        guard let text, !text.isEmpty else { return false }
+        var bytes = Array(text.utf8.prefix(prefix))
+        if bytes.contains(where: { $0 >= 0x80 }) {
+            let folded = String(text.prefix(prefix))
+                .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+                .lowercased()
+            return words.contains { folded.contains($0) }
+        }
+        for index in bytes.indices where bytes[index] >= 0x41 && bytes[index] <= 0x5A { bytes[index] |= 0x20 }
+        return asciiWords.contains { Self.contains($0, in: bytes) }
+    }
+
+    private static func contains(_ needle: [UInt8], in haystack: [UInt8]) -> Bool {
+        guard let first = needle.first, needle.count <= haystack.count else { return needle.isEmpty }
+        var index = 0
+        let last = haystack.count - needle.count
+        while index <= last {
+            if haystack[index] == first {
+                var offset = 1
+                while offset < needle.count, haystack[index + offset] == needle[offset] { offset += 1 }
+                if offset == needle.count { return true }
+            }
+            index += 1
+        }
+        return false
     }
 }

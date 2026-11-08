@@ -212,7 +212,9 @@ struct LiveTVView: View {
     }
 
     /// Set when Kyro's shell draws the one header, so Live TV draws none of its own.
+    #if os(iOS)
     @Environment(\.kyroShellHeader) private var shellHeader
+    #endif
 
     /// Kyro's unified navigation hosts Live TV as a tab, with nothing behind it to go back to.
     private var isTabRoot: Bool {
@@ -224,7 +226,14 @@ struct LiveTVView: View {
     }
 
     /// The shell's header context while Live TV is its tab; nil when Live TV is pushed.
-    private var hostedHeader: KyroShellHeaderContext? { isTabRoot ? shellHeader : nil }
+    private var hostedHeader: (runway: CGFloat, scrollState: PageChromeScrollState)? {
+        #if os(iOS)
+        guard isTabRoot, let shellHeader else { return nil }
+        return (shellHeader.runway, shellHeader.scrollState(for: .liveTV))
+        #else
+        return nil
+        #endif
+    }
 
     private var backPlacement: LiveTVBackPlacement {
         LiveTVNavigationPolicy.homeBackPlacement(isTabRoot: isTabRoot, showingBrowser: showChannelBrowser)
@@ -249,7 +258,7 @@ struct LiveTVView: View {
             } else {
                 LiveTVHomeContent(model: homeModel, epg: homeEPG, actions: homeActions,
                                   topRunway: hostedHeader?.runway ?? 0,
-                                  scrollState: hostedHeader?.scrollState(for: .liveTV))
+                                  scrollState: hostedHeader?.scrollState)
             }
         }
         // Inside the navigation too, so Classic's tab shows the page rather than its own black.
@@ -946,6 +955,17 @@ struct LiveTVChannelLogo: View {
                 .accessibilityHidden(true)
         }
     }
+}
+
+/// How the shared Live TV provider settings view is presented.
+enum LiveTVSettingsPresentation: Equatable {
+    /// In its own sheet and navigation stack; closes after a provider is saved.
+    case sheet
+    /// A Settings subpage with system Back; stays open after a provider is saved.
+    case pushed
+
+    var showsDoneButton: Bool { self == .sheet }
+    var dismissesAfterSavingProvider: Bool { self == .sheet }
 }
 
 struct LiveTVSettingsView: View {

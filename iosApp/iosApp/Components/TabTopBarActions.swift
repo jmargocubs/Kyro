@@ -66,7 +66,9 @@ struct TabTopBarActions: View {
             ? AnyLayout(HStackLayout(spacing: SiloTheme.topBarIconSpacing))
             : AnyLayout(VStackLayout(spacing: 6))
         return layout {
+            #if os(iOS)
             KyroMoreMenuButton()
+            #endif
             TopBarIconButton(
                 systemImage: "magnifyingglass",
                 accessibilityLabel: "Search",

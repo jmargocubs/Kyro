@@ -28,15 +28,17 @@ final class KyroSportsHubStoreTests: XCTestCase {
 
     private func makeStore(
         transport: StubSleeperTransport,
-        now: Date = Date(timeIntervalSince1970: 1_791_396_000)
+        now: Date = Date(timeIntervalSince1970: 1_793_988_000)
     ) -> KyroSportsHubStore {
         let client = SleeperAPIClient(transport: transport, cache: SleeperResponseCache())
-        return KyroSportsHubStore(
+        let store = KyroSportsHubStore(
             client: client,
             season: "2026",
             calendar: Calendar(identifier: .gregorian),
             now: { now }
         )
+        store.selectCategory(.nfl)
+        return store
     }
 
     private func loadedTransport() throws -> StubSleeperTransport {
@@ -90,7 +92,7 @@ final class KyroSportsHubStoreTests: XCTestCase {
     }
 
     func testProviderChainFallsBackAfterPrimaryOutage() async {
-        let now = Date(timeIntervalSince1970: 1_791_396_000)
+        let now = Date(timeIntervalSince1970: 1_793_988_000)
         let game = KyroSportsGame(
             id: KyroGameID(provider: "fallback", league: .nfl, rawID: "g1"),
             league: .nfl,
@@ -196,23 +198,29 @@ final class KyroSportsHubStoreTests: XCTestCase {
 
     // MARK: - Leagues
 
-    func testNonNFLSelectionClearsContentAndDoesNotFetch() async throws {
+    func testSelectingAnotherLeagueNeverShowsNFLRowsAndKeepsNFLCache() async throws {
         let transport = try loadedTransport()
         let store = makeStore(transport: transport)
         await store.load()
-        XCTAssertFalse(store.sections.isEmpty)
+        let nflSections = store.sections
+        XCTAssertFalse(nflSections.isEmpty)
 
+        // A Sleeper-only store has no NBA source, so NBA must fail cleanly
+        // instead of reusing NFL rows.
         store.selectedLeague = .nba
-        await store.load()
-
         XCTAssertTrue(store.sections.isEmpty)
-        XCTAssertEqual(store.phase, .idle)
+        await store.load()
+        XCTAssertTrue(store.sections.isEmpty)
+        XCTAssertEqual(store.phase, .failed(.malformedResponse))
+
+        store.selectedLeague = .nfl
+        XCTAssertEqual(store.sections, nflSections)
+        XCTAssertEqual(store.phase, .loaded)
     }
 
-    func testOnlyNFLIsAvailableInS2A() {
-        XCTAssertTrue(KyroSportLeague.nfl.isAvailable)
-        for league in [KyroSportLeague.nba, .mlb, .nhl, .collegeFootball] {
-            XCTAssertFalse(league.isAvailable, "\(league.displayName) lands in a later phase")
+    func testEveryLeagueIsAvailableInS5() {
+        for league in KyroSportLeague.allCases {
+            XCTAssertTrue(league.isAvailable, "\(league.displayName) is active in S5")
         }
     }
 
@@ -233,7 +241,9 @@ final class KyroSportsHubStoreTests: XCTestCase {
         transport.set(.init(data: try fixture("teams_nfl")), forPath: teamsPath)
         transport.set(.init(data: Data(#"{"week":9,"season":"2026"}"#.utf8)), forPath: statePath)
 
-        let store = makeStore(transport: transport)
+        let liveLocalDay = ISO8601DateFormatter().date(from: "2026-11-06T02:00:00Z")!
+        let store = makeStore(transport: transport, now: liveLocalDay)
+        store.selectCategory(.nfl)
         await store.load()
 
         XCTAssertTrue(store.shouldPoll)

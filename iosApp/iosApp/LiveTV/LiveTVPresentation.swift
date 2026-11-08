@@ -270,8 +270,9 @@ final class LiveTVPresentation {
             let presenter = visiblePresenter() ?? .list
             lastPresenter = presenter
             phase = .presented(channel, presenter)
-            // With no Live TV screen up, the list opens and shows the player.
-            if visible.isEmpty { navigateToLiveTV?() }
+            // With no Live TV screen up, the list opens and shows the player. The shell needs no
+            // Live TV screen: it presents over whatever is open (Sports Hub, Search).
+            if presenter != .shell, visible.isEmpty { navigateToLiveTV?() }
             return .continuePlayback
         }
         phase = .idle
@@ -292,7 +293,10 @@ final class LiveTVPresentation {
     // MARK: Private
 
     /// The Live TV screen that can show a cover now: the one that presented last, else any.
+    /// A player the shell presented comes back over the shell, wherever the user is, instead of
+    /// switching to the Live TV tab.
     private func visiblePresenter() -> LiveTVPresenter? {
+        if lastPresenter == .shell { return .shell }
         if visible.contains(lastPresenter) { return lastPresenter }
         return visible.contains(.list) ? .list : visible.first
     }

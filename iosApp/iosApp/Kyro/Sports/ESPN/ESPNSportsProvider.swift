@@ -2,12 +2,13 @@ import Foundation
 
 /// ESPN is Kyro's primary NFL source. The same adapter decodes one-day
 /// scoreboards for NBA, MLB, NHL, and FBS so those future screens do not need
-/// to know ESPN's wire format. Only NFL is connected to the UI in this phase.
+/// to know ESPN's wire format. Tennis uses the same bounded/cached client but
+/// its tournament hierarchy is flattened by `ESPNMapping.tennisGames`.
 struct ESPNSportsProvider: KyroSportsProviding {
     let providerID = ESPNMapping.providerName
 
-    private let client: ESPNAPIClient
-    private let calendar: Calendar
+    let client: ESPNAPIClient
+    let calendar: Calendar
     private let scheduleCache: ESPNNormalizedScheduleCache
 
     init(
@@ -120,10 +121,24 @@ struct ESPNSportsProvider: KyroSportsProviding {
         )
     }
 
-    private func mapValidated(
+    func mapValidated(
         _ response: ESPNScoreboardResponse,
         league: KyroSportLeague
     ) throws -> [KyroSportsGame] {
+        if league == .atp || league == .wta {
+            // A tennis day can legitimately map to nothing: a tournament with
+            // no draws yet, doubles-only play, or only TBD bracket slots. Only
+            // singles matches whose players cannot be read mean a bad payload.
+            var games: [KyroSportsGame] = []
+            var unreadable = 0
+            for event in response.events {
+                let result = ESPNMapping.tennisMapping(from: event, league: league)
+                games += result.games
+                unreadable += result.unreadable
+            }
+            if games.isEmpty, unreadable > 0 { throw KyroSportsDataError.malformedResponse }
+            return games
+        }
         let mapped = response.events.compactMap { ESPNMapping.game(from: $0, league: league) }
         guard response.events.isEmpty || !mapped.isEmpty else {
             throw KyroSportsDataError.malformedResponse
@@ -177,7 +192,7 @@ actor ESPNNormalizedScheduleCache {
 
     func games(for year: Int, at date: Date) -> [KyroSportsGame]? {
         guard let entry = entries[year],
-              date.timeIntervalSince(entry.storedAt) < ESPNCachePolicy.schedule.maxAge else {
+              date.timeIntervalSince(entry.storedAt) < ESPNCachePolicy.schedule.maxAge(for: ESPNPayloadActivity(), at: date) else {
             return nil
         }
         return entry.games

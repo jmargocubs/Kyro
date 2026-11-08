@@ -67,6 +67,7 @@ enum SleeperMapping {
         case .collegeFootball: "cfb"
         case .mlb: "mlb"
         case .nhl: "nhl"
+        case .atp, .wta: ""
         }
     }
 
@@ -97,6 +98,8 @@ enum SleeperMapping {
             return .scheduled
         case "postponed", "delayed":
             return .postponed
+        case "suspended":
+            return .suspended
         case "canceled", "cancelled":
             return .canceled
         case let other?:
@@ -161,6 +164,8 @@ enum SleeperMapping {
             return "Postponed"
         case .canceled:
             return "Canceled"
+        case .suspended:
+            return "Suspended"
         case .live:
             // Sleeper reports `quarter` as "Q1".."Q4", "F", or "" and
             // `quarter_num` separately; the string is the display-ready one.

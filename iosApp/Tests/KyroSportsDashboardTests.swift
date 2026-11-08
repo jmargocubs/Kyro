@@ -167,7 +167,7 @@ final class KyroSportsDashboardTests: XCTestCase {
     func testNFLByeWeekStillListsOtherCurrentWeekGames() {
         // Week 9 has a short slate (bye-heavy); week 10 stays hidden.
         let result = sections([
-            game("only", .scheduled, hoursFromNow: 48, week: 9, away: "CHI", home: "GB"),
+            game("only", .scheduled, hoursFromNow: 48, away: "CHI", home: "GB", week: 9),
             game("next", .scheduled, hoursFromNow: 24 * 8, week: 10)
         ])
         let visible = KyroSportsDashboard.visibleSections(from: result, mode: .upcoming)

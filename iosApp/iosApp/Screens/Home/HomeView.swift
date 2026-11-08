@@ -24,9 +24,22 @@ struct HomeView: View {
     @State private var chromeScrollState = PageChromeScrollState()
     /// Set when Kyro's shell draws the one header (see `KyroAppHeader`). Home then skips its own
     /// copy and reports its scroll to the shell's Home state, which the shell's glass strip reads.
+    #if os(iOS)
     @Environment(\.kyroShellHeader) private var shellHeader
+    #endif
     private var activeChromeScrollState: PageChromeScrollState {
+        #if os(iOS)
         shellHeader?.scrollState(for: .home) ?? chromeScrollState
+        #else
+        chromeScrollState
+        #endif
+    }
+    private var showsOwnHeader: Bool {
+        #if os(iOS)
+        shellHeader == nil
+        #else
+        true
+        #endif
     }
     #if os(iOS)
     /// Breathing room between the status-bar safe area and the floating
@@ -134,7 +147,7 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if shellHeader == nil {
+            if showsOwnHeader {
             HStack(alignment: .center, spacing: 12) {
                 SidebarToggleButton()
                 // The wordmark is pinned with the utilities so it stays put

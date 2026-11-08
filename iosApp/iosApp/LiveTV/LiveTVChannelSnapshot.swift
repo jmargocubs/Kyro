@@ -97,8 +97,9 @@ enum LiveTVCatalogNotice {
 /// Reads and writes channel snapshots off the main actor. Calls run one at a time, so a removal is
 /// never overtaken by a write that was already running.
 actor LiveTVChannelSnapshotStore {
-    static let maximumChannels = 20_000
-    static let maximumFileBytes = 16 * 1024 * 1024
+    static let maximumChannels = LiveTVCatalogLimits.maximumChannels
+    /// About 250 bytes per channel entry: 40,000 channels need roughly 10 MB.
+    static let maximumFileBytes = 32 * 1024 * 1024
     nonisolated let directory: URL
 
     init(directory: URL? = nil) {

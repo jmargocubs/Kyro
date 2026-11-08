@@ -138,8 +138,43 @@ final class KyroESPNProviderTests: XCTestCase {
         XCTAssertEqual(collegeGame.statusDetail, "9:21 - 4th")
     }
 
-    func testPostponedAndCanceledStatusesAreExplicit() {
-        func status(_ name: String, description: String) -> ESPNScoreboardResponse.Status {
+    func testTennisTournamentHierarchyPlayersFlagsSetsAndRound() throws {
+        let response = try ESPNFixtureSupport.response("espn_tennis_atp", bundleClass: Self.self)
+        let games = response.events.flatMap { ESPNMapping.tennisGames(from: $0, league: .atp) }
+        let game = try XCTUnwrap(games.first)
+        XCTAssertEqual(games.count, 1)
+        XCTAssertTrue(game.isSingles)
+        XCTAssertEqual(game.tournament, "ATP Finals")
+        XCTAssertEqual(game.round, "Semifinal")
+        XCTAssertEqual(game.away.team.countryCode, "ES")
+        XCTAssertEqual(game.home.team.countryCode, "IT")
+        XCTAssertEqual(game.periods.map(\.label), ["Set 1", "Set 2", "Set 3"])
+        XCTAssertEqual(game.away.score, 2)
+        XCTAssertEqual(game.status, .final)
+    }
+
+    func testWTAUnknownTimeAndTourFiltering() throws {
+        let response = try ESPNFixtureSupport.response("espn_tennis_wta", bundleClass: Self.self)
+        let wta = response.events.flatMap { ESPNMapping.tennisGames(from: $0, league: .wta) }
+        XCTAssertEqual(wta.count, 1)
+        // timeValid=false: ESPN's date names the day only. Keep the day for
+        // the date strip, never show it as a clock time.
+        XCTAssertTrue(wta[0].isStartTimeTBD, "timeValid=false must not fabricate a start time")
+        XCTAssertEqual(wta[0].statusDetail, "Time TBD")
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        XCTAssertEqual(wta[0].startTime.map { utc.dateComponents([.month, .day, .hour], from: $0) },
+                       DateComponents(month: 11, day: 8, hour: 12), "anchored to the ESPN (US Eastern) calendar day")
+        XCTAssertEqual(wta[0].tournament, "WTA Finals")
+        XCTAssertEqual(wta[0].home.team.countryCode, "BY")
+    }
+
+    func testInterruptedAndActiveStatusesAreExplicit() {
+        func status(
+            _ name: String,
+            description: String,
+            state: String = "pre"
+        ) -> ESPNScoreboardResponse.Status {
             .init(
                 clock: nil,
                 displayClock: nil,
@@ -147,7 +182,7 @@ final class KyroESPNProviderTests: XCTestCase {
                 type: .init(
                     id: nil,
                     name: name,
-                    state: "pre",
+                    state: state,
                     completed: false,
                     description: description,
                     detail: nil,
@@ -157,6 +192,10 @@ final class KyroESPNProviderTests: XCTestCase {
         }
         XCTAssertEqual(ESPNMapping.status(from: status("STATUS_POSTPONED", description: "Postponed")), .postponed)
         XCTAssertEqual(ESPNMapping.status(from: status("STATUS_CANCELED", description: "Canceled")), .canceled)
+        XCTAssertEqual(ESPNMapping.status(from: status("STATUS_SUSPENDED", description: "Suspended")), .suspended)
+        XCTAssertEqual(ESPNMapping.status(from: status("STATUS_HALFTIME", description: "Halftime", state: "in")), .live)
+        XCTAssertEqual(ESPNMapping.status(from: status("STATUS_INTERMISSION", description: "Intermission", state: "in")), .live)
+        XCTAssertEqual(ESPNMapping.status(from: status("STATUS_OVERTIME", description: "Overtime", state: "in")), .live)
     }
 
     func testAllFiveLeagueEndpointPathsAndFBSGroup() async throws {
@@ -196,7 +235,7 @@ final class KyroESPNProviderTests: XCTestCase {
     }
 
     @MainActor
-    func testStorePrefersESPNThenSwitchesToSleeperWhenESPNFails() async throws {
+    func testStoreKeepsLastKnownGoodESPNDataWhenESPNFailsMidSession() async throws {
         let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-11-08T18:00:00Z"))
         let espnData = try ESPNFixtureSupport.data("nfl_scoreboard", bundleClass: Self.self)
         let espnTransport = StubESPNTransport()
@@ -237,6 +276,52 @@ final class KyroESPNProviderTests: XCTestCase {
 
         espnTransport.setFailure(KyroSportsDataError.offline)
         await store.load(force: true)
+        // Last-known-good ESPN data stays on screen, flagged stale, instead of
+        // swapping to a different provider's records mid-session.
+        XCTAssertEqual(store.phase, .loaded)
+        XCTAssertTrue(store.sections.flatMap(\.games).allSatisfy { $0.id.provider == "espn" })
+        XCTAssertTrue(store.isShowingStaleData)
+        XCTAssertEqual(sleeperTransport.requestCount(), 0)
+    }
+
+    @MainActor
+    func testStoreFallsBackToSleeperWhenESPNFailsOnColdStart() async throws {
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-11-08T18:00:00Z"))
+        let espnData = try ESPNFixtureSupport.data("nfl_scoreboard", bundleClass: Self.self)
+        let espnTransport = StubESPNTransport()
+        espnTransport.set(.init(data: espnData), leaguePath: nflPath, dates: "2026")
+        espnTransport.set(.init(data: espnData), leaguePath: nflPath, dates: "20261108")
+
+        let sleeperTransport = StubSleeperTransport()
+        sleeperTransport.set(
+            .init(data: try SleeperFixtureSupport.data(named: "scores_nfl_week9", bundleClass: Self.self)),
+            forPath: "/scores/nfl/regular/2026/9"
+        )
+        for week in [8, 10, 11] {
+            sleeperTransport.set(
+                .init(data: Data("[]".utf8)),
+                forPath: "/scores/nfl/regular/2026/\(week)"
+            )
+        }
+        sleeperTransport.set(
+            .init(data: try SleeperFixtureSupport.data(named: "teams_nfl", bundleClass: Self.self)),
+            forPath: "/teams/nfl"
+        )
+        sleeperTransport.set(
+            .init(data: Data(#"{"week":9,"season":"2026","season_type":"regular"}"#.utf8)),
+            forPath: "/v1/state/nfl"
+        )
+
+        let store = KyroSportsHubStore(
+            espnClient: ESPNAPIClient(transport: espnTransport),
+            sleeperClient: SleeperAPIClient(
+                transport: sleeperTransport,
+                cache: SleeperResponseCache()
+            ),
+            now: { now }
+        )
+        espnTransport.setFailure(KyroSportsDataError.offline)
+        await store.load()
         XCTAssertEqual(store.phase, .loaded)
         XCTAssertTrue(store.sections.flatMap(\.games).allSatisfy { $0.id.provider == "sleeper" })
         XCTAssertGreaterThan(sleeperTransport.requestCount(), 0)

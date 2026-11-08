@@ -2,13 +2,10 @@ import SwiftUI
 import Nuke
 import NukeUI
 
-// Phase S2A: the NFL half of the Sports Hub, backed by ESPN with Sleeper as an
-// outage fallback.
-//
-// The page keeps S1's shell — hero, scroll reporting, shell-header runway — and
-// replaces the placeholder cards with live sections. League filters are already
-// present for all five target leagues, but only NFL is activated; the others
-// render an explanatory empty state rather than unfinished league screens.
+// Phase S7: the Sports Hub for All Sports plus NFL, NBA, NHL, MLB, NCAA FBS,
+// ATP and WTA.
+// ESPN is primary (NFL falls back to Sleeper during an ESPN outage). Date
+// browsing and compact cards sit on the S5 provider and static-glass list.
 
 /// A Kyro-only fourth-tab root, shown inside the unified shell's tab bar.
 struct KyroRootPageView: View {
@@ -57,10 +54,43 @@ private struct KyroTabRootContainer<Content: View>: View {
 /// The Sports tab.
 struct KyroSportsHubView: View {
     @Environment(\.kyroShellHeader) private var shellHeader
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var fallbackScrollState = PageChromeScrollState()
-    @State private var store = KyroSportsHubStore()
+    @State private var store = KyroSportsHubStore(preferences: .standard)
     @State private var refreshTask: Task<Void, Never>?
+    /// The event's stream screen: Find streams, or the fallback when one-tap playback found
+    /// nothing that plays.
+    @State private var discovery: KyroSportsStreamDiscovery?
+    /// A stream picked on that screen, played once the sheet has finished closing so the player
+    /// never races the sheet's dismissal.
+    @State private var pendingChoice: KyroSportsStreamChoice?
+    @State private var eventPreview: KyroSportsEventSelection?
+    @State private var pendingPreviewWatch: KyroSportsGame?
+    @Environment(\.scenePhase) private var scenePhase
+    private let liveTV = LiveTVService.shared
+
+    private var playback: KyroSportsPlaybackCoordinator { liveTV.sportsPlayback }
+    private var liveNow: KyroSportsLiveNowModel { liveTV.sportsLiveNow }
+
+    /// Everything Live Now depends on: the live events (with scores), the provider, its catalog
+    /// revision and its guide generation. A change re-reads cached evidence; only missing or
+    /// stale events are matched again.
+    private var liveNowTrigger: KyroSportsLiveNowTrigger {
+        let providerID = liveTV.selectedProviderID
+        return KyroSportsLiveNowTrigger(games: store.liveGames, providerID: providerID,
+                                        isLoadingChannels: liveTV.isLoading,
+                                        isPrewarmingChannels: liveTV.isPrewarmingSports,
+                                        catalogRevision: liveTV.channelCatalogRevision,
+                                        guideGeneration: providerID.map { liveTV.guideGeneration(for: $0) } ?? 0)
+    }
+
+    /// The event the one-tap flow is working on, for the Live Now card's connecting state.
+    private var activeGameID: KyroGameID? {
+        switch playback.phase {
+        case .searching(let id): return id
+        case .connecting: return playback.context?.game.id
+        case .idle, .presented, .exhausted, .unavailable: return nil
+        }
+    }
 
     private var scrollState: PageChromeScrollState {
         shellHeader?.scrollState(for: .sports) ?? fallbackScrollState
@@ -69,17 +99,29 @@ struct KyroSportsHubView: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: SiloTheme.padding) {
-                KyroSportsFeaturedEventHero(
-                    game: store.featuredEvent,
-                    league: store.selectedLeague
-                )
-                if store.selectedLeague.isAvailable {
-                    KyroSportsDashboardNavigation(
-                        selection: store.selectedDashboardMode,
-                        action: store.selectDashboardMode
-                    )
+                KyroSportsHubHeading()
+                KyroSportsLiveNowSection(model: liveNow, category: store.selectedCategory,
+                                         activeGameID: activeGameID) { watch($0) }
+                KyroSportsScheduleHeader(selection: store.selectedCategory) { category in
+                    guard category != store.selectedCategory else { return }
+                    // Build 41.1: the page stays where the viewer left it. Only the rows below the
+                    // date strip change, in one update with no animation. Build 41 scrolled the
+                    // header to the top and re-pinned it as Live Now settled; those corrections
+                    // raced the menu's dismissal and async loads, so the header slid for several
+                    // frames on every switch.
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { store.selectCategory(category) }
                 }
-                KyroSportsLeagueFilter(selection: $store.selectedLeague)
+                .padding(.top, 6)
+                KyroSportsDateStrip(
+                    days: store.browseDays,
+                    selectedDay: store.selectedDay,
+                    now: store.clockNow,
+                    calendar: store.browseCalendar
+                ) { day in
+                    store.selectDay(day)
+                }
                 content
             }
             .frame(maxWidth: 720)
@@ -96,78 +138,190 @@ struct KyroSportsHubView: View {
         .siloPageBackground()
         .toolbar(.hidden, for: .navigationBar)
         .accessibilityIdentifier("kyroSportsHub")
-        .refreshable { await store.load(force: true) }
-        .task { await store.load() }
-        .onChange(of: store.selectedLeague) { _, _ in
+        .refreshable { await store.refresh() }
+        .task {
+            // Live Now re-reads when the prewarm ends however it ended (`liveNowTrigger` observes
+            // it), so a failed catalog download no longer leaves "Checking your channels…".
+            liveTV.prewarmSportsMatching()
+            updateLiveNow()
+            await store.loadIfNeeded()
+            startRefreshLoopIfNeeded()
+        }
+        .onChange(of: liveNowTrigger) { _, _ in updateLiveNow() }
+        .onChange(of: store.selectedCategory) { _, _ in
             cancelRefreshLoop()
-            Task { await store.load() }
+            Task {
+                await store.loadIfNeeded()
+                startRefreshLoopIfNeeded()
+            }
+        }
+        .onChange(of: store.selectedDay) { _, _ in
+            cancelRefreshLoop()
+            Task {
+                await store.loadIfNeeded()
+                startRefreshLoopIfNeeded()
+            }
         }
         .onChange(of: store.refreshInterval) { _, _ in
             startRefreshLoopIfNeeded()
         }
-        .onDisappear { cancelRefreshLoop() }
+        .onDisappear {
+            cancelRefreshLoop()
+            liveNow.cancel()
+            // A player covering the hub is not leaving it; an attempt still connecting is.
+            if playback.isBusy { liveTV.cancelSportsPlayback() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background {
+                liveNow.cancel()
+                if playback.isBusy { liveTV.cancelSportsPlayback() }
+            } else if phase == .active {
+                updateLiveNow()
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let status = KyroSportsConnectingStatus(phase: playback.phase, games: store.liveGames + store.scheduleGames) {
+                KyroSportsConnectingBanner(status: status) { liveTV.cancelSportsPlayback() }
+                    .padding(.horizontal, SiloTheme.padding)
+                    .padding(.bottom, SiloTheme.smallPadding)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: playback.isBusy)
+        #if os(iOS)
+        .modifier(KyroSportsShellPlayerFallback(service: liveTV))
+        #endif
+        .onChange(of: playback.phase) { _, phase in
+            switch phase {
+            case .exhausted(let game, let result):
+                discovery = KyroSportsStreamDiscovery(game: game, result: result,
+                                                      notice: KyroSportsStreamDiscovery.notice(for: game, result: result,
+                                                                                               now: store.clockNow))
+            case .unavailable(let game, let result, let message):
+                discovery = KyroSportsStreamDiscovery(game: game, result: result, notice: message)
+            case .idle, .searching, .connecting, .presented:
+                break
+            }
+        }
+        .sheet(item: $discovery, onDismiss: discoveryDismissed) { item in
+            KyroSportsStreamMatchSheet(discovery: item, service: liveTV,
+                                       choose: { match in
+                                           guard let result = item.result else { return }
+                                           pendingChoice = KyroSportsStreamChoice(match: match, game: item.game, result: result)
+                                           discovery = nil
+                                       },
+                                       dismiss: { discovery = nil })
+        }
+        .sheet(item: $eventPreview, onDismiss: {
+            if let game = pendingPreviewWatch {
+                pendingPreviewWatch = nil
+                watch(game)
+            }
+        }) { selection in
+            let game = (store.liveGames + store.scheduleGames).first { $0.id == selection.id } ?? selection.game
+            KyroSportsEventPreview(game: game, service: liveTV,
+                                   canWatch: liveNow.canPlay(game),
+                                   watch: { pendingPreviewWatch = game; eventPreview = nil })
+        }
+    }
+
+    /// One tap on a playable event: find its best stream, prove it plays, then show the player.
+    /// Every Sports Hub entry point comes through here, so one rule decides: the event is live
+    /// and Live Now holds strong stream evidence for it. Anything else is informational.
+    private func watch(_ game: KyroSportsGame) {
+        guard liveNow.canPlay(game) else { return }
+        // A second tap on the event already searching or connecting is not a new attempt.
+        guard activeGameID != game.id else { return }
+        liveTV.playSportsEvent(game, now: store.clockNow)
+    }
+
+    private func updateLiveNow() {
+        liveNow.update(games: store.liveGames, now: store.clockNow)
+    }
+
+    private func discoveryDismissed() {
+        if let choice = pendingChoice {
+            pendingChoice = nil
+            liveTV.playSportsStream(choice.match, for: choice.game, result: choice.result)
+        } else {
+            playback.acknowledgeFallback()
+        }
+    }
+
+    /// Schedule cards always open details. Only Live Now retains direct one-tap playback.
+    @ViewBuilder
+    private func gameRow(_ game: KyroSportsGame, showsLeague: Bool = true) -> some View {
+        let streams = liveNow.streamCount(for: game)
+        let card = Group {
+            if game.league == .atp || game.league == .wta {
+                KyroSportsTennisMatchRow(game: game, showsLeague: showsLeague, playableStreams: streams)
+                    .equatable()
+            } else {
+                KyroSportsGameRow(game: game, usesCompactLayout: true, showsLeague: showsLeague,
+                                  playableStreams: streams)
+                    .equatable()
+            }
+        }
+        Button { eventPreview = KyroSportsEventSelection(game: game) } label: {
+            card.contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows event details")
+        .accessibilityIdentifier("kyroSportsDetails-\(game.id.stringValue)")
+        .padding(.top, 10 - SiloTheme.padding)
     }
 
     // MARK: Sections
 
     @ViewBuilder
     private var content: some View {
-        if !store.selectedLeague.isAvailable {
-            KyroSportsUnavailableLeague(league: store.selectedLeague)
-        } else {
-            switch store.phase {
+        switch store.phase {
             case .idle, .loading:
-                KyroSportsLoadingState(league: store.selectedLeague)
+                KyroSportsLoadingState(title: store.selectedCategory.displayName)
             case .offline:
                 KyroSportsMessageState(
                     symbol: "wifi.slash",
                     title: "You're offline",
-                    message: "Connect to the internet to load NFL scores and schedules.",
-                    retry: { Task { await store.load(force: true) } }
+                    message: "Connect to the internet to load \(store.selectedCategory.displayName) scores and schedules.",
+                    retry: { Task { await store.refresh() } },
+                    isRetrying: store.isRefreshing
                 )
             case .failed(let error):
                 KyroSportsMessageState(
                     symbol: "exclamationmark.triangle",
                     title: "Scores unavailable",
                     message: error.userMessage,
-                    retry: { Task { await store.load(force: true) } }
+                    retry: { Task { await store.refresh() } },
+                    isRetrying: store.isRefreshing
                 )
             case .loaded:
-                if store.sections.isEmpty {
-                    KyroSportsMessageState(
-                        symbol: "calendar.badge.exclamationmark",
-                        title: "No games to show",
-                        message: "There are no NFL games in the current window.",
-                        retry: { Task { await store.load(force: true) } }
-                    )
-                } else {
-                    if store.isShowingStaleData {
-                        KyroSportsStaleNotice(retry: { Task { await store.load(force: true) } })
-                    }
-                    if let emptyState = store.dashboardEmptyState {
-                        KyroSportsDashboardEmptyStateView(state: emptyState)
-                    }
-                    // Keep the rows as direct children of the lazy stack. A
-                    // VStack per section would eagerly build every card as
-                    // soon as that section entered the lazy viewport.
-                    ForEach(store.visibleSections) { section in
-                        Section {
-                            ForEach(section.games) { game in
-                                KyroSportsGameRow(
-                                    game: game,
-                                    usesCompactLayout: dynamicTypeSize.isAccessibilitySize
-                                )
-                                .equatable()
-                                // The outer stack separates sections by 16 pt;
-                                // cards inside a section keep their 10 pt rhythm.
-                                .padding(.top, 10 - SiloTheme.padding)
-                            }
-                        } header: {
-                            KyroSportsSectionHeader(section: section)
+                if let notice = store.refreshNotice {
+                    KyroSportsRefreshBanner(notice: notice, retry: { Task { await store.refresh() } })
+                }
+                switch store.scheduleCoverage {
+                case .games:
+                    // One lazy row per header and per card, so scrolling builds and recycles one
+                    // card at a time. Each card carries its sport's accent instead of a rule
+                    // running down a whole section.
+                    ForEach(store.scheduleRows) { row in
+                        switch row {
+                        case .sportHeader(let league, let count):
+                            KyroSportsSportHeader(league: league, gameCount: count)
+                                .padding(.top, 12)
+                        case .game(let game):
+                            gameRow(game, showsLeague: false)
                         }
                     }
+                case .empty, .unavailable, .outsideFeed, .failed, .offline:
+                    let empty = store.noGamesState
+                    KyroSportsMessageState(
+                        symbol: empty.symbolName,
+                        title: empty.title,
+                        message: empty.message,
+                        retry: { Task { await store.refresh() } },
+                        isRetrying: store.isRefreshing
+                    )
                 }
-            }
         }
     }
 
@@ -194,88 +348,655 @@ struct KyroSportsHubView: View {
     }
 }
 
-// MARK: - League filter
-
-private struct KyroSportsLeagueFilter: View {
-    @Binding var selection: KyroSportLeague
+private struct KyroSportsTennisMatchRow: View, Equatable {
+    let game: KyroSportsGame
+    let showsLeague: Bool
+    /// Strong streams when the match can be played from here; nil keeps the card informational.
+    var playableStreams: Int?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                ForEach(KyroSportLeague.allCases) { league in
-                    Button {
-                        selection = league
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: league.symbolName)
-                                .font(.caption)
-                            Text(league.shortName)
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .foregroundStyle(selection == league ? KyroTheme.accentInk : KyroTheme.textSecondary)
-                        .background {
-                            Capsule().fill(selection == league
-                                           ? KyroTheme.selectedFill
-                                           : Color.white.opacity(0.06))
-                        }
-                        .overlay {
-                            Capsule().strokeBorder(
-                                selection == league ? KyroTheme.selectedBorder : Color.white.opacity(0.10),
-                                lineWidth: 1
-                            )
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(league.displayName)
-                    .accessibilityAddTraits(selection == league ? [.isSelected] : [])
-                    .accessibilityIdentifier("kyroSportsLeague-\(league.rawValue)")
+                if showsLeague { Text(game.league.shortName).font(.caption2.bold()).foregroundStyle(KyroTheme.accentInk) }
+                KyroSportsEventStatus(status: game.status, detail: game.statusLine)
+                Spacer()
+                if let start = game.startTime, game.status.isScheduled, !game.isStartTimeTBD {
+                    Text(start, format: .dateTime.hour().minute()).font(.caption.weight(.semibold)).monospacedDigit()
                 }
             }
-            .padding(.horizontal, 1)
+            if let tournament = game.tournament ?? game.note {
+                // Tournament identity in the tour's accent; ESPN's scoreboard has no tournament art.
+                Text([tournament, game.round].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption.weight(.semibold)).foregroundStyle(game.league.accentColor).lineLimit(2)
+            }
+            tennisPlayerLine(game.away, isWinner: game.winner?.team.id == game.away.team.id)
+            tennisPlayerLine(game.home, isWinner: game.winner?.team.id == game.home.team.id)
+            if !game.periods.isEmpty {
+                HStack(spacing: 10) {
+                    ForEach(game.periods) { set in
+                        VStack(spacing: 1) {
+                            Text(set.label.replacingOccurrences(of: "Set ", with: "S"))
+                                .font(.caption2).foregroundStyle(KyroTheme.textSecondary)
+                            Text("\(set.awayScore.map(String.init) ?? "–")–\(set.homeScore.map(String.init) ?? "–")")
+                                .font(.caption.weight(.semibold)).monospacedDigit()
+                        }
+                    }
+                }
+            }
+            if let playableStreams {
+                KyroSportsWatchFooter(streamCount: playableStreams)
+            }
         }
-        .scrollClipDisabled()
+        .padding(.leading, KyroSportsEventCardChrome.contentLeadingInset).padding(.trailing, 12).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .kyroSportsEventCardChrome(league: game.league)
+        .accessibilityIdentifier("kyroSportsTennisGame-\(game.id.rawID)")
+    }
+
+    private func tennisPlayerLine(_ side: KyroGameTeam, isWinner: Bool) -> some View {
+        HStack(spacing: 8) {
+            KyroSportsPlayerFlag(team: side.team)
+            if let rank = side.rank {
+                Text("(\(rank))").font(.caption.weight(.semibold)).foregroundStyle(KyroTheme.textSecondary)
+                    .monospacedDigit()
+            }
+            // Two lines so a doubles pairing ("A / B") is never cut to one name.
+            Text(side.team.nickname)
+                .font(.subheadline.weight(isWinner ? .bold : .medium))
+                .foregroundStyle(KyroTheme.textPrimary).lineLimit(2)
+            Spacer()
+            if isWinner {
+                Image(systemName: "checkmark.circle.fill").font(.caption).foregroundStyle(KyroTheme.accentInk)
+                    .accessibilityLabel("Winner")
+            }
+            if let score = side.score { Text(String(score)).font(.subheadline.bold()).monospacedDigit() }
+        }
+    }
+
+}
+
+/// A tennis player's country: ESPN's own flag image when the payload carries one, otherwise the
+/// code it sent (an alpha-2 code as an emoji flag, ESPN's three-letter code as text). The slot keeps
+/// one width whether the image is loading, loaded or missing; nothing is inferred from a name.
+private struct KyroSportsPlayerFlag: View {
+    let team: KyroSportsTeam
+
+    @Environment(\.displayScale) private var displayScale
+    @ScaledMetric(relativeTo: .subheadline) private var flagHeight: CGFloat = 14
+
+    var body: some View {
+        Group {
+            if let url = KyroSportsMatchupArtwork.flagURL(for: team),
+               let request = KyroSportsArtworkRequest.flag(url: url, height: flagHeight, scale: displayScale) {
+                LazyImage(request: request) { state in
+                    if let image = state.image {
+                        image.resizable().scaledToFit()
+                            .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                    } else {
+                        code
+                    }
+                }
+                .onDisappear(.cancel)
+                .frame(width: flagHeight * 1.5, height: flagHeight)
+            } else {
+                code
+            }
+        }
+        .frame(minWidth: 28, alignment: .leading)
+        .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var code: some View {
+        if let code = team.countryCode, code.count == 2 {
+            Text(code.uppercased().unicodeScalars.compactMap { UnicodeScalar(127397 + $0.value).map(String.init) }.joined())
+                .font(.body)
+        } else if let code = team.countryCode, code.count == 3 {
+            Text(code.uppercased())
+                .font(.caption2.weight(.bold)).monospaced()
+                .foregroundStyle(KyroTheme.textSecondary)
+        }
     }
 }
 
-// MARK: - Dashboard navigation
+/// An event's stream screen: what it may be (sheet item).
+struct KyroSportsStreamDiscovery: Identifiable {
+    let id = UUID()
+    let game: KyroSportsGame
+    /// Nil while Find streams is still matching.
+    var result: KyroSportsStreamMatchResult?
+    /// Why the screen opened instead of the player.
+    var notice: String?
 
-private struct KyroSportsDashboardNavigation: View {
-    let selection: KyroSportsDashboardMode
-    let action: (KyroSportsDashboardMode) -> Void
+    static func notice(for game: KyroSportsGame, result: KyroSportsStreamMatchResult, now: Date) -> String? {
+        if result.choiceDidNotPlay {
+            return "The stream you chose didn't start. Choose another or search your channels."
+        }
+        let tried = result.attemptStatuses.values.filter { $0 == .failed }.count
+        if tried > 0 {
+            return tried == 1
+                ? "The best stream for this game didn't start. Choose another or search your channels."
+                : "Kyro tried \(tried) streams for this game and none started. Choose another or search your channels."
+        }
+        if !KyroSportsPlaybackPolicy.allowsAutomaticPlayback(game, now: now) {
+            return "This game isn't live, so nothing was played."
+        }
+        if result.matches.isEmpty {
+            return nil
+        }
+        return "No stream is clearly this game. Choose one below."
+    }
+}
+
+struct KyroSportsStreamChoice {
+    let match: KyroSportsStreamMatch
+    let game: KyroSportsGame
+    let result: KyroSportsStreamMatchResult
+}
+
+private struct KyroSportsStreamMatchSheet: View {
+    let discovery: KyroSportsStreamDiscovery
+    let service: LiveTVService
+    let choose: (KyroSportsStreamMatch) -> Void
+    let dismiss: () -> Void
+    @State private var manualQuery = ""
+    @State private var manualCatalog: [ManualEntry] = []
+    @State private var manualResults: [LiveTVChannel] = []
+    @State private var currentProgrammes: [String: EPGProgram] = [:]
+
+    /// A playable channel with its folded search text, built once per sheet
+    /// off the main actor so typing never folds 40,000 names per keystroke.
+    private struct ManualEntry: Sendable {
+        let channel: LiveTVChannel
+        let folded: String
+    }
+
+    private var game: KyroSportsGame { discovery.game }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    KyroSportsStreamEventHeader(game: game, notice: discovery.notice)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                }
+                if let result = discovery.result {
+                    if result.matches.isEmpty {
+                        Section {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("No channel is clearly showing this game.")
+                                    .font(.subheadline.weight(.semibold))
+                                Text(result.guideWasStale
+                                     ? "Your guide is out of date. Refresh Live TV, or search your channels below."
+                                     : "Search your channels below if you know where it airs.")
+                                    .font(.caption)
+                                    .foregroundStyle(KyroTheme.textSecondary)
+                            }
+                            .listRowBackground(Color.white.opacity(0.05))
+                        }
+                    }
+                    KyroSportsStreamSectionsView(
+                        sections: KyroSportsStreamSection.make(
+                            matches: result.matches, broadcasters: result.possibleBroadcasters,
+                            status: { result.attemptStatuses[$0] ?? .untested }, currentChannelID: nil,
+                            currentProgrammes: currentProgrammes),
+                        select: { channelID in
+                            if let match = (result.matches + result.possibleBroadcasters)
+                                .first(where: { $0.channel.id == channelID }) { choose(match) }
+                        }
+                    )
+                    searchSection(result)
+                } else {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Looking through your channels…").foregroundStyle(KyroTheme.textSecondary)
+                    }
+                    .listRowBackground(Color.white.opacity(0.05))
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(KyroTheme.background)
+            .navigationTitle("Choose a Stream")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: dismiss) } }
+            .task {
+                // Up to 40,000 channels: only the array and provider IDs are read on the main
+                // actor; the playback check and name folding run off it.
+                let channels = service.channels
+                let providerIDs = service.playableProviderIDs
+                manualCatalog = await Task.detached(priority: .userInitiated) {
+                    Array(channels.lazy
+                        .filter { LiveTVService.isPlayable($0) { providerIDs.contains($0) } }
+                        .map { ManualEntry(channel: $0, folded: KyroSportsStreamMatcher.normalized($0.name + " " + $0.category)) })
+                }.value
+            }
+            .task(id: discovery.result?.matches.count ?? -1) {
+                guard let result = discovery.result else { return }
+                let unlisted = (result.matches + result.possibleBroadcasters).filter { $0.program == nil }.map(\.channel)
+                currentProgrammes = await service.sportsCurrentProgrammes(for: unlisted)
+            }
+            .task(id: "\(manualCatalog.count)|\(manualQuery)") {
+                let folded = KyroSportsStreamMatcher.normalized(manualQuery).trimmingCharacters(in: .whitespaces)
+                guard !folded.isEmpty else {
+                    manualResults = []
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled else { return }
+                let catalog = manualCatalog
+                let found = await Task.detached(priority: .userInitiated) {
+                    Array(catalog.lazy.filter { $0.folded.contains(folded) }.prefix(40).map(\.channel))
+                }.value
+                guard !Task.isCancelled else { return }
+                manualResults = found
+            }
+        }
+    }
+
+    /// Manual search stays available whenever automatic matching found nothing that played.
+    @ViewBuilder
+    private func searchSection(_ result: KyroSportsStreamMatchResult) -> some View {
+        Section {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(KyroTheme.textSecondary)
+                    .accessibilityHidden(true)
+                TextField("Search channels", text: $manualQuery)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+            }
+            .listRowBackground(Color.white.opacity(0.05))
+            if manualQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+                if !result.manualSearchSuggestions.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(result.manualSearchSuggestions, id: \.self) { suggestion in
+                                Button(suggestion) { manualQuery = suggestion }
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(KyroTheme.accentInk)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background { Capsule().fill(KyroTheme.selectedFill.opacity(0.6)) }
+                                    .overlay { Capsule().strokeBorder(KyroTheme.selectedBorder, lineWidth: 1) }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Search for \(suggestion)")
+                            }
+                        }
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                }
+            } else if manualResults.isEmpty, !manualCatalog.isEmpty {
+                Text("No channels match “\(manualQuery)”.")
+                    .foregroundStyle(KyroTheme.textSecondary)
+                    .listRowBackground(Color.white.opacity(0.05))
+            }
+            ForEach(manualResults) { channel in
+                let match = KyroSportsStreamMatch(id: channel.id, channel: channel, program: nil,
+                                                  confidence: .low, score: 0,
+                                                  reasons: ["Chosen from channel search"], isStale: true,
+                                                  source: .manual)
+                KyroSportsStreamRow(model: KyroSportsStreamRowModel(match: match, status: result.attemptStatuses[channel.id] ?? .untested,
+                                                                    isCurrent: false)) {
+                    choose(match)
+                }
+            }
+        } header: {
+            Text("Search channels")
+        } footer: {
+            Text("Search matches channel names only. “Played” means a stream started; Kyro can't check what it shows.")
+        }
+    }
+}
+
+#if os(iOS)
+/// Sports Hub presents its player on the shell presenter. The unified iPhone shell hosts that
+/// cover over every tab; the earlier navigation (iPad, legacy opt-out) has no shell cover, so the
+/// hub hosts it there. Exactly one host exists either way.
+private struct KyroSportsShellPlayerFallback: ViewModifier {
+    @Bindable var service: LiveTVService
+
+    func body(content: Content) -> some View {
+        if KyroUnifiedNavigation.isActive {
+            content
+        } else {
+            content.fullScreenCover(item: Binding(
+                get: { service.presentation.channel(for: .shell) },
+                set: { if $0 == nil { service.presentation.coverDismissed(from: .shell) } }
+            )) { channel in
+                LiveTVPlayerView(channel: channel, channels: service.channels, session: service.playerSession,
+                                 service: service)
+            }
+        }
+    }
+}
+#endif
+
+/// The searching/connecting banner's content, or nil when nothing is in flight.
+private struct KyroSportsConnectingStatus: Equatable {
+    let title: String
+    let detail: String?
+
+    init?(phase: KyroSportsPlaybackCoordinator.Phase, games: [KyroSportsGame]) {
+        switch phase {
+        case .searching(let id):
+            let game = games.first { $0.id == id }
+            title = "Finding a stream"
+            detail = game.map { "\($0.away.team.nickname) \($0.league == .atp || $0.league == .wta ? "vs" : "at") \($0.home.team.nickname)" }
+        case .connecting(let name, let attempt, let total):
+            title = "Connecting to \(name)"
+            detail = total > 1 ? "Stream \(attempt) of \(total)" : nil
+        case .idle, .presented, .exhausted, .unavailable:
+            return nil
+        }
+    }
+}
+
+private struct KyroSportsConnectingBanner: View {
+    let status: KyroSportsConnectingStatus
+    let cancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(status.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                if let detail = status.detail {
+                    Text(detail).font(.caption).foregroundStyle(KyroTheme.textSecondary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            Button("Cancel", action: cancel)
+                .font(.subheadline.weight(.semibold))
+                .accessibilityIdentifier("kyroSportsCancelConnecting")
+        }
+        .foregroundStyle(KyroTheme.textPrimary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.updatesFrequently)
+        .accessibilityIdentifier("kyroSportsConnecting")
+    }
+}
+
+// MARK: - Schedule header and sport selector
+
+/// What Live Now re-reads on change.
+struct KyroSportsLiveNowTrigger: Equatable {
+    let games: [KyroSportsGame]
+    let providerID: UUID?
+    let isLoadingChannels: Bool
+    /// The Sports Hub prewarm can end without changing the catalog (its download failed or was
+    /// not due); Live Now must re-read then.
+    let isPrewarmingChannels: Bool
+    let catalogRevision: Int
+    let guideGeneration: Int
+}
+
+/// "Scores & Schedule" with the sport selector beside it (or under it at large text sizes).
+private struct KyroSportsScheduleHeader: View {
+    let selection: KyroSportsCategory
+    let action: (KyroSportsCategory) -> Void
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                title
+                Spacer(minLength: 8)
+                KyroSportsSportMenu(selection: selection, action: action)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                title
+                KyroSportsSportMenu(selection: selection, action: action)
+            }
+        }
+    }
+
+    private var title: some View {
+        Text("Scores & Schedule")
+            .font(.title3.bold())
+            .foregroundStyle(KyroTheme.textPrimary)
+            .lineLimit(1)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// A compact dropdown in place of the Build 38 chip row. Opening it changes nothing; picking a
+/// sport goes through the store's saved selection like the chips did.
+private struct KyroSportsSportMenu: View {
+    let selection: KyroSportsCategory
+    let action: (KyroSportsCategory) -> Void
+
+    var body: some View {
+        Menu {
+            Picker("Sport", selection: Binding(get: { selection }, set: { action($0) })) {
+                ForEach(KyroSportsCategory.filterOrder) { category in
+                    Label(category.menuName, systemImage: category.symbolName)
+                        .tag(category)
+                        .accessibilityIdentifier("kyroSportsCategory-\(category.rawValue)")
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: selection.symbolName)
+                    .font(.caption)
+                    .accessibilityHidden(true)
+                Text(selection.menuName)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(KyroTheme.accentInk)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background { Capsule().fill(KyroTheme.selectedFill) }
+            .overlay { Capsule().strokeBorder(KyroTheme.selectedBorder, lineWidth: 1) }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Sport")
+        .accessibilityValue(selection.menuName)
+        .accessibilityHint("Chooses which sport to show")
+        .accessibilityIdentifier("kyroSportsCategoryFilter")
+    }
+}
+
+/// A live schedule card previews first; its footer reports evidence without implying one-tap play.
+private struct KyroSportsWatchFooter: View {
+    let streamCount: Int
 
     var body: some View {
         HStack(spacing: 6) {
-            ForEach(KyroSportsDashboardMode.allCases) { mode in
-                Button {
-                    action(mode)
-                } label: {
-                    Label(mode.title, systemImage: mode.symbolName)
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 9)
-                        .foregroundStyle(selection == mode ? KyroTheme.accentInk : KyroTheme.textSecondary)
-                        .background {
-                            if selection == mode {
-                                Capsule().fill(KyroTheme.accent.opacity(0.18))
+            Image(systemName: "tv").font(.system(size: 10, weight: .bold))
+            Text("Live streams available")
+            Text("·").foregroundStyle(KyroTheme.textSecondary)
+            Text(KyroSportsLiveNowCard.streamCountText(streamCount))
+                .foregroundStyle(KyroTheme.textSecondary)
+            Spacer(minLength: 0)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(KyroTheme.accentInk)
+        .padding(.top, 2)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Status at the head of a schedule card. An event ESPN reports in progress gets a red LIVE badge
+/// beside its clock; everything else keeps the status pill. Stream availability plays no part.
+private struct KyroSportsEventStatus: View {
+    let status: KyroGameStatus
+    let detail: String
+
+    var body: some View {
+        if KyroSportsEventCardStyle.showsLiveBadge(for: status) {
+            HStack(spacing: 6) {
+                KyroSportsLiveBadge()
+                Text(detail)
+                    .font(.caption2.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(KyroTheme.textPrimary)
+                    .lineLimit(1)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Live, \(detail)")
+        } else {
+            KyroSportsStatusPill(status: status, detail: detail)
+        }
+    }
+}
+
+/// Solid red LIVE label: a static capsule, no animation.
+struct KyroSportsLiveBadge: View {
+    var body: some View {
+        Text("LIVE")
+            .font(.caption2.weight(.heavy))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background { Capsule().fill(KyroTheme.live) }
+            .accessibilityLabel("Live")
+    }
+}
+
+// MARK: - Date strip
+
+private struct KyroSportsDateStrip: View {
+    let days: [Date]
+    let selectedDay: Date
+    let now: Date
+    let calendar: Calendar
+    let action: (Date) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !calendar.isDate(selectedDay, inSameDayAs: now) {
+                HStack {
+                    Spacer()
+                    Button {
+                        action(calendar.startOfDay(for: now))
+                    } label: {
+                        Label("Today", systemImage: "arrow.uturn.backward")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(KyroTheme.accentInk)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("kyroSportsReturnToToday")
+                }
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(days, id: \.self) { day in
+                        let isSelected = calendar.isDate(day, inSameDayAs: selectedDay)
+                        let isToday = calendar.isDate(day, inSameDayAs: now)
+                        Button {
+                            action(day)
+                        } label: {
+                            VStack(spacing: 4) {
+                                Text(day, format: .dateTime.weekday(.abbreviated))
+                                    .font(.caption2.weight(.semibold))
+                                Text(day, format: .dateTime.day())
+                                    .font(.headline.weight(.bold))
+                                Text(isToday ? "Today" : " ")
+                                    .font(.system(size: 9, weight: .bold))
+                            }
+                            .frame(width: 52)
+                            .padding(.vertical, 8)
+                            .foregroundStyle(isSelected ? KyroTheme.accentInk : KyroTheme.textSecondary)
+                            .background {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(isSelected ? KyroTheme.selectedFill : Color.white.opacity(0.06))
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .strokeBorder(
+                                        isSelected ? KyroTheme.selectedBorder
+                                            : isToday ? KyroTheme.accent.opacity(0.45) : Color.white.opacity(0.10),
+                                        lineWidth: isToday && !isSelected ? 1.5 : 1
+                                    )
                             }
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(accessibilityLabel(for: day, isToday: isToday, isSelected: isSelected))
+                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                        .accessibilityIdentifier("kyroSportsDate-\(Int(day.timeIntervalSince1970))")
+                    }
                 }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selection == mode ? [.isSelected] : [])
-                .accessibilityIdentifier("kyroSportsMode-\(mode.rawValue)")
+                .padding(.horizontal, 1)
+                .scrollTargetLayout()
             }
+            .scrollClipDisabled()
+            .scrollTargetBehavior(.viewAligned)
+            .accessibilityIdentifier("kyroSportsDateStrip")
         }
-        .padding(5)
-        .kyroSportsCardChrome(Capsule())
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("kyroSportsDashboardNavigation")
+    }
+
+    private func accessibilityLabel(for day: Date, isToday: Bool, isSelected: Bool) -> String {
+        var parts = [day.formatted(.dateTime.weekday(.wide).month(.wide).day())]
+        if isToday { parts.append("Today") }
+        if isSelected { parts.append("selected") }
+        return parts.joined(separator: ", ")
     }
 }
 
 // MARK: - Sections and rows
+
+/// The Sports tab's own title, in place of the Build 40 featured hero.
+private struct KyroSportsHubHeading: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "trophy.fill")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(KyroTheme.accentInk)
+                .accessibilityHidden(true)
+            Text("Sports")
+                .font(.title2.bold())
+                .foregroundStyle(KyroTheme.textPrimary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("kyroSportsHeading")
+    }
+}
+
+private struct KyroSportsSportHeader: View {
+    let league: KyroSportLeague
+    let gameCount: Int
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: league.symbolName)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(league.accentColor)
+                .frame(width: 42, height: 42)
+                .background(league.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                .accessibilityHidden(true)
+            Text(league.displayName)
+                .font(.title2.bold())
+                .foregroundStyle(KyroTheme.textPrimary)
+            Spacer(minLength: 0)
+            Text("\(gameCount) \(gameCount == 1 ? "game" : "games")")
+                .font(.caption)
+                .foregroundStyle(KyroTheme.textSecondary)
+        }
+        .padding(.vertical, 5)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("kyroSportsSportSection-\(league.rawValue)")
+    }
+}
+
+extension KyroSportLeague {
+    /// The sport's accent: its section header icon and its event cards' outline and edge.
+    var accentColor: Color {
+        let rgb = KyroSportsEventCardStyle.accentRGB(for: self)
+        return Color(red: Double((rgb >> 16) & 0xFF) / 255,
+                     green: Double((rgb >> 8) & 0xFF) / 255,
+                     blue: Double(rgb & 0xFF) / 255)
+    }
+}
 
 private struct KyroSportsSectionHeader: View {
     let section: KyroSportsGameSection
@@ -308,38 +1029,80 @@ private struct KyroSportsSectionHeader: View {
 private struct KyroSportsGameRow: View, Equatable {
     let game: KyroSportsGame
     let usesCompactLayout: Bool
+    var showsLeague: Bool = true
+    /// Strong streams when the game can be played from here; nil keeps the card informational.
+    var playableStreams: Int?
 
-    /// Records and kickoff time sit on a trailing column when the row is wide
-    /// enough for them. At accessibility sizes the row goes vertical instead of
-    /// squeezing the team names.
+    /// Build 41.1 matchup card: both logos with their names, the score or start time between them,
+    /// and the teams' own colours behind each side. Static shapes and colours only; logos load
+    /// through the shared pipeline into fixed frames, so nothing moves when they arrive.
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let artwork = KyroSportsMatchupArtwork(game: game)
+        VStack(alignment: .leading, spacing: 10) {
             header
-            if usesCompactLayout {
-                VStack(spacing: 8) { teamLines }
-                trailingColumn
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(spacing: 8) { teamLines }
-                    Spacer(minLength: 8)
-                    trailingColumn
-                }
+            if let context = contextLine {
+                Text(context)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(KyroTheme.textSecondary)
+                    .lineLimit(2)
             }
-            if !game.periods.isEmpty, (game.status.isLive || game.status.isFinal) {
+            HStack(alignment: .top, spacing: 8) {
+                KyroSportsMatchupSide(side: game.away, logoURL: artwork.awayLogoURL,
+                                      isWinner: game.winner?.team.id == game.away.team.id,
+                                      isLoser: isLoser(game.away), showsScore: game.hasScore)
+                center
+                    .frame(minWidth: 84)
+                KyroSportsMatchupSide(side: game.home, logoURL: artwork.homeLogoURL,
+                                      isWinner: game.winner?.team.id == game.home.team.id,
+                                      isLoser: isLoser(game.home), showsScore: game.hasScore)
+            }
+            if !game.periods.isEmpty {
                 KyroSportsPeriodStrip(periods: game.periods, game: game)
             }
+            if let playableStreams {
+                KyroSportsWatchFooter(streamCount: playableStreams)
+            }
         }
-        .padding(14)
+        .padding(.leading, KyroSportsEventCardChrome.contentLeadingInset)
+        .padding(.trailing, 12)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .kyroSportsCardChrome(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .kyroSportsEventCardChrome(league: game.league, backdrop: artwork.backdrop)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("kyroSportsGame-\(game.id.rawID)")
     }
 
+    private func isLoser(_ side: KyroGameTeam) -> Bool {
+        guard let winner = game.winner else { return false }
+        return winner.team.id != side.team.id
+    }
+
+    /// Bowl or championship name and live situation (e.g. MLB outs), joined.
+    private var contextLine: String? {
+        let parts = [game.note, game.situation].compactMap { value -> String? in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     private var header: some View {
         HStack(spacing: 8) {
-            KyroSportsStatusPill(status: game.status, detail: game.statusLine)
+            if showsLeague {
+                Text(game.league.shortName)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(KyroTheme.accentInk)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background {
+                        Capsule().fill(KyroTheme.selectedFill)
+                    }
+                    .overlay {
+                        Capsule().strokeBorder(KyroTheme.selectedBorder, lineWidth: 1)
+                    }
+                    .accessibilityLabel(game.league.displayName)
+            }
+            KyroSportsEventStatus(status: game.status, detail: compactStatus)
             Spacer(minLength: 4)
             if let broadcast = game.broadcast, !broadcast.isEmpty {
                 Text(broadcast)
@@ -350,92 +1113,103 @@ private struct KyroSportsGameRow: View, Equatable {
         }
     }
 
-    private var teamLines: some View {
-        VStack(spacing: 8) {
-            KyroSportsTeamLine(
-                team: game.away,
-                isWinner: game.winner?.team.id == game.away.team.id,
-                showsScore: game.hasScore
-            )
-            KyroSportsTeamLine(
-                team: game.home,
-                isWinner: game.winner?.team.id == game.home.team.id,
-                showsScore: game.hasScore
-            )
+    private var compactStatus: String {
+        if game.status.isLive, let situation = game.situation, !situation.isEmpty {
+            return "\(game.statusLine) · \(situation)"
         }
+        return game.statusLine
     }
 
+    /// The score for a game under way or over, otherwise its start time.
     @ViewBuilder
-    private var trailingColumn: some View {
-        VStack(alignment: usesCompactLayout ? .leading : .trailing, spacing: 6) {
+    private var center: some View {
+        VStack(spacing: 4) {
+            if game.hasScore {
+                HStack(spacing: 6) {
+                    scoreText(game.away)
+                    Text("–").foregroundStyle(KyroTheme.textSecondary)
+                    scoreText(game.home)
+                }
+                .font(.title2.weight(.bold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Score \(game.away.score.map(String.init) ?? "none") to \(game.home.score.map(String.init) ?? "none")")
+            } else if game.isStartTimeTBD || game.startTime == nil {
+                Text("TBD")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(KyroTheme.textPrimary)
+            } else if let start = game.startTime {
+                Text(start, format: .dateTime.hour().minute())
+                    .font(.title3.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(KyroTheme.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
             if let weekLabel = game.weekLabel {
                 Text(weekLabel)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(KyroTheme.textSecondary)
-            }
-            if let start = game.startTime {
-                Text(start, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(KyroTheme.textSecondary)
-                    .multilineTextAlignment(usesCompactLayout ? .leading : .trailing)
-            }
-            if let venue = game.venue, !venue.isEmpty {
-                Text(venue)
-                    .font(.caption2)
-                    .foregroundStyle(KyroTheme.textSecondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(usesCompactLayout ? .leading : .trailing)
+                    .lineLimit(1)
             }
         }
-        .frame(minWidth: 90, alignment: usesCompactLayout ? .leading : .trailing)
+        .padding(.top, 8)
+    }
+
+    private func scoreText(_ side: KyroGameTeam) -> some View {
+        Text(side.score.map(String.init) ?? "–")
+            .foregroundStyle(isLoser(side) ? KyroTheme.silver : KyroTheme.textPrimary)
     }
 }
 
-private struct KyroSportsTeamLine: View {
-    let team: KyroGameTeam
+/// One team in a matchup card: logo, short name and record, centred in its half.
+private struct KyroSportsMatchupSide: View {
+    let side: KyroGameTeam
+    let logoURL: URL?
     let isWinner: Bool
+    let isLoser: Bool
     let showsScore: Bool
 
+    @ScaledMetric(relativeTo: .title3) private var logoSize: CGFloat = 40
+
     var body: some View {
-        HStack(spacing: 10) {
-            KyroSportsTeamLogo(team: team.team)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(team.team.fullName)
-                    .font(.subheadline.weight(isWinner ? .bold : .medium))
-                    .foregroundStyle(isWinner ? KyroTheme.textPrimary : KyroTheme.silver)
-                    // Wrap rather than truncate: "Jacksonville Jaguars" must not read "Jacksonville J…".
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let record = team.displayRecord {
-                    Text(record)
-                        .font(.caption2)
-                        .foregroundStyle(KyroTheme.textSecondary)
-                }
-            }
-            Spacer(minLength: 8)
-            if showsScore {
-                Text(team.score.map(String.init) ?? "–")
-                    .font(.title3.weight(isWinner ? .bold : .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(isWinner ? KyroTheme.textPrimary : KyroTheme.silver)
+        VStack(spacing: 6) {
+            KyroSportsTeamLogo(team: side.team, size: logoSize, url: logoURL)
+            Text(KyroSportsMatchupArtwork.columnName(for: side))
+                .font(.subheadline.weight(isWinner ? .bold : .semibold))
+                .foregroundStyle(isLoser ? KyroTheme.silver : KyroTheme.textPrimary)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+                .fixedSize(horizontal: false, vertical: true)
+            if let record = side.displayRecord {
+                Text(record)
+                    .font(.caption2)
+                    .foregroundStyle(KyroTheme.textSecondary)
             }
         }
+        .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
     }
 
     private var accessibilityLabel: String {
-        var parts = [team.team.fullName]
-        if let record = team.displayRecord { parts.append("record \(record)") }
-        if showsScore, let score = team.score { parts.append("score \(score)") }
+        var parts = [side.team.fullName]
+        if let rank = side.rank, rank > 0 { parts.append("ranked number \(rank)") }
+        if let record = side.displayRecord { parts.append("record \(record)") }
+        if showsScore, let score = side.score { parts.append("score \(score)") }
         if isWinner { parts.append("winner") }
         return parts.joined(separator: ", ")
     }
 }
 
-private struct KyroSportsTeamLogo: View {
+struct KyroSportsTeamLogo: View {
     let team: KyroSportsTeam
-    var size: CGFloat = 28
+    var size: CGFloat = 22
+    /// Defaults to the team's dark-background logo, then its standard one.
+    var url: URL?
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
@@ -463,27 +1237,42 @@ private struct KyroSportsTeamLogo: View {
     }
 
     private var request: ImageRequest? {
-        guard let url = team.logoURL else { return nil }
-        return PosterImageCache.displayRequest(
-            url: url,
-            pointSize: CGSize(width: size, height: size),
-            scale: displayScale,
-            priority: .high
-        )
+        guard let url = url ?? KyroSportsMatchupArtwork.logoURL(for: team) else { return nil }
+        return KyroSportsArtworkRequest.logo(url: url, pointSize: size, scale: displayScale)
     }
 
+    /// Missing, broken or still-loading artwork: the abbreviation in the same frame, so nothing moves.
     private var fallback: some View {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
+        RoundedRectangle(cornerRadius: min(7, size * 0.3), style: .continuous)
             .fill(Color.white.opacity(0.10))
             .overlay {
                 Text(team.abbreviation)
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: max(9, size * 0.26), weight: .bold))
                     .foregroundStyle(KyroTheme.textSecondary)
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(1)
+                    .padding(2)
             }
     }
 }
 
-private struct KyroSportsStatusPill: View {
+/// Requests for Sports Hub artwork. Every logo and flag goes through the shared pipeline: ImageIO
+/// decodes it at the drawn pixel size off the main thread, the decoded image stays in the memory
+/// cache and the download in the disk cache, so scrolling back never downloads or decodes again.
+enum KyroSportsArtworkRequest {
+    static func logo(url: URL, pointSize: CGFloat, scale: CGFloat) -> ImageRequest? {
+        PosterImageCache.displayRequest(url: url, pointSize: CGSize(width: pointSize, height: pointSize),
+                                        scale: scale, priority: .high)
+    }
+
+    /// Flags are drawn about 3:2.
+    static func flag(url: URL, height: CGFloat, scale: CGFloat) -> ImageRequest? {
+        PosterImageCache.displayRequest(url: url, pointSize: CGSize(width: height * 1.5, height: height),
+                                        scale: scale, priority: .normal)
+    }
+}
+
+struct KyroSportsStatusPill: View {
     let status: KyroGameStatus
     let detail: String
 
@@ -491,7 +1280,7 @@ private struct KyroSportsStatusPill: View {
         switch status {
         case .live: KyroTheme.live
         case .final: KyroTheme.textSecondary
-        case .canceled, .postponed: KyroTheme.highlight
+        case .canceled, .postponed, .suspended: KyroTheme.highlight
         case .scheduled, .unknown: KyroTheme.accentInk
         }
     }
@@ -586,7 +1375,7 @@ private struct KyroSportsPeriodStrip: View {
 
 // MARK: - Live dot
 
-private struct KyroLiveDot: View {
+struct KyroLiveDot: View {
     // Static on purpose: a repeating animation would redraw every frame while scrolling.
     var body: some View {
         Circle()
@@ -599,13 +1388,13 @@ private struct KyroLiveDot: View {
 // MARK: - States
 
 private struct KyroSportsLoadingState: View {
-    let league: KyroSportLeague
+    let title: String
 
     var body: some View {
         VStack(spacing: 12) {
             ProgressView()
                 .tint(KyroTheme.accentInk)
-            Text("Loading \(league.displayName)…")
+            Text("Loading \(title)…")
                 .font(.footnote)
                 .foregroundStyle(KyroTheme.textSecondary)
         }
@@ -620,6 +1409,7 @@ private struct KyroSportsMessageState: View {
     let title: String
     let message: String
     let retry: (() -> Void)?
+    var isRetrying = false
 
     var body: some View {
         VStack(spacing: 10) {
@@ -634,7 +1424,11 @@ private struct KyroSportsMessageState: View {
                 .font(.footnote)
                 .foregroundStyle(KyroTheme.textSecondary)
                 .multilineTextAlignment(.center)
-            if let retry {
+            if isRetrying {
+                ProgressView()
+                    .padding(.top, 2)
+                    .accessibilityLabel("Refreshing")
+            } else if let retry {
                 Button("Try Again", action: retry)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(KyroTheme.accentInk)
@@ -676,47 +1470,40 @@ private struct KyroSportsDashboardEmptyStateView: View {
     }
 }
 
-private struct KyroSportsUnavailableLeague: View {
-    let league: KyroSportLeague
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: league.symbolName)
-                .font(.title2)
-                .foregroundStyle(KyroTheme.textSecondary)
-                .accessibilityHidden(true)
-            Text("\(league.displayName) is coming soon")
-                .font(.headline)
-                .foregroundStyle(KyroTheme.textPrimary)
-            Text("Kyro is starting with NFL scores and schedules. The other leagues follow in a later update.")
-                .font(.footnote)
-                .foregroundStyle(KyroTheme.textSecondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 36)
-        .padding(.horizontal, 16)
-        .kyroSportsCardChrome(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .accessibilityIdentifier("kyroSportsUnavailableLeague")
-    }
-}
-
-private struct KyroSportsStaleNotice: View {
+/// One status line above the schedule: refreshing, stale cached games, or
+/// leagues that could not load. Built from `KyroSportsHubStore.refreshNotice`.
+private struct KyroSportsRefreshBanner: View {
+    let notice: KyroSportsRefreshNotice
     let retry: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.footnote)
-                .foregroundStyle(KyroTheme.highlight)
-                .accessibilityHidden(true)
-            Text("Some scores or schedules may be out of date.")
-                .font(.caption)
-                .foregroundStyle(KyroTheme.textSecondary)
+        HStack(alignment: .center, spacing: 10) {
+            if notice.kind == .refreshing {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityHidden(true)
+            } else {
+                Image(systemName: notice.kind == .stale ? "clock.arrow.circlepath" : "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(KyroTheme.highlight)
+                    .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notice.title)
+                    .font(.caption)
+                    .foregroundStyle(KyroTheme.textSecondary)
+                if let detail = notice.detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(KyroTheme.textSecondary.opacity(0.8))
+                }
+            }
             Spacer(minLength: 4)
-            Button("Refresh", action: retry)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(KyroTheme.accentInk)
+            if notice.kind != .refreshing {
+                Button("Refresh", action: retry)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(KyroTheme.accentInk)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -724,205 +1511,135 @@ private struct KyroSportsStaleNotice: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(KyroTheme.highlight.opacity(0.10))
         }
-        .accessibilityIdentifier("kyroSportsStaleNotice")
-    }
-}
-
-// MARK: - Hero
-
-private struct KyroSportsFeaturedEventHero: View {
-    let game: KyroSportsGame?
-    let league: KyroSportLeague
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(KyroTheme.activeGradient)
-                        .frame(width: 44, height: 44)
-                        .shadow(color: KyroTheme.accent.opacity(0.55), radius: 14)
-                    Image(systemName: "trophy.fill")
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Sports")
-                        .font(.title2.bold())
-                        .foregroundStyle(KyroTheme.textPrimary)
-                    Text("Featured Event")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(KyroTheme.accentInk)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityAddTraits(.isHeader)
-
-                Spacer(minLength: 0)
-
-                Text(league.shortName)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(KyroTheme.textSecondary)
-            }
-
-            if let game {
-                KyroSportsFeaturedMatchup(game: game)
-            } else {
-                HStack(spacing: 10) {
-                    Image(systemName: "sportscourt")
-                        .foregroundStyle(KyroTheme.textSecondary)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("No featured event available")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(KyroTheme.textPrimary)
-                        Text("The next verified matchup will appear here.")
-                            .font(.caption)
-                            .foregroundStyle(KyroTheme.textSecondary)
-                    }
-                }
-                .accessibilityElement(children: .combine)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(RadialGradient(colors: [KyroTheme.depth.opacity(0.85), .clear],
-                                     center: .topLeading, startRadius: 0, endRadius: 320))
-        }
-        .kyroSportsCardChrome(RoundedRectangle(cornerRadius: 24, style: .continuous), glow: true)
-        .accessibilityIdentifier("kyroSportsFeaturedEvent")
-    }
-}
-
-private struct KyroSportsFeaturedMatchup: View {
-    let game: KyroSportsGame
-
-    var body: some View {
-        VStack(spacing: 12) {
-            HStack(alignment: .center, spacing: 10) {
-                KyroSportsFeaturedTeam(
-                    team: game.away,
-                    isWinner: game.winner?.team.id == game.away.team.id
-                )
-                VStack(spacing: 5) {
-                    if game.status.isLive || game.status.isFinal {
-                        Text(scoreLine)
-                            .font(.title2.bold())
-                            .monospacedDigit()
-                            .foregroundStyle(KyroTheme.textPrimary)
-                    } else {
-                        Text("at")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(KyroTheme.textSecondary)
-                    }
-                    KyroSportsStatusPill(status: game.status, detail: game.statusLine)
-                }
-                .frame(minWidth: 72)
-                KyroSportsFeaturedTeam(
-                    team: game.home,
-                    isWinner: game.winner?.team.id == game.home.team.id
-                )
-            }
-
-            VStack(spacing: 3) {
-                Text("\(game.away.team.fullName) at \(game.home.team.fullName)")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(KyroTheme.textPrimary)
-                    .multilineTextAlignment(.center)
-                if !game.status.isLive, let start = game.startTime {
-                    Text(start, format: .dateTime.weekday(.wide).month(.wide).day().hour().minute())
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(KyroTheme.silver)
-                }
-                HStack(spacing: 6) {
-                    Text(game.league.displayName)
-                    if let broadcast = game.broadcast, !broadcast.isEmpty {
-                        Text("•")
-                        Text(broadcast)
-                    }
-                }
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(KyroTheme.textSecondary)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var scoreLine: String {
-        "\(game.away.score.map(String.init) ?? "–")–\(game.home.score.map(String.init) ?? "–")"
-    }
-}
-
-private struct KyroSportsFeaturedTeam: View {
-    let team: KyroGameTeam
-    let isWinner: Bool
-
-    var body: some View {
-        VStack(spacing: 5) {
-            KyroSportsTeamLogo(team: team.team, size: 48)
-            Text(team.team.abbreviation)
-                .font(.caption.weight(isWinner ? .bold : .semibold))
-                .foregroundStyle(isWinner ? KyroTheme.textPrimary : KyroTheme.silver)
-                .lineLimit(1)
-            if let record = team.displayRecord {
-                Text(record)
-                    .font(.caption2)
-                    .foregroundStyle(KyroTheme.textSecondary)
-            }
-        }
-        .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("kyroSportsStaleNotice")
     }
 }
 
 // MARK: - Card chrome
 
 extension View {
-    /// Static glass-look chrome for surfaces that scroll inside the Sports Hub list.
-    fileprivate func kyroSportsCardChrome<S: InsettableShape>(_ shape: S, glow: Bool = false) -> some View {
-        modifier(KyroSportsCardChrome(shape: shape, glow: glow))
+    /// Static chrome for Sports Hub surfaces that are not schedule events: Live Now, states,
+    /// event details.
+    func kyroSportsCardChrome<S: InsettableShape>(_ shape: S) -> some View {
+        modifier(KyroSportsCardChrome(shape: shape))
+    }
+
+    /// A schedule event card: its sport's outline and leading edge over either the teams' own
+    /// colours or, without them, the dark-blue league card.
+    func kyroSportsEventCardChrome(league: KyroSportLeague,
+                                   backdrop: KyroSportsMatchupArtwork.Backdrop = .league) -> some View {
+        modifier(KyroSportsEventCardChrome(accent: league.accentColor, backdrop: backdrop))
     }
 }
 
-/// `kyroGlass` is built for a few floating controls. Inside a scrolling list it is costly:
-/// every card samples and blurs its backdrop through a material, and the two shadows wrap
-/// that material, so the render server re-blurs the backdrop and redraws both shadows for
-/// every visible card on every scroll frame. Nothing else in the app scrolls this effect.
-///
-/// The backdrop behind a Sports card is the near-uniform page canvas, so the blur adds
-/// almost nothing visible. This version draws the same layers (tint gradient, silver rim,
-/// dark drop shadow, accent glow) over a fixed base colour. With no backdrop sampling,
-/// SwiftUI can draw each card once and move it while scrolling.
-private struct KyroSportsCardChrome<S: InsettableShape>: ViewModifier {
+/// The tinted base every Sports card shares. `kyroGlass` would sample and blur the backdrop
+/// through a material for every scrolling card; the backdrop here is the near-uniform page canvas,
+/// so a fixed base colour with the same tint reads the same.
+private struct KyroSportsCardFill<S: InsettableShape>: View {
     let shape: S
-    let glow: Bool
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    /// Stand-in for `.ultraThinMaterial` over the iOS page canvas (#111111 with a faint
-    /// white wash). Tune here if the static card reads lighter or darker than live glass.
-    private static var staticBase: Color { Color(red: 0.086, green: 0.086, blue: 0.094) }
+    /// Stand-in for `.ultraThinMaterial` over the iOS page canvas (#111111 with a faint white wash).
+    static var staticBase: Color { Color(red: 0.086, green: 0.086, blue: 0.094) }
 
-    func body(content: Content) -> some View {
-        content.background { staticChrome }
-    }
-
-    private var staticChrome: some View {
-        ZStack {
-            if reduceTransparency {
-                shape.fill(KyroTheme.glassOpaque)
-            } else {
+    var body: some View {
+        if reduceTransparency {
+            shape.fill(KyroTheme.glassOpaque)
+        } else {
+            ZStack {
                 shape.fill(Self.staticBase)
                 shape.fill(LinearGradient(colors: [KyroTheme.glassTint, Color.black.opacity(0.38)],
                                           startPoint: .top, endPoint: .bottom))
             }
-            shape.strokeBorder(KyroTheme.glassRim, lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.5), radius: 16, y: 6)
-        .shadow(color: KyroTheme.accent.opacity(glow ? 0.4 : 0.16), radius: 20)
+    }
+}
+
+/// Build 41: no shadows. Build 40 drew two blurred shadows (radius 16 and 20) under every card,
+/// which the render server blurs again for every visible card on every scroll frame; on the
+/// near-black canvas they were barely visible.
+private struct KyroSportsCardChrome<S: InsettableShape>: ViewModifier {
+    let shape: S
+
+    func body(content: Content) -> some View {
+        content.background {
+            KyroSportsCardFill(shape: shape)
+                .overlay { shape.strokeBorder(KyroTheme.glassRim, lineWidth: 1) }
+        }
+    }
+}
+
+/// League identity for a schedule card: a restrained outline and a stronger bar inside the
+/// leading edge, both in the sport's accent (the colour of its section header). Static shapes and
+/// colours only, so the card is drawn once and moved while scrolling.
+struct KyroSportsEventCardChrome: ViewModifier {
+    /// Leading padding for card content, clearing the accent bar.
+    static let contentLeadingInset: CGFloat = 16
+    static let outlineOpacity: Double = 0.4
+    static let edgeOpacity: Double = 0.9
+
+    /// How strongly a team's colour shows on its half. Low enough that white text stays legible.
+    static let teamColorOpacity: Double = 0.32
+
+    let accent: Color
+    var backdrop: KyroSportsMatchupArtwork.Backdrop = .league
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        return content.background {
+            ZStack(alignment: .leading) {
+                switch backdrop {
+                case .league:
+                    KyroSportsCardFill(shape: shape)
+                case .teams(let away, let home):
+                    // Two solid colour blocks with a slanted divide, inside the card's own outline
+                    // (no clip or mask), then one shading pass so the lower half reads darker.
+                    shape.fill(KyroSportsCardFill<RoundedRectangle>.staticBase)
+                    KyroSportsMatchupHalf(side: .leading).fill(Color(away).opacity(Self.teamColorOpacity))
+                    KyroSportsMatchupHalf(side: .trailing).fill(Color(home).opacity(Self.teamColorOpacity))
+                    shape.fill(LinearGradient(colors: [Color.black.opacity(0.05), Color.black.opacity(0.40)],
+                                              startPoint: .top, endPoint: .bottom))
+                }
+                shape.strokeBorder(accent.opacity(Self.outlineOpacity), lineWidth: 1)
+                Capsule()
+                    .fill(accent.opacity(Self.edgeOpacity))
+                    .frame(width: 3)
+                    .padding(.vertical, 10)
+                    .padding(.leading, 5)
+            }
+            .accessibilityHidden(true)
+        }
+    }
+}
+
+/// One team's half of a matchup card: the card's rounded rectangle cut by a slanted divide. A
+/// shape rather than a clip, so the card stays a few static fills.
+private struct KyroSportsMatchupHalf: Shape {
+    enum Side { case leading, trailing }
+    let side: Side
+
+    func path(in rect: CGRect) -> Path {
+        let card = RoundedRectangle(cornerRadius: 14, style: .continuous).path(in: rect)
+        let slant = min(22, rect.width * 0.06)
+        let top = rect.midX + slant, bottom = rect.midX - slant
+        var half = Path()
+        switch side {
+        case .leading:
+            half.addLines([CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: top, y: rect.minY),
+                           CGPoint(x: bottom, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY)])
+        case .trailing:
+            half.addLines([CGPoint(x: top, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
+                           CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: bottom, y: rect.maxY)])
+        }
+        half.closeSubpath()
+        return card.intersection(half)
+    }
+}
+
+private extension Color {
+    init(_ rgb: KyroSportsRGB) {
+        self.init(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 }

@@ -14,6 +14,8 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
     case collegeFootball
     case mlb
     case nhl
+    case atp
+    case wta
 
     var id: String { rawValue }
 
@@ -25,6 +27,8 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .collegeFootball: "NCAA Football"
         case .mlb: "MLB"
         case .nhl: "NHL"
+        case .atp: "ATP"
+        case .wta: "WTA"
         }
     }
 
@@ -36,6 +40,8 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .collegeFootball: "NCAA"
         case .mlb: "MLB"
         case .nhl: "NHL"
+        case .atp: "ATP"
+        case .wta: "WTA"
         }
     }
 
@@ -45,6 +51,20 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nba: "basketball.fill"
         case .mlb: "baseball.fill"
         case .nhl: "hockey.puck.fill"
+        case .atp, .wta: "tennisball.fill"
+        }
+    }
+
+    /// Restrained section/preview accents. Kept as values so identity is testable without UI.
+    var accentRGB: UInt32 {
+        switch self {
+        case .nfl: 0x428DFF
+        case .collegeFootball: 0xA783E8
+        case .nba: 0xF4A55A
+        case .nhl: 0x53BFB9
+        case .mlb: 0xE87575
+        case .atp: 0xB2D96C
+        case .wta: 0xED8EB6
         }
     }
 
@@ -55,12 +75,13 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .collegeFootball: "Regular season"
         case .mlb: "Regular season"
         case .nhl: "Regular season"
+        case .atp, .wta: "Tour"
         }
     }
 
-    /// Leagues whose full decoding exists today. The hub shows the rest in the
-    /// filter but does not fetch them yet (see `isAvailable`).
-    var isAvailable: Bool { self == .nfl }
+    /// Every league in the filter is wired to a provider path as of Phase S5.
+    /// Kept as a property so a future league can ship dark behind the filter.
+    var isAvailable: Bool { true }
 }
 
 // MARK: - Identifiers
@@ -115,6 +136,7 @@ enum KyroGameStatus: Equatable, Sendable {
     case final
     case postponed
     case canceled
+    case suspended
     case unknown(String)
 
     var isLive: Bool { self == .live }
@@ -136,6 +158,7 @@ enum KyroGameStatus: Equatable, Sendable {
         case .final: "Final"
         case .postponed: "Postponed"
         case .canceled: "Canceled"
+        case .suspended: "Suspended"
         case .unknown: "Update pending"
         }
     }
@@ -177,9 +200,20 @@ struct KyroSportsTeam: Identifiable, Equatable, Sendable {
     let nickname: String
     let location: String?
     let logoURL: URL?
+    /// The provider's logo variant for dark backgrounds, when it has one.
+    let darkLogoURL: URL?
     let primaryColorHex: String?
+    let alternateColorHex: String?
     let conference: String?
     let division: String?
+    /// Country code when the provider supplies one: ISO alpha-2 (`ES`) from
+    /// older payloads, or ESPN's three-letter flag code (`ESP`) from live tennis.
+    let countryCode: String?
+    /// The provider's flag image for `countryCode` (ESPN tennis). Never derived from the code.
+    let flagURL: URL?
+    /// Other names the provider uses for the team, e.g. ESPN's
+    /// `shortDisplayName` "Jax State". Stream matching uses them as aliases.
+    let alternateNames: [String]
 
     init(
         id: String,
@@ -188,9 +222,14 @@ struct KyroSportsTeam: Identifiable, Equatable, Sendable {
         nickname: String,
         location: String? = nil,
         logoURL: URL? = nil,
+        darkLogoURL: URL? = nil,
         primaryColorHex: String? = nil,
+        alternateColorHex: String? = nil,
         conference: String? = nil,
-        division: String? = nil
+        division: String? = nil,
+        countryCode: String? = nil,
+        flagURL: URL? = nil,
+        alternateNames: [String] = []
     ) {
         self.id = id
         self.league = league
@@ -198,9 +237,14 @@ struct KyroSportsTeam: Identifiable, Equatable, Sendable {
         self.nickname = nickname
         self.location = location
         self.logoURL = logoURL
+        self.darkLogoURL = darkLogoURL
         self.primaryColorHex = primaryColorHex
+        self.alternateColorHex = alternateColorHex
         self.conference = conference
         self.division = division
+        self.countryCode = countryCode
+        self.flagURL = flagURL
+        self.alternateNames = alternateNames
     }
 
     /// The name to draw when the full name would wrap: "49ers", not
@@ -243,12 +287,22 @@ struct KyroGameTeam: Equatable, Sendable {
     /// Provider-reported poll rank at game time. Nil means unranked or that
     /// the league does not publish rankings in its scoreboard payload.
     let rank: Int?
+    /// Provider-declared winner. Tennis needs it: a retirement or walkover
+    /// is decided without a final set count.
+    let isWinner: Bool?
 
-    init(team: KyroSportsTeam, score: Int? = nil, record: String? = nil, rank: Int? = nil) {
+    init(team: KyroSportsTeam, score: Int? = nil, record: String? = nil, rank: Int? = nil, isWinner: Bool? = nil) {
         self.team = team
         self.score = score
         self.record = record
         self.rank = rank
+        self.isWinner = isWinner
+    }
+
+    /// The team name with its poll rank, e.g. `#5 Georgia Bulldogs`.
+    var rankedName: String {
+        guard let rank, rank > 0 else { return team.fullName }
+        return "#\(rank) \(team.fullName)"
     }
 
     /// The record with a trailing `-0` tie column removed, matching how NFL
@@ -284,7 +338,18 @@ struct KyroSportsGame: Identifiable, Equatable, Sendable {
     let periods: [KyroGamePeriod]
     let venue: String?
     let broadcast: String?
+    /// Event headline such as a bowl or conference championship name.
+    let note: String?
+    /// Short live-state text the status line cannot carry, e.g. `2 outs`.
+    let situation: String?
     let provenance: [KyroGameProvenance]
+    /// Tennis-only tournament context. Team sports leave these nil.
+    let tournament: String?
+    let round: String?
+    let isSingles: Bool
+    /// True when the provider gave only the scheduled day. `startTime` then
+    /// anchors the day (noon UTC) and must not be shown as a clock time.
+    let isStartTimeTBD: Bool
 
     init(
         id: KyroGameID,
@@ -300,7 +365,13 @@ struct KyroSportsGame: Identifiable, Equatable, Sendable {
         periods: [KyroGamePeriod] = [],
         venue: String? = nil,
         broadcast: String? = nil,
-        provenance: [KyroGameProvenance]? = nil
+        note: String? = nil,
+        situation: String? = nil,
+        provenance: [KyroGameProvenance]? = nil,
+        tournament: String? = nil,
+        round: String? = nil,
+        isSingles: Bool = false,
+        isStartTimeTBD: Bool = false
     ) {
         self.id = id
         self.league = league
@@ -315,7 +386,13 @@ struct KyroSportsGame: Identifiable, Equatable, Sendable {
         self.periods = periods
         self.venue = venue
         self.broadcast = broadcast
+        self.note = note
+        self.situation = situation
         self.provenance = provenance ?? [KyroGameProvenance(provider: id.provider, rawID: id.rawID)]
+        self.tournament = tournament
+        self.round = round
+        self.isSingles = isSingles
+        self.isStartTimeTBD = isStartTimeTBD
     }
 
     /// The most specific line to show under the matchup: the provider's clock
@@ -330,7 +407,10 @@ struct KyroSportsGame: Identifiable, Equatable, Sendable {
 
     /// The winning side for a final game, if there is one.
     var winner: KyroGameTeam? {
-        guard status.isFinal, let homeScore = home.score, let awayScore = away.score,
+        guard status.isFinal else { return nil }
+        if home.isWinner == true, away.isWinner != true { return home }
+        if away.isWinner == true, home.isWinner != true { return away }
+        guard let homeScore = home.score, let awayScore = away.score,
               homeScore != awayScore else { return nil }
         return homeScore > awayScore ? home : away
     }
@@ -500,6 +580,31 @@ enum KyroSportsDashboard {
                 message: "Final scores from the last seven days will appear here."
             )
         }
+    }
+
+    /// Copy for a loaded league with no games at all in its window.
+    static func noGamesState(
+        for league: KyroSportLeague,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> KyroSportsDashboardEmptyState {
+        if league == .mlb {
+            // MLB's regular season runs roughly late March to early October and
+            // the postseason ends by early November.
+            let month = calendar.component(.month, from: now)
+            if month >= 11 || month <= 2 {
+                return KyroSportsDashboardEmptyState(
+                    symbolName: "baseball.fill",
+                    title: "MLB is in its offseason",
+                    message: "Scores and schedules return when spring training and the new season begin."
+                )
+            }
+        }
+        return KyroSportsDashboardEmptyState(
+            symbolName: "calendar.badge.exclamationmark",
+            title: "No games to show",
+            message: "There are no \(league.displayName) games in the current window."
+        )
     }
 
     /// True when sectioning retained later-week / beyond-window games that the

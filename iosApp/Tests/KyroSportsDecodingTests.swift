@@ -116,6 +116,26 @@ final class KyroSportsDecodingTests: XCTestCase {
 
     // MARK: - Scheduled games
 
+    func testESPNTeamCarriesAlternateColourAndDarkLogo() throws {
+        let json = #"""
+        {"events":[{"id":"401","date":"2026-11-08T18:00Z","status":{"type":{"state":"pre","name":"STATUS_SCHEDULED"}},
+          "competitions":[{"id":"401","competitors":[
+            {"homeAway":"home","team":{"id":"17","abbreviation":"BKN","location":"Brooklyn","name":"Nets","color":"000000",
+              "alternateColor":"ffffff","logo":"https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/bkn.png",
+              "logoDark":"https://a.espncdn.com/i/teamlogos/nba/500-dark/scoreboard/bkn.png"}},
+            {"homeAway":"away","team":{"id":"2","abbreviation":"BOS","location":"Boston","name":"Celtics","color":"008348",
+              "logo":"https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/bos.png"}}]}]}]}
+        """#
+        let response = try JSONDecoder().decode(ESPNScoreboardResponse.self, from: Data(json.utf8))
+        let game = try XCTUnwrap(response.events.first.flatMap { ESPNMapping.game(from: $0, league: .nba) })
+        XCTAssertEqual(game.home.team.alternateColorHex, "ffffff")
+        XCTAssertEqual(game.home.team.darkLogoURL?.absoluteString, "https://a.espncdn.com/i/teamlogos/nba/500-dark/scoreboard/bkn.png")
+        XCTAssertNil(game.away.team.alternateColorHex, "missing fields stay missing")
+        XCTAssertNil(game.away.team.darkLogoURL)
+        XCTAssertEqual(KyroSportsMatchupArtwork(game: game).backdrop,
+                       .teams(away: KyroSportsRGB(rgb: 0x008348), home: KyroSportsMatchupArtwork.neutralSide))
+    }
+
     func testScheduledGameIsNotLiveAndHasNoScore() throws {
         let wire = try SleeperFixtureSupport.decode(
             [SleeperScoreGame].self, named: "scores_nfl_week9", bundleClass: Self.self
@@ -208,6 +228,14 @@ final class KyroSportsDecodingTests: XCTestCase {
             rawStatus: "pre_game", isInProgress: false, hasStarted: false, isOver: false, canceled: true
         )
         XCTAssertEqual(status, .canceled)
+    }
+
+    func testSleeperSuspendedStatusIsExplicit() {
+        let status = SleeperMapping.status(
+            rawStatus: "suspended", isInProgress: false, hasStarted: true, isOver: false, canceled: false
+        )
+        XCTAssertEqual(status, .suspended)
+        XCTAssertEqual(status.label, "Suspended")
     }
 
     // MARK: - Missing optional fields
@@ -364,7 +392,7 @@ final class KyroSportsDecodingTests: XCTestCase {
 
     func testSectionsOrderLiveThenTodayThenUpcoming() throws {
         // 2026-11-06T18:00:00Z — a Friday.
-        let now = Date(timeIntervalSince1970: 1_791_396_000)
+        let now = Date(timeIntervalSince1970: 1_793_988_000)
         let calendar = Calendar(identifier: .gregorian)
 
         func game(_ id: String, _ status: KyroGameStatus, hoursFromNow: Double) -> KyroSportsGame {
@@ -391,7 +419,7 @@ final class KyroSportsDecodingTests: XCTestCase {
     }
 
     func testFinishedGameFromAnotherDayIsARecentResultNotUpcoming() {
-        let now = Date(timeIntervalSince1970: 1_791_396_000)
+        let now = Date(timeIntervalSince1970: 1_793_988_000)
         let calendar = Calendar(identifier: .gregorian)
         func game(_ id: String, _ status: KyroGameStatus, hoursFromNow: Double) -> KyroSportsGame {
             KyroSportsGame(
@@ -407,9 +435,10 @@ final class KyroSportsDecodingTests: XCTestCase {
             from: [game("next", .scheduled, hoursFromNow: 72), game("last", .final, hoursFromNow: -30)],
             now: now, calendar: calendar
         )
-        XCTAssertEqual(sections.map(\.bucket), [.recent, .upcoming])
-        XCTAssertEqual(sections[0].games.first?.id.rawID, "last")
-        XCTAssertEqual(sections[1].games.first?.id.rawID, "next")
+        // Sections are ordered live, today, upcoming, recent, later.
+        XCTAssertEqual(sections.map(\.bucket), [.upcoming, .recent])
+        XCTAssertEqual(sections[0].games.first?.id.rawID, "next")
+        XCTAssertEqual(sections[1].games.first?.id.rawID, "last")
     }
 
     func testEmptySectionsAreOmitted() {
@@ -485,7 +514,7 @@ final class KyroSportsDecodingTests: XCTestCase {
     }
 
     func testUpcomingIsSplitIntoDeterministicCalendarDateSections() {
-        let now = Date(timeIntervalSince1970: 1_791_396_000)
+        let now = Date(timeIntervalSince1970: 1_793_988_000)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let games = [
@@ -552,12 +581,13 @@ final class KyroSportsDecodingTests: XCTestCase {
     }
 
     func testPostponedAndCanceledFutureGamesHaveOneUpcomingAssignment() {
-        let now = Date(timeIntervalSince1970: 1_791_396_000)
+        let now = Date(timeIntervalSince1970: 1_793_988_000)
         let future = now.addingTimeInterval(48 * 3600)
         let sections = KyroSportsSectioning.sections(
             from: [
                 accuracyGame("postponed", status: .postponed, start: future, week: 9),
-                accuracyGame("canceled", status: .canceled, start: future, week: 9)
+                // A different matchup: same teams at the same kickoff are one game.
+                accuracyGame("canceled", status: .canceled, start: future, week: 9, away: "LV", home: "MIA")
             ],
             now: now
         )
@@ -569,7 +599,7 @@ final class KyroSportsDecodingTests: XCTestCase {
     }
 
     func testMissingTimestampAndStalePastScheduleAreNotMisleadingUpcomingGames() {
-        let now = Date(timeIntervalSince1970: 1_791_396_000)
+        let now = Date(timeIntervalSince1970: 1_793_988_000)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let sections = KyroSportsSectioning.sections(
@@ -585,7 +615,7 @@ final class KyroSportsDecodingTests: XCTestCase {
     }
 
     func testLiveToFinalMovesFromLiveNowToRecentWithoutDuplication() {
-        let now = Date(timeIntervalSince1970: 1_791_396_000)
+        let now = Date(timeIntervalSince1970: 1_793_988_000)
         let start = now.addingTimeInterval(-3600)
         let live = KyroSportsSectioning.sections(
             from: [accuracyGame("game", status: .live, start: start, week: 9)],

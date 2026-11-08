@@ -211,7 +211,13 @@ enum KyroSportsReconciler {
             periods: game.periods,
             venue: game.venue,
             broadcast: game.broadcast,
-            provenance: provenance
+            note: game.note,
+            situation: game.situation,
+            provenance: provenance,
+            tournament: game.tournament,
+            round: game.round,
+            isSingles: game.isSingles,
+            isStartTimeTBD: game.isStartTimeTBD
         )
     }
 }
@@ -293,7 +299,8 @@ enum KyroSportsSectioning {
             guard !game.status.isLive, !game.status.isFinal, let start = game.startTime else {
                 return false
             }
-            guard start > now || calendar.isDate(start, inSameDayAs: now) else { return false }
+            // A scheduled game that already started is stale, not a later game.
+            guard start > now else { return false }
             return !visibleIDs.contains(game.id)
         }
         .sorted(by: KyroSportsReconciler.deterministicOrder)
@@ -325,17 +332,34 @@ enum KyroSportsSectioning {
         switch context.league {
         case .nfl:
             return belongsToCurrentNFLWeek(game, start: start, now: now, calendar: calendar, context: context)
-        case .nba, .nhl, .mlb, .collegeFootball:
-            let startOfToday = calendar.startOfDay(for: now)
-            guard let upcomingEnd = calendar.date(
-                byAdding: .day,
-                value: otherLeagueUpcomingDayCount,
-                to: startOfToday
-            ) else {
-                return false
+        case .collegeFootball:
+            // ESPN's week number is authoritative for FBS, including bowls
+            // (postseason week 1). Without it, fall back to the rolling window.
+            if let currentWeek = context.currentWeek, let gameWeek = game.week {
+                if let currentSeason = context.currentSeason, let season = game.season,
+                   season != currentSeason {
+                    return false
+                }
+                return gameWeek == currentWeek
             }
-            return start >= startOfToday && start < upcomingEnd
+            return isInsideRollingWindow(start: start, now: now, calendar: calendar)
+        case .nba, .nhl, .mlb:
+            return isInsideRollingWindow(start: start, now: now, calendar: calendar)
+        case .atp, .wta:
+            return isInsideRollingWindow(start: start, now: now, calendar: calendar)
         }
+    }
+
+    private static func isInsideRollingWindow(start: Date, now: Date, calendar: Calendar) -> Bool {
+        let startOfToday = calendar.startOfDay(for: now)
+        guard let upcomingEnd = calendar.date(
+            byAdding: .day,
+            value: otherLeagueUpcomingDayCount,
+            to: startOfToday
+        ) else {
+            return false
+        }
+        return start >= startOfToday && start < upcomingEnd
     }
 
     /// Local Thursday 00:00 through the following Tuesday 00:00 (exclusive),

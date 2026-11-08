@@ -184,6 +184,43 @@ final class EPGSQLiteGuide: @unchecked Sendable {
         }
     }
 
+    /// Programmes overlapping `interval` on any channel whose title, subtitle or summary opening
+    /// contains one of `anchors` (ASCII case-insensitive `LIKE`). One bounded query for event
+    /// matching: it never touches the resident window and returns at most `limit` rows.
+    /// `anchors` must be plain letter/number words, so they carry no `LIKE` wildcards.
+    func windowPrograms(overlapping interval: DateInterval, anchors: [String], limit: Int) -> [(key: String, program: EPGProgram)] {
+        let words = Array(anchors.filter { !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber } }.prefix(16))
+        guard !words.isEmpty, limit > 0 else { return [] }
+        let clauses = words.indices.map { offset in
+            let parameter = offset + 4
+            return "title LIKE ?\(parameter) OR subtitle LIKE ?\(parameter) OR substr(summary, 1, 280) LIKE ?\(parameter)"
+        }
+        let sql = """
+        SELECT channel_key, channel_id, start_s, end_s, title, subtitle, summary, category, episode
+        FROM programmes WHERE start_s < ?1 AND end_s > ?2 AND (\(clauses.joined(separator: " OR "))) LIMIT ?3
+        """
+        return (try? connection.withHandle { db in
+            let statement = try EPGSQLiteStatement(db, sql)
+            defer { statement.finalize() }
+            statement.bind(1, interval.end.timeIntervalSinceReferenceDate)
+            statement.bind(2, interval.start.timeIntervalSinceReferenceDate)
+            statement.bind(3, Int64(limit))
+            for (offset, word) in words.enumerated() { statement.bind(Int32(offset + 4), "%\(word)%") }
+            var rows: [(key: String, program: EPGProgram)] = []
+            while try statement.step() {
+                guard let key = statement.text(0) else { continue }
+                rows.append((key, EPGProgram(
+                    channelID: statement.text(1) ?? key,
+                    start: Date(timeIntervalSinceReferenceDate: statement.double(2)),
+                    end: Date(timeIntervalSinceReferenceDate: statement.double(3)),
+                    title: statement.text(4) ?? "",
+                    subtitle: statement.text(5), summary: statement.text(6),
+                    category: statement.text(7), episode: statement.text(8))))
+            }
+            return rows
+        }) ?? []
+    }
+
     /// Steps `statement` (already prepared with `selectChannel`) for one channel.
     fileprivate static func readChannel(_ statement: EPGSQLiteStatement, key: String) throws -> [EPGProgram] {
         statement.bind(1, key)

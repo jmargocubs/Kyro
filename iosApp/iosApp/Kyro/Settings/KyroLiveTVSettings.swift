@@ -4,19 +4,6 @@ import SwiftUI
 // (`LiveTVSettingsView`) is reused as it is; this file only decides how it is presented, what the
 // Settings row says, and which of its sections are worth showing under the unified shell.
 
-/// How `LiveTVSettingsView` is presented.
-enum LiveTVSettingsPresentation: Equatable {
-    /// In its own sheet and navigation stack: Live TV's first-time setup ("Add Playlist") and the
-    /// pushed Live TV's toolbar gear. It has a Done button and closes after a provider is saved.
-    case sheet
-    /// A subpage of Settings, in Settings' own stack: the system Back button is its only way out,
-    /// and saving a provider leaves the user on the page, where the provider now shows.
-    case pushed
-
-    var showsDoneButton: Bool { self == .sheet }
-    var dismissesAfterSavingProvider: Bool { self == .sheet }
-}
-
 /// The Live TV row in Settings.
 enum KyroLiveTVSettingsEntry {
     static let title = "Live TV"

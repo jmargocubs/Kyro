@@ -1249,12 +1249,21 @@ struct LiveTVM3UParseResult: Sendable, Equatable {
     let hitChannelLimit: Bool
 }
 
+/// Live TV catalog capacity, shared by import, the channel snapshot and Sports Hub matching.
+enum LiveTVCatalogLimits {
+    /// Build 38 raised the cap from 20,000 to 40,000 channels.
+    static let maximumChannels = 40_000
+    /// M3U and Xtream stream-list downloads. 40,000 Xtream records run about 16–20 MB, past the
+    /// old 16 MiB cap, so the cap rose with the channel limit.
+    static let maximumPlaylistBytes = 40 * 1024 * 1024
+}
+
 enum LiveTVM3UParser {
-    static func parse(data: Data, providerID: UUID, limit: Int = 20_000) throws -> [LiveTVChannel] {
+    static func parse(data: Data, providerID: UUID, limit: Int = LiveTVCatalogLimits.maximumChannels) throws -> [LiveTVChannel] {
         try parseResult(data: data, providerID: providerID, limit: limit).channels
     }
 
-    static func parseResult(data: Data, providerID: UUID, limit: Int = 20_000) throws -> LiveTVM3UParseResult {
+    static func parseResult(data: Data, providerID: UUID, limit: Int = LiveTVCatalogLimits.maximumChannels) throws -> LiveTVM3UParseResult {
         guard limit > 0, let text = String(data: data, encoding: .utf8)
                 ?? String(data: data, encoding: .isoLatin1) else {
             throw LiveTVError.invalidPlaylist
@@ -1262,6 +1271,7 @@ enum LiveTVM3UParser {
 
         var channels: [LiveTVChannel] = []
         var seenIDs = Set<String>()
+        var seenEntries = Set<String>()
         var pending: (name: String, attributes: [String: String])?
         var hitChannelLimit = false
         let lines = text.split(whereSeparator: \.isNewline)
@@ -1286,13 +1296,21 @@ enum LiveTVM3UParser {
             }
 
             let guideID = item.attributes["tvg-id"]?.nilIfBlank
-            let stableSource = guideID?.lowercased() ?? item.name.folding(
+            let foldedName = item.name.folding(
                 options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")
             ).lowercased()
-            let digest = SHA256.hash(data: Data("\(providerID.uuidString)|\(stableSource)".utf8))
-                .map { String(format: "%02x", $0) }.joined()
-            let stableID = "\(providerID.uuidString):\(digest)"
-            guard seenIDs.insert(stableID).inserted else { continue }
+            let stableSource = guideID?.lowercased() ?? foldedName
+            // The same guide ID and name twice is one channel listed twice.
+            guard seenEntries.insert("\(stableSource)\u{1F}\(foldedName)").inserted else { continue }
+            var stableID = Self.channelID(providerID: providerID, key: stableSource)
+            if !seenIDs.insert(stableID).inserted {
+                // Event feeds often borrow one guide ID ("DAZN1.uk") for many differently named
+                // channels. Before Build 38 every one after the first was dropped. The first keeps
+                // its identity; each later one gets an ID keyed by guide ID and name, which stays
+                // stable across refreshes.
+                stableID = Self.channelID(providerID: providerID, key: "\(stableSource)|name:\(foldedName)")
+                guard seenIDs.insert(stableID).inserted else { continue }
+            }
 
             let logo = item.attributes["tvg-logo"].flatMap(webURL)
             let category = item.attributes["group-title"]?.nilIfBlank ?? "Other"
@@ -1306,6 +1324,24 @@ enum LiveTVM3UParser {
             ))
         }
         return LiveTVM3UParseResult(channels: channels, hitChannelLimit: hitChannelLimit)
+    }
+
+    private static func channelID(providerID: UUID, key: String) -> String {
+        "\(providerID.uuidString):\(hex(SHA256.hash(data: Data("\(providerID.uuidString)|\(key)".utf8))))"
+    }
+
+    private static let hexDigits = Array("0123456789abcdef".utf8)
+
+    /// Lowercase hex, byte-for-byte what `String(format: "%02x")` per byte produced, without
+    /// 32 formatter calls per channel (1.3 million for a 40,000-channel playlist).
+    static func hex<Bytes: Sequence>(_ bytes: Bytes) -> String where Bytes.Element == UInt8 {
+        var output: [UInt8] = []
+        output.reserveCapacity(64)
+        for byte in bytes {
+            output.append(hexDigits[Int(byte >> 4)])
+            output.append(hexDigits[Int(byte & 0x0F)])
+        }
+        return String(decoding: output, as: UTF8.self)
     }
 
     private static func webURL(_ value: String) -> URL? {
@@ -1327,9 +1363,11 @@ enum LiveTVM3UParser {
         return nil
     }
 
+    /// Compiled once: a 40,000-channel playlist would otherwise compile it 40,000 times.
+    private static let attributePattern = try? NSRegularExpression(pattern: #"([A-Za-z0-9_-]+)="([^"]*)""#)
+
     private static func parseAttributes(_ line: String) -> [String: String] {
-        let pattern = #"([A-Za-z0-9_-]+)="([^"]*)""#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [:] }
+        guard let regex = attributePattern else { return [:] }
         let range = NSRange(line.startIndex..<line.endIndex, in: line)
         var result: [String: String] = [:]
         for match in regex.matches(in: line, range: range) {

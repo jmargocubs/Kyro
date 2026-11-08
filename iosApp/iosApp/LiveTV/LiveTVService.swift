@@ -92,13 +92,35 @@ final class LiveTVService {
     /// list and the guide.
     @ObservationIgnored let presentation = LiveTVPresentation(scheduler: LiveTVTaskScheduler())
     #if os(iOS)
+    /// One-tap Sports Hub playback over the same session and presentation.
+    @ObservationIgnored private(set) lazy var sportsPlayback: KyroSportsPlaybackCoordinator = {
+        let coordinator = KyroSportsPlaybackCoordinator(scheduler: LiveTVTaskScheduler())
+        coordinator.driver = self
+        return coordinator
+    }()
+    /// Sports Hub Live Now: live events with strong local stream evidence. Metadata only; it
+    /// never starts a stream. One per process so its match cache outlives a tab switch.
+    @ObservationIgnored private(set) lazy var sportsLiveNow = KyroSportsLiveNowModel(source: self)
+    @ObservationIgnored private var sportsIndex: (providerID: UUID, revision: Int, task: Task<KyroSportsChannelIndex?, Never>)?
+    @ObservationIgnored private var sportsGuideKeyCache: (providerID: UUID, revision: Int, generation: Int, task: Task<[String: [Int32]]?, Never>)?
+    @ObservationIgnored private var sportsIndexValue: KyroSportsChannelIndex?
+    @ObservationIgnored private var sportsPrepare: (token: UUID, finished: Bool)?
+    @ObservationIgnored private var sportsPrewarm: Task<Void, Never>?
+    /// True while the Sports Hub prewarm runs. Observed, so Live Now re-reads its availability
+    /// when the prewarm ends, including when its catalog download failed.
+    private(set) var isPrewarmingSports = false
+    @ObservationIgnored private var sportsSearchTask: Task<Void, Never>?
+    @ObservationIgnored private var isObservingSportsSession = false
+    private static let sportsCatalogWaitSeconds: TimeInterval = 25
+    #endif
+    #if os(iOS)
     @ObservationIgnored private var pictureInPictureMonitor: LiveTVPictureInPictureMonitor?
     #endif
 
     private static let providersKey = "liveTV.providers.v1"
     private static let favoritesKey = "liveTV.favorites.v1"
-    private static let maximumPlaylistBytes = 16 * 1024 * 1024
-    private static let maximumChannels = 20_000
+    private static let maximumPlaylistBytes = LiveTVCatalogLimits.maximumPlaylistBytes
+    private static let maximumChannels = LiveTVCatalogLimits.maximumChannels
     /// A downloaded playlist older than this is refreshed when Live TV opens.
     private static let playlistRefreshInterval: TimeInterval = 12 * 60 * 60
     /// Opening Live TV again within this time does not retry a download that just ran or failed.
@@ -128,7 +150,9 @@ final class LiveTVService {
         } else {
             let configuration = URLSessionConfiguration.ephemeral
             configuration.timeoutIntervalForRequest = 15
-            configuration.timeoutIntervalForResource = 20
+            // A 40,000-channel playlist or Xtream list is 8–20 MB; 20 s total failed it on slower
+            // connections. A stalled transfer still fails after 15 s without data.
+            configuration.timeoutIntervalForResource = 60
             configuration.urlCache = nil
             self.session = URLSession(configuration: configuration)
         }
@@ -576,8 +600,7 @@ final class LiveTVService {
                       let name = record.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { continue }
                 let streamURL = try XtreamURLBuilder.streamURL(server: server, username: username, password: password,
                     streamID: streamID, extension: record.containerExtension, allowedOutputFormats: outputFormats)
-                let digest = SHA256.hash(data: Data("\(providerID.uuidString)|xtream|\(streamID)".utf8))
-                    .map { String(format: "%02x", $0) }.joined()
+                let digest = LiveTVM3UParser.hex(SHA256.hash(data: Data("\(providerID.uuidString)|xtream|\(streamID)".utf8)))
                 channels.append(LiveTVChannel(id: "\(providerID.uuidString):\(digest)",
                     guideID: record.epgChannelID?.nilIfEmpty ?? String(streamID), name: name, streamURL: streamURL,
                     logoURL: record.streamIcon.flatMap(Self.webURL),
@@ -720,6 +743,10 @@ final class LiveTVService {
         guard isPlayable(channel) else { startupTrace.record("playback_failed"); rejectCachedPlayback(); return }
         startupTrace.record("stream_url_available_and_validated")
         Task { await refreshShortEPG(for: channel) }
+        // Ordinary Live TV playback never carries a Sports Hub event's Other Streams.
+        #if os(iOS)
+        if sportsPlaybackIsActive { cancelSportsPlayback(); sportsPlayback.ordinaryPlaybackStarted() }
+        #endif
         let selection = presentation.select(channel, from: presenter)
         if selection == .playInPlace {
             playerSession.play(channel, startupTrace: startupTrace)
@@ -754,11 +781,222 @@ final class LiveTVService {
     /// The playback gate, for surfaces that should only offer channels playback will accept.
     func canPlay(_ channel: LiveTVChannel) -> Bool { isPlayable(channel) }
 
+    #if os(iOS)
+    // MARK: Sports Hub streams
+
+    /// Warms what an event tap needs: a downloaded (playable) catalog and its match index. Uses
+    /// the same due-only refresh policy as opening Live TV, so it adds no extra downloads.
+    func prewarmSportsMatching() {
+        guard let providerID = selectedProviderID, sportsPrewarm == nil else { return }
+        isPrewarmingSports = true
+        sportsPrewarm = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.sportsPrewarm = nil
+                self.isPrewarmingSports = false
+            }
+            await self.prepareSelectedProvider()
+            guard self.selectedProviderID == providerID else { return }
+            _ = await self.sportsChannelIndex(for: providerID)
+        }
+    }
+
+    /// Local event-to-stream candidates against the selected provider. Reuses one channel index
+    /// per catalog revision and one guide-key map per guide generation, and reads only guide
+    /// programmes around the event; nothing here touches the network except the due-only
+    /// playlist refresh that makes cached channels playable.
+    func sportsStreamMatches(for game: KyroSportsGame, now: Date = .now) async -> KyroSportsStreamMatchResult {
+        let request = KyroSportsStreamMatchRequest(game: game, now: now)
+        guard let providerID = selectedProviderID else {
+            return KyroSportsStreamMatcher.emptyResult(for: request, guide: nil, cancelled: false)
+        }
+        await awaitPlayableCatalog(providerID)
+        guard !Task.isCancelled, selectedProviderID == providerID,
+              let index = await sportsChannelIndex(for: providerID), !Task.isCancelled else {
+            return KyroSportsStreamMatcher.emptyResult(for: request, guide: nil, cancelled: true)
+        }
+        let guide = guideIndexes[providerID]
+        let keys = await guide.asyncFlatMap { await self.sportsGuideKeys(index: index, guide: $0, providerID: providerID) }
+        return await Task.detached(priority: .userInitiated) {
+            KyroSportsStreamMatcher.match(request: request, index: index, guide: guide, guideKeys: keys)
+        }.value
+    }
+
+    /// Cached rows are browseable, not playable. A tap needs this session's downloaded catalog,
+    /// so wait for a due refresh, but only until the channels are in (never for the guide).
+    private func awaitPlayableCatalog(_ providerID: UUID) async {
+        guard !liveCatalogs.contains(providerID) else { return }
+        let token = UUID()
+        sportsPrepare = (token, false)
+        Task { [weak self] in
+            await self?.prepareSelectedProvider()
+            if self?.sportsPrepare?.token == token { self?.sportsPrepare = (token, true) }
+        }
+        let deadline = Date().addingTimeInterval(Self.sportsCatalogWaitSeconds)
+        // The refresh publishes channels before it downloads the guide; stop waiting then.
+        while !liveCatalogs.contains(providerID), Date() < deadline, !Task.isCancelled,
+              sportsPrepare?.token == token, sportsPrepare?.finished == false {
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+    }
+
+    private func sportsChannelIndex(for providerID: UUID) async -> KyroSportsChannelIndex? {
+        let revision = channelCatalogRevision
+        if let cached = sportsIndex, cached.providerID == providerID, cached.revision == revision {
+            return await cached.task.value
+        }
+        sportsIndex?.task.cancel()
+        sportsIndexValue = nil
+        sportsGuideKeyCache = nil
+        let catalog = channelCatalogs[providerID] ?? []
+        let isLive = liveCatalogs.contains(providerID) && providers.contains(where: { $0.id == providerID })
+        let task = Task.detached(priority: .userInitiated) { () -> KyroSportsChannelIndex? in
+            // A downloaded catalog holds only web stream URLs; a cached one holds none.
+            let playable = isLive ? catalog.filter { ["http", "https"].contains($0.streamURL.scheme?.lowercased() ?? "") } : []
+            return KyroSportsChannelIndex.build(channels: playable, providerID: providerID, catalogRevision: revision)
+        }
+        sportsIndex = (providerID, revision, task)
+        let value = await task.value
+        if sportsIndex?.revision == revision, sportsIndex?.providerID == providerID { sportsIndexValue = value }
+        return value
+    }
+
+    private func sportsGuideKeys(index: KyroSportsChannelIndex, guide: EPGIndex, providerID: UUID) async -> [String: [Int32]]? {
+        let generation = guideGenerations.generation(for: providerID)
+        if let cached = sportsGuideKeyCache, cached.revision == index.catalogRevision,
+           cached.providerID == providerID, cached.generation == generation {
+            return await cached.task.value
+        }
+        sportsGuideKeyCache?.task.cancel()
+        let task = Task.detached(priority: .userInitiated) { index.guideKeyMap(for: guide) }
+        sportsGuideKeyCache = (providerID, index.catalogRevision, generation, task)
+        return await task.value
+    }
+
+    /// Starts one-tap playback for an event: discovery, then automatic attempts through the one
+    /// Live TV session. The coordinator's phase tells the Sports Hub what to show.
+    func playSportsEvent(_ game: KyroSportsGame, now: Date = .now) {
+        // Build 39: upcoming, final, postponed and canceled events never start discovery or
+        // playback, whichever Sports Hub surface asked.
+        guard KyroSportsPlaybackEligibility.isInProgress(game) else { return }
+        let coordinator = sportsPlayback
+        let token = coordinator.beginSearching(game)
+        sportsSearchTask?.cancel()
+        sportsSearchTask = Task { [weak self] in
+            guard let self else { return }
+            guard await self.prepareSportsPlayback() else {
+                let result = await self.sportsStreamMatches(for: game, now: now)
+                guard !Task.isCancelled, token == coordinator.generation else { return }
+                coordinator.startUnavailable(result, for: game, token: token,
+                                             message: "Close Picture in Picture, then try again.")
+                return
+            }
+            let result = await self.sportsStreamMatches(for: game, now: now)
+            guard !Task.isCancelled, token == coordinator.generation else { return }
+            coordinator.start(result, for: game, token: token,
+                              allowsAutomaticPlayback: KyroSportsPlaybackPolicy.allowsAutomaticPlayback(game, now: now))
+        }
+    }
+
+    /// Plays a stream the viewer picked on the event's discovery screen. The connecting banner
+    /// shows while Live TV's Picture in Picture closes; if it will not close, the discovery screen
+    /// returns with the reason instead of the pick silently doing nothing.
+    func playSportsStream(_ match: KyroSportsStreamMatch, for game: KyroSportsGame, result: KyroSportsStreamMatchResult) {
+        let coordinator = sportsPlayback
+        let token = coordinator.beginSearching(game)
+        sportsSearchTask?.cancel()
+        sportsSearchTask = Task { [weak self] in
+            guard let self else { return }
+            let ready = await self.prepareSportsPlayback()
+            guard !Task.isCancelled, token == coordinator.generation else { return }
+            guard ready else {
+                coordinator.startUnavailable(result, for: game, token: token,
+                                             message: "Close Picture in Picture, then try again.")
+                return
+            }
+            coordinator.playChosen(match, game: game, result: result)
+        }
+    }
+
+    /// What the guide shows now on each channel, for stream rows without a matched listing. Reads
+    /// at most 40 channels off the main actor; never touches the network.
+    func sportsCurrentProgrammes(for channels: [LiveTVChannel], at date: Date = .now) async -> [String: EPGProgram] {
+        guard let providerID = selectedProviderID, let guide = guideIndexes[providerID], !channels.isEmpty else { return [:] }
+        let list = Array(channels.prefix(40))
+        return await Task.detached(priority: .userInitiated) {
+            var found: [String: EPGProgram] = [:]
+            for channel in list {
+                if Task.isCancelled { break }
+                guard let key = guide.channelKey(guideID: channel.guideID, name: channel.name) else { continue }
+                if !guide.isResident(channelKey: key) { guide.prefetch(channelKeys: [key]) }
+                if let current = guide.nowNext(channelKey: key, at: date).current { found[channel.id] = current }
+            }
+            return found
+        }.value
+    }
+
+    func cancelSportsPlayback() {
+        sportsSearchTask?.cancel()
+        sportsSearchTask = nil
+        sportsPlayback.cancel()
+    }
+
+    /// Live TV's own Picture in Picture window must close before the session is retuned headless;
+    /// otherwise the window would show the attempts. False when it does not close in time.
+    private func prepareSportsPlayback() async -> Bool {
+        observeSportsSessionIfNeeded()
+        switch presentation.phase {
+        case .idle:
+            return true
+        case .presented, .restoring:
+            return false
+        case .pictureInPicture:
+            presentation.stopPictureInPicture?()
+            for _ in 0..<30 {
+                try? await Task.sleep(for: .milliseconds(100))
+                if presentation.phase == .idle { return true }
+            }
+            return false
+        }
+    }
+
+    /// Re-reads the session and presentation for the coordinator on every change.
+    private func observeSportsSessionIfNeeded() {
+        guard !isObservingSportsSession else { return }
+        isObservingSportsSession = true
+        observeSportsSession()
+    }
+
+    private func observeSportsSession() {
+        withObservationTracking {
+            _ = playerSession.state
+            _ = playerSession.activeChannelID
+            _ = presentation.phase
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.sportsPlayback.sessionDidChange()
+                if self.sportsPlayback.phase == .presented, self.presentation.phase == .idle {
+                    self.sportsPlayback.playerClosed()
+                }
+                self.observeSportsSession()
+            }
+        }
+    }
+    #endif
+
     private func isPlayable(_ channel: LiveTVChannel) -> Bool {
-        guard let providerID = UUID(uuidString: String(channel.id.prefix(36))),
-              providers.contains(where: { $0.id == providerID }),
+        Self.isPlayable(channel) { id in providers.contains(where: { $0.id == id }) }
+    }
+
+    /// IDs of the configured providers, so a long channel list can be checked off the main actor.
+    var playableProviderIDs: Set<UUID> { Set(providers.map(\.id)) }
+
+    /// The playback gate as a pure check: a configured provider's channel with a web stream URL.
+    nonisolated static func isPlayable(_ channel: LiveTVChannel, isKnownProvider: (UUID) -> Bool) -> Bool {
+        guard let providerID = UUID(uuidString: String(channel.id.prefix(36))), isKnownProvider(providerID),
               let scheme = channel.streamURL.scheme?.lowercased() else { return false }
-        return ["http", "https"].contains(scheme)
+        return scheme == "http" || scheme == "https"
     }
 
     private func rejectCachedPlayback() {
@@ -1167,3 +1405,95 @@ struct KeychainLiveTVSecretStore: LiveTVSecretStore {
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
+
+#if os(iOS)
+// MARK: - Sports Hub playback driver
+
+extension LiveTVService: KyroSportsPlaybackDriving {
+    /// Whether a Sports Hub event owns the current or pending playback.
+    var sportsPlaybackIsActive: Bool {
+        sportsPlayback.isBusy || sportsPlayback.context != nil
+    }
+
+    var sportsPlaybackState: LiveTVPlaybackState { playerSession.state }
+    var sportsPlaybackChannelID: String? { playerSession.activeChannelID }
+    var sportsPlaybackFailureIsTerminal: Bool {
+        playerSession.state == .failed && playerSession.errorMessage == LiveTVPlaybackFailure.otherVideoActive.message
+    }
+
+    func sportsResolve(_ channel: LiveTVChannel) -> LiveTVChannel? {
+        let resolved: LiveTVChannel?
+        if let index = sportsIndexValue, index.providerID == selectedProviderID,
+           index.catalogRevision == channelCatalogRevision {
+            resolved = index.channel(id: channel.id)
+        } else {
+            resolved = channels.first { $0.id == channel.id }
+        }
+        guard let resolved, canPlay(resolved) else { return nil }
+        return resolved
+    }
+
+    /// Picture in Picture is bound by the player once it is on screen, never here, so a stream
+    /// still being tested can never end up in an automatic Picture in Picture window.
+    func sportsStartPlayback(_ channel: LiveTVChannel) {
+        playerSession.play(channel, startupTrace: LiveTVStartupTrace(
+            channelID: channel.id, backend: activeEPGStorageMode == .sqlite ? "sqlite" : "memory"))
+    }
+
+    func sportsPresentPlayer(_ channel: LiveTVChannel) {
+        errorMessage = nil
+        Task { await refreshShortEPG(for: channel) }
+        // The shell presents over the Sports Hub itself, so no Live TV tab is selected first.
+        _ = presentation.select(channel, from: .shell)
+    }
+
+    func sportsRetunePresentedPlayer(_ channel: LiveTVChannel) -> Bool {
+        playFromPlayerPicker(channel)
+    }
+
+    func sportsStopPlayback() {
+        endPlayback()
+    }
+}
+
+// MARK: - Sports Hub Live Now source
+
+extension LiveTVService: KyroSportsLiveNowSource {
+    var liveNowAvailability: KyroSportsLiveNowAvailability {
+        guard let providerID = selectedProviderID, providers.contains(where: { $0.id == providerID }) else {
+            return .noProvider
+        }
+        // Cached rows are not playable; wait for this session's download (Sports Hub prewarm
+        // runs the due-only refresh). Live Now itself never starts one.
+        guard liveCatalogs.contains(providerID) else {
+            return isLoading || playlistRefresh != nil || isPrewarmingSports ? .catalogLoading : .catalogUnavailable
+        }
+        return .ready(KyroSportsLiveNowRevision(providerID: providerID, catalogRevision: channelCatalogRevision,
+                                                guideGeneration: guideGenerations.generation(for: providerID)))
+    }
+
+    /// The same local matcher as a tap, against the cached channel index and guide-key map, at
+    /// utility priority. No playlist wait, no download, no playback.
+    func liveNowMatches(for game: KyroSportsGame, now: Date) async -> KyroSportsStreamMatchResult? {
+        guard case .ready(let revision) = liveNowAvailability,
+              let index = await sportsChannelIndex(for: revision.providerID), !Task.isCancelled,
+              index.catalogRevision == revision.catalogRevision else { return nil }
+        let guide = guideIndexes[revision.providerID]
+        let keys = await guide.asyncFlatMap { await self.sportsGuideKeys(index: index, guide: $0, providerID: revision.providerID) }
+        guard !Task.isCancelled, guide == nil || keys != nil else { return nil }
+        let request = KyroSportsStreamMatchRequest(game: game, now: now)
+        let work = Task.detached(priority: .utility) {
+            KyroSportsStreamMatcher.match(request: request, index: index, guide: guide, guideKeys: keys)
+        }
+        let result = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        return Task.isCancelled || result.indexWasCancelled ? nil : result
+    }
+}
+
+private extension Optional {
+    func asyncFlatMap<U>(_ transform: (Wrapped) async -> U?) async -> U? {
+        guard let value = self else { return nil }
+        return await transform(value)
+    }
+}
+#endif

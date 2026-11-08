@@ -257,16 +257,22 @@ struct LibrariesTabView: View {
     #if os(iOS)
     @Environment(\.statusColumn) private var statusColumn
     #endif
+    #if os(iOS)
     @Environment(\.kyroShellHeader) private var shellHeader
     @Environment(\.secondaryDestinationTitle) private var secondaryTitle
+    #endif
 
     /// The shell's header context when it draws the header for this page: a Movies or Series
     /// tab under the unified shell. Nil for a library root pushed from More and everywhere the
     /// shell draws no header, where this page keeps its own top bar.
-    private var hostedHeader: (context: KyroShellHeaderContext, state: PageChromeScrollState)? {
+    private var hostedHeader: (runway: CGFloat, state: PageChromeScrollState)? {
+        #if os(iOS)
         guard let destination = KyroShellHeader.destination(forCategory: category),
               let context = KyroShellHeader.hosted(shellHeader, secondaryTitle: secondaryTitle) else { return nil }
-        return (context, context.scrollState(for: destination))
+        return (context.runway, context.scrollState(for: destination))
+        #else
+        return nil
+        #endif
     }
 
     init(
@@ -404,7 +410,7 @@ struct LibrariesTabView: View {
             if let hosted = hostedHeader {
                 // The shell's one header sits in this runway; the library selector is page
                 // content directly beneath it.
-                Color.clear.frame(height: hosted.context.runway)
+                Color.clear.frame(height: hosted.runway)
                 HStack(spacing: 12) {
                     LibrarySelectorButton(
                         library: activeLibrary,
