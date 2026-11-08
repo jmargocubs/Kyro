@@ -37,6 +37,22 @@ target or a change that would lose protected state. Unsigned compilation with
 for an authenticated run. See `docs/mac-builder.md` for setup and background.
 Build recovery must follow the Mac Resource Limits in global instructions (no clean builds, DerivedData deletion, or extra simulators without approval).
 
+## Device Testing Workflow
+
+This section overrides the simulator guidance above. The primary test device is an
+iPhone 16 Plus running unsigned IPAs installed through Feather.
+
+- Do not boot or launch iOS Simulator for routine functionality or visual checks
+  unless the developer explicitly approves it. Do not add debug launch routes whose
+  only purpose is to reach a screen in Simulator.
+- Verify without Simulator first: static checks and focused unit tests that run
+  without a simulator where they cover the change.
+- When device testing is needed and the implementation is ready, build one unsigned
+  Release IPA for Feather. Do not build or archive it until the developer approves.
+  Avoid repeated archives, concurrent builds, and full test runs without new risk.
+- Use `-jobs 2` and one Xcode build at a time. Never modify production
+  authentication to support testing.
+
 ## Coding Style & Naming Conventions
 
 Use Swift 5 and SwiftUI naming conventions. Types use `PascalCase`; functions and properties use `camelCase`. Keep platform-specific code under the existing `iOS`, `tvOS`, or `macOS` folders and update `project.yml` instead of hand-editing generated `.xcodeproj` files. Preserve existing Apple bundle IDs and keychain groups during this migration for TestFlight continuity.
