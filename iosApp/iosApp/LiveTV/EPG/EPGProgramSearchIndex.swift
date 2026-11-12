@@ -388,7 +388,7 @@ struct EPGProgramSearchIndex: Sendable {
                                 scan(block: block, of: texts, query: query, into: &found)
                             case .perText:
                                 for position in texts.positions(inBlock: block) {
-                                    if let quality = verifiedQuality(text: texts.text(at: position), query: query) {
+                                    if let quality = Self.verifiedQuality(text: texts.text(at: position), query: query) {
                                         found.append((texts.ids[position], quality))
                                     }
                                 }
@@ -431,7 +431,7 @@ struct EPGProgramSearchIndex: Sendable {
             }
             let hitPosition = max(position, low - 1)
             let id = group.ids[hitPosition]
-            if let quality = verifiedQuality(text: group.text(at: hitPosition), query: query) {
+            if let quality = Self.verifiedQuality(text: group.text(at: hitPosition), query: query) {
                 found.append((id, quality))
             }
             position = hitPosition + 1
@@ -440,7 +440,7 @@ struct EPGProgramSearchIndex: Sendable {
 
     /// `localizedStandardContains` on the text alone decides the match; the first-match position
     /// decides the quality.
-    private func verifiedQuality(text: NSString, query: String) -> MatchQuality? {
+    static func verifiedQuality(text: NSString, query: String) -> MatchQuality? {
         guard text.localizedStandardContains(query) else { return nil }
         let original = text as String
         var searchStart = original.startIndex
@@ -493,11 +493,11 @@ struct EPGProgramSearchIndex: Sendable {
     }
 
     /// ASCII case folding; equals Foundation's case-insensitive folding of ASCII outside tr/az.
-    private static func asciiLowercased(_ byte: UInt8) -> UInt8 {
+    static func asciiLowercased(_ byte: UInt8) -> UInt8 {
         byte >= 65 && byte <= 90 ? byte + 32 : byte
     }
 
-    private static func isASCIIWordByte(_ byte: UInt8) -> Bool {
+    static func isASCIIWordByte(_ byte: UInt8) -> Bool {
         (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
     }
 
@@ -590,7 +590,8 @@ struct EPGProgramSearchIndex: Sendable {
 /// Owns the current program search index. It builds lazily on the first query for an identity
 /// (provider, catalog revision, guide generation), reuses it while the identity is unchanged, and
 /// returns a result only while its query, identity and index are all still current.
-/// SQLite-backed guides are not searched: their listings are not all in memory.
+/// A SQLite-backed guide is searched on disk through `EPGSQLiteProgramSearch` instead, under the
+/// same identity, generation and cancellation rules; its listings are never loaded into memory.
 ///
 /// The locale is not part of the identity: the index holds nothing locale-dependent, and the
 /// matching locale is read again for every query, so a locale change needs no rebuild.
@@ -621,6 +622,9 @@ actor EPGProgramSearchIndexStore {
     private var queryGeneration = 0
     private var buildWorker: Task<EPGProgramSearchIndex?, Never>?
     private var searchWorker: Task<[EPGProgramSearchIndex.Match]?, Never>?
+    private var sqliteSource: EPGSQLiteProgramSearch?
+    private var sqliteBuildWorker: Task<EPGSQLiteProgramSearch?, Never>?
+    private var sqliteSearchWorker: Task<EPGSQLiteProgramSearch.Outcome?, Never>?
     #if DEBUG
     private var buildCount = 0
     private var lastMatchingLocaleIdentifier: String?
@@ -640,17 +644,22 @@ actor EPGProgramSearchIndexStore {
         queryGeneration += 1
         let generation = queryGeneration
         searchWorker?.cancel(); searchWorker = nil
+        sqliteSearchWorker?.cancel(); sqliteSearchWorker = nil
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= EPGProgramSearchIndex.minimumQueryLength else { return .queryTooShort }
         let expected = input.identity
         if identity != expected {
             catalogGeneration += 1
             buildWorker?.cancel(); buildWorker = nil
-            index = nil; identity = expected
+            sqliteBuildWorker?.cancel(); sqliteBuildWorker = nil
+            index = nil; sqliteSource = nil; identity = expected
         }
         let catalog = catalogGeneration
         guard let guide = input.guide else { return .noGuide }
-        if guide.isSQLiteBacked { return .unsupportedStorage }
+        if guide.isSQLiteBacked {
+            return await searchSQLite(query: query, input: input, guide: guide, now: now, limit: limit,
+                                      generation: generation, catalog: catalog)
+        }
         let source: EPGProgramSearchIndex
         if let index, index.identity == expected { source = index }
         else {
@@ -700,18 +709,69 @@ actor EPGProgramSearchIndexStore {
         return .results(result)
     }
 
+    /// The SQLite counterpart of the in-memory path above: a per-identity source prepared once and
+    /// shared by every query for that identity, then one bounded on-disk search per query.
+    private func searchSQLite(query: String, input: Input, guide: EPGIndex, now: Date, limit: Int,
+                              generation: Int, catalog: Int) async -> Outcome? {
+        let expected = input.identity
+        let source: EPGSQLiteProgramSearch
+        if let sqliteSource, sqliteSource.identity == expected { source = sqliteSource }
+        else {
+            let worker: Task<EPGSQLiteProgramSearch?, Never>
+            if let sqliteBuildWorker { worker = sqliteBuildWorker } else {
+                #if DEBUG
+                buildCount += 1
+                #endif
+                worker = Task {
+                    await EPGSQLiteProgramSearch.prepare(identity: expected, guide: guide, channels: input.channels)
+                }
+                sqliteBuildWorker = worker
+            }
+            // Shared like the in-memory build: a cancelled query only stops waiting.
+            let built = await Self.waitWithoutCancelling(worker)
+            guard catalog == catalogGeneration, identity == expected else { return nil }
+            if let built, built.identity == expected {
+                if sqliteSource?.identity != expected { sqliteSource = built }
+                if sqliteBuildWorker == worker { sqliteBuildWorker = nil }
+            } else if !Task.isCancelled {
+                if sqliteBuildWorker == worker { sqliteBuildWorker = nil }
+                return nil
+            }
+            guard !Task.isCancelled, let built else { return nil }
+            source = built
+        }
+        guard generation == queryGeneration else { return nil }
+        let locale = matchingLocale()
+        #if DEBUG
+        lastMatchingLocaleIdentifier = locale.identifier
+        #endif
+        sqliteSearchWorker?.cancel()
+        let worker = Task { await source.search(query: query, now: now, limit: limit, matchingLocale: locale) }
+        sqliteSearchWorker = worker
+        let result = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: {
+            worker.cancel()
+        })
+        guard !Task.isCancelled, generation == queryGeneration, catalog == catalogGeneration,
+              identity == expected, sqliteSource?.identity == expected, let result else { return nil }
+        sqliteSearchWorker = nil
+        switch result {
+        case .results(let matches): return .results(matches)
+        case .storageUnavailable: return .unsupportedStorage
+        }
+    }
+
     func invalidate(providerID: UUID? = nil) {
         guard providerID == nil || identity?.providerID == providerID else { return }
         catalogGeneration += 1; queryGeneration += 1
         buildWorker?.cancel(); searchWorker?.cancel()
+        sqliteBuildWorker?.cancel(); sqliteSearchWorker?.cancel()
         buildWorker = nil; searchWorker = nil; identity = nil; index = nil
+        sqliteBuildWorker = nil; sqliteSearchWorker = nil; sqliteSource = nil
     }
 
     /// The task's value, or nil as soon as the caller is cancelled. Never cancels `task`.
-    private static func waitWithoutCancelling(
-        _ task: Task<EPGProgramSearchIndex?, Never>
-    ) async -> EPGProgramSearchIndex? {
-        let wait = SharedWait()
+    private static func waitWithoutCancelling<Value: Sendable>(_ task: Task<Value?, Never>) async -> Value? {
+        let wait = SharedWait<Value>()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 wait.install(continuation)
@@ -724,13 +784,13 @@ actor EPGProgramSearchIndexStore {
 
     /// Resumes one continuation exactly once, with whichever of the value or the caller's
     /// cancellation arrives first; the order of `install` and `finish` does not matter.
-    private final class SharedWait: @unchecked Sendable {
+    private final class SharedWait<Value: Sendable>: @unchecked Sendable {
         private let lock = NSLock()
-        private var continuation: CheckedContinuation<EPGProgramSearchIndex?, Never>?
+        private var continuation: CheckedContinuation<Value?, Never>?
         private var isFinished = false
-        private var value: EPGProgramSearchIndex?
+        private var value: Value?
 
-        func install(_ continuation: CheckedContinuation<EPGProgramSearchIndex?, Never>) {
+        func install(_ continuation: CheckedContinuation<Value?, Never>) {
             lock.lock()
             guard isFinished else {
                 self.continuation = continuation
@@ -742,7 +802,7 @@ actor EPGProgramSearchIndexStore {
             continuation.resume(returning: value)
         }
 
-        func finish(_ result: EPGProgramSearchIndex?) {
+        func finish(_ result: Value?) {
             lock.lock()
             guard !isFinished else { lock.unlock(); return }
             isFinished = true

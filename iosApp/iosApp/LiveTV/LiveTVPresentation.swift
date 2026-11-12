@@ -11,6 +11,16 @@ enum LiveTVPresenter: Hashable, Sendable {
     case shell
 }
 
+/// One presenter's full-screen cover. Its identity is the presenter, not the channel: a retune
+/// inside the player (its channel picker, Sports Hub's Other Streams) changes the channel but must
+/// keep the same cover. Keying a cover by channel makes SwiftUI dismiss it and present a new one,
+/// and the dismissed player's disappearance stops the stream that was just retuned.
+struct LiveTVPlayerCoverItem: Identifiable, Equatable {
+    let presenter: LiveTVPresenter
+    let channel: LiveTVChannel
+    var id: LiveTVPresenter { presenter }
+}
+
 /// What a channel selection means right now.
 enum LiveTVSelection: Equatable, Sendable {
     /// The full-screen player opens for the channel.
@@ -50,11 +60,69 @@ final class LiveTVPresentation {
         /// Picture in Picture asked for the player back and its cover has not appeared yet.
         /// `nil` waits for a Live TV screen to appear.
         case restoring(LiveTVChannel, LiveTVPresenter?)
+        /// Sports Hub's inline player shows the stream. No cover is up; expanding presents the
+        /// full-screen player over the shell, and collapsing it comes back here.
+        case inline(LiveTVChannel)
     }
 
     static let restoreTimeoutSeconds: Double = 4
 
-    private(set) var phase: Phase = .idle
+    private(set) var phase: Phase = .idle {
+        didSet {
+            switch phase {
+            case .presented:
+                pictureInPictureOrigin = nil
+            case .restoring:
+                // A restore may be bringing the full-screen player back; `restoreRequested`
+                // decides, and the expansion it sets must survive into `.presented`.
+                break
+            case .pictureInPicture:
+                isWatchExpanded = false
+                isWatchExpandedByRotation = false
+                isInlineExpandedByRotation = false
+            case .idle, .inline:
+                // Expansion belongs to one presented watch screen. A closed cover or a stop
+                // leaves it, so the next watch screen opens in portrait.
+                isWatchExpanded = false
+                isWatchExpandedByRotation = false
+                if case .idle = phase { isInlineExpandedByRotation = false }
+                pictureInPictureOrigin = nil
+            }
+        }
+    }
+
+    /// Where the stream was showing when Picture in Picture took it from a player's own control.
+    /// A restore returns there: the inline player, the portrait watch screen, or full screen.
+    enum PictureInPictureOrigin: Equatable {
+        /// A cover from `presenter`. `expanded` is the watch screen's full-screen player.
+        case cover(LiveTVPresenter, expanded: Bool)
+        /// Sports Hub's inline player.
+        case inline
+    }
+
+    @ObservationIgnored private(set) var pictureInPictureOrigin: PictureInPictureOrigin?
+
+    /// Counts player presentations: a selection that opens a cover, an inline expansion, a
+    /// restore, a return from Picture in Picture. A player view records the value it appeared
+    /// under, so when it later disappears it can tell whether it is still the presentation that
+    /// owns the stream, or an earlier one whose dismissal finished after a newer one began.
+    @ObservationIgnored private(set) var presentationEpoch = 0
+
+    /// Whether a player view that appeared under `epoch` should end the stream as it disappears.
+    /// Only the current presentation may, and only when nothing else (Picture in Picture, the
+    /// inline player) holds the stream. An explicit close stops the session itself.
+    func shouldStopWhenPlayerDisappears(presentedAt epoch: Int) -> Bool {
+        epoch == presentationEpoch && LiveTVPictureInPicturePolicy.shouldStopWhenPlayerDisappears(phase)
+    }
+
+    /// The portrait watch screen (iPhone, opened from the guide) has handed its stream to the
+    /// full-screen player above it. The watch screen's own surface is unmounted meanwhile: the
+    /// engine has one layer, and it follows the surface bound last.
+    private(set) var isWatchExpanded = false
+    /// A device-driven expansion returns to portrait when UIKit rotates back. A manual expansion
+    /// is different: it must stay full screen even with system Portrait Orientation Lock enabled.
+    private(set) var isWatchExpandedByRotation = false
+    private(set) var isInlineExpandedByRotation = false
 
     /// Ends the Live TV session: stop playback, release Picture in Picture.
     @ObservationIgnored var stopPlayback: (() -> Void)?
@@ -72,6 +140,11 @@ final class LiveTVPresentation {
     /// Where the full-screen player opens if Picture in Picture ends without the user asking for it.
     @ObservationIgnored private var returnChannel: LiveTVChannel?
     @ObservationIgnored private var inPlaceTargetID: String?
+    /// The full-screen player was expanded from the inline player, so closing it can return there.
+    /// Only `showInline` and `expandInline` set it; every other selection clears it.
+    @ObservationIgnored private var expandedFromInline = false
+    /// Whether the screen that hosts the inline player (Sports Hub) is on screen.
+    private(set) var isInlineHostVisible = false
 
     init(scheduler: any LiveTVScheduling) {
         self.scheduler = scheduler
@@ -86,11 +159,38 @@ final class LiveTVPresentation {
         }
     }
 
+    /// The cover `presenter` should show, keyed by presenter so a retune keeps it up.
+    func coverItem(for presenter: LiveTVPresenter) -> LiveTVPlayerCoverItem? {
+        channel(for: presenter).map { LiveTVPlayerCoverItem(presenter: presenter, channel: $0) }
+    }
+
     /// The channel Live TV is playing, wherever it is shown.
     var activeChannel: LiveTVChannel? {
         switch phase {
         case .idle: nil
-        case .presented(let channel, _), .pictureInPicture(let channel), .restoring(let channel, _): channel
+        case .presented(let channel, _), .pictureInPicture(let channel), .restoring(let channel, _),
+             .inline(let channel): channel
+        }
+    }
+
+    var isInline: Bool {
+        if case .inline = phase { return true }
+        return false
+    }
+
+    /// The full-screen player can close back into the inline player instead of ending the stream.
+    var canCollapseToInline: Bool {
+        guard expandedFromInline, isInlineHostVisible, case .presented(_, .shell) = phase else { return false }
+        return true
+    }
+
+    /// The full-screen player over the shell came from Sports Hub's inline player, which is still
+    /// on screen: it opens in landscape, including while a Picture in Picture restore brings it back.
+    var isFullScreenFromInline: Bool {
+        guard expandedFromInline, isInlineHostVisible else { return false }
+        switch phase {
+        case .presented(_, .shell), .restoring(_, .shell): return true
+        case .idle, .presented, .pictureInPicture, .restoring, .inline: return false
         }
     }
 
@@ -103,15 +203,22 @@ final class LiveTVPresentation {
 
     /// A channel was chosen in the list or the guide.
     func select(_ channel: LiveTVChannel, from presenter: LiveTVPresenter) -> LiveTVSelection {
+        expandedFromInline = false
+        isInlineExpandedByRotation = false
+        isWatchExpanded = false
+        isWatchExpandedByRotation = false
         switch phase {
-        case .idle, .presented:
+        case .idle, .presented, .inline:
             lastPresenter = presenter
+            presentationEpoch += 1
             phase = .presented(channel, presenter)
             return .present
         case .restoring:
             return .ignored
         case .pictureInPicture(let current):
             lastPresenter = presenter
+            // The window now returns to the screen that made this selection.
+            pictureInPictureOrigin = .cover(presenter, expanded: false)
             if channel.id == current.id {
                 returnChannel = channel
                 inPlaceTargetID = nil
@@ -146,7 +253,97 @@ final class LiveTVPresentation {
         case .presented(_, let presenter): phase = .presented(channel, presenter)
         case .pictureInPicture: phase = .pictureInPicture(channel)
         case .restoring(_, let presenter): phase = .restoring(channel, presenter)
+        case .inline: phase = .inline(channel)
         case .idle: break
+        }
+    }
+
+    // MARK: Portrait watch screen
+
+    /// The watch screen's Full Screen control: the same stream moves to the full-screen player.
+    /// The phase stays `.presented`, so nothing retunes and the cover underneath stays up.
+    @discardableResult
+    func expandWatch(byRotation: Bool = false) -> Bool {
+        guard case .presented = phase, !isWatchExpanded else { return false }
+        isWatchExpanded = true
+        isWatchExpandedByRotation = byRotation
+        return true
+    }
+
+    /// The full-screen player's collapse control: the stream returns to the watch screen.
+    func collapseWatch() {
+        isWatchExpanded = false
+        isWatchExpandedByRotation = false
+    }
+
+    // MARK: Inline playback
+
+    /// Sports Hub verified a stream: show it in the inline player. Only from idle (Sports Hub
+    /// closes Live TV's own Picture in Picture before it tunes) or to retune the inline player.
+    @discardableResult
+    func showInline(_ channel: LiveTVChannel) -> Bool {
+        switch phase {
+        case .idle, .inline:
+            lastPresenter = .shell
+            expandedFromInline = true
+            isInlineExpandedByRotation = false
+            phase = .inline(channel)
+            return true
+        case .presented, .pictureInPicture, .restoring:
+            return false
+        }
+    }
+
+    /// The inline player's expand control: the same stream opens full screen over the shell.
+    func expandInline(byRotation: Bool = false) {
+        guard case .inline(let channel) = phase else { return }
+        lastPresenter = .shell
+        expandedFromInline = true
+        isInlineExpandedByRotation = byRotation
+        presentationEpoch += 1
+        phase = .presented(channel, .shell)
+    }
+
+    /// The full-screen player's collapse control. The cover closes and the stream plays on inline.
+    @discardableResult
+    func collapseToInline() -> Bool {
+        guard canCollapseToInline, case .presented(let channel, _) = phase else { return false }
+        isInlineExpandedByRotation = false
+        phase = .inline(channel)
+        return true
+    }
+
+    /// The inline player's close control: the stream ends.
+    func closeInline() {
+        guard isInline else { return }
+        phase = .idle
+        stopPlayback?()
+    }
+
+    /// Sports Hub is retuning the session for another event. The inline player leaves the screen;
+    /// the caller stops or retunes the session itself.
+    func releaseInline() {
+        guard isInline else { return }
+        phase = .idle
+    }
+
+    func inlineHostAppeared() {
+        isInlineHostVisible = true
+    }
+
+    /// Sports Hub left the screen. An inline stream has nowhere left to show, so it ends rather
+    /// than play on headless. A full-screen cover over the hub can report it as disappearing; the
+    /// hub is still there.
+    func inlineHostDisappeared() {
+        switch phase {
+        case .presented, .restoring:
+            return
+        case .inline:
+            isInlineHostVisible = false
+            phase = .idle
+            stopPlayback?()
+        case .idle, .pictureInPicture:
+            isInlineHostVisible = false
         }
     }
 
@@ -164,7 +361,7 @@ final class LiveTVPresentation {
         // A cover over the screen can report it as disappearing; it is still there.
         switch phase {
         case .presented, .restoring: return
-        case .idle, .pictureInPicture: visible.remove(presenter)
+        case .idle, .pictureInPicture, .inline: visible.remove(presenter)
         }
     }
 
@@ -178,21 +375,31 @@ final class LiveTVPresentation {
         case .presented(let channel, let presenter) where !visible.contains(presenter):
             lastPresenter = .shell
             phase = .presented(channel, .shell)
-        case .idle, .presented, .pictureInPicture, .restoring:
+        case .idle, .presented, .pictureInPicture, .restoring, .inline:
             break
         }
     }
 
     // MARK: Picture in Picture
 
-    /// Picture in Picture finished starting from the player's own button: the cover closes and the
-    /// stream plays on in the window.
+    /// Picture in Picture finished starting from the player's own button: the cover (or the inline
+    /// player) gives the stream to the window, where it plays on.
     func pictureInPictureStartedFromControl() {
-        guard case .presented(let channel, let presenter) = phase else { return }
+        let channel: LiveTVChannel, presenter: LiveTVPresenter, origin: PictureInPictureOrigin
+        switch phase {
+        case .presented(let current, let owner):
+            (channel, presenter) = (current, owner)
+            origin = .cover(owner, expanded: isWatchExpanded)
+        case .inline(let current):
+            (channel, presenter) = (current, .shell)
+            origin = .inline
+        case .idle, .pictureInPicture, .restoring: return
+        }
         lastPresenter = presenter
         returnChannel = nil
         inPlaceTargetID = nil
         phase = .pictureInPicture(channel)
+        pictureInPictureOrigin = origin
     }
 
     /// The Live TV session failed while Picture in Picture owns it: close the window and show the
@@ -215,24 +422,60 @@ final class LiveTVPresentation {
     /// AVKit asks for the full-screen player back. `completion(true)` must mean it is on screen.
     func restoreRequested(completion: @escaping (Bool) -> Void) {
         switch phase {
-        case .presented:
-            // Automatic Picture in Picture left the cover up; it is already the interface.
+        case .presented, .inline:
+            // Automatic Picture in Picture left the cover (or the inline player) up; it is
+            // already the interface.
             completion(true)
         case .pictureInPicture(let channel):
-            let target = visiblePresenter()
-            phase = .restoring(channel, target)
-            pendingRestore = completion
-            restoreTimer?.cancel()
-            restoreRequestID = UUID()
-            let requestID = restoreRequestID
-            restoreTimer = scheduler.schedule(after: Self.restoreTimeoutSeconds) { [weak self] in
-                guard let self, self.restoreRequestID == requestID else { return }
-                self.restoreTimedOut()
+            let origin = pictureInPictureOrigin
+            if origin == .inline, isInlineHostVisible {
+                // The inline player takes the stream back without a cover, but AVKit must not be
+                // told restoration succeeded until its Aether surface has mounted.
+                phase = .inline(channel)
+                beginRestore(completion)
+                return
             }
+            let target = visiblePresenter()
+            presentationEpoch += 1
+            phase = .restoring(channel, target)
+            // Picture in Picture started from the watch screen's full-screen player returns to it.
+            if case .cover(let presenter, expanded: true) = origin, presenter == target {
+                isWatchExpanded = true
+            }
+            beginRestore(completion)
             if target == nil { navigateToLiveTV?() }
         case .idle, .restoring:
             completion(false)
         }
+    }
+
+    /// Whether a restore requested now brings back a full-screen player that was expanded from an
+    /// inline player: the watch screen's, or Sports Hub's over the shell. That player opens in
+    /// landscape, so its cover cuts in instead of sliding up: the rotation is the only motion, and
+    /// the watch screen underneath, which shows no picture while expanded, is not seen first
+    /// (Build 50 recording, 3:17–3:19). Matches what `restoreRequested` then does.
+    var restoreReturnsToExpandedPlayer: Bool {
+        guard case .pictureInPicture = phase else { return false }
+        if pictureInPictureOrigin == .inline, isInlineHostVisible { return false }
+        let target = visiblePresenter()
+        if case .cover(let presenter, expanded: true) = pictureInPictureOrigin, presenter == target { return true }
+        return target == .shell && expandedFromInline && isInlineHostVisible
+    }
+
+    /// The portrait watch screen is on screen. It answers a restore only when it is the player
+    /// being restored. Restoring its expanded full-screen player, the watch screen appears first
+    /// with no surface, and answering then would hand the window back before the player that
+    /// takes the stream exists; that player answers when it appears.
+    func watchScreenDidAppear(_ channel: LiveTVChannel) {
+        guard !isWatchExpanded else { return }
+        playerDidAppear(channel)
+    }
+
+    /// Sports Hub's inline Aether surface is mounted after an inline PiP restore. Only now is it
+    /// safe to let AVKit remove the system window and hand the video layer back.
+    func inlinePlayerDidAppear(_ channel: LiveTVChannel) {
+        guard pendingRestore != nil, case .inline(let current) = phase, current.id == channel.id else { return }
+        answerRestore(true)
     }
 
     /// The full-screen player for `channel` is on screen.
@@ -267,6 +510,12 @@ final class LiveTVPresentation {
         restoreTimer = nil
         pendingRestore = nil
         if isStillBound, let channel = returnChannel {
+            if pictureInPictureOrigin == .inline, isInlineHostVisible {
+                // A failed stream closes the window into the inline player, where Retry is.
+                phase = .inline(channel)
+                return .continuePlayback
+            }
+            presentationEpoch += 1
             let presenter = visiblePresenter() ?? .list
             lastPresenter = presenter
             phase = .presented(channel, presenter)
@@ -309,6 +558,17 @@ final class LiveTVPresentation {
         pendingRestore = nil
         completion?(didRestore)
     }
+
+    private func beginRestore(_ completion: @escaping (Bool) -> Void) {
+        pendingRestore = completion
+        restoreTimer?.cancel()
+        restoreRequestID = UUID()
+        let requestID = restoreRequestID
+        restoreTimer = scheduler.schedule(after: Self.restoreTimeoutSeconds) { [weak self] in
+            guard let self, self.restoreRequestID == requestID else { return }
+            self.restoreTimedOut()
+        }
+    }
 }
 
 /// The ownership rules that keep Live TV's Picture in Picture from colliding with Silo's own.
@@ -321,9 +581,12 @@ enum LiveTVPictureInPicturePolicy {
 
     /// Whether the player's disappearance ends the stream. Closing the cover for Picture in Picture
     /// leaves the stream playing in the window.
+    /// A cover collapsed into the inline player leaves it playing there.
     static func shouldStopWhenPlayerDisappears(_ phase: LiveTVPresentation.Phase) -> Bool {
-        if case .pictureInPicture = phase { return false }
-        return true
+        switch phase {
+        case .pictureInPicture, .inline: false
+        case .idle, .presented, .restoring: true
+        }
     }
 }
 

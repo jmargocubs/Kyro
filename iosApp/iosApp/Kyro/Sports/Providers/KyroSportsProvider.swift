@@ -217,7 +217,8 @@ enum KyroSportsReconciler {
             tournament: game.tournament,
             round: game.round,
             isSingles: game.isSingles,
-            isStartTimeTBD: game.isStartTimeTBD
+            isStartTimeTBD: game.isStartTimeTBD,
+            competitionKey: game.competitionKey
         )
     }
 }
@@ -346,6 +347,8 @@ enum KyroSportsSectioning {
         case .nba, .nhl, .mlb:
             return isInsideRollingWindow(start: start, now: now, calendar: calendar)
         case .atp, .wta:
+            return isInsideRollingWindow(start: start, now: now, calendar: calendar)
+        case .soccer:
             return isInsideRollingWindow(start: start, now: now, calendar: calendar)
         }
     }

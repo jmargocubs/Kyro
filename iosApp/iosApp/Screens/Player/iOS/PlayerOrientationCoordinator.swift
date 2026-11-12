@@ -1,5 +1,6 @@
 #if os(iOS)
 import Observation
+import SwiftUI
 import UIKit
 
 /// SwiftUI app delegate bridge used only so UIKit asks our shared coordinator
@@ -75,6 +76,35 @@ struct PlayerRotationState {
     }
 }
 
+/// Which interface rotation the player asked for itself, so that one rotation runs without UIKit's
+/// rotation animation.
+///
+/// Live TV full screen expanded from an inline player swaps its cover in one frame and rotates the
+/// scene to landscape; closing it rotates back to portrait. Animated, that rotation spins the
+/// outgoing layout against the black window (Build 50 recording, 1:13–1:25 and 3:13–3:19). A
+/// rotation the device drives keeps the system animation: only the one the player requested,
+/// toward the orientation it requested, is consumed here.
+struct PlayerRotationTransitionPolicy: Equatable {
+    private(set) var pending: PlayerScreenOrientation?
+
+    /// The player asked the scene for `target`. A scene already there will not transition, so
+    /// nothing is left pending to swallow a later rotation the device makes.
+    mutating func requested(_ target: PlayerScreenOrientation, from current: PlayerScreenOrientation?) {
+        pending = current == target ? nil : target
+    }
+
+    /// A rotation is starting toward `target` (nil when the size does not say). True once, for the
+    /// rotation that was requested; a rotation the other way supersedes the request.
+    mutating func transitionWillBegin(to target: PlayerScreenOrientation?) -> Bool {
+        guard let pending else { return false }
+        self.pending = nil
+        return target == nil || target == pending
+    }
+
+    /// The geometry request failed, or a new player took over the orientation policy.
+    mutating func cancel() { pending = nil }
+}
+
 /// Centralized orientation policy for the iOS app and player shell. Playback code
 /// should stay unaware of this; the coordinator only manages UIKit masks and
 /// scene geometry updates while the full-screen player is visible.
@@ -94,14 +124,43 @@ final class PlayerOrientationCoordinator {
     }
 
     private var rotationState = PlayerRotationState()
+    @ObservationIgnored private var rotationTransition = PlayerRotationTransitionPolicy()
+    /// Live TV full screen holds the scene in landscape because it asked to, not because the
+    /// device turned; leaving it rotates back the same way.
+    @ObservationIgnored private var isLiveTVLandscapeRequested = false
     @ObservationIgnored private var liveTVOrientationObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var isWatchScreenActive = false
+    private(set) var suppressNaturalExpansionUntilUpright = false
     private(set) var observedOrientation: PlayerScreenOrientation = .portrait
     var isPlayerActive: Bool { rotationState.isPlayerActive }
     var isRotationLocked: Bool { rotationState.isLocked }
 
     var supportedOrientations: UIInterfaceOrientationMask {
-        Self.orientationMask(isPlayerActive: isPlayerActive,
-                             lockedOrientation: rotationState.lockedOrientation)
+        if !isPlayerActive && isWatchScreenActive { return .allButUpsideDown }
+        return Self.orientationMask(isPlayerActive: isPlayerActive,
+                                    lockedOrientation: rotationState.lockedOrientation)
+    }
+
+    /// The portrait watch frame permits native interface rotation without requesting geometry.
+    /// UIKit therefore obeys system Portrait Orientation Lock; the manual Full Screen control
+    /// still uses the existing explicit landscape override in the full-screen player.
+    func watchScreenDidAppear() {
+        isWatchScreenActive = true
+        observeLiveTVOrientationChanges()
+        refreshInterfaceOrientation()
+        notifyActiveWindowsOfOrientationChange()
+    }
+
+    func watchScreenDidDisappear() {
+        isWatchScreenActive = false
+        if !isPlayerActive { stopObservingLiveTVOrientationChanges() }
+        notifyActiveWindowsOfOrientationChange()
+    }
+
+    /// Exiting a manually requested landscape cover while still holding the phone sideways
+    /// must not immediately re-open it through the automatic watch-screen path.
+    func manualInlineCollapseRequested() {
+        suppressNaturalExpansionUntilUpright = UIDevice.current.orientation.isLandscape
     }
 
     /// `browsingOrientations` defaults to `appDefaultOrientations`, resolved
@@ -133,6 +192,8 @@ final class PlayerOrientationCoordinator {
 
     func activatePlayer() {
         refreshInterfaceOrientation()
+        forgetRequestedRotation()
+        isWatchScreenActive = false
         // `player.orientation_mode` is the remote-persisted lock. Landscape
         // locked means the session opens locked to the preferred landscape
         // side; rotate freely means the lock starts off.
@@ -146,10 +207,30 @@ final class PlayerOrientationCoordinator {
     /// not read or persist the movie-player orientation preference.
     func activateLiveTVPlayer() {
         refreshInterfaceOrientation()
+        forgetRequestedRotation()
+        isWatchScreenActive = false
         rotationState.activate()
         observeLiveTVOrientationChanges()
         updateOrientationPolicy(preferredOrientation: deviceOrientationMask())
     }
+
+    /// Live TV full screen expanded from an inline player: locked to landscape (either side, so
+    /// the device can still flip between them) and rotated there in one geometry request. The
+    /// lock is what keeps it landscape while the phone is held upright or Portrait Orientation
+    /// Lock is on; an explicit request rotates the scene either way. `deactivatePlayer()` returns
+    /// to the portrait browsing mask.
+    func activateLiveTVLandscapePlayer() {
+        refreshInterfaceOrientation()
+        isWatchScreenActive = false
+        rotationState.activate(lockedOrientation: Self.liveTVLandscapeLock)
+        isLiveTVLandscapeRequested = true
+        rotationTransition.requested(.landscape, from: currentScreenOrientation())
+        observeLiveTVOrientationChanges()
+        updateOrientationPolicy(preferredOrientation: preferredLandscapeMask())
+    }
+
+    /// Both landscape sides: the lock fixes the axis, not the side the phone is turned to.
+    static let liveTVLandscapeLock: UIInterfaceOrientationMask = .landscape
 
     /// Requests a geometry change only while the Live TV cover is active. The
     /// scene's allowed mask remains both landscape sides, so device rotation
@@ -166,8 +247,15 @@ final class PlayerOrientationCoordinator {
     }
 
     func deactivatePlayer() {
+        // Callers deactivate more than once (the close control, then the cover's disappearance);
+        // only the first, which still holds landscape, asks for the unanimated return.
+        if isLiveTVLandscapeRequested {
+            isLiveTVLandscapeRequested = false
+            rotationTransition.requested(.portrait, from: currentScreenOrientation())
+        }
         rotationState.deactivate()
-        stopObservingLiveTVOrientationChanges()
+        if isWatchScreenActive { observeLiveTVOrientationChanges() }
+        else { stopObservingLiveTVOrientationChanges() }
         updateOrientationPolicy(preferredOrientation: Self.appDefaultOrientations.contains(.portrait)
             ? .portrait : Self.appDefaultOrientations)
     }
@@ -204,7 +292,11 @@ final class PlayerOrientationCoordinator {
         UIDevice.current.beginGeneratingDeviceOrientationNotifications()
         let center = NotificationCenter.default
         let token = center.addObserver(forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.refreshInterfaceOrientation() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if UIDevice.current.orientation.isPortrait { self.suppressNaturalExpansionUntilUpright = false }
+                self.refreshInterfaceOrientation()
+            }
         }
         liveTVOrientationObservers.append(token)
     }
@@ -247,10 +339,13 @@ final class PlayerOrientationCoordinator {
 
         let geometryMask = Self.geometryMask(isPlayerActive: isPlayerActive,
                                              preferredOrientation: preferredOrientation,
-                                             lockedOrientation: rotationState.lockedOrientation)
+                                             lockedOrientation: rotationState.lockedOrientation,
+                                             browsingOrientations: isWatchScreenActive ? .allButUpsideDown : nil)
         guard let scene = scenes.first else { return }
         scene.requestGeometryUpdate(.iOS(interfaceOrientations: geometryMask)) { [weak self] _ in
             guard let self else { return }
+            // This handler runs only when the request fails: no rotation of ours will follow.
+            self.rotationTransition.cancel()
             self.refreshInterfaceOrientation()
             for window in scene.windows {
                 guard let rootViewController = window.rootViewController else { continue }
@@ -272,6 +367,14 @@ final class PlayerOrientationCoordinator {
         }
         for child in viewController.children {
             notifyOrientationChange(for: child)
+        }
+    }
+
+    private func notifyActiveWindowsOfOrientationChange() {
+        for scene in activeWindowScenes() {
+            for window in scene.windows {
+                if let root = window.rootViewController { notifyOrientationChange(for: root) }
+            }
         }
     }
 
@@ -328,6 +431,62 @@ final class PlayerOrientationCoordinator {
         activeWindowScenes()
             .map(\.effectiveGeometry.interfaceOrientation)
             .first(where: { $0 != .unknown })
+    }
+
+    private func currentScreenOrientation() -> PlayerScreenOrientation? {
+        currentInterfaceOrientation().flatMap(PlayerScreenOrientation.init(interfaceOrientation:))
+    }
+
+    private func forgetRequestedRotation() {
+        isLiveTVLandscapeRequested = false
+        rotationTransition.cancel()
+    }
+
+    /// Called as an interface rotation begins. True when it is the rotation the player asked for,
+    /// which then runs without animation.
+    func rotationTransitionWillBegin(to size: CGSize) -> Bool {
+        let target: PlayerScreenOrientation? = size.width == size.height ? nil
+            : (size.width > size.height ? .landscape : .portrait)
+        return rotationTransition.transitionWillBegin(to: target)
+    }
+}
+
+/// Sits at the root of the window so it sees every interface rotation, including the one that
+/// follows a cover's dismissal, when the player that asked for it is gone. A rotation the player
+/// requested runs with UIKit animations off until its transition completes; the cover already
+/// changed in one frame, so the result is a cut instead of the window spinning on black.
+struct PlayerRotationTransitionHost: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) {}
+
+    final class Controller: UIViewController {
+        override func loadView() {
+            let view = UIView()
+            view.isUserInteractionEnabled = false
+            view.isHidden = true
+            self.view = view
+        }
+
+        override func viewWillTransition(to size: CGSize,
+                                         with coordinator: any UIViewControllerTransitionCoordinator) {
+            super.viewWillTransition(to: size, with: coordinator)
+            // UIKit forwards the container's new size; a square or empty size reads as unknown.
+            let suppressAnimation = PlayerOrientationCoordinator.shared.rotationTransitionWillBegin(to: size)
+            // Preserve the process-wide UIKit animation state. The transition coordinator calls
+            // completion for both finished and interrupted transitions; restoring the captured
+            // value there (and when no transition was queued) prevents a failed/interrupted
+            // geometry request from leaving unrelated UIKit animations disabled or enabled.
+            let animationsWereEnabled = UIView.areAnimationsEnabled
+            if suppressAnimation { UIView.setAnimationsEnabled(false) }
+            let queued = coordinator.animate(alongsideTransition: nil) { _ in
+                if suppressAnimation { UIView.setAnimationsEnabled(animationsWereEnabled) }
+                PlayerOrientationCoordinator.shared.refreshInterfaceOrientation()
+            }
+            if !queued {
+                if suppressAnimation { UIView.setAnimationsEnabled(animationsWereEnabled) }
+                PlayerOrientationCoordinator.shared.refreshInterfaceOrientation()
+            }
+        }
     }
 }
 #endif

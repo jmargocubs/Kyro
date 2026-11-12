@@ -360,9 +360,9 @@ final class EPGProgramSearchIndexTests: XCTestCase {
                                                destination: directory.appendingPathComponent("guide.sqlite"))
         let sqliteGuide = EPGIndex(sqlite: built.index, statistics: built.statistics)
         let sqlite = await store.search(query: "news", input: input(revision: 1, generation: 2, guide: sqliteGuide), now: now)
-        XCTAssertEqual(sqlite, .unsupportedStorage)
+        XCTAssertEqual(titles(sqlite), ["News"], "a SQLite-backed guide is searched on disk")
         let builds = await store.buildCountForTesting
-        XCTAssertEqual(builds, 0, "no outcome above may build an index")
+        XCTAssertEqual(builds, 1, "only the SQLite guide prepares a search source")
     }
 
     func testSupersededQueryCannotPublish() async throws {

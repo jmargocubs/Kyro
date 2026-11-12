@@ -69,6 +69,36 @@ struct LiveTVBrowserFilters: Equatable, Sendable {
     static let channels = Self()
 }
 
+/// The guide context captured immediately before its fixed search control opens. Search results
+/// can change the row list, but clearing or dismissing search must return to this exact filter and
+/// scroll position rather than the position of the temporary result set.
+struct LiveTVGuideSearchRestoration: Equatable, Sendable {
+    let category: String?
+    let favoritesOnly: Bool
+    let offsetX: Double
+    let offsetY: Double
+    let query: String
+
+    init(category: String?, favoritesOnly: Bool, offsetX: Double, offsetY: Double, query: String) {
+        self.category = category
+        self.favoritesOnly = favoritesOnly
+        self.offsetX = Self.safeOffset(offsetX)
+        self.offsetY = Self.safeOffset(offsetY)
+        self.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Closing or clearing search returns to the pre-search guide, not to a temporary result
+    /// query. Category and Favorites remain part of that browsing context.
+    var dismissedFilters: LiveTVBrowserFilters {
+        LiveTVBrowserFilters(category: category, favoritesOnly: favoritesOnly)
+    }
+
+    private static func safeOffset(_ value: Double) -> Double {
+        guard value.isFinite, value >= 0 else { return 0 }
+        return min(value, 10_000_000)
+    }
+}
+
 enum LiveTVHomeErrorPresentation {
     /// Import/playback errors remain a separate, visible status even when cached channels make
     /// the browser itself ready. Nil is the only hidden state.
@@ -659,7 +689,14 @@ final class LiveTVPlaybackController {
     static let retuneBudget = 3
     static let retuneSpacingSeconds: Double = 20
 
-    private(set) var state: LiveTVPlaybackState = .stopped
+    private(set) var state: LiveTVPlaybackState = .stopped {
+        didSet {
+            // Diagnostics only (off by default): times buffering against main-thread pacing.
+            if (oldValue == .buffering) != (state == .buffering) {
+                KyroPerformanceDiagnostics.playbackBuffering(state == .buffering)
+            }
+        }
+    }
     private(set) var errorMessage: String?
     /// Privacy-safe failure token for diagnostics: an engine error kind and code, never a URL.
     private(set) var failureDetail: String?

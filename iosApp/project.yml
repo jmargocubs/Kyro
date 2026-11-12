@@ -45,7 +45,7 @@ targetTemplates:
     settings:
       base:
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 31
+        CURRENT_PROJECT_VERSION: 62
         # Surfaced to the app as the `SiloBuildChannel` Info.plist key and
         # reported to the server as X-Silo-Client-Channel. The unsigned
         # sideload lanes override this to `sideload`; DEBUG builds report
@@ -364,6 +364,8 @@ targets:
       # Provenance note for the Sleeper fixtures, not a fixture itself.
       - path: Tests/Fixtures/Sleeper/SOURCE
         buildPhase: none
+      - path: Tests/Fixtures/ESPN/SOURCE
+        buildPhase: none
       - path: Tests/Fixtures/ASS/README.md
         buildPhase: none
       - path: Tests/Fixtures/ASS/generate-font.py
@@ -443,9 +445,15 @@ targets:
           - "KyroESPNNFLPrimaryTests.swift"
           - "KyroESPNTennisLiveTests.swift"
           - "KyroSportsEventChannelMatchingTests.swift"
+          - "KyroSportsEventDetailTests.swift"
+          - "KyroSoccerTests.swift"
+          - "KyroSportsMatchReportTests.swift"
+          - "KyroSportsStreamDiscoveryCorrectionsTests.swift"
           - "KyroSportsEventPreviewTests.swift"
           - "KyroSportsLiveNowTests.swift"
           - "KyroSportsPlaybackCoordinatorTests.swift"
+          - "KyroSportsInlinePlaybackTests.swift"
+          - "KyroSportsPlayerPolishTests.swift"
           - "KyroSportsShellPresentationTests.swift"
           - "KyroSportsStreamMatcherTests.swift"
           - "KyroSportsStreamPresentationTests.swift"

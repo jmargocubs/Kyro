@@ -267,17 +267,38 @@ struct LiveTVPlayerView: View {
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
     @Environment(\.scenePhase) private var scenePhase
     #endif
+    /// Fixed when the cover opens: full screen from an inline player is landscape on iPhone.
+    @State private var orientation: LiveTVFullScreenOrientation
+    /// The presentation this player appeared under; see `LiveTVPresentation.presentationEpoch`.
+    @State private var presentedEpoch: Int?
     let channels: [LiveTVChannel]
     let session: LiveTVPlayerSession
     /// Owns the shared presentation and Picture in Picture hand-off; nil for a bare player.
     let service: LiveTVService?
+    /// Set when the iPhone watch screen expanded into this player. Back then returns there and
+    /// the stream plays on; the watch screen owns stopping it.
+    let onCollapse: (() -> Void)?
+    /// A system-driven watch expansion follows the device back to portrait; the manual button
+    /// keeps the existing landscape override, including under Portrait Orientation Lock.
+    let naturalRotation: Bool
 
     init(channel: LiveTVChannel, channels: [LiveTVChannel], session: LiveTVPlayerSession,
-         service: LiveTVService? = nil) {
+         service: LiveTVService? = nil, naturalRotation: Bool = false,
+         onCollapse: (() -> Void)? = nil) {
         _channel = State(initialValue: channel)
         self.channels = channels
         self.session = session
         self.service = service
+        self.onCollapse = onCollapse
+        self.naturalRotation = naturalRotation
+        #if os(iOS)
+        let isPhone = UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        let isPhone = false
+        #endif
+        _orientation = State(initialValue: .resolve(
+            isPhone: isPhone,
+            isExpandedFromInline: !naturalRotation && (onCollapse != nil || service?.presentation.isFullScreenFromInline == true)))
     }
 
     var body: some View {
@@ -286,8 +307,12 @@ struct LiveTVPlayerView: View {
             if let aether = (session.engine as? AetherLiveTVEngine)?.engine {
                 // The engine swaps its own layer per route; the surface only hosts it, so rotation
                 // remounts the view without recreating the engine.
-                AetherPlayerSurface(engine: aether)
-                    .ignoresSafeArea()
+                ZStack {
+                    AetherPlayerSurface(engine: aether)
+                        .task { service?.presentation.playerDidAppear(channel) }
+                    LiveTVSubtitleLayer(engine: aether)
+                }
+                .ignoresSafeArea()
             }
 
             // Taps on the bare video toggle the controls; hidden controls let taps through to here.
@@ -298,20 +323,59 @@ struct LiveTVPlayerView: View {
 
             VStack(spacing: 0) {
                 HStack {
-                    Button {
-                        controls.cancel()
-                        session.stop()
-                        #if os(iOS)
-                        orientationCoordinator.deactivatePlayer()
-                        #endif
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.headline.weight(.semibold))
-                            .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial, in: Circle())
+                    if let onCollapse {
+                        // Expanded from the watch screen: Back returns to it without a retune.
+                        Button {
+                            controls.cancel()
+                            #if os(iOS)
+                            orientationCoordinator.manualInlineCollapseRequested()
+                            orientationCoordinator.deactivatePlayer()
+                            #endif
+                            onCollapse()
+                        } label: {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                .font(.headline.weight(.semibold))
+                                .frame(width: 44, height: 44)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                        .accessibilityLabel("Exit Full Screen")
+                        .accessibilityHint("Returns to the channel details and guide; the channel keeps playing")
+                        .accessibilityIdentifier("liveTVWatchCollapsePlayer")
+                    } else if let service, service.presentation.canCollapseToInline {
+                        // Expanded from Sports Hub's inline player: Back returns there and the
+                        // stream plays on. The inline player has its own Stop.
+                        Button {
+                            controls.cancel()
+                            #if os(iOS)
+                            orientationCoordinator.manualInlineCollapseRequested()
+                            orientationCoordinator.deactivatePlayer()
+                            #endif
+                            LiveTVCoverTransition.immediate { service.presentation.collapseToInline() }
+                        } label: {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                .font(.headline.weight(.semibold))
+                                .frame(width: 44, height: 44)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                        .accessibilityLabel("Back to Sports")
+                        .accessibilityHint("Keeps the game playing above the Sports Hub")
+                        .accessibilityIdentifier("kyroSportsCollapsePlayer")
+                    } else {
+                        Button {
+                            controls.cancel()
+                            session.stop()
+                            #if os(iOS)
+                            orientationCoordinator.deactivatePlayer()
+                            #endif
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.headline.weight(.semibold))
+                                .frame(width: 44, height: 44)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                        .accessibilityLabel("Stop Live TV")
                     }
-                    .accessibilityLabel("Stop Live TV")
 
                     Spacer()
                     Text(channel.name)
@@ -320,20 +384,31 @@ struct LiveTVPlayerView: View {
                         .lineLimit(1)
                     Spacer()
 
+                    HStack(spacing: 0) {
                     #if os(iOS)
-                    Button {
-                        controls.interact()
-                        orientationCoordinator.toggleLiveTVOrientation()
-                    } label: {
-                        Image(systemName: orientationCoordinator.observedOrientation == .landscape
-                              ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                            .font(.headline.weight(.semibold))
-                            .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial, in: Circle())
+                    if orientation.showsRotateControl {
+                        Button {
+                            controls.interact()
+                            orientationCoordinator.toggleLiveTVOrientation()
+                        } label: {
+                            Image(systemName: orientationCoordinator.observedOrientation == .landscape
+                                  ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                                .font(.headline.weight(.semibold))
+                                .frame(width: 44, height: 44)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                        .accessibilityLabel(orientationCoordinator.observedOrientation == .landscape
+                                            ? "Return to portrait" : "Rotate to landscape")
+                        .accessibilityHint("Changes Live TV orientation without stopping playback")
                     }
-                    .accessibilityLabel(orientationCoordinator.observedOrientation == .landscape
-                                        ? "Return to portrait" : "Rotate to landscape")
-                    .accessibilityHint("Changes Live TV orientation without stopping playback")
+                    #endif
+
+                    #if os(iOS)
+                    if let aether = (session.engine as? AetherLiveTVEngine)?.engine {
+                        LiveTVBasicControlsButton(engine: aether) { presenting in
+                            controls.update(state: session.state, isOverlayPresented: presenting)
+                        }
+                    }
                     #endif
 
                     #if os(iOS)
@@ -379,11 +454,12 @@ struct LiveTVPlayerView: View {
                             .background(.ultraThinMaterial, in: Circle())
                     }
                     .accessibilityLabel("Switch channel")
+                    }
+                    .opacity(controls.isVisible ? 1 : 0)
+                    .allowsHitTesting(controls.isVisible)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
-                .opacity(controls.isVisible ? 1 : 0)
-                .allowsHitTesting(controls.isVisible)
 
                 Spacer()
 
@@ -391,17 +467,17 @@ struct LiveTVPlayerView: View {
 
                 Spacer()
 
-                if let symbol = transportSymbol {
+                if let transport = LiveTVTransportControl(state: session.state) {
                     Button {
                         controls.interact()
                         session.togglePlayback()
                     } label: {
-                        Image(systemName: symbol)
+                        Image(systemName: transport.symbol)
                             .font(.title2.weight(.bold))
                             .frame(width: 58, height: 58)
                             .background(.ultraThinMaterial, in: Circle())
                     }
-                    .accessibilityLabel(session.isPaused ? "Resume live stream" : "Pause live stream")
+                    .accessibilityLabel(transport.accessibilityLabel)
                     .accessibilityHint("Temporary live-stream pause; the provider may not retain paused video.")
                     .padding(.bottom, 30)
                     .opacity(controls.isVisible ? 1 : 0)
@@ -425,22 +501,47 @@ struct LiveTVPlayerView: View {
             }
         }
         .onAppear {
-            service?.presentation.playerDidAppear(channel)
+            if presentedEpoch == nil { presentedEpoch = service?.presentation.presentationEpoch }
             #if os(iOS)
-            orientationCoordinator.activateLiveTVPlayer()
+            // One geometry request either way. Full screen from the watch screen or Sports Hub is
+            // locked landscape; activating free rotation first would queue a portrait request
+            // that can win the race against the landscape one.
+            switch orientation {
+            case .landscapeLocked: orientationCoordinator.activateLiveTVLandscapePlayer()
+            case .rotatesFreely: orientationCoordinator.activateLiveTVPlayer()
+            }
             #endif
         }
         .onChange(of: channel) { oldValue, newValue in
             guard oldValue.id != newValue.id else { return }
             controls.channelChanged()
         }
+        // The cover stays up across a retune (its identity is the presenter, not the channel), so
+        // a switch made elsewhere, such as Sports Hub moving to another stream, renames it here.
+        .onChange(of: service?.presentation.activeChannel?.id) { _, _ in
+            guard let active = service?.presentation.activeChannel, active.id != channel.id,
+                  case .presented = service?.presentation.phase else { return }
+            channel = active
+        }
         #if os(iOS)
         // Picture in Picture started from the button: only the cover closes. The stream plays on in
         // the window, and AVKit's restore control re-presents this player.
         .onChange(of: pictureInPicture.controlStartToken) { _, _ in
             guard pictureInPicture.ownsEngagedSession(session) else { return }
-            service?.presentation.pictureInPictureStartedFromControl()
-            dismiss()
+            if orientation == .landscapeLocked {
+                // Release landscape now, not when the cover has finished closing: otherwise the
+                // screens underneath are drawn sideways until it has. The cover swaps out in one
+                // frame and the requested rotation back to portrait runs unanimated
+                // (`PlayerRotationTransitionHost`), so the whole hand-off is a cut.
+                orientationCoordinator.deactivatePlayer()
+                LiveTVCoverTransition.immediate {
+                    service?.presentation.pictureInPictureStartedFromControl()
+                    dismiss()
+                }
+            } else {
+                service?.presentation.pictureInPictureStartedFromControl()
+                dismiss()
+            }
         }
         // Automatic Picture in Picture on leaving the app keeps this cover, so coming back lands on
         // the player itself; end the window into it.
@@ -450,12 +551,27 @@ struct LiveTVPlayerView: View {
         }
         #endif
         .onChange(of: session.state) { syncControls() }
+        #if os(iOS)
+        .onChange(of: orientationCoordinator.observedOrientation) { _, orientation in
+            guard naturalRotation, orientation == .portrait, let presentation = service?.presentation else { return }
+            if presentation.isWatchExpandedByRotation {
+                LiveTVCoverTransition.immediate { presentation.collapseWatch() }
+            } else if presentation.isInlineExpandedByRotation, presentation.canCollapseToInline {
+                LiveTVCoverTransition.immediate { _ = presentation.collapseToInline() }
+            }
+        }
+        #endif
         .onChange(of: isShowingChannelPicker) { syncControls() }
         .onChange(of: isShowingOtherStreams) { syncControls() }
         .onDisappear {
             controls.cancel()
-            // A cover closed for Picture in Picture leaves the stream playing in the window.
-            if service.map({ LiveTVPictureInPicturePolicy.shouldStopWhenPlayerDisappears($0.presentation.phase) }) ?? true {
+            // Close stops the session itself; this only catches the cover being taken down some
+            // other way. A cover closed for Picture in Picture leaves the stream playing in the
+            // window, and one collapsed into Sports Hub's inline player leaves it playing there.
+            // Expanded from the watch screen, the watch screen underneath owns the stream. And a
+            // cover that is no longer the current presentation owns nothing: its dismissal can
+            // finish after a restore or a new selection has started the next one.
+            if onCollapse == nil, shouldStopOnDisappear {
                 session.stop()
             }
             #if os(iOS)
@@ -493,6 +609,12 @@ struct LiveTVPlayerView: View {
         controls.update(state: session.state, isOverlayPresented: isShowingChannelPicker || isShowingOtherStreams)
     }
 
+    private var shouldStopOnDisappear: Bool {
+        guard let service else { return true }
+        guard let presentedEpoch else { return false }
+        return service.presentation.shouldStopWhenPlayerDisappears(presentedAt: presentedEpoch)
+    }
+
     /// The Sports Hub event this player is showing, when it has more than one stream. Ordinary
     /// Live TV playback has no event context and shows no Other Streams control.
     #if os(iOS)
@@ -503,16 +625,6 @@ struct LiveTVPlayerView: View {
         return service.sportsPlayback
     }
     #endif
-
-    /// Pause only while there is something to pause; play only when paused. Connecting and
-    /// failed show no transport control, so a failure never looks like active playback.
-    private var transportSymbol: String? {
-        switch session.state {
-        case .playing, .buffering: "pause.fill"
-        case .paused: "play.fill"
-        case .connecting, .failed, .stopped: nil
-        }
-    }
 
     @ViewBuilder
     private var statusOverlay: some View {
@@ -553,6 +665,35 @@ struct LiveTVPlayerView: View {
             .foregroundStyle(.white)
             .padding(16)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+/// Hosts Aether's decoded subtitle cue stream over the Live TV surface. Aether deliberately keeps
+/// subtitle decoding separate from its video surface; without this host overlay a selected EIA-608
+/// track can be active (and show a checkmark) while its cues have nowhere to draw.
+@MainActor
+struct LiveTVSubtitleLayer: View {
+    let engine: AetherEngine
+    @State private var assSubtitles: ASSSubtitleSession
+    @State private var cueHold = SubtitleCueHold()
+
+    init(engine: AetherEngine) {
+        self.engine = engine
+        _assSubtitles = State(initialValue: ASSSubtitleSession(engine: engine))
+    }
+
+    var body: some View {
+        AetherSubtitleOverlay(
+            engine: engine,
+            assSubtitles: assSubtitles,
+            cueHold: cueHold,
+            sourceTime: engine.clock.sourceTime,
+            primaryUsesMovieTimeline: false,
+            secondaryUsesMovieTimeline: false,
+            livePrimaryCues: [],
+            liveSecondaryCues: [],
+            appearance: PlayerSettings.shared.effectiveSubtitleAppearance,
+            subtitleSyncMs: PlayerSettings.shared.subtitleSyncMs)
     }
 }
 
@@ -601,3 +742,224 @@ private struct LiveTVChannelPickerView: View {
         search.update(channels: channels, query: query, category: nil, favoritesOnly: false, favoriteIDs: [])
     }
 }
+
+#if os(iOS)
+/// The shared Phase B1 entry point used by both the portrait watch frame and the full-screen
+/// Live TV player. It owns no playback state: all selections go directly to the session's one
+/// AetherEngine, and the sheet observes the engine's published track inventory.
+struct LiveTVBasicControlsButton: View {
+    @ObservedObject private var engine: AetherEngine
+    let onPresentationChanged: (Bool) -> Void
+    @State private var isShowingControls = false
+    @State private var isShowingStats = false
+
+    init(engine: AetherEngine, onPresentationChanged: @escaping (Bool) -> Void) {
+        _engine = ObservedObject(wrappedValue: engine)
+        self.onPresentationChanged = onPresentationChanged
+    }
+
+    private var route: LiveTVStatsSample.Route {
+        switch engine.videoRoute {
+        case .none: .none
+        case .remoteBypass: .remoteHLS
+        case .loopback: .loopbackHLS
+        case .software: .software
+        case .audio: .audioOnly
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if route != .none {
+                Button {
+                    onPresentationChanged(true)
+                    isShowingControls = true
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.headline.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .accessibilityLabel("Live TV Controls")
+                .accessibilityHint("Choose audio, subtitles, or picture aspect")
+                .accessibilityIdentifier("liveTVBasicControls")
+
+                Button {
+                    onPresentationChanged(true)
+                    isShowingStats = true
+                } label: {
+                    Image(systemName: "chart.xyaxis.line")
+                        .font(.headline.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .accessibilityLabel("Stream Stats")
+                .accessibilityIdentifier("liveTVStreamStats")
+            }
+
+            if LiveTVPlayerControlCapabilities.canRouteOutput(route: route) {
+                AirPlayRoutePicker { presenting in
+                    onPresentationChanged(presenting)
+                }
+                .frame(width: 44, height: 44)
+                .siloPlayerGlass(in: Circle(), interactive: true)
+            }
+        }
+        .sheet(isPresented: $isShowingControls) {
+            LiveTVBasicControlsSheet(engine: engine)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $isShowingStats) {
+            LiveTVStreamStatsSheet(engine: engine)
+        }
+        .onChange(of: isShowingControls) { _, shown in
+            onPresentationChanged(shown)
+        }
+        .onChange(of: isShowingStats) { _, shown in
+            onPresentationChanged(shown)
+        }
+    }
+}
+
+private struct LiveTVBasicControlsSheet: View {
+    @ObservedObject var engine: AetherEngine
+    @Environment(\.dismiss) private var dismiss
+    @State private var aspect: VideoGravity
+
+    init(engine: AetherEngine) {
+        self._engine = ObservedObject(wrappedValue: engine)
+        self._aspect = State(initialValue: Self.aspect(for: engine.videoGravity))
+    }
+
+    private var route: LiveTVStatsSample.Route {
+        switch engine.videoRoute {
+        case .none: .none
+        case .remoteBypass: .remoteHLS
+        case .loopback: .loopbackHLS
+        case .software: .software
+        case .audio: .audioOnly
+        }
+    }
+
+    private static func aspect(for gravity: AVLayerVideoGravity) -> VideoGravity {
+        VideoGravity.allCases.first {
+            $0.avGravity.rawValue == gravity.rawValue
+        } ?? .fit
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if LiveTVPlayerControlCapabilities.canSelectAudio(
+                    route: route, trackCount: engine.audioTracks.count) {
+                    Section("Audio") {
+                        ForEach(engine.audioTracks) { track in
+                            Button {
+                                engine.selectAudioTrack(index: track.id)
+                            } label: {
+                                LiveTVTrackRow(
+                                    title: LiveTVTrackLabel.audio(track),
+                                    isSelected: engine.activeAudioTrackIndex == track.id)
+                            }
+                        }
+                    }
+                }
+
+                if LiveTVPlayerControlCapabilities.canSelectSubtitles(
+                    route: route, trackCount: engine.subtitleTracks.count) {
+                    Section("Subtitles") {
+                        Button {
+                            engine.clearSubtitle()
+                        } label: {
+                            LiveTVTrackRow(
+                                title: "Off",
+                                isSelected: engine.activeSubtitleTrackIndex == nil)
+                        }
+
+                        ForEach(engine.subtitleTracks) { track in
+                            Button {
+                                engine.selectSubtitleTrack(index: track.id)
+                            } label: {
+                                LiveTVTrackRow(
+                                    title: LiveTVTrackLabel.subtitle(track),
+                                    isSelected: engine.activeSubtitleTrackIndex == track.id)
+                            }
+                        }
+                    }
+                }
+
+                if LiveTVPlayerControlCapabilities.canChangeAspect(route: route) {
+                    Section("Video") {
+                        Picker("Aspect", selection: Binding(
+                            get: { aspect },
+                            set: { newValue in
+                                aspect = newValue
+                                PlayerSettings.shared.setVideoGravity(newValue)
+                                engine.videoGravity = newValue.avGravity
+                            })) {
+                            ForEach(VideoGravity.allCases, id: \.self) { gravity in
+                                Text(gravity.label).tag(gravity)
+                            }
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Live TV Controls")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct LiveTVTrackRow: View {
+    let title: String
+    let isSelected: Bool
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .lineLimit(2)
+            Spacer(minLength: 12)
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.tint)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+private enum LiveTVTrackLabel {
+    static func audio(_ track: TrackInfo) -> String {
+        let candidates: [String?] = [track.name, track.language, track.isAtmos ? "Atmos" : nil,
+                                     track.isAtmos ? nil : TrackLabels.audioLayout(
+                                        channelLayout: track.channelLayout, channels: track.channels),
+                                     track.codec.isEmpty ? nil : track.codec.uppercased()]
+        var parts = candidates.compactMap { value -> String? in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }
+        if parts.isEmpty { parts = ["Audio track \(track.id)"] }
+        return parts.joined(separator: " · ")
+    }
+
+    static func subtitle(_ track: TrackInfo) -> String {
+        let candidates: [String?] = [track.name, track.language, track.codec.isEmpty ? nil : track.codec.uppercased(),
+                                     track.isForced ? "Forced" : nil, track.isHearingImpaired ? "SDH" : nil]
+        var parts = candidates.compactMap { value -> String? in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }
+        if parts.isEmpty { parts = ["Subtitle track \(track.id)"] }
+        return parts.joined(separator: " · ")
+    }
+}
+#endif

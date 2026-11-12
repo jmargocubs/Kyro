@@ -178,9 +178,10 @@ actor ESPNAPIClient {
         league: KyroSportLeague,
         dates: String?,
         policy: ESPNCachePolicy,
-        ignoreFreshness: Bool = false
+        ignoreFreshness: Bool = false,
+        competitionKey: String? = nil
     ) async throws -> ESPNScoreboardPayload {
-        let key = cacheKey(league: league, dates: dates)
+        let key = cacheKey(league: league, dates: dates, competitionKey: competitionKey)
         let currentDate = now()
         let stored = entries[key]
         if !ignoreFreshness, let stored,
@@ -196,7 +197,8 @@ actor ESPNAPIClient {
             id = existing.id
             task = existing.task
         } else {
-            let request = try makeRequest(league: league, dates: dates, etag: stored?.etag)
+            let request = try makeRequest(league: league, dates: dates, etag: stored?.etag,
+                                         competitionKey: competitionKey)
             let transport = transport
             let newTask = Task<NetworkResult, Error> {
                 let (data, response) = try await transport.send(request)
@@ -298,9 +300,10 @@ actor ESPNAPIClient {
     private func makeRequest(
         league: KyroSportLeague,
         dates: String?,
-        etag: String?
+        etag: String?,
+        competitionKey: String?
     ) throws -> URLRequest {
-        guard let endpoint = URL(string: ESPNMapping.path(for: league), relativeTo: baseURL),
+        guard let endpoint = URL(string: ESPNMapping.path(for: league, competitionKey: competitionKey), relativeTo: baseURL),
               var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: true) else {
             throw KyroSportsDataError.malformedResponse
         }
@@ -323,8 +326,8 @@ actor ESPNAPIClient {
         return request
     }
 
-    private func cacheKey(league: KyroSportLeague, dates: String?) -> String {
-        "\(league.rawValue)|\(dates ?? "current")"
+    private func cacheKey(league: KyroSportLeague, dates: String?, competitionKey: String?) -> String {
+        "\(league.rawValue)|\(competitionKey ?? "default")|\(dates ?? "current")"
     }
 
     private func stalePayload(

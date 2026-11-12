@@ -2,6 +2,13 @@ import Foundation
 import Observation
 import CryptoKit
 
+/// One memoized channel-to-guide match and the channel fields it was computed from.
+struct LiveTVChannelKeyMemo {
+    let guideID: String?
+    let name: String
+    let key: String?
+}
+
 @MainActor
 @Observable
 final class LiveTVService {
@@ -39,7 +46,13 @@ final class LiveTVService {
     private var categoryCatalogs: [UUID: [String]] = [:]
     /// Bumps whenever SQLite-backed guide listings finish loading, so channel rows read fresh data.
     private(set) var guideResidencyRevision = 0
-    @ObservationIgnored private var residencyPending: [String: Set<String>] = [:]
+    /// Channel → guide key for the installed guides. A channel without a guide-ID match is matched
+    /// by its folded display name (12.8 µs per fold measured on an M2), and every guide row asked
+    /// twice per build. Each entry remembers the guide ID and name it was computed from; the whole
+    /// memo is dropped whenever any guide index is installed, replaced or removed.
+    @ObservationIgnored private var channelKeyMemo: [String: LiveTVChannelKeyMemo] = [:]
+    /// Newest requests load first; see `LiveTVGuideResidencyQueue`.
+    @ObservationIgnored private var residencyPending = LiveTVGuideResidencyQueue()
     @ObservationIgnored private var residencyProviderID: UUID?
     @ObservationIgnored private var residencyGuideID: UUID?
     @ObservationIgnored private var residencyFailed = Set<String>()
@@ -91,6 +104,9 @@ final class LiveTVService {
     /// One full-screen player presentation and Picture in Picture hand-off, shared by the channel
     /// list and the guide.
     @ObservationIgnored let presentation = LiveTVPresentation(scheduler: LiveTVTaskScheduler())
+    /// The pushed guide's filters and time position at the moment it chose a channel, read once by
+    /// the watch screen's Guide tab. Never persisted.
+    @ObservationIgnored var guideWatchHandoff: LiveTVGuideWatchHandoff?
     #if os(iOS)
     /// One-tap Sports Hub playback over the same session and presentation.
     @ObservationIgnored private(set) lazy var sportsPlayback: KyroSportsPlaybackCoordinator = {
@@ -873,6 +889,32 @@ final class LiveTVService {
         return await task.value
     }
 
+    #if KYRO_INTERNAL_EPG_STORAGE_TOGGLE
+    /// INTERNAL TEST builds only: the Sports Match Report for one event, built from the same
+    /// cached channel index, guide and guide-key map a tap uses, off the main actor. Nil when no
+    /// playable catalog is loaded, or when the provider, catalog or guide changed while building.
+    /// No download, no playback.
+    func sportsMatchReport(for game: KyroSportsGame, now: Date = .now) async -> KyroSportsMatchReport? {
+        guard let providerID = selectedProviderID, liveCatalogs.contains(providerID),
+              let index = await sportsChannelIndex(for: providerID), !Task.isCancelled else { return nil }
+        let generation = guideGenerations.generation(for: providerID)
+        let guide = guideIndexes[providerID]
+        let keys = await guide.asyncFlatMap { await self.sportsGuideKeys(index: index, guide: $0, providerID: providerID) }
+        guard !Task.isCancelled, guide == nil || keys != nil, selectedProviderID == providerID,
+              index.catalogRevision == channelCatalogRevision,
+              guideGenerations.generation(for: providerID) == generation else { return nil }
+        let mode: KyroSportsMatchReportBuilder.StorageMode = guide.map { $0.isSQLiteBacked ? .sqlite : .memory } ?? .none
+        let input = KyroSportsMatchReportBuilder.Input(request: .init(game: game, now: now), index: index, guide: guide,
+                                                       guideKeys: keys, guideGeneration: generation,
+                                                       storageMode: mode, createdAt: now)
+        let work = Task.detached(priority: .utility) { KyroSportsMatchReportBuilder.build(input) }
+        let report = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        guard !Task.isCancelled, selectedProviderID == providerID, index.catalogRevision == channelCatalogRevision,
+              guideGenerations.generation(for: providerID) == generation else { return nil }
+        return report
+    }
+    #endif
+
     /// Starts one-tap playback for an event: discovery, then automatic attempts through the one
     /// Live TV session. The coordinator's phase tells the Sports Hub what to show.
     func playSportsEvent(_ game: KyroSportsGame, now: Date = .now) {
@@ -880,6 +922,8 @@ final class LiveTVService {
         // playback, whichever Sports Hub surface asked.
         guard KyroSportsPlaybackEligibility.isInProgress(game) else { return }
         let coordinator = sportsPlayback
+        // Build 46: the event already playing inline keeps playing; a second tap is not a retune.
+        guard !(coordinator.isPlaying(game.id) && presentation.isInline) else { return }
         let token = coordinator.beginSearching(game)
         sportsSearchTask?.cancel()
         sportsSearchTask = Task { [weak self] in
@@ -943,10 +987,16 @@ final class LiveTVService {
 
     /// Live TV's own Picture in Picture window must close before the session is retuned headless;
     /// otherwise the window would show the attempts. False when it does not close in time.
+    /// An inline stream for another event ends first, so its audio never runs under the attempts
+    /// and an event with nothing to try leaves no stream playing behind the discovery screen.
     private func prepareSportsPlayback() async -> Bool {
         observeSportsSessionIfNeeded()
         switch presentation.phase {
         case .idle:
+            return true
+        case .inline:
+            presentation.releaseInline()
+            endPlayback()
             return true
         case .presented, .restoring:
             return false
@@ -1139,7 +1189,8 @@ final class LiveTVService {
             _ = guideResidencyRevision
             requestResidencyIfNeeded(index, providerID: providerID, channel: channel)
         }
-        let pair = index.nowNext(guideID: channel.guideID, name: channel.name, at: date)
+        guard let key = channelKey(for: channel, in: index) else { return LiveTVProgramPair(current: nil, next: nil) }
+        let pair = index.nowNext(channelKey: key, at: date)
         return LiveTVProgramPair(current: pair.current.map(LiveTVProgram.init), next: pair.next.map(LiveTVProgram.init))
     }
 
@@ -1153,10 +1204,21 @@ final class LiveTVService {
         _ = guideResidencyRevision
         guard let providerID = UUID(uuidString: String(channel.id.prefix(36))),
               let index = guideIndexes[providerID], index.isSQLiteBacked,
-              let key = index.channelKey(guideID: channel.guideID, name: channel.name),
+              let key = channelKey(for: channel, in: index),
               !index.isResident(channelKey: key) else { return false }
         return !residencyFailed.contains(key) &&
-            (residencyPending[key] != nil || residencyInFlight.contains(key))
+            (residencyPending.contains(key) || residencyInFlight.contains(key))
+    }
+
+    /// True when this channel's guide row will not change until the guide itself does: its
+    /// listings are loaded, it has no listings, or it has no guide at all. False while they could
+    /// still arrive (queued, loading, or not yet asked for). Guide rows cache only settled values,
+    /// so a row built before its listings loaded asks again on its next build (Build 61).
+    func isGuideChannelSettled(_ channel: LiveTVChannel) -> Bool {
+        guard let providerID = UUID(uuidString: String(channel.id.prefix(36))),
+              let index = guideIndexes[providerID], index.isSQLiteBacked,
+              let key = channelKey(for: channel, in: index) else { return true }
+        return index.isResident(channelKey: key) || residencyFailed.contains(key)
     }
 
     /// Listings for one channel that overlap `interval`, in airing order. Empty when its guide is
@@ -1165,7 +1227,7 @@ final class LiveTVService {
         guard !isGuideStale,
               let providerID = UUID(uuidString: String(channel.id.prefix(36))),
               let index = guideIndexes[providerID],
-              let key = index.channelKey(guideID: channel.guideID, name: channel.name) else { return [] }
+              let key = channelKey(for: channel, in: index) else { return [] }
         if index.isSQLiteBacked, !index.isResident(channelKey: key) {
             queueResidency(index, providerID: providerID, key: key, channelID: channel.id)
         }
@@ -1178,8 +1240,19 @@ final class LiveTVService {
     // main actor. A channel outside the window reads as empty, is queued here, loaded on a background
     // task, and its row is then invalidated (the same targeted invalidation short guides use).
 
+    /// The channel's key in `index`, memoized until the next guide publication.
+    private func channelKey(for channel: LiveTVChannel, in index: EPGIndex) -> String? {
+        if let memo = channelKeyMemo[channel.id], memo.guideID == channel.guideID, memo.name == channel.name {
+            return memo.key
+        }
+        let key = index.channelKey(guideID: channel.guideID, name: channel.name)
+        if channelKeyMemo.count >= LiveTVCatalogLimits.maximumChannels { channelKeyMemo.removeAll(keepingCapacity: true) }
+        channelKeyMemo[channel.id] = LiveTVChannelKeyMemo(guideID: channel.guideID, name: channel.name, key: key)
+        return key
+    }
+
     private func requestResidencyIfNeeded(_ index: EPGIndex, providerID: UUID, channel: LiveTVChannel) {
-        guard let key = index.channelKey(guideID: channel.guideID, name: channel.name),
+        guard let key = channelKey(for: channel, in: index),
               !index.isResident(channelKey: key) else { return }
         queueResidency(index, providerID: providerID, key: key, channelID: channel.id)
     }
@@ -1192,9 +1265,11 @@ final class LiveTVService {
             residencyPending.removeAll()
             residencyInFlight.removeAll()
         }
-        guard !residencyFailed.contains(key), residencyPending.count < 512 || residencyPending[key] != nil else { return }
+        guard !residencyFailed.contains(key) else { return }
         residencyProviderID = providerID
-        residencyPending[key, default: []].insert(channelID)
+        // A full queue drops its oldest request, a row the viewer has most likely scrolled past.
+        // That row is not marked failed, so it asks again when it is next built.
+        residencyPending.request(key, channelID: channelID)
         guard residencyTask == nil else { return }
         residencyTask = Task { [weak self] in await self?.drainResidency() }
     }
@@ -1206,8 +1281,8 @@ final class LiveTVService {
                 residencyPending.removeAll()
                 break
             }
-            let batch = Array(residencyPending.prefix(Self.residencyBatch))
-            for (key, _) in batch { residencyPending[key] = nil }
+            // Newest first: the rows on screen when a fling stops load before the ones it passed.
+            let batch = residencyPending.takeNewest(Self.residencyBatch)
             residencyInFlight.formUnion(batch.map(\.key))
             let keys = batch.map(\.key)
             let prefetchID = UUID()
@@ -1349,8 +1424,10 @@ final class LiveTVService {
     /// `guideGenerations`. Clearing a provider that has no guide changes nothing.
     private func setGuideIndex(_ index: EPGIndex?, for providerID: UUID) {
         guard index != nil || guideIndexes[providerID] != nil else { return }
+        channelKeyMemo.removeAll(keepingCapacity: true)
         guideIndexes[providerID] = index
         guideGenerations.advance(providerID)
+        KyroPerformanceDiagnostics.event("Guide publish", .guidePublication)
     }
 
     private func invalidateAllGuideRows() {
@@ -1440,11 +1517,21 @@ extension LiveTVService: KyroSportsPlaybackDriving {
             channelID: channel.id, backend: activeEPGStorageMode == .sqlite ? "sqlite" : "memory"))
     }
 
+    /// Build 46: the verified stream plays in Sports Hub's inline player. Expanding it presents
+    /// the full-screen player over the shell, so no Live TV tab is selected first.
     func sportsPresentPlayer(_ channel: LiveTVChannel) {
         errorMessage = nil
         Task { await refreshShortEPG(for: channel) }
-        // The shell presents over the Sports Hub itself, so no Live TV tab is selected first.
-        _ = presentation.select(channel, from: .shell)
+        if !presentation.showInline(channel) {
+            // Only reachable if a cover or Picture in Picture took over between the attempt and
+            // its success; the stream then opens full screen as before.
+            _ = presentation.select(channel, from: .shell)
+        }
+    }
+
+    /// The inline player's Stop. The event context ends with it.
+    func stopSportsInlinePlayback() {
+        presentation.closeInline()
     }
 
     func sportsRetunePresentedPlayer(_ channel: LiveTVChannel) -> Bool {

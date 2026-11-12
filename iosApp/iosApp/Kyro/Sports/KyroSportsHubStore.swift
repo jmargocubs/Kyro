@@ -316,6 +316,23 @@ final class KyroSportsHubStore {
     @ObservationIgnored private var browseGeneration = 0
     @ObservationIgnored private var inFlight: [KyroSportLeague: InFlightLoad] = [:]
 
+    /// Sports fetching a day they have never loaded. Observed, so the page can say "loading"
+    /// instead of "not loaded yet, try again" while the first answer is on its way (Build 61:
+    /// the recording showed that message for a second on every cold start). Live polls of a
+    /// loaded day never touch it.
+    private(set) var firstDayLoads: Set<LeagueDay> = []
+
+    struct LeagueDay: Hashable {
+        let league: KyroSportLeague
+        let day: Date
+    }
+
+    /// True while a selected sport is still fetching the selected day for the first time.
+    var isLoadingSelectedDay: Bool {
+        let day = calendar.startOfDay(for: selectedDay)
+        return selectedCategory.leagues.contains { firstDayLoads.contains(LeagueDay(league: $0, day: day)) }
+    }
+
     private struct InFlightLoad {
         let token: Int
         let day: Date
@@ -511,7 +528,32 @@ final class KyroSportsHubStore {
     /// - Parameter force: bypasses the cached section data and refetches, used
     ///   by pull-to-refresh and by the live poll.
     func load(force: Bool = false) async {
-        let leagues = selectedCategory.leagues
+        await load(leagues: selectedCategory.leagues, force: force)
+    }
+
+    /// Refreshes only sports whose visible schedule is live or close enough to start that the
+    /// refresh policy asks for polling. All Sports previously fanned every tick out to every
+    /// provider route when one event was live. Besides unnecessary traffic, those state
+    /// publications invalidated the dashboard and competed with Guide and player transitions.
+    func poll() async {
+        let games = scheduleGames
+        let current = now()
+        let leagues = Self.pollingLeagues(in: selectedCategory.leagues, games: games, now: current)
+        guard !leagues.isEmpty else { return }
+        await load(leagues: leagues, force: true)
+    }
+
+    static func pollingLeagues(
+        in candidates: [KyroSportLeague],
+        games: [KyroSportsGame],
+        now: Date
+    ) -> [KyroSportLeague] {
+        candidates.filter { league in
+            KyroSportsRefreshPolicy.interval(for: games.filter { $0.league == league }, now: now) != nil
+        }
+    }
+
+    private func load(leagues: [KyroSportLeague], force: Bool) async {
         let day = calendar.startOfDay(for: selectedDay)
         let category = selectedCategory
         let generation = browseGeneration
@@ -545,6 +587,10 @@ final class KyroSportsHubStore {
             running.task.cancel()
             inFlight[league] = nil
         }
+        let firstLoad = LeagueDay(league: league, day: day)
+        let isFirstLoad = !state(for: league).loadedDays.contains(day)
+        if isFirstLoad { firstDayLoads.insert(firstLoad) }
+        defer { if isFirstLoad { firstDayLoads.remove(firstLoad) } }
         loadCounter += 1
         let token = loadCounter
         let task = Task<Void, Never> { [weak self] in

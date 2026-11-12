@@ -33,6 +33,15 @@ final class KyroSportsEventChannelMatchingTests: XCTestCase {
                               home: KyroGameTeam(team: home), away: KyroGameTeam(team: away), broadcast: "CBSSN")
     }
 
+    private func buccaneersAtBears(broadcast: String = "NBC/Peacock/Universo") -> KyroSportsGame {
+        let away = KyroSportsTeam(id: "tb", league: .nfl, abbreviation: "TB", nickname: "Buccaneers", location: "Tampa Bay")
+        let home = KyroSportsTeam(id: "chi", league: .nfl, abbreviation: "CHI", nickname: "Bears", location: "Chicago")
+        let kickoff = ISO8601DateFormatter().date(from: "2026-11-09T01:20:00Z")!
+        return KyroSportsGame(id: KyroGameID(provider: "espn", league: .nfl, rawID: "bucs-bears-20261108"),
+                              league: .nfl, startTime: kickoff, status: .live,
+                              home: KyroGameTeam(team: home), away: KyroGameTeam(team: away), broadcast: broadcast)
+    }
+
     private func channel(_ id: String, _ name: String, category: String = "Sports", guideID: String? = nil) -> LiveTVChannel {
         LiveTVChannel(id: id, guideID: guideID, name: name, streamURL: URL(string: "https://example.com/\(id).ts")!,
                       logoURL: nil, category: category)
@@ -146,6 +155,77 @@ final class KyroSportsEventChannelMatchingTests: XCTestCase {
         ], guide: guide)
         XCTAssertEqual(result.matches.map(\.channel.id), ["fox"])
         XCTAssertEqual(result.possibleBroadcasters.map(\.channel.id), ["foxsd"], "a matched channel is not listed twice")
+    }
+
+    func testBuccaneersBearsFindsNBCAndUniversoVariantsWithoutEPGButNeverAutoPlaysThem() {
+        let channels = [channel("affiliate", "NBC Chicago WMAQ"), channel("nbc4k", "NBC4K"),
+                        channel("nbcuhd", "NBC UHD"), channel("nbcfhd", "NBC FHD"),
+                        channel("nbc1080", "NBC 1080p"), channel("nbchd", "NBC HD"),
+                        channel("regionalPrefix", "USA | NBC"),
+                        channel("universo", "Universo HD", category: "Spanish"),
+                        channel("nbcnews", "NBCNews")]
+        let result = match(buccaneersAtBears(), channels)
+        XCTAssertTrue(result.matches.isEmpty)
+        XCTAssertTrue(result.autoPlayCandidates.isEmpty)
+        XCTAssertEqual(result.possibleBroadcasters.map(\.channel.id),
+                       ["nbc4k", "nbcuhd", "nbcfhd", "nbc1080", "nbchd", "universo", "regionalPrefix", "affiliate"])
+        XCTAssertFalse(result.possibleBroadcasters.contains { $0.channel.name == "Peacock" },
+                       "a streaming service is not synthesized into the IPTV catalog")
+        XCTAssertFalse(result.possibleBroadcasters.contains { $0.channel.id == "nbcnews" }, "NBC must be a whole token")
+        XCTAssertTrue(result.possibleBroadcasters.allSatisfy { $0.source == .broadcaster && !$0.isAutoPlayEligible })
+    }
+
+    func testBroadcasterAliasesAreBoundarySafeAndSpanishNetworkIsNotInferredFromNBCAlone() {
+        let channels = [channel("universo", "NBC Universo UHD"), channel("universo4k", "Universo4K"),
+                        channel("univision", "Univision HD"), channel("nbc", "NBC HD")]
+        let both = match(buccaneersAtBears(broadcast: "NBC, Peacock & Universo"), channels)
+        XCTAssertEqual(Set(both.possibleBroadcasters.map(\.channel.id)), ["universo", "universo4k", "nbc"])
+        XCTAssertEqual(both.possibleBroadcasters.count, 3, "a channel matching NBC and Universo appears only once")
+        let nbcOnly = match(buccaneersAtBears(broadcast: "NBC"), channels)
+        XCTAssertEqual(Set(nbcOnly.possibleBroadcasters.map(\.channel.id)), ["universo", "nbc"],
+                       "NBC Universo contains NBC, but Universo alone needs a listed Universo broadcaster")
+    }
+
+    func testNetworkQualityVariantsBeatShortAffiliateNamesAndExpandedPoolIsBounded() {
+        let affiliates = (0..<100).map { channel("affiliate\($0)", "NBC \($0) Local") }
+        let national = [channel("4k", "NBC 4K"), channel("uhd", "NBC UHD"), channel("fhd", "NBC FHD"),
+                        channel("1080", "NBC 1080p"), channel("hd", "NBC HD"), channel("base", "NBC")]
+        let result = match(buccaneersAtBears(broadcast: "NBC"), affiliates + national)
+        XCTAssertEqual(result.possibleBroadcasters.count, KyroSportsStreamMatcher.maximumBroadcasters)
+        XCTAssertEqual(Array(result.possibleBroadcasters.prefix(6)).map(\.channel.id),
+                       ["4k", "uhd", "fhd", "1080", "hd", "base"])
+        XCTAssertTrue(result.possibleBroadcasters.allSatisfy { !$0.isAutoPlayEligible })
+        XCTAssertEqual(result.possibleBroadcasters.map(\.channel.id),
+                       match(buccaneersAtBears(broadcast: "NBC"), Array((affiliates + national).reversed()))
+                           .possibleBroadcasters.map(\.channel.id))
+    }
+
+    func testSecondNationalBroadcastRetainsVerifiedEventAndThreeAttemptLimit() throws {
+        let game = michiganStateAtMichigan(broadcast: "FOX")
+        let guide = try guide([(id: "fox", title: "College Football: Michigan State at Michigan")])
+        let events = (0..<5).map { channel("event\($0)", "Michigan State @ Michigan", category: "NCAAF") }
+        // "FOX HD" would share the guide's "fox" channel by display name (quality tags are ignored),
+        // so the unlinked broadcaster needs a name of its own.
+        let result = match(game, events + [channel("fox4k", "FOX 4K", guideID: "fox"), channel("foxhd", "FOX Sports HD")], guide: guide)
+        XCTAssertEqual(result.matches.count, 6)
+        XCTAssertEqual(result.autoPlayCandidates.count, KyroSportsStreamMatcher.maximumAutoPlayCandidates)
+        XCTAssertEqual(result.possibleBroadcasters.map(\.channel.id), ["foxhd"])
+        XCTAssertFalse(try XCTUnwrap(result.possibleBroadcasters.first).isAutoPlayEligible)
+    }
+
+    func testFortyThousandChannelCatalogKeepsNetworkResultsBounded() throws {
+        var channels = (0..<39_800).map { channel("other\($0)", "Station \($0)") }
+        channels += (0..<200).map { channel("affiliate\($0)", "NBC \($0) Local") }
+        // Keep the test at the production capacity, not one channel beyond it.
+        channels[39_799] = channel("national4k", "NBC 4K")
+        let index = try XCTUnwrap(KyroSportsChannelIndex.build(channels: channels))
+        let result = KyroSportsStreamMatcher.match(request: .init(game: buccaneersAtBears(broadcast: "NBC"), now: now),
+                                                   index: index, guide: nil, guideKeys: nil)
+        XCTAssertEqual(result.diagnostics.catalogChannels, 40_000)
+        XCTAssertEqual(result.possibleBroadcasters.count, KyroSportsStreamMatcher.maximumBroadcasters)
+        XCTAssertEqual(result.possibleBroadcasters.first?.channel.id, "national4k")
+        XCTAssertTrue(result.matches.isEmpty)
+        XCTAssertTrue(result.autoPlayCandidates.isEmpty)
     }
 
     // MARK: Duplicates and shared guides

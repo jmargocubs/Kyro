@@ -59,6 +59,18 @@ final class KyroSportsStreamPresentationTests: XCTestCase {
         XCTAssertTrue(sections[0].startsExpanded)
     }
 
+    func testNetworkSectionShowsSixInitiallyAndSearchesBoundedExpandedRows() {
+        let candidates = (0..<12).map { match("n\($0)", eligible: false, source: .broadcaster,
+                                              name: $0 == 10 ? "Universo 4K" : "NBC Local \($0)") }
+        let section = KyroSportsStreamSection.make(matches: [match("n0")], broadcasters: candidates,
+                                                   status: { _ in .untested }, currentChannelID: nil)
+            .first { $0.kind == .networkChannels }!
+        XCTAssertEqual(section.rows.count, 11, "a verified match is not repeated in network channels")
+        XCTAssertEqual(section.visibleNetworkRows(showAll: false).count, 6)
+        XCTAssertEqual(section.visibleNetworkRows(showAll: true).count, 11)
+        XCTAssertEqual(section.visibleNetworkRows(showAll: true, query: "universo").map(\.channelID), ["n10"])
+    }
+
     // MARK: Status and evidence
 
     func testMetadataMatchAndPlaybackResultAreDistinct() {

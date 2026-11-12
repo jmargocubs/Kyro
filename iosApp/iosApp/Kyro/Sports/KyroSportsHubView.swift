@@ -56,6 +56,9 @@ struct KyroSportsHubView: View {
     @Environment(\.kyroShellHeader) private var shellHeader
     @State private var fallbackScrollState = PageChromeScrollState()
     @State private var store = KyroSportsHubStore(preferences: .standard)
+    @State private var eventDetailStore = KyroSportsEventDetailStore()
+    /// Keeps the pinned event's score current while the feed shows another sport or day.
+    @State private var pinnedRefresher = KyroSportsPinnedEventRefresher()
     @State private var refreshTask: Task<Void, Never>?
     /// The event's stream screen: Find streams, or the fallback when one-tap playback found
     /// nothing that plays.
@@ -65,6 +68,13 @@ struct KyroSportsHubView: View {
     @State private var pendingChoice: KyroSportsStreamChoice?
     @State private var eventPreview: KyroSportsEventSelection?
     @State private var pendingPreviewWatch: KyroSportsGame?
+    @State private var watchingTab: KyroSportsWatchingTab = .feed
+    @State private var isShowingOtherStreams = false
+    /// The Feed's position while another tab covers it (Build 61). The tracker is not observed,
+    /// so scrolling never invalidates the hub.
+    @State private var feedPosition = ScrollPosition()
+    @State private var feedDriver = KyroSportsFeedScrollDriver()
+    @State private var feedCoordinator = KyroSportsFeedScrollCoordinator()
     @Environment(\.scenePhase) private var scenePhase
     private let liveTV = LiveTVService.shared
 
@@ -92,48 +102,84 @@ struct KyroSportsHubView: View {
         }
     }
 
+    #if os(iOS)
+    private var isInlinePlayerVisible: Bool {
+        KyroSportsInlinePlayerMode.make(sports: playback.phase, presentation: liveTV.presentation.phase).isVisible
+    }
+    #endif
+
     private var scrollState: PageChromeScrollState {
         shellHeader?.scrollState(for: .sports) ?? fallbackScrollState
     }
 
+    private var selectedWatchingGame: KyroSportsGame? {
+        guard let selected = playback.context?.game else { return nil }
+        // The feed's copy when it lists the event; otherwise the pinned event's own refresh, so a
+        // sport or day change in the feed never freezes the playing event's score or status.
+        return KyroSportsPinnedEvent.resolve(pinned: selected, scheduleGames: store.liveGames + store.scheduleGames,
+                                             refreshed: pinnedRefresher.latest)
+    }
+
+    private var pinnedRefreshKey: KyroSportsPinnedEvent.RefreshKey? {
+        guard let selected = playback.context?.game else { return nil }
+        return KyroSportsPinnedEvent.RefreshKey(
+            gameID: selected.id,
+            coveredBySchedule: (store.liveGames + store.scheduleGames).contains { $0.id == selected.id })
+    }
+
+    /// Tab taps freeze or restore the Feed in the same call as the tap, before the change renders,
+    /// so a fling still coasting is stopped at the offset the tap saw (Build 62).
+    private var watchingTabSelection: Binding<KyroSportsWatchingTab> {
+        Binding(get: { watchingTab }, set: { newTab in
+            if newTab != .feed, watchingTab == .feed { feedCoordinator.feedHidden() }
+            if newTab == .feed, watchingTab != .feed { feedCoordinator.feedShown() }
+            watchingTab = newTab
+        })
+    }
+
+    /// The Feed is under Game, Stats or News only while an event is pinned above it.
+    private var isFeedVisible: Bool {
+        watchingTab == .feed || selectedWatchingGame == nil
+    }
+
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: SiloTheme.padding) {
-                KyroSportsHubHeading()
-                KyroSportsLiveNowSection(model: liveNow, category: store.selectedCategory,
-                                         activeGameID: activeGameID) { watch($0) }
-                KyroSportsScheduleHeader(selection: store.selectedCategory) { category in
-                    guard category != store.selectedCategory else { return }
-                    // Build 41.1: the page stays where the viewer left it. Only the rows below the
-                    // date strip change, in one update with no animation. Build 41 scrolled the
-                    // header to the top and re-pinned it as Live Now settled; those corrections
-                    // raced the menu's dismissal and async loads, so the header slid for several
-                    // frames on every switch.
-                    var transaction = Transaction(animation: nil)
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) { store.selectCategory(category) }
-                }
-                .padding(.top, 6)
-                KyroSportsDateStrip(
-                    days: store.browseDays,
-                    selectedDay: store.selectedDay,
-                    now: store.clockNow,
-                    calendar: store.browseCalendar
-                ) { day in
-                    store.selectDay(day)
-                }
-                content
+        ZStack {
+            sportsFeed
+                .opacity(isFeedVisible ? 1 : 0)
+                .allowsHitTesting(isFeedVisible)
+                .accessibilityHidden(!isFeedVisible)
+            if let game = selectedWatchingGame, watchingTab != .feed {
+                KyroSportsWatchingContent(tab: watchingTab, game: game, detailStore: eventDetailStore,
+                                          channelName: liveTV.presentation.activeChannel?.name,
+                                          hasOtherStreams: (playback.context?.alternatives.count ?? 0)
+                                            + (playback.context?.overflow.count ?? 0)
+                                            + (playback.context?.broadcasters.count ?? 0) > 1,
+                                          showOtherStreams: { isShowingOtherStreams = true })
             }
-            .frame(maxWidth: 720)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, SiloTheme.padding)
-            .padding(.top, SiloTheme.smallPadding)
-            .padding(.bottom, SiloTheme.largePadding)
         }
-        .reportsPageChromeScroll(to: scrollState)
         .siloScrollEdgeEffect()
         .safeAreaInset(edge: .top, spacing: 0) {
-            Color.clear.frame(height: shellHeader?.runway ?? 0)
+            VStack(spacing: 0) {
+                Color.clear.frame(height: shellHeader?.runway ?? 0)
+                #if os(iOS)
+                // Build 46: the tapped event plays here, above the feed, which scrolls beneath it.
+                KyroSportsInlinePlayer(service: liveTV, games: store.liveGames + store.scheduleGames,
+                                       pinnedGame: selectedWatchingGame,
+                                       isShowingOtherStreams: $isShowingOtherStreams)
+                if isInlinePlayerVisible, selectedWatchingGame != nil {
+                    KyroSportsWatchingTabBar(selection: watchingTabSelection)
+                }
+                #endif
+            }
+            // Game, Stats and News scroll beneath this inset. The Feed reports its scroll to the
+            // shell header, which then draws its own backdrop; these tabs do not, so the space above
+            // the player stayed transparent and their rows showed under KYRO and the status bar
+            // (Build 59, NBA Stats). An opaque canvas behind the inset hides what scrolls under it.
+            .background(alignment: .top) {
+                if KyroSportsWatchingLayout.needsOpaqueInset(tab: watchingTab, hasPinnedEvent: selectedWatchingGame != nil) {
+                    Color.siloPageCanvas.ignoresSafeArea(edges: .top)
+                }
+            }
         }
         .siloPageBackground()
         .toolbar(.hidden, for: .navigationBar)
@@ -148,7 +194,13 @@ struct KyroSportsHubView: View {
             startRefreshLoopIfNeeded()
         }
         .onChange(of: liveNowTrigger) { _, _ in updateLiveNow() }
+        .onChange(of: isFeedVisible) { _, visible in feedVisibilityChanged(visible) }
+        .task(id: pinnedRefreshKey) {
+            guard let key = pinnedRefreshKey, let pinned = playback.context?.game, pinned.id == key.gameID else { return }
+            await pinnedRefresher.keepCurrent(pinned, coveredBySchedule: key.coveredBySchedule)
+        }
         .onChange(of: store.selectedCategory) { _, _ in
+            feedCoordinator.contentReplaced()
             cancelRefreshLoop()
             Task {
                 await store.loadIfNeeded()
@@ -156,6 +208,7 @@ struct KyroSportsHubView: View {
             }
         }
         .onChange(of: store.selectedDay) { _, _ in
+            feedCoordinator.contentReplaced()
             cancelRefreshLoop()
             Task {
                 await store.loadIfNeeded()
@@ -165,11 +218,14 @@ struct KyroSportsHubView: View {
         .onChange(of: store.refreshInterval) { _, _ in
             startRefreshLoopIfNeeded()
         }
+        .onAppear { liveTV.presentation.inlineHostAppeared() }
         .onDisappear {
             cancelRefreshLoop()
             liveNow.cancel()
-            // A player covering the hub is not leaving it; an attempt still connecting is.
+            // A player covering the hub is not leaving it; an attempt still connecting is, and
+            // an inline stream ends with the hub rather than play on with nothing to show it.
             if playback.isBusy { liveTV.cancelSportsPlayback() }
+            liveTV.presentation.inlineHostDisappeared()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
@@ -179,15 +235,9 @@ struct KyroSportsHubView: View {
                 updateLiveNow()
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let status = KyroSportsConnectingStatus(phase: playback.phase, games: store.liveGames + store.scheduleGames) {
-                KyroSportsConnectingBanner(status: status) { liveTV.cancelSportsPlayback() }
-                    .padding(.horizontal, SiloTheme.padding)
-                    .padding(.bottom, SiloTheme.smallPadding)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: playback.isBusy)
+        #if os(iOS)
+        .animation(.easeInOut(duration: 0.25), value: isInlinePlayerVisible)
+        #endif
         #if os(iOS)
         .modifier(KyroSportsShellPlayerFallback(service: liveTV))
         #endif
@@ -225,7 +275,65 @@ struct KyroSportsHubView: View {
         }
     }
 
-    /// One tap on a playable event: find its best stream, prove it plays, then show the player.
+    private var sportsFeed: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: SiloTheme.padding) {
+                KyroSportsHubHeading()
+                KyroSportsLiveNowSection(model: liveNow, category: store.selectedCategory,
+                                         activeGameID: activeGameID,
+                                         isLoadingScores: store.isLoadingSelectedDay) { watch($0) }
+                KyroSportsScheduleHeader(selection: store.selectedCategory) { category in
+                    guard category != store.selectedCategory else { return }
+                    // Changing a sport preserves the feed's position and avoids an animated
+                    // replacement of its rows while the selected stream keeps playing above.
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { store.selectCategory(category) }
+                }
+                .padding(.top, 6)
+                KyroSportsDateStrip(days: store.browseDays, selectedDay: store.selectedDay,
+                                    now: store.clockNow, calendar: store.browseCalendar) { day in
+                    store.selectDay(day)
+                }
+                content
+            }
+            .frame(maxWidth: 720)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.top, SiloTheme.smallPadding)
+            .padding(.bottom, SiloTheme.largePadding)
+            #if canImport(UIKit)
+            .background(KyroSportsFeedScrollResolver(driver: feedDriver))
+            #endif
+        }
+        .scrollPosition($feedPosition)
+        .onAppear {
+            feedDriver.scrollToFallback = { y in
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { feedPosition.scrollTo(y: y) }
+            }
+            feedCoordinator.driver = feedDriver
+        }
+        .onScrollGeometryChange(for: KyroSportsFeedScrollGeometry.self) { geometry in
+            KyroSportsFeedScrollGeometry(offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                                         contentHeight: geometry.contentSize.height,
+                                         viewportHeight: geometry.containerSize.height)
+        } action: { [feedScroll = feedDriver.tracker] _, geometry in
+            feedScroll.offset = geometry.offset
+            feedScroll.contentHeight = geometry.contentHeight
+            feedScroll.viewportHeight = geometry.viewportHeight
+        }
+        .reportsPageChromeScroll(to: scrollState)
+    }
+
+    /// Backstop for a change of `isFeedVisible` that did not come from a tab tap. Both calls are
+    /// idempotent: the first hide keeps its offset, and a restore clears it.
+    private func feedVisibilityChanged(_ visible: Bool) {
+        if visible { feedCoordinator.feedShown() } else { feedCoordinator.feedHidden() }
+    }
+
+    /// One tap on a playable event: find its best stream, prove it plays, then play it inline.
     /// Every Sports Hub entry point comes through here, so one rule decides: the event is live
     /// and Live Now holds strong stream evidence for it. Anything else is informational.
     private func watch(_ game: KyroSportsGame) {
@@ -312,6 +420,9 @@ struct KyroSportsHubView: View {
                             gameRow(game, showsLeague: false)
                         }
                     }
+                case .unavailable where store.isLoadingSelectedDay:
+                    // Another selected sport is still answering: loading, not "try again".
+                    KyroSportsLoadingState(title: store.selectedCategory.displayName)
                 case .empty, .unavailable, .outsideFeed, .failed, .offline:
                     let empty = store.noGamesState
                     KyroSportsMessageState(
@@ -337,7 +448,7 @@ struct KyroSportsHubView: View {
             while !Task.isCancelled, let interval = store.refreshInterval {
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { return }
-                await store.load(force: true)
+                await store.poll()
             }
         }
     }
@@ -538,15 +649,19 @@ private struct KyroSportsStreamMatchSheet: View {
                     }
                     KyroSportsStreamSectionsView(
                         sections: KyroSportsStreamSection.make(
-                            matches: result.matches, broadcasters: result.possibleBroadcasters,
+                            matches: result.matches, overflow: result.overflowMatches,
+                            broadcasters: result.possibleBroadcasters,
                             status: { result.attemptStatuses[$0] ?? .untested }, currentChannelID: nil,
                             currentProgrammes: currentProgrammes),
                         select: { channelID in
-                            if let match = (result.matches + result.possibleBroadcasters)
+                            if let match = (result.matches + result.overflowMatches + result.possibleBroadcasters)
                                 .first(where: { $0.channel.id == channelID }) { choose(match) }
                         }
                     )
                     searchSection(result)
+                    #if KYRO_INTERNAL_EPG_STORAGE_TOGGLE
+                    KyroSportsMatchReportSlot(game: game)
+                    #endif
                 } else {
                     HStack(spacing: 10) {
                         ProgressView()
@@ -573,7 +688,8 @@ private struct KyroSportsStreamMatchSheet: View {
             }
             .task(id: discovery.result?.matches.count ?? -1) {
                 guard let result = discovery.result else { return }
-                let unlisted = (result.matches + result.possibleBroadcasters).filter { $0.program == nil }.map(\.channel)
+                let unlisted = (result.matches + result.overflowMatches + result.possibleBroadcasters)
+                    .filter { $0.program == nil }.map(\.channel)
                 currentProgrammes = await service.sportsCurrentProgrammes(for: unlisted)
             }
             .task(id: "\(manualCatalog.count)|\(manualQuery)") {
@@ -661,19 +777,20 @@ private struct KyroSportsShellPlayerFallback: ViewModifier {
             content
         } else {
             content.fullScreenCover(item: Binding(
-                get: { service.presentation.channel(for: .shell) },
+                get: { service.presentation.coverItem(for: .shell) },
                 set: { if $0 == nil { service.presentation.coverDismissed(from: .shell) } }
-            )) { channel in
-                LiveTVPlayerView(channel: channel, channels: service.channels, session: service.playerSession,
-                                 service: service)
+            )) { cover in
+                LiveTVPlayerView(channel: cover.channel, channels: service.channels, session: service.playerSession,
+                                 service: service,
+                                 naturalRotation: service.presentation.isInlineExpandedByRotation)
             }
         }
     }
 }
 #endif
 
-/// The searching/connecting banner's content, or nil when nothing is in flight.
-private struct KyroSportsConnectingStatus: Equatable {
+/// The searching/connecting status the inline player shows, or nil when nothing is in flight.
+struct KyroSportsConnectingStatus: Equatable {
     let title: String
     let detail: String?
 
@@ -689,34 +806,6 @@ private struct KyroSportsConnectingStatus: Equatable {
         case .idle, .presented, .exhausted, .unavailable:
             return nil
         }
-    }
-}
-
-private struct KyroSportsConnectingBanner: View {
-    let status: KyroSportsConnectingStatus
-    let cancel: () -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ProgressView()
-            VStack(alignment: .leading, spacing: 2) {
-                Text(status.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                if let detail = status.detail {
-                    Text(detail).font(.caption).foregroundStyle(KyroTheme.textSecondary).lineLimit(1)
-                }
-            }
-            Spacer(minLength: 8)
-            Button("Cancel", action: cancel)
-                .font(.subheadline.weight(.semibold))
-                .accessibilityIdentifier("kyroSportsCancelConnecting")
-        }
-        .foregroundStyle(KyroTheme.textPrimary)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.updatesFrequently)
-        .accessibilityIdentifier("kyroSportsConnecting")
     }
 }
 

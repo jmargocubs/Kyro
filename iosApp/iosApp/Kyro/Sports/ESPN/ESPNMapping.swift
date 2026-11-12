@@ -12,12 +12,22 @@ enum ESPNMapping {
         case .collegeFootball: "/apis/site/v2/sports/football/college-football/scoreboard"
         case .atp: "/apis/site/v2/sports/tennis/atp/scoreboard"
         case .wta: "/apis/site/v2/sports/tennis/wta/scoreboard"
+        case .soccer: "/apis/site/v2/sports/soccer/eng.1/scoreboard"
         }
+    }
+
+    static func path(for league: KyroSportLeague, competitionKey: String?) -> String {
+        guard league == .soccer, let key = competitionKey, !key.isEmpty else {
+            return path(for: league)
+        }
+        return "/apis/site/v2/sports/soccer/\(key)/scoreboard"
     }
 
     static func game(
         from event: ESPNScoreboardResponse.Event,
-        league: KyroSportLeague
+        league: KyroSportLeague,
+        competitionKey: String? = nil,
+        competitionName: String? = nil
     ) -> KyroSportsGame? {
         guard let competition = event.competitions?.first else { return nil }
         let rawID = nonempty(event.id) ?? nonempty(competition.id)
@@ -68,8 +78,10 @@ enum ESPNMapping {
             ),
             venue: nonempty(competition.venue?.fullName),
             broadcast: broadcast(from: competition.broadcasts ?? []),
-            note: competition.notes?.lazy.compactMap { nonempty($0.headline) }.first,
-            situation: situation(from: competition.situation, league: league, status: status)
+            note: nonempty(competitionName) ?? nonempty(competition.altGameNote)
+                ?? competition.notes?.lazy.compactMap { nonempty($0.headline) }.first,
+            situation: situation(from: competition.situation, league: league, status: status),
+            competitionKey: competitionKey
         )
     }
 
@@ -433,6 +445,7 @@ enum ESPNMapping {
         case .nhl: nhlSuffix(period: period, seasonType: seasonType).id
         case .nfl, .nba, .collegeFootball: period <= 4 ? "q\(period)" : "ot\(period - 4)"
         case .atp, .wta: "set\(period)"
+        case .soccer: "half\(period)"
         }
     }
 
@@ -443,6 +456,7 @@ enum ESPNMapping {
         case .nfl, .collegeFootball, .nba:
             return period <= 4 ? "Q\(period)" : period == 5 ? "OT" : "\(period - 4)OT"
         case .atp, .wta: return "Set \(period)"
+        case .soccer: return period == 1 ? "1H" : period == 2 ? "2H" : "ET\(period - 2)"
         }
     }
 

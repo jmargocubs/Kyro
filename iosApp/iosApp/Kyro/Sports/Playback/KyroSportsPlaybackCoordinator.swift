@@ -16,7 +16,8 @@ protocol KyroSportsPlaybackDriving: AnyObject {
     func sportsResolve(_ channel: LiveTVChannel) -> LiveTVChannel?
     /// Starts or retunes the session without presenting the player.
     func sportsStartPlayback(_ channel: LiveTVChannel)
-    /// Shows the full-screen player over the current screen for the channel now playing.
+    /// Shows the channel now playing in Sports Hub's inline player (Build 46). The inline player
+    /// expands to the full-screen player and Picture in Picture over the same session.
     func sportsPresentPlayer(_ channel: LiveTVChannel)
     /// Retunes the presented player through its own channel-switch route.
     func sportsRetunePresentedPlayer(_ channel: LiveTVChannel) -> Bool
@@ -40,16 +41,21 @@ struct KyroSportsPlaybackContext: Equatable, Sendable {
     let game: KyroSportsGame
     /// Event-specific matches, best first, plus any channel the viewer chose from search.
     private(set) var alternatives: [KyroSportsStreamMatch]
+    /// Accepted event matches beyond the initial list, best first. Offered, never tried automatically.
+    let overflow: [KyroSportsStreamMatch]
     /// Listed-broadcaster channels with no event evidence. Offered, never tried automatically.
     let broadcasters: [KyroSportsStreamMatch]
     private(set) var statuses: [String: KyroSportsStreamStatus] = [:]
     var currentChannelID: String?
 
-    init(game: KyroSportsGame, alternatives: [KyroSportsStreamMatch], broadcasters: [KyroSportsStreamMatch]) {
+    init(game: KyroSportsGame, alternatives: [KyroSportsStreamMatch], overflow: [KyroSportsStreamMatch] = [],
+         broadcasters: [KyroSportsStreamMatch]) {
         id = UUID()
         self.game = game
         var seen = Set<String>()
         self.alternatives = alternatives.filter { seen.insert($0.channel.id).inserted }
+        self.overflow = overflow.prefix(KyroSportsStreamMatcher.maximumOverflowMatches)
+            .filter { seen.insert($0.channel.id).inserted }
         self.broadcasters = broadcasters.filter { seen.insert($0.channel.id).inserted }
     }
 
@@ -62,19 +68,22 @@ struct KyroSportsPlaybackContext: Equatable, Sendable {
     /// Adds a channel picked from channel search so it stays listed after a switch.
     mutating func include(_ match: KyroSportsStreamMatch) {
         guard !alternatives.contains(where: { $0.channel.id == match.channel.id }),
+              !overflow.contains(where: { $0.channel.id == match.channel.id }),
               !broadcasters.contains(where: { $0.channel.id == match.channel.id }) else { return }
         alternatives.append(match)
     }
 
     func match(for channelID: String) -> KyroSportsStreamMatch? {
-        alternatives.first { $0.channel.id == channelID } ?? broadcasters.first { $0.channel.id == channelID }
+        alternatives.first { $0.channel.id == channelID }
+            ?? overflow.first { $0.channel.id == channelID }
+            ?? broadcasters.first { $0.channel.id == channelID }
     }
 }
 
 /// One-tap Sports Hub playback.
 ///
-/// Tap → candidates → try the best one in the existing Live TV session → present the player only
-/// once a stream actually plays. A failure or a silent stream moves to the next credible
+/// Tap → candidates → try the best one in the existing Live TV session → show the inline player
+/// only once a stream actually plays. A failure or a silent stream moves to the next credible
 /// candidate, within a fixed number of attempts and a total time budget. Only one session exists,
 /// so at most one stream is ever connecting, and a newer tap or Cancel supersedes the attempt.
 @MainActor
@@ -86,7 +95,7 @@ final class KyroSportsPlaybackCoordinator {
         case searching(KyroGameID)
         /// Trying `attempt` (1-based) of `total` before the player is shown.
         case connecting(channelName: String, attempt: Int, total: Int)
-        /// The player is up for this event.
+        /// This event owns the session: inline, full screen or in Picture in Picture.
         case presented
         /// Nothing credible played. The event's discovery screen takes over.
         case exhausted(KyroSportsGame, KyroSportsStreamMatchResult)
@@ -129,6 +138,11 @@ final class KyroSportsPlaybackCoordinator {
         }
     }
 
+    /// Whether `gameID` is the event that owns the playing session.
+    func isPlaying(_ gameID: KyroGameID) -> Bool {
+        phase == .presented && context?.game.id == gameID
+    }
+
     // MARK: Starting and stopping
 
     /// Discovery is about to run for `game`. Supersedes any attempt in flight.
@@ -147,6 +161,7 @@ final class KyroSportsPlaybackCoordinator {
         pendingResult = result
         chosenChannelID = nil
         context = KyroSportsPlaybackContext(game: game, alternatives: result.matches,
+                                            overflow: result.overflowMatches,
                                             broadcasters: result.possibleBroadcasters)
         queue = allowsAutomaticPlayback ? Array(result.autoPlayCandidates.prefix(KyroSportsStreamMatcher.maximumAutoPlayCandidates)) : []
         attemptNumber = 0
@@ -204,6 +219,7 @@ final class KyroSportsPlaybackCoordinator {
         pendingResult = result
         if context?.game.id != game.id {
             context = KyroSportsPlaybackContext(game: game, alternatives: result.matches,
+                                                overflow: result.overflowMatches,
                                                 broadcasters: result.possibleBroadcasters)
         }
         context?.include(match)
@@ -258,7 +274,8 @@ final class KyroSportsPlaybackCoordinator {
         self.context = context
     }
 
-    /// The player closed (not into Picture in Picture). The event context ends with it.
+    /// The player closed (not into Picture in Picture or back into the inline player). The event
+    /// context ends with it.
     func playerClosed() {
         guard phase == .presented else { return }
         phase = .idle
@@ -386,7 +403,7 @@ final class KyroSportsPlaybackCoordinator {
     /// that did not play is reported rather than forgotten when the screen comes back.
     private func annotated(_ result: KyroSportsStreamMatchResult, with context: KyroSportsPlaybackContext) -> KyroSportsStreamMatchResult {
         var result = result
-        let channelIDs = (result.matches + result.possibleBroadcasters + context.alternatives).map(\.channel.id)
+        let channelIDs = (result.matches + result.overflowMatches + result.possibleBroadcasters + context.alternatives).map(\.channel.id)
         result.attemptStatuses = Dictionary(channelIDs.map { ($0, context.status(of: $0)) },
                                             uniquingKeysWith: { first, _ in first })
         result.choiceDidNotPlay = chosenChannelID.map { context.status(of: $0) == .failed } ?? false

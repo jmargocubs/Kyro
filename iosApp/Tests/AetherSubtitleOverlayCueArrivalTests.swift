@@ -8,6 +8,51 @@ import XCTest
 /// paused no clock tick redraws the overlay, so the cues arriving must.
 @MainActor
 final class AetherSubtitleOverlayCueArrivalTests: XCTestCase {
+    func testExistingPrimaryCuesAreDrawnWhenOverlayMounts() async throws {
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("overlay-existing-\(UUID().uuidString).srt")
+        try "1\n00:00:00,000 --> 00:00:10,000\nEXISTING SUBTITLE\n\n"
+            .write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let appID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 4)
+        controller.addExternalSubtitleTrack(ExternalSubtitleTrack(url: url), appTrackID: appID)
+        controller.selectSubtitleTrack(id: appID)
+
+        let decodeDeadline = ContinuousClock.now + .seconds(5)
+        while controller.engine.subtitleCues.isEmpty, ContinuousClock.now < decodeDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(controller.engine.subtitleCues.isEmpty, "Aether has cues before the surface mounts")
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 640, height: 360))
+        window.windowScene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        window.rootViewController = UIHostingController(rootView: ZStack {
+            Color.black
+            AetherSubtitleOverlay(
+                engine: controller.engine,
+                assSubtitles: controller.assSubtitles,
+                cueHold: controller.cueHold,
+                sourceTime: 2,
+                primaryUsesMovieTimeline: true,
+                secondaryUsesMovieTimeline: true,
+                livePrimaryCues: [],
+                liveSecondaryCues: [],
+                appearance: .default,
+                subtitleSyncMs: 0
+            )
+        })
+        window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil }
+
+        let drawDeadline = ContinuousClock.now + .seconds(1)
+        while whitePixels(in: window) == 0, ContinuousClock.now < drawDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertGreaterThan(whitePixels(in: window), 50,
+                             "an overlay mounted after selection reads the current cue snapshot")
+    }
+
     func testPrimaryCuesDecodedWhilePausedAreDrawn() async throws {
         try await assertDrawsCuesDecodedWhilePaused(
             select: { $0.selectSubtitleTrack(id: $1) },

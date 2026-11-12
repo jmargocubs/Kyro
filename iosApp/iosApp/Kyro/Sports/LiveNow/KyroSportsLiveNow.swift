@@ -298,8 +298,18 @@ struct KyroSportsLiveNowEmptyContent: Equatable {
     let message: String?
     let showsProgress: Bool
 
-    init(status: KyroSportsLiveNowModel.Status, liveEventCount: Int, category: KyroSportsCategory) {
+    /// `isLoadingScores`: the selected sports have not answered yet, so "nothing is live" would be
+    /// a guess.
+    init(status: KyroSportsLiveNowModel.Status, liveEventCount: Int, category: KyroSportsCategory,
+         isLoadingScores: Bool = false) {
         let sport = category == .all ? "" : "\(category.shortName) "
+        if liveEventCount == 0, isLoadingScores {
+            symbol = "sportscourt"
+            title = "Loading live \(sport)games…"
+            message = nil
+            showsProgress = true
+            return
+        }
         if liveEventCount == 0 {
             symbol = "sportscourt"
             title = "No \(sport)games are live right now"

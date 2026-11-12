@@ -242,28 +242,67 @@ struct EPGIndex: Sendable, EPGQuerying {
     /// answer with a single query; short-guide overlays replace their stored channel.
     func windowPrograms(overlapping interval: DateInterval, anchors: [String],
                         limit: Int = 2_000) -> [(key: String, program: EPGProgram)] {
+        windowRows(overlapping: interval, anchors: anchors, limit: limit).rows
+    }
+
+    /// `windowPrograms` with a deterministic budget: when more than `limit` programmes qualify, the
+    /// ones starting nearest the middle of `interval` are kept (then guide key, then start), and
+    /// `truncated` says so. Programmes that also mention any of `excluding` are skipped, so a
+    /// second, weaker pass never spends budget on rows an earlier pass already read.
+    func windowRows(overlapping interval: DateInterval, anchors: [String], excluding: [String] = [],
+                    limit: Int = 2_000) -> EPGWindowRows {
         let words = Array(Set(anchors.filter { !$0.isEmpty })).sorted()
-        guard !words.isEmpty, limit > 0 else { return [] }
-        var rows: [(key: String, program: EPGProgram)] = []
+        guard !words.isEmpty, limit > 0 else { return EPGWindowRows() }
+        let excluded = Array(Set(excluding.filter { !$0.isEmpty })).sorted()
+        let center = interval.start.addingTimeInterval(interval.duration / 2)
         let scanner = EPGAnchorScanner(words: words)
-        func mayMention(_ program: EPGProgram) -> Bool {
+        let excluder = excluded.isEmpty ? nil : EPGAnchorScanner(words: excluded)
+        func mentions(_ program: EPGProgram, _ scanner: EPGAnchorScanner) -> Bool {
             scanner.mayMention(program.title) || scanner.mayMention(program.subtitle)
                 || scanner.mayMention(program.summary, prefix: 280)
         }
-        for (key, list) in programsByChannel {
-            for program in Self.programs(in: list, overlapping: interval) where mayMention(program) {
-                rows.append((key, program))
-                if rows.count >= limit { return rows }
+        var window = EPGWindowRows()
+        typealias Candidate = (distance: TimeInterval, key: String, program: EPGProgram)
+        func precedes(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
+            if lhs.distance != rhs.distance { return lhs.distance < rhs.distance }
+            if lhs.key != rhs.key { return lhs.key < rhs.key }
+            return lhs.program.start < rhs.program.start
+        }
+        var kept: [Candidate] = []
+        // The worst row kept once the budget has overflowed. Anything after it can never be kept,
+        // so it is skipped before the (more expensive) text scan.
+        var cutoff: Candidate?
+        // Keep at most twice the budget between trims, so a noisy anchor never holds every
+        // matching programme of a large in-memory guide.
+        func trim() {
+            kept.sort(by: precedes)
+            guard kept.count > limit else { return }
+            kept.removeLast(kept.count - limit)
+            window.truncated = true
+            cutoff = kept.last
+        }
+        for (number, entry) in programsByChannel.enumerated() {
+            if number.isMultiple(of: 256), Task.isCancelled { return EPGWindowRows(cancelled: true) }
+            for program in Self.programs(in: entry.value, overlapping: interval) {
+                let candidate = (abs(program.start.timeIntervalSince(center)), entry.key, program)
+                if let cutoff, !precedes(candidate, cutoff) { continue }
+                guard mentions(program, scanner) else { continue }
+                if let excluder, mentions(program, excluder) { continue }
+                kept.append(candidate)
+                if kept.count >= limit * 2 { trim() }
             }
         }
         if let sqlite {
             let overlays = Set(programsByChannel.keys)
-            for row in sqlite.guide.windowPrograms(overlapping: interval, anchors: words, limit: limit - rows.count)
-            where !overlays.contains(row.key) {
-                rows.append(row)
-            }
+            let stored = sqlite.guide.windowRows(overlapping: interval, anchors: words, excluding: excluded, limit: limit)
+            if stored.cancelled { return EPGWindowRows(cancelled: true) }
+            window.truncated = window.truncated || stored.truncated
+            kept += stored.rows.filter { !overlays.contains($0.key) }
+                .map { (abs($0.program.start.timeIntervalSince(center)), $0.key, $0.program) }
         }
-        return rows
+        trim()
+        window.rows = kept.map { ($0.key, $0.program) }
+        return window
     }
 
     static func programs(in list: [EPGProgram], overlapping interval: DateInterval) -> [EPGProgram] {
@@ -412,6 +451,17 @@ private extension EPGProgram {
 
 /// Case-insensitive word prefilter for guide text. ASCII text (nearly every guide) is scanned
 /// byte by byte; anything else is folded like the matcher folds it, so no programme is missed.
+/// One bounded, anchored guide read for event matching. Rows are ordered nearest start to the
+/// middle of the window first, then by guide key and start, in memory and in SQLite alike, so a
+/// full budget always keeps the same rows whatever order the guide stores them in.
+struct EPGWindowRows: Sendable {
+    var rows: [(key: String, program: EPGProgram)] = []
+    /// More programmes qualified than the budget allowed; the rest were not read.
+    var truncated = false
+    /// The calling task was cancelled; `rows` is empty.
+    var cancelled = false
+}
+
 struct EPGAnchorScanner {
     private let words: [String]
     private let asciiWords: [[UInt8]]

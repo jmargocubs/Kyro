@@ -17,26 +17,32 @@ struct KyroSportsOtherStreamsSheet: View {
                     Section {
                         KyroSportsStreamEventHeader(game: context.game)
                             .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                            .listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 4))
+                    } footer: {
+                        Text("Current stream is first. Alternatives are grouped by match strength.")
+                            .font(.caption2)
                     }
+                    // The stream on screen first, then what played, then untried, failed last.
                     KyroSportsStreamSectionsView(
-                        sections: KyroSportsStreamSection.make(
-                            matches: context.alternatives, broadcasters: context.broadcasters,
+                        sections: KyroSportsStreamSection.prioritizedForSwitching(KyroSportsStreamSection.make(
+                            matches: context.alternatives, overflow: context.overflow,
+                            broadcasters: context.broadcasters,
                             status: { context.status(of: $0) }, currentChannelID: context.currentChannelID,
-                            currentProgrammes: currentProgrammes),
+                            currentProgrammes: currentProgrammes)),
+                        showsEvidence: false,
                         select: { channelID in
                             if let match = context.match(for: channelID) { select(match) }
                         }
                     )
-                    Section {
-                    } footer: {
-                        Text("“Played” means the stream started in this session. Kyro can't check what a stream is showing.")
-                    }
+                    #if os(iOS) && KYRO_INTERNAL_EPG_STORAGE_TOGGLE
+                    KyroSportsMatchReportSlot(game: context.game)
+                    #endif
                 } else {
                     Text("This game's streams are no longer available.")
                         .foregroundStyle(KyroTheme.textSecondary)
                 }
             }
+            .listSectionSpacing(.compact)
             .scrollContentBackground(.hidden)
             .background(KyroTheme.background)
             .navigationTitle("Other Streams")
@@ -46,10 +52,15 @@ struct KyroSportsOtherStreamsSheet: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: dismiss) } }
             .task {
                 guard let context = coordinator.context else { return }
-                let channels = (context.alternatives + context.broadcasters).filter { $0.program == nil }.map(\.channel)
+                let channels = (context.alternatives + context.overflow + context.broadcasters)
+                    .filter { $0.program == nil }.map(\.channel)
                 currentProgrammes = await LiveTVService.shared.sportsCurrentProgrammes(for: channels)
             }
         }
+        // Half height by default: the current stream and the best alternatives fit without an
+        // empty full-height sheet; drag up for the rest.
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
         .accessibilityIdentifier("kyroSportsOtherStreams")
     }
 }

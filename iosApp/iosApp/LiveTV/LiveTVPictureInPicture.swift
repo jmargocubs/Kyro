@@ -33,7 +33,11 @@ extension LiveTVPlayerSession {
                     completion(false)
                     return
                 }
-                presentation.restoreRequested(completion: completion)
+                if presentation.restoreReturnsToExpandedPlayer {
+                    LiveTVCoverTransition.immediate { presentation.restoreRequested(completion: completion) }
+                } else {
+                    presentation.restoreRequested(completion: completion)
+                }
             },
             // A start that did not happen leaves the button as it was; the stream is unaffected.
             onStartFailure: nil

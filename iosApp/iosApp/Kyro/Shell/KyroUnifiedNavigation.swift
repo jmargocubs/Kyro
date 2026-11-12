@@ -140,12 +140,21 @@ private struct KyroUnifiedNavigationShell: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.kyroShellTab, .liveTV(store: .shared, service: service))
-            .fullScreenCover(item: Binding(
-                get: { service.presentation.channel(for: .shell) },
-                set: { if $0 == nil { service.presentation.coverDismissed(from: .shell) } }
-            )) { channel in
-                LiveTVPlayerView(channel: channel, channels: service.channels, session: service.playerSession,
-                                 service: service)
+            .fullScreenCover(isPresented: Binding(
+                get: { service.presentation.channel(for: .shell) != nil },
+                set: { if !$0 { service.presentation.coverDismissed(from: .shell) } }
+            )) {
+                if service.presentation.isFullScreenFromInline,
+                   let channel = service.presentation.channel(for: .shell) {
+                    // Sports Hub's existing full-screen expansion remains a direct landscape cover.
+                    LiveTVPlayerView(channel: channel, channels: service.channels,
+                                     session: service.playerSession, service: service,
+                                     naturalRotation: service.presentation.isInlineExpandedByRotation)
+                } else {
+                    // A channel chosen from shell Search uses the same iPhone watch screen as
+                    // Home and Guide. Its one surface follows the same presentation ownership.
+                    LiveTVWatchView(service: service)
+                }
             }
     }
 }

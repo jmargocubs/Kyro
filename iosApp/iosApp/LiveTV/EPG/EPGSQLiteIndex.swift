@@ -189,27 +189,56 @@ final class EPGSQLiteGuide: @unchecked Sendable {
     /// matching: it never touches the resident window and returns at most `limit` rows.
     /// `anchors` must be plain letter/number words, so they carry no `LIKE` wildcards.
     func windowPrograms(overlapping interval: DateInterval, anchors: [String], limit: Int) -> [(key: String, program: EPGProgram)] {
-        let words = Array(anchors.filter { !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber } }.prefix(16))
-        guard !words.isEmpty, limit > 0 else { return [] }
+        windowRows(overlapping: interval, anchors: anchors, limit: limit).rows
+    }
+
+    /// `windowPrograms` with a deterministic budget. Rows are ordered by distance from the middle
+    /// of `interval`, then guide key and start (the same order as the in-memory guide), and
+    /// one extra row is read to tell a full budget from a truncated one. Rows that also mention
+    /// one of `excluding` are skipped. The `ORDER BY` sorts only rows that already matched.
+    func windowRows(overlapping interval: DateInterval, anchors: [String], excluding: [String] = [],
+                    limit: Int) -> EPGWindowRows {
+        func plain(_ values: [String]) -> [String] {
+            Array(values.filter { !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber } }.prefix(16))
+        }
+        let words = plain(anchors)
+        let excluded = plain(excluding)
+        guard !words.isEmpty, limit > 0 else { return EPGWindowRows() }
+        let first = 5
         let clauses = words.indices.map { offset in
-            let parameter = offset + 4
+            let parameter = offset + first
             return "title LIKE ?\(parameter) OR subtitle LIKE ?\(parameter) OR substr(summary, 1, 280) LIKE ?\(parameter)"
         }
+        // NULL subtitles or summaries must not turn the exclusion into NULL (which drops the row).
+        let exclusions = excluded.indices.map { offset in
+            let parameter = offset + first + words.count
+            return "title LIKE ?\(parameter) OR coalesce(subtitle, '') LIKE ?\(parameter) "
+                + "OR coalesce(substr(summary, 1, 280), '') LIKE ?\(parameter)"
+        }
+        let exclusion = exclusions.isEmpty ? "" : " AND NOT (\(exclusions.joined(separator: " OR ")))"
         let sql = """
         SELECT channel_key, channel_id, start_s, end_s, title, subtitle, summary, category, episode
-        FROM programmes WHERE start_s < ?1 AND end_s > ?2 AND (\(clauses.joined(separator: " OR "))) LIMIT ?3
+        FROM programmes WHERE start_s < ?1 AND end_s > ?2 AND (\(clauses.joined(separator: " OR ")))\(exclusion)
+        ORDER BY abs(start_s - ?3), channel_key, start_s LIMIT ?4
         """
-        return (try? connection.withHandle { db in
+        let center = interval.start.addingTimeInterval(interval.duration / 2)
+        let read = try? connection.withHandle { db -> EPGWindowRows in
             let statement = try EPGSQLiteStatement(db, sql)
             defer { statement.finalize() }
             statement.bind(1, interval.end.timeIntervalSinceReferenceDate)
             statement.bind(2, interval.start.timeIntervalSinceReferenceDate)
-            statement.bind(3, Int64(limit))
-            for (offset, word) in words.enumerated() { statement.bind(Int32(offset + 4), "%\(word)%") }
-            var rows: [(key: String, program: EPGProgram)] = []
+            statement.bind(3, center.timeIntervalSinceReferenceDate)
+            statement.bind(4, Int64(limit) + 1)
+            for (offset, word) in (words + excluded).enumerated() { statement.bind(Int32(offset + first), "%\(word)%") }
+            var window = EPGWindowRows()
             while try statement.step() {
+                if window.rows.count.isMultiple(of: 256), Task.isCancelled { return EPGWindowRows(cancelled: true) }
                 guard let key = statement.text(0) else { continue }
-                rows.append((key, EPGProgram(
+                guard window.rows.count < limit else {
+                    window.truncated = true
+                    break
+                }
+                window.rows.append((key, EPGProgram(
                     channelID: statement.text(1) ?? key,
                     start: Date(timeIntervalSinceReferenceDate: statement.double(2)),
                     end: Date(timeIntervalSinceReferenceDate: statement.double(3)),
@@ -217,8 +246,9 @@ final class EPGSQLiteGuide: @unchecked Sendable {
                     subtitle: statement.text(5), summary: statement.text(6),
                     category: statement.text(7), episode: statement.text(8))))
             }
-            return rows
-        }) ?? []
+            return window
+        }
+        return read ?? EPGWindowRows()
     }
 
     /// Steps `statement` (already prepared with `selectChannel`) for one channel.

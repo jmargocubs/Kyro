@@ -39,9 +39,10 @@ struct SearchView: View {
     init(
         usesTVTopMenuInset: Bool = true,
         seededQuery: Binding<AppRouter.SearchRequest?> = .constant(nil),
-        liveTVService: LiveTVService = .shared,
+        liveTVService: LiveTVService? = nil,
         programSearchEnabled: Bool = true
     ) {
+        let liveTVService = liveTVService ?? LiveTVService.shared
         let searchModel = SearchViewModel(includesPeople: true, includesEpisodes: true)
         // The unified search has only All / Movies & TV / Live TV filters. Its Silo scope is video
         // with episodes, not audiobooks, regardless of the device's optional audiobook tab.

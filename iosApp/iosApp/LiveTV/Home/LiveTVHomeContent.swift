@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// What the Home draws, resolved by `LiveTVView` from the active provider. Plain data, so
 /// fixtures can render the Home without a service.
@@ -102,17 +105,19 @@ struct LiveTVHomeContent: View {
             .padding(.horizontal, LiveTVHomeMetrics.margin)
             .padding(.top, 12)
 
-        Group {
-            if !model.sections.featured.isEmpty {
-                LiveTVHeroCarousel(cards: model.sections.featured, epg: epg, isEnabled: model.carouselEnabled,
-                                   isFavorite: actions.isFavorite, play: actions.play,
-                                   toggleFavorite: actions.toggleFavorite, loadPrograms: actions.loadPrograms)
-            } else {
-                LiveTVHeroWelcomeCard(browse: { actions.browse(.channels) })
+        if !isPhoneHome {
+            Group {
+                if !model.sections.featured.isEmpty {
+                    LiveTVHeroCarousel(cards: model.sections.featured, epg: epg, isEnabled: model.carouselEnabled,
+                                       isFavorite: actions.isFavorite, play: actions.play,
+                                       toggleFavorite: actions.toggleFavorite, loadPrograms: actions.loadPrograms)
+                } else {
+                    LiveTVHeroWelcomeCard(browse: { actions.browse(.channels) })
+                }
             }
+            .padding(.horizontal, LiveTVHomeMetrics.margin)
+            .padding(.top, 12)
         }
-        .padding(.horizontal, LiveTVHomeMetrics.margin)
-        .padding(.top, 12)
 
         if !model.sections.continueWatching.isEmpty {
             LiveTVHomeSectionHeader(title: "Continue Watching")
@@ -132,6 +137,15 @@ struct LiveTVHomeContent: View {
             LiveTVHomeRail(model.sections.lineup, spacing: 10) { card in
                 LiveTVLineupTile(card: card, play: { actions.play(card.channel) },
                                  remove: { actions.toggleFavorite(card.channel) })
+            }
+        }
+
+        // The Home layout already splits history after Continue Watching. Draw the remaining
+        // channels here instead of repeating the first three in a second rail.
+        if !model.sections.recentlyWatched.isEmpty {
+            LiveTVHomeSectionHeader(title: "Recently Watched")
+            LiveTVHomeRail(model.sections.recentlyWatched) { card in
+                LiveTVContinueCard(card: card, epg: epg) { actions.play(card.channel) }
             }
         }
 
@@ -161,6 +175,14 @@ struct LiveTVHomeContent: View {
             .dynamicTypeSize(...DynamicTypeSize.xxLarge)
         }
 
+    }
+
+    private var isPhoneHome: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        false
+        #endif
     }
 
     @ViewBuilder

@@ -38,3 +38,32 @@ struct LiveTVGuideCategoryPickerState {
         if !valid.contains(lastVisible) { lastVisibleByProvider[providerID] = nil }
     }
 }
+
+/// Pure presentation data for the category picker. The picker owns no filter state; it only
+/// derives searchable and frequently-used groups from the guide's existing catalog.
+enum LiveTVGuideCategoryPickerModel {
+    static func filteredCategories(_ categories: [String], query: String) -> [String] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return categories }
+        return categories.filter { $0.localizedCaseInsensitiveContains(query) }
+    }
+
+    static func frequentCategories(categories: [String], channels: [LiveTVChannel], favoriteIDs: Set<String>, limit: Int = 4) -> [String] {
+        guard limit > 0 else { return [] }
+        let valid = Set(categories)
+        var counts: [String: Int] = [:]
+        var favoriteCounts: [String: Int] = [:]
+        for channel in channels where valid.contains(channel.category) {
+            counts[channel.category, default: 0] += 1
+            if favoriteIDs.contains(channel.id) { favoriteCounts[channel.category, default: 0] += 1 }
+        }
+        return categories.enumerated()
+            .sorted {
+                let lhs = (favoriteCounts[$0.element, default: 0], counts[$0.element, default: 0])
+                let rhs = (favoriteCounts[$1.element, default: 0], counts[$1.element, default: 0])
+                return lhs == rhs ? $0.offset < $1.offset : lhs > rhs
+            }
+            .prefix(limit)
+            .map(\.element)
+    }
+}

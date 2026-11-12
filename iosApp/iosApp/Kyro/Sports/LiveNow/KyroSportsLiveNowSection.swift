@@ -7,6 +7,8 @@ struct KyroSportsLiveNowSection: View {
     let category: KyroSportsCategory
     /// The event the one-tap flow is searching or connecting for, if any.
     let activeGameID: KyroGameID?
+    /// The selected sports are still on their first load, so an empty Live Now is not yet known.
+    var isLoadingScores = false
     let play: (KyroSportsGame) -> Void
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -26,7 +28,7 @@ struct KyroSportsLiveNowSection: View {
             header
             if model.items.isEmpty {
                 KyroSportsLiveNowEmptyState(content: .init(status: model.status, liveEventCount: model.liveEventCount,
-                                                           category: category),
+                                                           category: category, isLoadingScores: isLoadingScores),
                                             minimumHeight: contentHeight)
             } else {
                 cards

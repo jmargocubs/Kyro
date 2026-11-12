@@ -44,11 +44,13 @@ enum ESPNLeagueWindowStrategy: Equatable, Sendable {
     case dailyRequests
     case currentWeek
     case tournamentDay
+    case soccerRegistry
 
     static func strategy(for league: KyroSportLeague) -> ESPNLeagueWindowStrategy {
         switch league {
         case .collegeFootball: .currentWeek
         case .atp, .wta: .tournamentDay
+        case .soccer: .soccerRegistry
         case .nfl, .nba, .nhl, .mlb: .dailyRequests
         }
     }
@@ -63,6 +65,8 @@ extension ESPNSportsProvider: KyroSportsLeagueProviding {
         force: Bool = false
     ) async throws -> KyroSportsProviderOutput {
         switch ESPNLeagueWindowStrategy.strategy(for: league) {
+        case .soccerRegistry:
+            return try await fetchSoccerDay(league: league, date: now, now: now, force: force)
         case .currentWeek:
             if let output = try await fetchCurrentWeek(league: league, now: now, force: force) {
                 return output
@@ -83,6 +87,8 @@ extension ESPNSportsProvider: KyroSportsLeagueProviding {
         force: Bool
     ) async throws -> KyroSportsProviderOutput {
         switch ESPNLeagueWindowStrategy.strategy(for: league) {
+        case .soccerRegistry:
+            return try await fetchSoccerDay(league: league, date: date, now: now, force: force)
         case .currentWeek:
             if let output = try await fetchCurrentWeek(league: league, now: now, force: force) {
                 return output
@@ -91,6 +97,89 @@ extension ESPNSportsProvider: KyroSportsLeagueProviding {
         case .dailyRequests, .tournamentDay:
             return try await fetchSingleDay(league: league, date: date, now: now, force: force)
         }
+    }
+
+    // MARK: Soccer registry
+
+    /// Fetch only the selected local day. A soccer refresh therefore touches
+    /// one bounded request per verified competition, never a background sweep
+    /// of every calendar or every league. The actor-backed ESPN client still
+    /// supplies ETag/cache freshness and coalescing for repeated loads.
+    private func fetchSoccerDay(
+        league: KyroSportLeague,
+        date: Date,
+        now: Date,
+        force: Bool
+    ) async throws -> KyroSportsProviderOutput {
+        let start = calendar.startOfDay(for: date)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+        let day = Self.espnDayString(for: date)
+        enum Result: Sendable {
+            case success([KyroSportsGame], Int?, KyroSportsDataError?)
+            case failure(KyroSportsDataError)
+        }
+        var results: [String: Result] = [:]
+        var iterator = KyroSoccerCompetitionRegistry.verified.makeIterator()
+        try await withThrowingTaskGroup(of: (String, Result).self) { group in
+            func addNext() -> Bool {
+                guard let competition = iterator.next() else { return false }
+                group.addTask {
+                    do {
+                        let payload = try await self.client.fetchScoreboard(
+                            league: league,
+                            dates: day,
+                            policy: date < now ? .completedDay : .today,
+                            ignoreFreshness: force,
+                            competitionKey: competition.key
+                        )
+                        let mapped = try self.mapValidated(payload.response, league: league,
+                                                           competitionKey: competition.key,
+                                                           competitionName: competition.name)
+                        return (competition.key, .success(mapped, payload.response.leagues?.first?.season?.year,
+                                                          payload.refreshError))
+                    } catch let error as KyroSportsDataError {
+                        return (competition.key, .failure(error))
+                    } catch is CancellationError {
+                        return (competition.key, .failure(.cancelled))
+                    } catch {
+                        return (competition.key, .failure(.offline))
+                    }
+                }
+                return true
+            }
+            for _ in 0..<Self.maxConcurrentDayRequests { if !addNext() { break } }
+            while let result = try await group.next() {
+                results[result.0] = result.1
+                if case .failure(.cancelled) = result.1 {
+                    group.cancelAll()
+                    throw KyroSportsDataError.cancelled
+                }
+                _ = addNext()
+            }
+        }
+        var games: [KyroSportsGame] = []
+        var firstFailure: KyroSportsDataError?
+        var refreshError: KyroSportsDataError?
+        var season: Int?
+        for competition in KyroSoccerCompetitionRegistry.verified {
+            switch results[competition.key] {
+            case let .success(mapped, year, stale):
+                games.append(contentsOf: mapped)
+                season = season ?? year
+                refreshError = refreshError ?? stale
+            case let .failure(error):
+                firstFailure = firstFailure ?? error
+            case nil: break
+            }
+        }
+        guard !games.isEmpty || firstFailure == nil else { throw firstFailure! }
+        let windowed = KyroSportsReconciler.deduplicated(games.filter { game in
+            guard let startTime = game.startTime else { return false }
+            return startTime >= start && startTime < end
+        })
+        return KyroSportsProviderOutput(provider: providerID, games: windowed,
+                                        season: season ?? calendar.component(.year, from: date),
+                                        week: 0, refreshError: refreshError ?? firstFailure)
     }
 
     // MARK: Current week (FBS)

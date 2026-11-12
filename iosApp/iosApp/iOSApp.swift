@@ -62,6 +62,12 @@ struct SiloApp: App {
                     }
                     SiloDeepLinkCoordinator.shared.receive(url)
                 }
+                #if os(iOS)
+                // Player-requested rotations (Live TV full screen) run unanimated; see the host.
+                .background { PlayerRotationTransitionHost().frame(width: 0, height: 0) }
+                // Off unless Live TV Settings → Diagnostics turned it on for this launch.
+                .kyroPerformanceOverlay()
+                #endif
                 #if os(macOS)
                 // Deliver URLs to this window instead of opening a new one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])

@@ -49,6 +49,15 @@ struct KyroSportsStreamRowModel: Identifiable, Equatable {
         }
     }
 
+    /// Other Streams' tier: 0 started this session (or is starting), 1 untried, 2 failed.
+    var switchingRank: Int {
+        switch status {
+        case .nowPlaying, .played, .connecting: 0
+        case .eventMatch, .possibleMatch, .fromSearch, .unconfirmed: 1
+        case .didNotPlay: 2
+        }
+    }
+
     /// Whether choosing the row does anything: the stream on screen only reacts when it failed.
     var isSelectable: Bool { !isCurrent || status == .didNotPlay }
 
@@ -109,12 +118,16 @@ struct KyroSportsStreamRowModel: Identifiable, Equatable {
     }
 }
 
-/// The picker's groups: strong event matches first, then weaker event evidence, then network
-/// channels nothing ties to the event (shown collapsed). Generic channels never appear.
+/// The picker's groups: strong event matches first, then weaker event evidence, then accepted
+/// matches beyond the initial list (shown collapsed, same evidence labels), then network channels
+/// nothing ties to the event (shown collapsed). Generic channels never appear.
 struct KyroSportsStreamSection: Identifiable, Equatable {
     enum Kind: String, Equatable {
+        /// Other Streams only: the stream on screen, in a group of its own at the top.
+        case nowPlaying
         case eventMatches
         case possibleMatches
+        case moreMatches
         case networkChannels
     }
 
@@ -124,19 +137,56 @@ struct KyroSportsStreamSection: Identifiable, Equatable {
 
     var title: String {
         switch kind {
+        case .nowPlaying: "Now playing"
         case .eventMatches: "Matches this game"
         case .possibleMatches: "Possible matches"
+        case .moreMatches: "More matches"
         case .networkChannels: "Network channels"
         }
     }
 
-    /// Network channels start collapsed unless one of them is playing or was tried.
+    /// Collapsed groups (more matches, network channels) open by themselves only when one of their
+    /// streams is playing or was tried.
+    var isCollapsible: Bool { kind == .moreMatches || kind == .networkChannels }
+
     var startsExpanded: Bool {
-        kind != .networkChannels || rows.contains { $0.isCurrent || $0.status == .played || $0.status == .didNotPlay }
+        !isCollapsible || rows.contains { $0.isCurrent || $0.status == .played || $0.status == .didNotPlay }
     }
 
+    /// Only the bounded broadcaster list is searched; the compact picker shows six rows.
+    func visibleNetworkRows(showAll: Bool, query: String = "") -> [KyroSportsStreamRowModel] {
+        guard kind == .networkChannels else { return rows }
+        guard showAll else { return Array(rows.prefix(KyroSportsStreamMatcher.initialBroadcasters)) }
+        let terms = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        guard !terms.isEmpty else { return rows }
+        return rows.filter {
+            $0.fullName.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains(terms)
+        }
+    }
+
+    /// Other Streams' order for switching away from the stream on screen: that stream alone at the
+    /// top, then the usual groups with streams that played this session ahead of untried ones and
+    /// streams that failed last. Order within each tier is the matcher's. Only the list changes;
+    /// automatic playback and fallback keep the matcher's own order.
+    static func prioritizedForSwitching(_ sections: [KyroSportsStreamSection]) -> [KyroSportsStreamSection] {
+        let current = sections.flatMap(\.rows).filter(\.isCurrent)
+        let others = sections.compactMap { section -> KyroSportsStreamSection? in
+            let rows = section.rows.filter { !$0.isCurrent }
+                .enumerated()
+                .sorted { ($0.element.switchingRank, $0.offset) < ($1.element.switchingRank, $1.offset) }
+                .map(\.element)
+            return rows.isEmpty ? nil : KyroSportsStreamSection(kind: section.kind, rows: rows)
+        }
+        guard !current.isEmpty else { return others }
+        return [KyroSportsStreamSection(kind: .nowPlaying, rows: current)] + others
+    }
+
+    /// `overflow` is the matcher's bounded list of accepted matches beyond `matches`. A channel
+    /// appears once, in the first group that lists it.
     static func make(
         matches: [KyroSportsStreamMatch],
+        overflow: [KyroSportsStreamMatch] = [],
         broadcasters: [KyroSportsStreamMatch],
         status: (String) -> KyroSportsStreamStatus,
         currentChannelID: String?,
@@ -151,10 +201,12 @@ struct KyroSportsStreamSection: Identifiable, Equatable {
         }
         let strong = matches.filter { $0.isAutoPlayEligible && $0.source != .manual }.compactMap(row)
         let possible = matches.filter { !$0.isAutoPlayEligible || $0.source == .manual }.compactMap(row)
+        let more = overflow.prefix(KyroSportsStreamMatcher.maximumOverflowMatches).compactMap(row)
         let network = broadcasters.compactMap(row)
         return [
             KyroSportsStreamSection(kind: .eventMatches, rows: strong),
             KyroSportsStreamSection(kind: .possibleMatches, rows: possible),
+            KyroSportsStreamSection(kind: .moreMatches, rows: more),
             KyroSportsStreamSection(kind: .networkChannels, rows: network),
         ].filter { !$0.rows.isEmpty }
     }

@@ -123,7 +123,9 @@ struct ESPNSportsProvider: KyroSportsProviding {
 
     func mapValidated(
         _ response: ESPNScoreboardResponse,
-        league: KyroSportLeague
+        league: KyroSportLeague,
+        competitionKey: String? = nil,
+        competitionName: String? = nil
     ) throws -> [KyroSportsGame] {
         if league == .atp || league == .wta {
             // A tennis day can legitimately map to nothing: a tournament with
@@ -139,7 +141,10 @@ struct ESPNSportsProvider: KyroSportsProviding {
             if games.isEmpty, unreadable > 0 { throw KyroSportsDataError.malformedResponse }
             return games
         }
-        let mapped = response.events.compactMap { ESPNMapping.game(from: $0, league: league) }
+        let mapped = response.events.compactMap {
+            ESPNMapping.game(from: $0, league: league, competitionKey: competitionKey,
+                             competitionName: competitionName)
+        }
         guard response.events.isEmpty || !mapped.isEmpty else {
             throw KyroSportsDataError.malformedResponse
         }

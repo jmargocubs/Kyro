@@ -119,14 +119,14 @@ final class KyroSportsS6ScheduleTests: XCTestCase {
     func testAllSportsIsTheDefaultCategory() {
         let store = makeStore(stub: LeagueStub())
         XCTAssertEqual(store.selectedCategory, .all)
-        XCTAssertEqual(KyroSportsCategory.filterOrder.map(\.shortName), ["All", "NFL", "NCAA", "NBA", "NHL", "MLB", "ATP", "WTA"])
+        XCTAssertEqual(KyroSportsCategory.filterOrder.map(\.shortName), ["All", "NFL", "NCAA", "NBA", "NHL", "MLB", "SOC", "ATP", "WTA"])
     }
 
     // MARK: Build 39 sport selector and Live Now source
 
     func testSportSelectorListsEveryOptionInCategoryOrder() {
         XCTAssertEqual(KyroSportsCategory.filterOrder.map(\.menuName),
-                       ["All Sports", "NFL", "NCAA Football", "NBA", "NHL", "MLB", "ATP Tennis", "WTA Tennis"])
+                       ["All Sports", "NFL", "NCAA Football", "NBA", "NHL", "MLB", "Soccer", "ATP Tennis", "WTA Tennis"])
     }
 
     func testSelectorSavesTheChoiceAndReselectingIsANoOp() async {
@@ -866,5 +866,34 @@ final class KyroSportsS6ScheduleTests: XCTestCase {
         await store.refresh()
         XCTAssertEqual(store.scheduleCoverage, .empty)
         XCTAssertNil(store.refreshNotice)
+    }
+
+    func testLivePollingTargetsOnlyTheLeagueThatNeedsIt() {
+        let games = [
+            game("wta-live", .wta, .live, hoursFromNow: -0.5),
+            game("nba-later", .nba, .scheduled, hoursFromNow: 5),
+            game("nhl-final", .nhl, .final, hoursFromNow: -3)
+        ]
+        XCTAssertEqual(
+            KyroSportsHubStore.pollingLeagues(
+                in: KyroSportLeague.allCases, games: games, now: now
+            ),
+            [.wta],
+            "one live event must not fan a poll out to every All Sports provider"
+        )
+    }
+
+    func testPollingIncludesStartingSoonButNotDistantOrCompletedLeagues() {
+        let games = [
+            game("nfl-soon", .nfl, .scheduled, hoursFromNow: 0.75),
+            game("nba-later", .nba, .scheduled, hoursFromNow: 2),
+            game("mlb-final", .mlb, .final, hoursFromNow: -1)
+        ]
+        XCTAssertEqual(
+            KyroSportsHubStore.pollingLeagues(
+                in: [.nfl, .nba, .mlb], games: games, now: now
+            ),
+            [.nfl]
+        )
     }
 }

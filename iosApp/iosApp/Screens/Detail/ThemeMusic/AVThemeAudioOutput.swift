@@ -24,7 +24,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class AVThemeAudioOutput: ThemeAudioOutput {
     /// A converted theme larger than this is not a theme; give up on it.
-    static let maxConvertedBytes = 32 * 1024 * 1024
+    nonisolated static let maxConvertedBytes = 32 * 1024 * 1024
 
     var volume: Float {
         get { player.volume }

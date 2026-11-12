@@ -187,7 +187,7 @@ final class UnifiedSearchProgramSourceTests: XCTestCase {
         XCTAssertEqual(builds, 1, "a locale change alone never rebuilds")
     }
 
-    func testEmptyLoadingStaleAndUnsupportedGuideStates() async throws {
+    func testEmptyLoadingStaleAndEmptySQLiteGuideStates() async throws {
         let world = World(provider: providerA, titles: ["Anything"])
         let coordinator = world.makeCoordinator()
 
@@ -200,14 +200,16 @@ final class UnifiedSearchProgramSourceTests: XCTestCase {
         await coordinator.catalogDidChange()
         XCTAssertEqual(coordinator.programState, UnifiedSearchSourceStatus(phase: .unavailable, message: "The TV guide is out of date."))
 
+        // A SQLite-backed guide with no listings is searchable and simply finds nothing.
         world.guide.value = UnifiedSearchGuideSnapshot(guideGeneration: 5, guide: try makeSQLiteGuide(), isGuideLoading: false,
                                                        isGuideStale: false)
         await coordinator.catalogDidChange()
-        XCTAssertEqual(coordinator.programState.phase, .unavailable)
+        XCTAssertEqual(coordinator.programState, UnifiedSearchSourceStatus(phase: .loaded, resultCount: 0))
         coordinator.onQueryChanged("anything")
-        try await waitUntil { coordinator.liveTVState.phase == .loaded && coordinator.programState.phase == .unavailable }
+        try await waitUntil { coordinator.liveTVState.phase == .loaded && coordinator.programState.phase == .loaded }
+        XCTAssertTrue(coordinator.programResults.isEmpty)
         let builds = await world.store.buildCountForTesting
-        XCTAssertEqual(builds, 0, "no index for an unsupported guide")
+        XCTAssertEqual(builds, 1, "the SQLite guide prepared one search source")
 
         world.setGuide(titles: ["Anything"], generation: 6)
         await coordinator.catalogDidChange()
@@ -224,6 +226,43 @@ final class UnifiedSearchProgramSourceTests: XCTestCase {
 
         let noProvider = World(provider: nil, titles: [])
         XCTAssertEqual(noProvider.makeCoordinator().programState.phase, .unavailable)
+    }
+
+    /// A SQLite-backed guide is searched through the same coordinator path: results publish under the
+    /// guide's identity, a tap resolves the programme from disk without filling the resident window,
+    /// and a guide refresh drops the old results and searches the new guide.
+    func testSQLiteBackedGuideFindsResolvesAndRefreshesPrograms() async throws {
+        let world = World(provider: providerA, titles: ["Placeholder", "Placeholder"])
+        let sqliteGuide = try makeSQLiteGuide(programmes: [
+            .init("g0", -600, "Evening News", duration: 3_600),
+            .init("g1", 1_200, "Late News", subtitle: "Weather", duration: 1_800),
+            .init("g1", -900, "Cooking", duration: 1_800),
+        ])
+        world.guide.value = UnifiedSearchGuideSnapshot(guideGeneration: 10, guide: sqliteGuide, isGuideLoading: false,
+                                                       isGuideStale: false)
+        let coordinator = world.makeCoordinator()
+        coordinator.onQueryChanged("NEWS")
+        try await waitUntil { coordinator.programState.phase == .loaded }
+        XCTAssertEqual(coordinator.programResults.map(\.title), ["Evening News", "Late News"])
+        XCTAssertEqual(coordinator.programResults.map(\.wasLiveAtSearch), [true, false])
+        XCTAssertEqual(coordinator.programResults.map(\.channelName), ["Channel 0", "Channel 1"])
+
+        let tapped = try XCTUnwrap(coordinator.programResults.last)
+        XCTAssertEqual(sqliteGuide.sqlite?.guide.residentChannelCount, 0)
+        let resolution = await coordinator.resolveProgram(for: tapped)
+        let resolved = try XCTUnwrap(resolution)
+        XCTAssertEqual(resolved.channel.id, tapped.channelID)
+        XCTAssertEqual(resolved.program.title, "Late News")
+        XCTAssertEqual(resolved.program.subtitle, "Weather")
+        XCTAssertEqual(sqliteGuide.sqlite?.guide.residentChannelCount, 0, "resolution reads one channel without caching it")
+
+        // Refresh to an in-memory guide: old results drop at once, then the new guide answers.
+        world.setGuide(titles: ["News Refreshed"], generation: 11)
+        await coordinator.catalogDidChange()
+        XCTAssertTrue(coordinator.programResults.isEmpty)
+        let staleResolution = await coordinator.resolveProgram(for: tapped)
+        XCTAssertNil(staleResolution)
+        try await waitUntil { coordinator.programResults.map(\.title) == ["News Refreshed"] }
     }
 
     func testDismissalCancelsPendingProgramWorkAndReentryRestartsIt() async throws {
@@ -432,6 +471,11 @@ final class UnifiedSearchProgramSourceTests: XCTestCase {
                                                fingerprint: Data(repeating: 0x42, count: EPGSourceFingerprint.length),
                                                destination: directory.appendingPathComponent("guide.sqlite"))
         return EPGIndex(sqlite: built.index, statistics: built.statistics)
+    }
+
+    /// A SQLite-backed guide opened cached-only, as the app opens it, with listings around `now`.
+    private func makeSQLiteGuide(programmes: [EPGSQLiteSearchFixture.Programme]) throws -> EPGIndex {
+        try EPGSQLiteSearchFixture.buildBoth(programmes, now: now, provider: providerA, testCase: self).sqlite
     }
 
     private func waitUntil(timeout: Duration = .seconds(3), _ condition: @MainActor () -> Bool) async throws {

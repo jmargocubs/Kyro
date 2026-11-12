@@ -66,23 +66,15 @@ struct AetherSubtitleOverlay: View {
         .accessibilityHidden(true)
         // Every primary track switch changes the engine's active index, and the
         // index is set before the switch publishes cues.
-        .onReceive(engine.$subtitleCues) {
-            // A showing track fetched again after a timing change keeps its
-            // cues until the new ones arrive.
-            if $0.isEmpty, cueHold.holds(.primary, trackID: engine.activeSubtitleTrackIndex) { return }
-            primary = primaryTrack.laidOutAsAuthored($0, trackID: engine.activeSubtitleTrackIndex)
-            primaryCursor.reset(primary)
+        .onAppear {
+            // @Published does not replay its current value to a new surface. Live TV moves the
+            // same engine between portrait and fullscreen surfaces, so a newly attached overlay
+            // must consume the already-decoded snapshot before waiting for the next caption packet.
+            updatePrimaryCues(engine.subtitleCues)
+            updateSecondaryCues(engine.secondarySubtitleCues)
         }
-        // The engine publishes no secondary index. It clears the secondary
-        // cues whenever it selects a secondary track, so an empty publication
-        // starts over; an embedded secondary track that empties during a long
-        // gap starts over too.
-        .onReceive(engine.$secondarySubtitleCues) {
-            if $0.isEmpty, cueHold.holds(.secondary, trackID: nil) { return }
-            if $0.isEmpty { secondaryTrack = LTRAuthoredSubtitles.Track() }
-            secondary = secondaryTrack.laidOutAsAuthored($0, trackID: nil)
-            secondaryCursor.reset(secondary)
-        }
+        .onReceive(engine.$subtitleCues) { updatePrimaryCues($0) }
+        .onReceive(engine.$secondarySubtitleCues) { updateSecondaryCues($0) }
         .onReceive(engine.clock.$sourceTime) { time in
             guard needsEngineClock else { return }
             aetherSourceTime = time
@@ -98,6 +90,24 @@ struct AetherSubtitleOverlay: View {
         secondaryCursor.reposition()
         livePrimaryCursor.reposition()
         liveSecondaryCursor.reposition()
+    }
+
+    private func updatePrimaryCues(_ cues: [SubtitleCue]) {
+        // A showing track fetched again after a timing change keeps its cues until the new ones
+        // arrive. The same path is used for the initial snapshot on a surface hand-off.
+        if cues.isEmpty, cueHold.holds(.primary, trackID: engine.activeSubtitleTrackIndex) { return }
+        primary = primaryTrack.laidOutAsAuthored(cues, trackID: engine.activeSubtitleTrackIndex)
+        primaryCursor.reset(primary)
+    }
+
+    private func updateSecondaryCues(_ cues: [SubtitleCue]) {
+        // The engine publishes no secondary index. It clears secondary cues whenever it selects a
+        // secondary track, so an empty publication starts over; an embedded secondary track that
+        // empties during a long gap starts over too.
+        if cues.isEmpty, cueHold.holds(.secondary, trackID: nil) { return }
+        if cues.isEmpty { secondaryTrack = LTRAuthoredSubtitles.Track() }
+        secondary = secondaryTrack.laidOutAsAuthored(cues, trackID: nil)
+        secondaryCursor.reset(secondary)
     }
 
     /// The engine clock itself. `aetherSourceTime` lags it while ticks are

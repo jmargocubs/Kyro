@@ -1,4 +1,46 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
+
+/// One cover policy for Home, browser, Favorites and the Guide. The presenter still owns the
+/// cover; changing the channel never changes its identity or creates another playback session.
+struct LiveTVChannelCover: ViewModifier {
+    @Bindable var service: LiveTVService
+    let presenter: LiveTVPresenter
+    let isEnabled: Bool
+
+    func body(content: Content) -> some View {
+        if !isEnabled {
+            content
+        } else if usesWatchScreen {
+            #if os(iOS)
+            content.fullScreenCover(isPresented: Binding(
+                get: { service.presentation.channel(for: presenter) != nil },
+                set: { if !$0 { service.presentation.coverDismissed(from: presenter) } }
+            )) {
+                LiveTVWatchView(service: service)
+            }
+            #endif
+        } else {
+            content.fullScreenCover(item: Binding(
+                get: { service.presentation.coverItem(for: presenter) },
+                set: { if $0 == nil { service.presentation.coverDismissed(from: presenter) } }
+            )) { cover in
+                LiveTVPlayerView(channel: cover.channel, channels: service.channels,
+                                 session: service.playerSession, service: service)
+            }
+        }
+    }
+
+    private var usesWatchScreen: Bool {
+        #if os(iOS)
+        LiveTVWatchScreen.isEnabled(isPhone: UIDevice.current.userInterfaceIdiom == .phone)
+        #else
+        false
+        #endif
+    }
+}
 
 /// Live TV's names for Kyro's C3 roles. The values live in `KyroTheme`, which
 /// the app shell and Kyro's navigation share.
@@ -305,10 +347,8 @@ struct LiveTVView: View {
             LiveTVGuideView(service: service)
             #endif
         }
-        .fullScreenCover(item: listCoverBinding(whenBrowserPushed: false)) { channel in
-            LiveTVPlayerView(channel: channel, channels: service.channels, session: service.playerSession,
-                             service: service)
-        }
+        .modifier(LiveTVChannelCover(service: service, presenter: .list,
+                                     isEnabled: !isBrowserPushed))
         .task(id: service.selectedProviderID) {
             restoreBrowsingContext(for: service.selectedProviderID)
             updateSearch()
@@ -427,13 +467,6 @@ struct LiveTVView: View {
             })
     }
 
-    /// Exactly one of Home and the pushed browser presents the player cover and Settings sheet.
-    private func listCoverBinding(whenBrowserPushed pushed: Bool) -> Binding<LiveTVChannel?> {
-        Binding(
-            get: { isBrowserPushed == pushed ? service.presentation.channel(for: .list) : nil },
-            set: { if $0 == nil, isBrowserPushed == pushed { service.presentation.coverDismissed(from: .list) } })
-    }
-
     private func settingsBinding(whenBrowserPushed pushed: Bool) -> Binding<Bool> {
         Binding(
             get: { isShowingSettings && isBrowserPushed == pushed },
@@ -468,10 +501,8 @@ struct LiveTVView: View {
             .navigationBarTitleDisplayMode(.inline)
             .refreshable { await service.refreshSelectedProvider() }
             .sheet(isPresented: settingsBinding(whenBrowserPushed: true)) { settingsSheet }
-            .fullScreenCover(item: listCoverBinding(whenBrowserPushed: true)) { channel in
-                LiveTVPlayerView(channel: channel, channels: service.channels, session: service.playerSession,
-                                 service: service)
-            }
+            .modifier(LiveTVChannelCover(service: service, presenter: .list,
+                                         isEnabled: isBrowserPushed))
             .onAppear { service.presentation.surfaceAppeared(.list) }
     }
 
@@ -982,8 +1013,12 @@ struct LiveTVSettingsView: View {
     @State private var providerKind: LiveTVProviderKind = .m3u
     @State private var errorMessage: String?
     @State private var providerToRemove: LiveTVProvider?
+    @AppStorage(KyroPerformanceDiagnostics.defaultsKey) private var performanceOverlayEnabled = false
 #if KYRO_INTERNAL_EPG_STORAGE_TOGGLE
     @AppStorage(EPGStorageMode.defaultsKey) private var sqliteStorageEnabled = false
+#if os(iOS)
+    @AppStorage(KyroSportsDiagnosticsVisibility.defaultsKey) private var sportsDiagnosticsVisible = false
+#endif
 #endif
 
     var body: some View {
@@ -1093,6 +1128,20 @@ struct LiveTVSettingsView: View {
                                 || username.isEmpty || password.isEmpty)
             }
 
+#if os(iOS)
+            Section("Diagnostics") {
+                Toggle("Performance overlay", isOn: $performanceOverlayEnabled)
+                    .accessibilityIdentifier("kyroPerformanceOverlayToggle")
+                Text("Shows frame pacing, main-thread stalls and guide update counts in a corner of the screen. Tap the overlay to copy a report; press and hold to reset it. Takes effect after force-quitting and reopening Kyro. Leave it off for normal use.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+                if performanceOverlayEnabled != KyroPerformanceDiagnostics.isEnabled {
+                    Text("Restart Kyro to apply.")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(LiveTVAccent.primaryText)
+                }
+            }
+#endif
 #if KYRO_INTERNAL_EPG_STORAGE_TOGGLE
             Section("INTERNAL TEST — EPG Storage") {
                 Toggle("Use experimental SQLite guide", isOn: $sqliteStorageEnabled)
@@ -1105,6 +1154,15 @@ struct LiveTVSettingsView: View {
                         .foregroundStyle(LiveTVAccent.primaryText)
                 }
             }
+#if os(iOS)
+            Section("INTERNAL TEST — Sports Diagnostics") {
+                Toggle("Show Sports Match Report", isOn: $sportsDiagnosticsVisible)
+                    .accessibilityIdentifier("kyroSportsDiagnosticsToggle")
+                Text("Adds the Sports Match Report to Choose a Stream and Other Streams. Off by default so the normal interface stays clean.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+            }
+#endif
 #endif
         }
         .scrollContentBackground(.hidden)

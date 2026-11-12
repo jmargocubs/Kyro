@@ -91,6 +91,7 @@ struct ESPNScoreboardResponse: Decodable, Sendable {
         let venue: Venue?
         let broadcasts: [Broadcast]?
         let notes: [Note]?
+        let altGameNote: String?
         let situation: Situation?
         let name: String?
         let shortName: String?

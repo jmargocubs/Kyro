@@ -158,6 +158,44 @@ struct LiveTVBrowsingContextCollection: Codable, Equatable, Sendable {
     }
 }
 
+/// What the pushed guide hands the watch screen's Guide tab when it chooses a channel: the same
+/// category, favorites filter, search and time position. The embedded guide starts from it instead
+/// of the scene's saved context, which may be from an earlier visit, and never writes that saved
+/// context, so the pushed guide underneath keeps its own.
+struct LiveTVGuideWatchHandoff: Equatable, Sendable {
+    let providerID: UUID
+    let category: String?
+    let favoritesOnly: Bool
+    let searchQuery: String
+    /// Horizontal scroll offset of the time grid, nil to show the current time.
+    let offsetX: Double?
+
+    init(providerID: UUID, category: String?, favoritesOnly: Bool, searchQuery: String, offsetX: Double?) {
+        self.providerID = providerID
+        self.category = category
+        self.favoritesOnly = favoritesOnly
+        self.searchQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.offsetX = offsetX.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+    }
+
+    /// The filters the embedded guide applies for `providerID`, with a category the catalog no
+    /// longer lists dropped. Nil when the handoff belongs to another provider.
+    func filters(for providerID: UUID, categories: [String]) -> LiveTVBrowserFilters? {
+        guard providerID == self.providerID else { return nil }
+        let validCategory = category.flatMap { categories.isEmpty || categories.contains($0) ? $0 : nil }
+        return LiveTVBrowserFilters(query: searchQuery, category: validCategory, favoritesOnly: favoritesOnly)
+    }
+
+    /// The vertical offset that reveals `channelID`'s row under the pinned time header, with
+    /// `contextRows` rows above it so the row does not sit against the header. Nil when the
+    /// channel is not among the rows.
+    static func revealOffsetY(channelID: String?, rowIDs: [String], rowHeight: Double,
+                              contextRows: Int = 1) -> Double? {
+        guard let channelID, let index = rowIDs.firstIndex(of: channelID) else { return nil }
+        return Double(max(0, index - contextRows)) * rowHeight
+    }
+}
+
 /// Tracks the guide's unresolved restore snapshot until the guide has actually issued its
 /// scroll restoration. Saves made while that restore is pending must keep the original opaque
 /// row and offsets rather than persisting the freshly initialized ScrollPosition.

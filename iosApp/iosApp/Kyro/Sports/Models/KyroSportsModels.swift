@@ -16,6 +16,10 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
     case nhl
     case atp
     case wta
+    /// ESPN soccer is a family of competitions. The concrete competition is
+    /// carried by `KyroSportsGame.competitionKey` and the registry, so adding
+    /// a league never requires another provider-wide enum case.
+    case soccer
 
     var id: String { rawValue }
 
@@ -29,6 +33,7 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nhl: "NHL"
         case .atp: "ATP"
         case .wta: "WTA"
+        case .soccer: "Soccer"
         }
     }
 
@@ -42,6 +47,7 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nhl: "NHL"
         case .atp: "ATP"
         case .wta: "WTA"
+        case .soccer: "SOC"
         }
     }
 
@@ -52,6 +58,7 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .mlb: "baseball.fill"
         case .nhl: "hockey.puck.fill"
         case .atp, .wta: "tennisball.fill"
+        case .soccer: "soccerball"
         }
     }
 
@@ -65,6 +72,7 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .mlb: 0xE87575
         case .atp: 0xB2D96C
         case .wta: 0xED8EB6
+        case .soccer: 0x64C98A
         }
     }
 
@@ -76,6 +84,7 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .mlb: "Regular season"
         case .nhl: "Regular season"
         case .atp, .wta: "Tour"
+        case .soccer: "Competition"
         }
     }
 
@@ -350,6 +359,9 @@ struct KyroSportsGame: Identifiable, Equatable, Sendable {
     /// True when the provider gave only the scheduled day. `startTime` then
     /// anchors the day (noon UTC) and must not be shown as a clock time.
     let isStartTimeTBD: Bool
+    /// ESPN competition slug (for example `eng.1`) for soccer. It is nil for
+    /// the existing single-league feeds.
+    let competitionKey: String?
 
     init(
         id: KyroGameID,
@@ -371,7 +383,8 @@ struct KyroSportsGame: Identifiable, Equatable, Sendable {
         tournament: String? = nil,
         round: String? = nil,
         isSingles: Bool = false,
-        isStartTimeTBD: Bool = false
+        isStartTimeTBD: Bool = false,
+        competitionKey: String? = nil
     ) {
         self.id = id
         self.league = league
@@ -393,6 +406,7 @@ struct KyroSportsGame: Identifiable, Equatable, Sendable {
         self.round = round
         self.isSingles = isSingles
         self.isStartTimeTBD = isStartTimeTBD
+        self.competitionKey = competitionKey
     }
 
     /// The most specific line to show under the matchup: the provider's clock

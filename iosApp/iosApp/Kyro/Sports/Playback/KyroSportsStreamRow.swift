@@ -5,6 +5,7 @@ import NukeUI
 /// One stream in the Sports Hub stream picker and the player's Other Streams sheet.
 struct KyroSportsStreamRow: View {
     let model: KyroSportsStreamRowModel
+    var showsEvidence = true
     let select: () -> Void
 
     var body: some View {
@@ -17,28 +18,33 @@ struct KyroSportsStreamRow: View {
                         .foregroundStyle(KyroTheme.textPrimary)
                         .lineLimit(2)
                         .truncationMode(.tail)
-                    if let title = model.programmeTitle {
-                        HStack(spacing: 4) {
-                            Text(title).lineLimit(1)
+                    if model.programmeTitle != nil || hasProgrammeInterval {
+                        VStack(alignment: .leading, spacing: 1) {
+                            if let title = model.programmeTitle {
+                                Text(title)
+                                    .lineLimit(2)
+                                    .truncationMode(.tail)
+                            }
                             if let start = model.programmeStart, let end = model.programmeEnd, start < end {
-                                Text("·")
                                 Text(start..<end, format: .interval.hour().minute())
                                     .monospacedDigit()
                                     .lineLimit(1)
-                                    .layoutPriority(1)
                             }
                         }
                         .font(.caption)
                         .foregroundStyle(KyroTheme.silver)
                     }
-                    Text(model.evidence)
-                        .font(.caption2)
-                        .foregroundStyle(KyroTheme.textSecondary)
-                        .lineLimit(1)
+                    if showsEvidence {
+                        Text(model.evidence)
+                            .font(.caption2)
+                            .foregroundStyle(KyroTheme.textSecondary)
+                            .lineLimit(2)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 KyroSportsStreamStatusLabel(status: model.status, label: model.statusLabel)
             }
+            .frame(minHeight: 44)
             .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
@@ -59,6 +65,11 @@ struct KyroSportsStreamRow: View {
         .accessibilityHint(model.accessibilityHint)
         .accessibilityAddTraits(model.isCurrent ? [.isSelected, .isButton] : .isButton)
         .accessibilityIdentifier("kyroSportsStream-\(model.channelID)")
+    }
+
+    private var hasProgrammeInterval: Bool {
+        guard let start = model.programmeStart, let end = model.programmeEnd else { return false }
+        return start < end
     }
 
     /// The stream on screen carries Kyro's electric-blue selection.
@@ -144,20 +155,59 @@ struct KyroSportsStreamStatusLabel: View {
 /// with no event evidence stay collapsed until asked for.
 struct KyroSportsStreamSectionsView: View {
     let sections: [KyroSportsStreamSection]
+    var showsEvidence = true
     let select: (String) -> Void
     @State private var expandedNetwork: Bool?
+    @State private var expandedMore: Bool?
+    @State private var showAllNetwork = false
+    @State private var networkQuery = ""
 
     var body: some View {
         ForEach(sections) { section in
             Section {
-                if section.kind == .networkChannels {
+                if section.kind == .moreMatches {
+                    // Bounded by the matcher (`maximumOverflowMatches`); List rows render lazily.
+                    DisclosureGroup(isExpanded: Binding(
+                        get: { expandedMore ?? section.startsExpanded },
+                        set: { expandedMore = $0 }
+                    )) {
+                        rows(section)
+                    } label: {
+                        Text("\(section.rows.count) more stream\(section.rows.count == 1 ? "" : "s") that list this game")
+                            .font(.subheadline)
+                            .foregroundStyle(KyroTheme.textSecondary)
+                    }
+                    .listRowBackground(Color.white.opacity(0.05))
+                    .accessibilityIdentifier("kyroSportsMoreMatches")
+                } else if section.kind == .networkChannels {
                     DisclosureGroup(isExpanded: Binding(
                         get: { expandedNetwork ?? section.startsExpanded },
                         set: { expandedNetwork = $0 }
                     )) {
-                        rows(section)
+                        if showAllNetwork {
+                            HStack(spacing: 8) {
+                                Image(systemName: "magnifyingglass")
+                                    .foregroundStyle(KyroTheme.textSecondary)
+                                TextField("Search network channels", text: $networkQuery)
+                                    .autocorrectionDisabled()
+                                    #if os(iOS)
+                                    .textInputAutocapitalization(.never)
+                                    #endif
+                            }
+                        }
+                        ForEach(section.visibleNetworkRows(showAll: showAllNetwork, query: networkQuery)) { row in
+                            KyroSportsStreamRow(model: row, showsEvidence: showsEvidence) { select(row.channelID) }
+                        }
+                        if section.rows.count > KyroSportsStreamMatcher.initialBroadcasters {
+                            Button(showAllNetwork ? "Show Fewer" : "See All") {
+                                showAllNetwork.toggle()
+                                networkQuery = ""
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .accessibilityIdentifier("kyroSportsNetworkSeeAll")
+                        }
                     } label: {
-                        Text("\(section.rows.count) channel\(section.rows.count == 1 ? "" : "s") from the listed network")
+                        Text("\(section.rows.count == KyroSportsStreamMatcher.maximumBroadcasters ? "Up to " : "")\(section.rows.count) channel\(section.rows.count == 1 ? "" : "s") from the listed network")
                             .font(.subheadline)
                             .foregroundStyle(KyroTheme.textSecondary)
                     }
@@ -170,6 +220,10 @@ struct KyroSportsStreamSectionsView: View {
             } footer: {
                 if section.kind == .networkChannels {
                     Text("Nothing shows these channels carry this game.")
+                } else if section.kind == .moreMatches {
+                    Text(showsEvidence
+                         ? "Each row shows its evidence, as above. Kyro doesn't try these automatically."
+                         : "Additional matches are not tried automatically.")
                 }
             }
         }
@@ -177,7 +231,7 @@ struct KyroSportsStreamSectionsView: View {
 
     private func rows(_ section: KyroSportsStreamSection) -> some View {
         ForEach(section.rows) { row in
-            KyroSportsStreamRow(model: row) { select(row.channelID) }
+            KyroSportsStreamRow(model: row, showsEvidence: showsEvidence) { select(row.channelID) }
         }
     }
 }

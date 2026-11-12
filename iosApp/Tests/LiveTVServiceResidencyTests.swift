@@ -94,8 +94,12 @@ final class LiveTVServiceResidencyTests: XCTestCase {
             _ = harness.service.guidePrograms(for: channel, overlapping: harness.window)
         }
         XCTAssertEqual(harness.service.pendingResidencyCountForTesting, 512)
-        XCTAssertFalse(harness.service.isGuideChannelLoading(harness.channels[699]),
-                       "requests beyond the pending cap are not mislabeled as queued")
+        // Build 61: a full queue keeps the newest requests (the rows on screen) and drops the oldest.
+        XCTAssertTrue(harness.service.isGuideChannelLoading(harness.channels[699]))
+        XCTAssertFalse(harness.service.isGuideChannelLoading(harness.channels[0]),
+                       "dropped requests are not mislabeled as queued")
+        XCTAssertFalse(harness.service.isGuideChannelSettled(harness.channels[0]),
+                       "a dropped row is not cached, so it asks again when next built")
         await harness.service.waitForResidencyForTesting()
         XCTAssertLessThanOrEqual(harness.index.sqlite!.guide.residentChannelCount, EPGSQLiteGuide.defaultResidentChannels)
     }

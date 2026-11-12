@@ -63,6 +63,25 @@ final class LiveTVGuideTests: XCTestCase {
                        .allCategories)
     }
 
+    func testCategoryPickerFiltersCaseInsensitivelyAndTrimsQuery() {
+        let categories = ["News", "Sports", "Movies"]
+        XCTAssertEqual(LiveTVGuideCategoryPickerModel.filteredCategories(categories, query: "  SPORT "), ["Sports"])
+        XCTAssertEqual(LiveTVGuideCategoryPickerModel.filteredCategories(categories, query: ""), categories)
+    }
+
+    func testCategoryPickerFrequentCategoriesPrioritizeFavoritesThenChannelCount() {
+        let providerChannels = [
+            LiveTVChannel(id: "news-1", guideID: nil, name: "News 1", streamURL: URL(string: "https://example.invalid/1")!, logoURL: nil, category: "News"),
+            LiveTVChannel(id: "sports-1", guideID: nil, name: "Sports 1", streamURL: URL(string: "https://example.invalid/2")!, logoURL: nil, category: "Sports"),
+            LiveTVChannel(id: "sports-2", guideID: nil, name: "Sports 2", streamURL: URL(string: "https://example.invalid/3")!, logoURL: nil, category: "Sports"),
+            LiveTVChannel(id: "movies-1", guideID: nil, name: "Movies 1", streamURL: URL(string: "https://example.invalid/4")!, logoURL: nil, category: "Movies")
+        ]
+        XCTAssertEqual(
+            LiveTVGuideCategoryPickerModel.frequentCategories(
+                categories: ["News", "Sports", "Movies"], channels: providerChannels, favoriteIDs: ["news-1"]),
+            ["News", "Sports", "Movies"])
+    }
+
     func testTimelineAlignsToLocalHalfHoursAndBoundsTheWindow() throws {
         let now = date("2026-01-01T12:17:00Z")
         let timeline = LiveTVGuideTimeline(now: now, timeZone: utc)
@@ -429,6 +448,59 @@ final class LiveTVGuideTests: XCTestCase {
         let restored = LiveTVChannelFiltering.filter(first, query: "", category: "News",
                                                      favoritesOnly: false, favoriteIDs: [])
         XCTAssertEqual(restored.map(\.id), first.map(\.id), "clearing search rebuilds the previous guide filters")
+    }
+
+    func testRepeatedGuideSearchPublishesOnlyTheLatestQuery() async {
+        let channels = [
+            LiveTVChannel(id: "news", guideID: nil, name: "North News", streamURL: URL(string: "https://test/news")!,
+                          logoURL: nil, category: "News"),
+            LiveTVChannel(id: "sports", guideID: nil, name: "North Sports", streamURL: URL(string: "https://test/sports")!,
+                          logoURL: nil, category: "Sports"),
+        ]
+        let search = LiveTVChannelSearchModel()
+        search.update(channels: channels, query: "news", category: nil, favoritesOnly: false,
+                      favoriteIDs: [], debounce: .milliseconds(180), includeGroups: false)
+        search.update(channels: channels, query: "sports", category: nil, favoritesOnly: false,
+                      favoriteIDs: [], debounce: .milliseconds(180), includeGroups: false)
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.matches.map(\.id), ["sports"], "a superseded query cannot repopulate the guide")
+        XCTAssertFalse(search.isSearching)
+    }
+
+    func testPendingGuideSearchKeepsPreviousRowsUntilResultsArrive() async {
+        let channels = [
+            LiveTVChannel(id: "news", guideID: nil, name: "North News", streamURL: URL(string: "https://test/news")!,
+                          logoURL: nil, category: "News"),
+            LiveTVChannel(id: "sports", guideID: nil, name: "North Sports", streamURL: URL(string: "https://test/sports")!,
+                          logoURL: nil, category: "Sports"),
+        ]
+        let search = LiveTVChannelSearchModel()
+        search.update(channels: channels, query: "news", category: nil, favoritesOnly: false,
+                      favoriteIDs: [], debounce: .zero, includeGroups: false)
+        await search.waitForCurrentSearch()
+        search.update(channels: channels, query: "sports", category: nil, favoritesOnly: false,
+                      favoriteIDs: [], debounce: .milliseconds(180), includeGroups: false)
+        XCTAssertTrue(search.isSearching)
+        XCTAssertEqual(search.matches.map(\.id), ["news"], "pending work does not clear the prior result set")
+        await search.waitForCurrentSearch()
+        XCTAssertEqual(search.matches.map(\.id), ["sports"])
+    }
+
+    func testSearchDismissalRestoresFiltersAndBothGuideOffsets() {
+        let restoration = LiveTVGuideSearchRestoration(category: "Sports", favoritesOnly: true,
+                                                        offsetX: 720, offsetY: 384, query: "north")
+        XCTAssertEqual(restoration.dismissedFilters, LiveTVBrowserFilters(category: "Sports", favoritesOnly: true))
+        XCTAssertEqual(restoration.offsetX, 720)
+        XCTAssertEqual(restoration.offsetY, 384)
+        XCTAssertEqual(restoration.dismissedFilters.query, "",
+                       "clearing or closing search returns to the original browsing context")
+    }
+
+    func testSearchRestorationBoundsInvalidOffsetsInsteadOfMovingTheGuide() {
+        let restoration = LiveTVGuideSearchRestoration(category: nil, favoritesOnly: false,
+                                                        offsetX: .infinity, offsetY: -1, query: "")
+        XCTAssertEqual(restoration.offsetX, 0)
+        XCTAssertEqual(restoration.offsetY, 0)
     }
 
     func testBannerPrefersErrorsThenGuideMessagesAndHidesWhileLoading() {

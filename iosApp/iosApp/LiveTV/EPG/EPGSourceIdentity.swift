@@ -142,7 +142,7 @@ final class EPGFingerprintKeyProvider: @unchecked Sendable {
     private var cached: SymmetricKey?
 
     init(store: any EPGFingerprintKeyStoring = KeychainEPGFingerprintKeyStore(),
-         randomBytes: @escaping @Sendable (Int) -> Data? = EPGFingerprintKeyProvider.secureRandomBytes) {
+         randomBytes: @escaping @Sendable (Int) -> Data? = { EPGFingerprintKeyProvider.secureRandomBytes($0) }) {
         self.store = store
         self.randomBytes = randomBytes
     }

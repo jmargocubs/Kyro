@@ -562,7 +562,9 @@ private class RedirectRefusingDelegate: NSObject, URLSessionTaskDelegate, @unche
 
 /// Trusts exactly the pinned key and follows no redirect: a candidate that
 /// sends the probe elsewhere is not the server.
-private final class PinnedProbeDelegate: RedirectRefusingDelegate {
+// URLSession may call this delegate from different queues. The base has no state;
+// the pin is immutable, and each callback uses only its own arguments.
+private final class PinnedProbeDelegate: RedirectRefusingDelegate, @unchecked Sendable {
     let pin: String
 
     init(pin: String) {

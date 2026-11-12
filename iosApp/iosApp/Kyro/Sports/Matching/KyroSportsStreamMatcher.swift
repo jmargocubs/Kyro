@@ -54,7 +54,15 @@ struct KyroSportsStreamMatch: Identifiable, Equatable, Sendable {
 struct KyroSportsStreamMatchDiagnostics: Equatable, Sendable {
     var catalogChannels = 0
     var guideRows = 0
+    /// Guide rows read for full team names and other strong aliases (first pass).
+    var strongGuideRows = 0
+    /// Guide rows read for abbreviations and other weak aliases, from the budget left (second pass).
+    var weakGuideRows = 0
+    /// More guide programmes qualified than `KyroSportsStreamMatcher.maximumGuideRows` allowed.
+    var guideRowsTruncated = false
     var nameCandidates = 0
+    /// Every accepted event match, before the initial list and the overflow bound.
+    var acceptedMatches = 0
     var matchDuration: TimeInterval = 0
 
     static func == (lhs: Self, rhs: Self) -> Bool { true }
@@ -64,8 +72,15 @@ struct KyroSportsStreamMatchResult: Equatable, Sendable {
     /// `.low` means no verified event match; `matches` is then empty and the
     /// sheet offers manual channel search only.
     let confidence: KyroSportsStreamMatchConfidence
-    /// Event-specific candidates only. Never padded with generic channels.
+    /// Event-specific candidates only. Never padded with generic channels. The initial list: at
+    /// most `KyroSportsStreamMatcher.maximumMatches`, chosen so one network broadcast repeated on
+    /// many affiliates cannot fill it (see `KyroSportsStreamMatcher.initialSelection`).
     let matches: [KyroSportsStreamMatch]
+    /// Accepted event matches that did not fit `matches`, best first. Same evidence and labels as
+    /// `matches`, never tried automatically, at most `KyroSportsStreamMatcher.maximumOverflowMatches`.
+    var overflowMatches: [KyroSportsStreamMatch] = []
+    /// Accepted matches beyond the overflow bound, counted but not kept.
+    var omittedMatchCount = 0
     let manualSearchQuery: String
     let guideWasStale: Bool
     let indexWasCancelled: Bool
@@ -111,7 +126,19 @@ enum KyroSportsStreamMatcher {
     static let maximumMatches = 10
     /// Streams tried automatically for one tap before the discovery screen takes over.
     static let maximumAutoPlayCandidates = 3
-    static let maximumBroadcasters = 6
+    static let initialBroadcasters = 6
+    /// The expanded list is still bounded; all matching work runs in the detached matcher.
+    static let maximumBroadcasters = 64
+    /// Accepted matches kept beyond the initial list, for the expandable "More matches" group.
+    static let maximumOverflowMatches = 50
+    /// Initial-list rows one repeated network broadcast may fill (same programme, network,
+    /// language, listing quality and feed). Automatic-playback candidates are always kept.
+    static let maximumInitialPerBroadcast = 3
+    /// Initial-list rows kept for channels whose own name lists the event, when there are more
+    /// accepted matches than fit.
+    static let reservedEventChannelSlots = 3
+    /// Guide rows one event match may read, across both retrieval passes.
+    static let maximumGuideRows = 2_000
 
     // MARK: Entry points
 
@@ -184,8 +211,13 @@ enum KyroSportsStreamMatcher {
 
         // 1. Guide programmes around the event that may name a participant.
         if let guide, let guideKeys {
-            let rows = guide.windowPrograms(overlapping: interval, anchors: context.anchors)
+            let read = guideRows(guide: guide, interval: interval, context: context)
+            if read.cancelled || Task.isCancelled { return finish(emptyResult(for: request, guide: guide, cancelled: true)) }
+            let rows = read.rows
             diagnostics.guideRows = rows.count
+            diagnostics.strongGuideRows = read.strongRows
+            diagnostics.weakGuideRows = read.weakRows
+            diagnostics.guideRowsTruncated = read.truncated
             for (number, row) in rows.enumerated() {
                 if number.isMultiple(of: 128), Task.isCancelled {
                     return finish(emptyResult(for: request, guide: guide, cancelled: true))
@@ -214,6 +246,7 @@ enum KyroSportsStreamMatcher {
 
         let ordered = best.values.sorted(by: rankedBefore)
         let broadcasters = possibleBroadcasters(index: index, context: context, excluding: Set(best.keys), stale: stale)
+        if Task.isCancelled { return finish(emptyResult(for: request, guide: guide, cancelled: true)) }
         guard !ordered.isEmpty else {
             var empty = emptyResult(for: request, guide: guide, cancelled: false)
             empty.possibleBroadcasters = broadcasters
@@ -230,7 +263,7 @@ enum KyroSportsStreamMatcher {
         } else {
             confidence = .medium
         }
-        let adjusted = ordered.prefix(maximumMatches).map { match -> KyroSportsStreamMatch in
+        let adjusted = ordered.map { match -> KyroSportsStreamMatch in
             let level: KyroSportsStreamMatchConfidence = confidence == .high ? .high
                 : (match.confidence == .high ? .medium : match.confidence)
             return KyroSportsStreamMatch(id: match.id, channel: match.channel, program: match.program,
@@ -238,13 +271,142 @@ enum KyroSportsStreamMatcher {
                                          isStale: match.isStale, source: match.source,
                                          isAutoPlayEligible: match.isAutoPlayEligible)
         }
-        var result = KyroSportsStreamMatchResult(confidence: confidence, matches: Array(adjusted),
+        // Automatic playback keeps its Build 44 ranking: the best eligible matches among the top
+        // `maximumMatches` by score, whatever the initial list shows around them.
+        let autoPlay = Array(adjusted.prefix(maximumMatches).filter(\.isAutoPlayEligible).prefix(maximumAutoPlayCandidates))
+        let selection = initialSelection(adjusted, pinned: Set(autoPlay.map(\.channel.id)), context: context)
+        diagnostics.acceptedMatches = adjusted.count
+        var result = KyroSportsStreamMatchResult(confidence: confidence, matches: selection.initial,
                                                  manualSearchQuery: query(for: game), guideWasStale: stale,
                                                  indexWasCancelled: false, manualSearchSuggestions: suggestions)
-        result.autoPlayCandidates = Array(adjusted.filter(\.isAutoPlayEligible).prefix(maximumAutoPlayCandidates))
+        result.overflowMatches = Array(selection.overflow.prefix(maximumOverflowMatches))
+        result.omittedMatchCount = Swift.max(0, selection.overflow.count - maximumOverflowMatches)
+        result.autoPlayCandidates = autoPlay
         result.possibleBroadcasters = broadcasters
         return finish(result)
     }
+
+    // MARK: Guide retrieval
+
+    struct GuideRows {
+        var rows: [(key: String, program: EPGProgram)] = []
+        var strongRows = 0
+        var weakRows = 0
+        var truncated = false
+        var cancelled = false
+    }
+
+    /// Two bounded passes over the guide window. Full team names and other strong aliases read
+    /// first; abbreviations and city names ("chi", "tampa"), which also occur inside unrelated
+    /// words, get only the budget left and skip rows the first pass already read. Coverage equals
+    /// one pass over every anchor whenever neither pass is truncated.
+    static func guideRows(guide: EPGIndex, interval: DateInterval, context: MatchContext,
+                          budget: Int = maximumGuideRows) -> GuideRows {
+        var read = GuideRows()
+        let strong = context.strongAnchors
+        if !strong.isEmpty {
+            let first = guide.windowRows(overlapping: interval, anchors: strong, limit: budget)
+            if first.cancelled { return GuideRows(cancelled: true) }
+            read.rows = first.rows
+            read.strongRows = first.rows.count
+            read.truncated = first.truncated
+        }
+        let weak = context.weakAnchors
+        guard !weak.isEmpty else { return read }
+        let remaining = budget - read.rows.count
+        guard remaining > 0 else {
+            // The first pass used the whole budget; weak-only rows were never read.
+            read.truncated = true
+            return read
+        }
+        if Task.isCancelled { return GuideRows(cancelled: true) }
+        let second = guide.windowRows(overlapping: interval, anchors: weak, excluding: strong, limit: remaining)
+        if second.cancelled { return GuideRows(cancelled: true) }
+        read.rows += second.rows
+        read.weakRows = second.rows.count
+        read.truncated = read.truncated || second.truncated
+        return read
+    }
+
+    // MARK: Initial list
+
+    /// Splits ranked accepted matches into the initial list and the overflow, both in rank order.
+    ///
+    /// When everything fits, nothing changes. Otherwise, deterministically:
+    /// 1. automatic-playback candidates (`pinned`) are always shown;
+    /// 2. up to `reservedEventChannelSlots` channels whose name lists the event are shown;
+    /// 3. the remaining slots fill by rank, but a repeated network broadcast (`broadcastGroup`)
+    ///    takes at most `maximumInitialPerBroadcast` of them;
+    /// 4. slots still empty fill by rank, so the list is never shorter than before.
+    /// Overflow keeps every other accepted match with its evidence; nothing is downgraded.
+    static func initialSelection(_ ranked: [KyroSportsStreamMatch], pinned: Set<String>,
+                                 context: MatchContext) -> (initial: [KyroSportsStreamMatch], overflow: [KyroSportsStreamMatch]) {
+        guard ranked.count > maximumMatches else { return (ranked, []) }
+        var chosen = Set<String>()
+        var perGroup: [String: Int] = [:]
+        let groups = ranked.map { broadcastGroup($0, context: context) }
+        func take(_ index: Int) {
+            chosen.insert(ranked[index].channel.id)
+            if let group = groups[index] { perGroup[group, default: 0] += 1 }
+        }
+        func open(_ index: Int) -> Bool { chosen.count < maximumMatches && !chosen.contains(ranked[index].channel.id) }
+        for index in ranked.indices where pinned.contains(ranked[index].channel.id) && open(index) { take(index) }
+        var reserved = 0
+        for index in ranked.indices where reserved < reservedEventChannelSlots && ranked[index].source == .channelName && open(index) {
+            take(index)
+            reserved += 1
+        }
+        for index in ranked.indices where open(index) {
+            if let group = groups[index], perGroup[group, default: 0] >= maximumInitialPerBroadcast { continue }
+            take(index)
+        }
+        for index in ranked.indices where open(index) { take(index) }
+        return (ranked.filter { chosen.contains($0.channel.id) }, ranked.filter { !chosen.contains($0.channel.id) })
+    }
+
+    /// The identity of one network broadcast as a channel carries it, or nil for a channel that
+    /// stands on its own. Only guide matches on a known network's channels group, and only when
+    /// the guide programme (title, subtitle, start and end), the language, the listing quality and
+    /// any feed label (East, West, Alt…) all agree. Event channels, Game Pass slots, other
+    /// languages and 4K/UHD/FHD/HD variants therefore never collapse into one another, and
+    /// identical titles on unrelated channels are not assumed to be the same stream.
+    static func broadcastGroup(_ match: KyroSportsStreamMatch, context: MatchContext) -> String? {
+        guard match.source == .guide, let program = match.program else { return nil }
+        let tokens = phraseTokens(match.channel.name + " " + match.channel.category)
+        let nameTokens = phraseTokens(match.channel.name)
+        let phrases = context.networkPhrases + allNetworkPhrases.filter { !context.networkPhrases.contains($0) }
+        guard let network = phrases.first(where: { contains($0, in: nameTokens) }) else { return nil }
+        let language = tokens.lazy.compactMap { languageTags[$0] }.first ?? "default"
+        let feed = tokens.filter(feedTokens.contains).sorted().joined(separator: "+")
+        let programme = normalized([program.title, program.subtitle].compactMap { $0 }.joined(separator: " | "))
+        let start = Int(program.start.timeIntervalSinceReferenceDate / 60)
+        let end = Int(program.end.timeIntervalSinceReferenceDate / 60)
+        return [network.joined(separator: " "), language, String(listingQuality(phraseTokens(match.channel.name))),
+                feed, programme, String(start), String(end)].joined(separator: "|")
+    }
+
+    /// Language words in channel names and groups ("ES | NFL", "NBC (Spanish)").
+    static let languageTags: [String: String] = [
+        "es": "es", "esp": "es", "spa": "es", "spanish": "es", "espanol": "es", "latino": "es", "latam": "es",
+        "mx": "es", "fr": "fr", "french": "fr", "francais": "fr", "pt": "pt", "br": "pt", "portugues": "pt",
+        "portuguese": "pt", "de": "de", "german": "de", "deutsch": "de", "it": "it", "italian": "it",
+        "ar": "ar", "arabic": "ar", "sap": "sap"
+    ]
+
+    /// Labels that mark a distinct feed of the same network.
+    static let feedTokens: Set<String> = [
+        "east", "west", "pacific", "mountain", "central", "alt", "alternate", "backup", "feed", "home", "away", "plus"
+    ]
+
+    /// Every network phrase `networkPhrases` knows, so affiliates of an unlisted network group too.
+    static let allNetworkPhrases: [[String]] = {
+        var phrases: [[String]] = []
+        for phrase in knownNetworks.values.flatMap({ $0 }) {
+            let tokens = phraseTokens(phrase)
+            if !tokens.isEmpty, !phrases.contains(tokens) { phrases.append(tokens) }
+        }
+        return phrases.sorted { $0.joined(separator: " ") < $1.joined(separator: " ") }
+    }()
 
     /// Higher score first. Equal scores prefer a guide-confirmed slot, then the listed
     /// broadcaster's channel, then catalog identity, so the order never depends on hashing.
@@ -255,34 +417,78 @@ enum KyroSportsStreamMatcher {
         return lhs.channel.id < rhs.channel.id
     }
 
-    /// Channels of the listed broadcaster ("ESPN", "CBSSN") that nothing ties to this event.
-    /// A lead for manual choice only: a network name is never evidence.
+    /// Channels of the listed broadcaster ("ESPN", "NBC", "Universo") that nothing ties to
+    /// this event. A lead for manual choice only: a network name is never event evidence.
     static func possibleBroadcasters(index: KyroSportsChannelIndex, context: MatchContext,
                                      excluding matched: Set<Int>, stale: Bool) -> [KyroSportsStreamMatch] {
         guard !context.networkPhrases.isEmpty else { return [] }
-        var found: [KyroSportsStreamMatch] = []
-        // Shortest names first ("FOX" before "FOX Sports Racing 4K"), stopping once the list is
-        // full: a network word can hit thousands of channels in a 40,000-channel catalog.
+        struct Lead {
+            let offset: Int
+            let national: Bool
+            let quality: Int
+            let length: Int
+            let id: String
+        }
+        func precedes(_ lhs: Lead, _ rhs: Lead) -> Bool {
+            if lhs.national != rhs.national { return lhs.national }
+            if lhs.quality != rhs.quality { return lhs.quality > rhs.quality }
+            if lhs.length != rhs.length { return lhs.length < rhs.length }
+            return lhs.id < rhs.id
+        }
+        var top: [Lead] = []
+        // Postings bound the search to network tokens. Keep only the best 64 rather than sorting
+        // or retaining every affiliate in a large catalog.
         let offsets = index.offsets(containingAny: context.networkPhrases.compactMap(\.first))
-            .filter { !matched.contains($0) }
-            .sorted {
-                let left = index.channels[$0].name.utf8.count, right = index.channels[$1].name.utf8.count
-                return left != right ? left < right : index.channels[$0].id < index.channels[$1].id
-            }
-        for offset in offsets {
-            if found.count >= maximumBroadcasters { break }
+        for (number, offset) in offsets.enumerated() {
+            if number.isMultiple(of: 256), Task.isCancelled { return [] }
+            guard !matched.contains(offset) else { continue }
             let channel = index.channels[offset]
             let tokens = phraseTokens(channel.name)
             guard context.networkPhrases.contains(where: { contains($0, in: tokens) }) else { continue }
-            // A replay, highlights or other-sport channel of the network is not a lead either.
+            let lead = Lead(offset: offset, national: isNationalNetworkVariant(tokens, phrases: context.networkPhrases),
+                            quality: listingQuality(tokens), length: channel.name.utf8.count, id: channel.id)
+            if top.count == maximumBroadcasters, !precedes(lead, top[top.count - 1]) { continue }
+            // Reject cheaply out-ranked affiliates before the more expensive conflict analysis.
             let evidence = analyze(channel.name + " | " + channel.category, context: context)
             guard !evidence.nonEvent, !evidence.leagueConflict else { continue }
-            found.append(KyroSportsStreamMatch(id: "broadcaster|\(channel.id)", channel: channel, program: nil,
-                                               confidence: .low, score: 0,
-                                               reasons: ["Listed broadcaster; not confirmed to carry this event"],
-                                               isStale: stale, source: .broadcaster))
+            let position = top.firstIndex(where: { precedes(lead, $0) }) ?? top.count
+            top.insert(lead, at: position)
+            if top.count > maximumBroadcasters { top.removeLast() }
         }
-        return found
+        return top.map { lead in
+            let channel = index.channels[lead.offset]
+            return KyroSportsStreamMatch(id: "broadcaster|\(channel.id)", channel: channel, program: nil,
+                                         confidence: .low, score: 0,
+                                         reasons: ["Listed broadcaster; not confirmed to carry this event"],
+                                         isStale: stale, source: .broadcaster)
+        }
+    }
+
+    /// Listing text is a preference, not a measurement of the stream's resolution.
+    private static func listingQuality(_ tokens: [String]) -> Int {
+        if tokens.contains("4k") || tokens.contains(where: { $0.hasSuffix("4k") }) { return 5 }
+        if tokens.contains("uhd") || tokens.contains(where: { $0.hasSuffix("uhd") }) { return 4 }
+        if tokens.contains("fhd") || tokens.contains(where: { $0.hasSuffix("fhd") }) { return 3 }
+        if tokens.contains("1080p") || tokens.contains(where: { $0.hasSuffix("1080p") }) { return 2 }
+        if tokens.contains("hd") || tokens.contains(where: { $0.hasSuffix("hd") }) { return 1 }
+        return 0
+    }
+
+    private static func isNationalNetworkVariant(_ tokens: [String], phrases: [[String]]) -> Bool {
+        let suffixes: Set<String> = ["4k", "uhd", "fhd", "1080p", "hd", "us", "usa", "tv", "live", "east", "west", "national", "feed"]
+        // Catalogs commonly prefix a country before the network ("USA | NBC UHD").
+        let leadingRegions: Set<String> = ["us", "usa"]
+        let nameTokens = tokens.first.map { leadingRegions.contains($0) } == true ? Array(tokens.dropFirst()) : tokens
+        for phrase in phrases {
+            if nameTokens == phrase { return true }
+            if nameTokens.count >= phrase.count, Array(nameTokens.prefix(phrase.count)) == phrase,
+               nameTokens.dropFirst(phrase.count).allSatisfy(suffixes.contains) { return true }
+            // Providers also write NBC4K or UniversoHD without a separator.
+            if phrase.count == 1, let first = nameTokens.first, first.hasPrefix(phrase[0]),
+               suffixes.contains(String(first.dropFirst(phrase[0].count))),
+               nameTokens.dropFirst().allSatisfy(suffixes.contains) { return true }
+        }
+        return false
     }
 
     // MARK: Context
@@ -308,6 +514,10 @@ enum KyroSportsStreamMatcher {
         /// Cheap substring prefilter: at least one must occur in a text before
         /// it is tokenized.
         let anchors: [String]
+        /// One word of each strong alias that is not also a weak alias word ("bears" for
+        /// "Chicago Bears", never "chicago" or "chi"). Every text that contains a strong alias
+        /// contains one of these, so the first guide pass loses no strong evidence.
+        var strongAnchors: [String] = []
 
         func strength(in tokens: [String]) -> Strength? {
             var best: Strength?
@@ -328,6 +538,10 @@ enum KyroSportsStreamMatcher {
         let otherSportTokens: Set<String>
         let networkPhrases: [[String]]
         let anchors: [String]
+        /// First-pass guide anchors: words of full names and other strong aliases.
+        let strongAnchors: [String]
+        /// Second-pass guide anchors: abbreviation and city words no strong anchor covers.
+        let weakAnchors: [String]
 
         init(game: KyroSportsGame) {
             self.game = game
@@ -337,7 +551,10 @@ enum KyroSportsStreamMatcher {
             otherLeaguePhrases = KyroSportsStreamMatcher.otherLeaguePhrases(for: game.league)
             otherSportTokens = KyroSportsStreamMatcher.otherSportTokens(for: game.league)
             networkPhrases = KyroSportsStreamMatcher.networkPhrases(for: game.broadcast)
-            anchors = Array(Set(home.anchors + away.anchors))
+            anchors = Array(Set(home.anchors + away.anchors)).sorted()
+            let strong = Set(home.strongAnchors + away.strongAnchors)
+            strongAnchors = strong.sorted()
+            weakAnchors = Set(anchors).subtracting(strong).sorted()
         }
 
         var isMatchable: Bool { !home.aliases.isEmpty && !away.aliases.isEmpty }
@@ -381,6 +598,39 @@ enum KyroSportsStreamMatcher {
 
     // MARK: Programme scoring
 
+    /// Why a candidate was not accepted. Stable codes for the internal Sports Match Report.
+    enum Rejection: String, Codable, Sendable, CaseIterable {
+        case noParticipant
+        case oneParticipantNotEnough
+        case namesTooWeak
+        case otherContest
+        case nonEvent
+        case otherLeagueOrSport
+        case outsideEventTime
+        case channelContradictsGuide
+        case groupNonEvent
+        case groupOtherLeague
+        case nameDateConflicts
+    }
+
+    enum Assessment {
+        case accepted(KyroSportsStreamMatch)
+        case rejected(Rejection)
+
+        var match: KyroSportsStreamMatch? {
+            if case .accepted(let match) = self { return match }
+            return nil
+        }
+    }
+
+    /// The first veto in `evidence`, most specific first.
+    static func rejection(for evidence: Evidence) -> Rejection {
+        if evidence.nonEvent { return .nonEvent }
+        if evidence.leagueConflict { return .otherLeagueOrSport }
+        if evidence.conflict { return .otherContest }
+        return evidence.anySide ? .oneParticipantNotEnough : .noParticipant
+    }
+
     static func evaluate(
         program: EPGProgram,
         channel: LiveTVChannel,
@@ -388,6 +638,16 @@ enum KyroSportsStreamMatcher {
         stale: Bool,
         now: Date
     ) -> KyroSportsStreamMatch? {
+        assess(program: program, channel: channel, context: context, stale: stale, now: now).match
+    }
+
+    static func assess(
+        program: EPGProgram,
+        channel: LiveTVChannel,
+        context: MatchContext,
+        stale: Bool,
+        now: Date
+    ) -> Assessment {
         let headline = normalized([program.title, program.subtitle].compactMap { $0 }.joined(separator: " | "))
         var evidence = Evidence()
         var fromSummary = false
@@ -404,7 +664,7 @@ enum KyroSportsStreamMatcher {
         if !evidence.bothSides, !evidence.isRejected, let summary = program.summary,
            isGenericSportsHeadline(headline, context: context) {
             if !headlineMentions { analyzeHeadline() }
-            guard !evidence.isRejected else { return nil }
+            guard !evidence.isRejected else { return .rejected(rejection(for: evidence)) }
             let lead = String(summary.prefix(280))
             if context.mayMention(normalized(lead)) {
                 let summaryEvidence = analyze(lead, context: context)
@@ -414,12 +674,12 @@ enum KyroSportsStreamMatcher {
                 }
             }
         }
-        guard evidence.anySide, !evidence.isRejected else { return nil }
-        guard let timing = timing(of: program, game: context.game, now: now) else { return nil }
+        guard evidence.anySide, !evidence.isRejected else { return .rejected(rejection(for: evidence)) }
+        guard let timing = timing(of: program, game: context.game, now: now) else { return .rejected(.outsideEventTime) }
         // The channel itself can contradict its guide: a "Liberty @ Jacksonville State" event
         // channel, a replay feed, or a basketball group borrowing a football guide ID.
         let channelEvidence = channelContextEvidence(channel, context: context)
-        guard !channelEvidence.isRejected else { return nil }
+        guard !channelEvidence.isRejected else { return .rejected(.channelContradictsGuide) }
 
         let channelText = normalized(channel.name + " " + channel.category)
         let channelTokens = phraseTokensNormalized(channelText)
@@ -445,7 +705,7 @@ enum KyroSportsStreamMatcher {
             // clearly about this sport, starts on time, and names nobody else.
             let named = evidence.home != nil ? context.home : context.away
             guard [evidence.home, evidence.away].contains(.strong), timing.isTight, leagueEvidence,
-                  !evidence.matchup else { return nil }
+                  !evidence.matchup else { return .rejected(.oneParticipantNotEnough) }
             score = 35
             confidence = .medium
             reasons.append("Only \(named.displayName) is named in the guide title")
@@ -462,10 +722,10 @@ enum KyroSportsStreamMatcher {
             confidence = min(confidence, .medium)
             reasons.append("Guide is out of date; check before watching")
         }
-        return KyroSportsStreamMatch(id: "\(channel.id)|\(program.id)", channel: channel, program: program,
-                                     confidence: confidence, score: score, reasons: reasons, isStale: stale,
-                                     source: .guide,
-                                     isAutoPlayEligible: confidence == .high && evidence.bothSides)
+        return .accepted(KyroSportsStreamMatch(id: "\(channel.id)|\(program.id)", channel: channel, program: program,
+                                               confidence: confidence, score: score, reasons: reasons, isStale: stale,
+                                               source: .guide,
+                                               isAutoPlayEligible: confidence == .high && evidence.bothSides))
     }
 
     /// What the channel's own name and group say, for vetoes and support only.
@@ -478,13 +738,19 @@ enum KyroSportsStreamMatcher {
     /// event even without a guide. The group ("USA | NCAAF") supports discovery but never proves
     /// a match; a group or date for another sport, league or day vetoes it.
     static func evaluate(channelName channel: LiveTVChannel, context: MatchContext, stale: Bool) -> KyroSportsStreamMatch? {
-        guard context.mayMention(normalized(channel.name)) else { return nil }
+        assess(channelName: channel, context: context, stale: stale).match
+    }
+
+    static func assess(channelName channel: LiveTVChannel, context: MatchContext, stale: Bool) -> Assessment {
+        guard context.mayMention(normalized(channel.name)) else { return .rejected(.noParticipant) }
         let evidence = analyze(channel.name, context: context)
-        guard evidence.bothSides, !evidence.isRejected, evidence.strongSides >= 1 else { return nil }
+        guard evidence.bothSides, !evidence.isRejected else { return .rejected(rejection(for: evidence)) }
+        guard evidence.strongSides >= 1 else { return .rejected(.namesTooWeak) }
         let group = analyze(channel.category, context: context)
-        guard !group.nonEvent, !group.leagueConflict else { return nil }
+        guard !group.nonEvent else { return .rejected(.groupNonEvent) }
+        guard !group.leagueConflict else { return .rejected(.groupOtherLeague) }
         let date = KyroSportsEventNameDate.check(channel.name, event: context.game.isStartTimeTBD ? nil : context.game.startTime)
-        guard date != .conflicts else { return nil }
+        guard date != .conflicts else { return .rejected(.nameDateConflicts) }
 
         var score = 50 + evidence.strongSides * 4 + (evidence.matchup ? 5 : 0)
         var reasons = ["Channel name names both \(context.participantNoun)"]
@@ -507,9 +773,9 @@ enum KyroSportsStreamMatcher {
         // Both names strong, or a clear "X vs Y" with one strong name in a channel of this
         // sport. One strong name and a weak abbreviation ("MSU @ Michigan") is a lead only.
         let eligible = evidence.strongSides == 2 || (evidence.matchup && leagueEvidence)
-        return KyroSportsStreamMatch(
+        return .accepted(KyroSportsStreamMatch(
             id: channel.id, channel: channel, program: nil, confidence: .medium, score: score,
-            reasons: reasons, isStale: stale, source: .channelName, isAutoPlayEligible: eligible)
+            reasons: reasons, isStale: stale, source: .channelName, isAutoPlayEligible: eligible))
     }
 
     // MARK: Text analysis
@@ -686,6 +952,12 @@ enum KyroSportsStreamMatcher {
             if let surname = phraseTokens(full).last, surname.count >= 3 {
                 add(surname, strong: true, guarded: false)
             }
+        case .soccer:
+            add(full, strong: true, guarded: false)
+            add(team.nickname, strong: true, guarded: false)
+            add(team.location, strong: true, guarded: false)
+            for name in team.alternateNames { add(name, strong: true, guarded: false) }
+            add(team.abbreviation, strong: team.abbreviation.count >= 3, guarded: false)
         case .collegeFootball:
             add(full, strong: true, guarded: false)
             add(team.location, strong: true, guarded: true)
@@ -718,8 +990,18 @@ enum KyroSportsStreamMatcher {
             let distinctive = alias.tokens.filter { !genericAnchorTokens.contains($0) }
             return (distinctive.isEmpty ? alias.tokens : distinctive).max(by: { $0.count < $1.count })
         }).sorted()
+        // First-pass words avoid weak-alias words, which are shared ("Chicago") or short enough to
+        // occur inside unrelated words ("chi" in "children"). Falls back to the usual word only
+        // when a strong alias consists of nothing else.
+        let weakWords = Set(aliases.filter { !$0.isStrong }.flatMap(\.tokens))
+        let strongAnchors = Set(aliases.filter(\.isStrong).compactMap { alias -> String? in
+            let distinctive = alias.tokens.filter { !genericAnchorTokens.contains($0) }
+            let pool = distinctive.isEmpty ? alias.tokens : distinctive
+            let preferred = pool.filter { !weakWords.contains($0) }
+            return (preferred.isEmpty ? pool : preferred).max(by: { $0.count < $1.count })
+        }).sorted()
         let display = league == .collegeFootball ? (team.location ?? team.nickname) : team.nickname
-        return Participant(displayName: display, aliases: aliases, anchors: anchors)
+        return Participant(displayName: display, aliases: aliases, anchors: anchors, strongAnchors: strongAnchors)
     }
 
     private static let ignorableAliasTokens: Set<String> = ["the", "of", "university", "fc", "club", "team"]
@@ -755,6 +1037,7 @@ enum KyroSportsStreamMatcher {
         case .mlb: ["mlb", "baseball"]
         case .atp: ["atp", "tennis"]
         case .wta: ["wta", "tennis"]
+        case .soccer: ["soccer", "football", "futbol", "football club", "fc"]
         }
     }
 
@@ -770,7 +1053,8 @@ enum KyroSportsStreamMatcher {
             .nhl: [["ahl"], ["echl"], ["ohl"], ["whl"], ["ncaa"], ["college"], ["nfl"], ["nba"], ["mlb"]],
             .mlb: [["milb"], ["ncaa"], ["college"], ["nfl"], ["nba"], ["nhl"]],
             .atp: [["wta"], ["women"], ["womens"], ["doubles"]],
-            .wta: [["atp"], ["men"], ["mens"], ["doubles"]]
+            .wta: [["atp"], ["men"], ["mens"], ["doubles"]],
+            .soccer: [["nfl"], ["nba"], ["nhl"], ["mlb"], ["ncaa"], ["college football"], ["futsal"]]
         ]
         return all[league] ?? []
     }
@@ -784,6 +1068,7 @@ enum KyroSportsStreamMatcher {
         case .nhl: return ["football", "basketball", "baseball", "soccer", "tennis"]
         case .mlb: return ["football", "basketball", "hockey", "softball", "soccer", "tennis"]
         case .atp, .wta: return ["football", "basketball", "hockey", "baseball", "soccer", "padel", "pickleball"]
+        case .soccer: return ["football", "basketball", "hockey", "baseball", "tennis", "golf", "rugby"]
         }
     }
 
@@ -791,26 +1076,31 @@ enum KyroSportsStreamMatcher {
     /// only; a network never makes a match by itself.
     static func networkPhrases(for broadcast: String?) -> [[String]] {
         guard let broadcast else { return [] }
-        let known: [String: [String]] = [
-            "cbssn": ["cbs sports network", "cbssn", "cbs sports net"],
-            "espn": ["espn"], "espn2": ["espn2", "espn 2"], "espnu": ["espnu"],
-            "espnews": ["espnews"], "fs1": ["fs1", "fox sports 1"], "fs2": ["fs2", "fox sports 2"],
-            "secn": ["sec network", "secn"], "accn": ["acc network", "accn"],
-            "btn": ["big ten network", "btn"], "nfl net": ["nfl network"], "nba tv": ["nba tv"],
-            "nhl net": ["nhl network"], "mlb net": ["mlb network"], "tnt": ["tnt"], "trutv": ["trutv"],
-            "tennis channel": ["tennis channel"], "abc": ["abc"], "cbs": ["cbs"], "nbc": ["nbc"], "fox": ["fox"]
-        ]
         var phrases: [[String]] = []
-        for part in broadcast.split(separator: "/") {
+        for part in broadcast.split(whereSeparator: { "/,&".contains($0) }) {
             let key = phraseTokens(String(part)).joined(separator: " ")
             guard !key.isEmpty else { continue }
-            for phrase in known[key] ?? [key] {
+            for phrase in knownNetworks[key] ?? [key] {
                 let tokens = phraseTokens(phrase)
                 if !tokens.isEmpty, !phrases.contains(tokens) { phrases.append(tokens) }
             }
         }
         return phrases
     }
+
+    /// ESPN broadcaster labels to the channel-name phrases that carry them.
+    static let knownNetworks: [String: [String]] = [
+        "cbssn": ["cbs sports network", "cbssn", "cbs sports net"],
+        "espn": ["espn"], "espn2": ["espn2", "espn 2"], "espnu": ["espnu"],
+        "espnews": ["espnews"], "fs1": ["fs1", "fox sports 1"], "fs2": ["fs2", "fox sports 2"],
+        "secn": ["sec network", "secn"], "accn": ["acc network", "accn"],
+        "btn": ["big ten network", "btn"], "nfl net": ["nfl network"], "nba tv": ["nba tv"],
+        "nhl net": ["nhl network"], "mlb net": ["mlb network"], "tnt": ["tnt"], "trutv": ["trutv"],
+        "tennis channel": ["tennis channel"], "abc": ["abc"], "cbs": ["cbs"],
+        "nbc": ["nbc", "nbc4k", "nbcuhd", "nbcfhd", "nbc1080p", "nbchd"],
+        "universo": ["universo", "universo4k", "universouhd", "universofhd", "universo1080p", "universohd"],
+        "fox": ["fox"]
+    ]
 
     // MARK: Time
 
@@ -844,7 +1134,7 @@ enum KyroSportsStreamMatcher {
         return Timing(isTight: false, reason: "Guide time is \(minutes) min from the scheduled start")
     }
 
-    private static func eventInterval(for game: KyroSportsGame, request: KyroSportsStreamMatchRequest) -> DateInterval {
+    static func eventInterval(for game: KyroSportsGame, request: KyroSportsStreamMatchRequest) -> DateInterval {
         let center = game.isStartTimeTBD ? request.now : (game.startTime ?? request.now)
         return DateInterval(start: center.addingTimeInterval(-request.eventWindow), end: center.addingTimeInterval(request.eventWindow))
     }

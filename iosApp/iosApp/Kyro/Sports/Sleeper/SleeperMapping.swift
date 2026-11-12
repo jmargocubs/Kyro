@@ -68,6 +68,7 @@ enum SleeperMapping {
         case .mlb: "mlb"
         case .nhl: "nhl"
         case .atp, .wta: ""
+        case .soccer: ""
         }
     }
 

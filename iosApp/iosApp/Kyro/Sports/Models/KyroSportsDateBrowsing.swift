@@ -10,12 +10,13 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
     case collegeFootball
     case atp
     case wta
+    case soccer
 
     var id: String { rawValue }
 
     /// Visual order: All | NFL | NCAA | NBA | NHL | MLB | ATP | WTA
     static var filterOrder: [KyroSportsCategory] {
-        [.all, .nfl, .collegeFootball, .nba, .nhl, .mlb, .atp, .wta]
+        [.all, .nfl, .collegeFootball, .nba, .nhl, .mlb, .soccer, .atp, .wta]
     }
 
     var displayName: String {
@@ -28,6 +29,7 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .collegeFootball: KyroSportLeague.collegeFootball.displayName
         case .atp: KyroSportLeague.atp.displayName
         case .wta: KyroSportLeague.wta.displayName
+        case .soccer: KyroSportLeague.soccer.displayName
         }
     }
 
@@ -36,6 +38,7 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         switch self {
         case .atp: "ATP Tennis"
         case .wta: "WTA Tennis"
+        case .soccer: "Soccer"
         default: displayName
         }
     }
@@ -50,6 +53,7 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .collegeFootball: KyroSportLeague.collegeFootball.shortName
         case .atp: KyroSportLeague.atp.shortName
         case .wta: KyroSportLeague.wta.shortName
+        case .soccer: KyroSportLeague.soccer.shortName
         }
     }
 
@@ -63,12 +67,16 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .collegeFootball: KyroSportLeague.collegeFootball.symbolName
         case .atp: KyroSportLeague.atp.symbolName
         case .wta: KyroSportLeague.wta.symbolName
+        case .soccer: KyroSportLeague.soccer.symbolName
         }
     }
 
     var leagues: [KyroSportLeague] {
         switch self {
-        case .all: KyroSportLeague.allCases
+        // Soccer is intentionally loaded through its own filter: its verified
+        // registry spans dozens of routes and should never make the default
+        // All Sports refresh fan out across every competition.
+        case .all: KyroSportLeague.allCases.filter { $0 != .soccer }
         case .nfl: [.nfl]
         case .nba: [.nba]
         case .nhl: [.nhl]
@@ -76,6 +84,7 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .collegeFootball: [.collegeFootball]
         case .atp: [.atp]
         case .wta: [.wta]
+        case .soccer: [.soccer]
         }
     }
 
@@ -89,6 +98,7 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .collegeFootball: .collegeFootball
         case .atp: .atp
         case .wta: .wta
+        case .soccer: .soccer
         }
     }
 
@@ -101,6 +111,7 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .collegeFootball: self = .collegeFootball
         case .atp: self = .atp
         case .wta: self = .wta
+        case .soccer: self = .soccer
         }
     }
 }
@@ -144,7 +155,7 @@ enum KyroSportsBrowseCalendar {
 
 /// Date-local schedule assembly for All Sports and single-league chips.
 enum KyroSportsDaySchedule {
-    static let sectionOrder: [KyroSportLeague] = [.nfl, .collegeFootball, .nba, .nhl, .mlb, .atp, .wta]
+    static let sectionOrder: [KyroSportLeague] = [.nfl, .collegeFootball, .nba, .nhl, .mlb, .soccer, .atp, .wta]
 
     struct SportSection: Identifiable, Equatable, Sendable {
         let league: KyroSportLeague

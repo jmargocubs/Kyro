@@ -237,8 +237,8 @@ final class UnifiedSearchCoordinator {
     private(set) var siloState: UnifiedSearchSourceStatus = .idle
     private(set) var liveTVState: UnifiedSearchSourceStatus = .idle
     private(set) var liveTVResults: [UnifiedLiveTVSearchResult] = []
-    /// TV programs from the selected provider's in-memory guide. Stays `.idle` with no results when
-    /// the coordinator was created without a program source.
+    /// TV programs from the selected provider's guide, in memory or SQLite-backed. Stays `.idle` with
+    /// no results when the coordinator was created without a program source.
     private(set) var programState: UnifiedSearchSourceStatus = .idle
     private(set) var programResults: [UnifiedProgramSearchResult] = []
 
@@ -543,7 +543,8 @@ final class UnifiedSearchCoordinator {
             guard let channel = found,
                   guide.channelKey(guideID: channel.guideID, name: channel.name) == result.channelKey else { return nil }
             let window = DateInterval(start: result.start, end: max(result.end, result.start.addingTimeInterval(1)))
-            guard let program = guide.programs(channelKey: result.channelKey, overlapping: window)
+            // Off-main: a SQLite-backed guide reads this one channel from disk when it is not resident.
+            guard let program = guide.matchingPrograms(channelKey: result.channelKey, overlapping: window)
                 .first(where: { $0.id == result.programID }) else { return nil }
             return (channel, program)
         }
@@ -770,10 +771,11 @@ final class UnifiedSearchCoordinator {
         /// changes nothing until it publishes (and so changes the guide generation).
         let isGuideLoading: Bool
         let isGuideStale: Bool
+        /// A storage switch replaces the guide; kept so the key also differs if that ever reuses a generation.
         let isSQLiteBacked: Bool
         let hasChannels: Bool
 
-        var isReady: Bool { hasGuide && !isGuideStale && !isSQLiteBacked && hasChannels }
+        var isReady: Bool { hasGuide && !isGuideStale && hasChannels }
     }
 
     private func programGuide(_ catalog: UnifiedSearchIPTVCatalogSnapshot) -> UnifiedSearchGuideSnapshot? {
@@ -865,6 +867,7 @@ final class UnifiedSearchCoordinator {
             programState = UnifiedSearchSourceStatus(phase: .unavailable, message: "No TV guide is available.")
             return
         case .unsupportedStorage:
+            // The SQLite guide file could not be opened or read.
             programState = UnifiedSearchSourceStatus(phase: .unavailable,
                                                      message: "TV program search isn't available for this guide.")
             return
@@ -955,9 +958,6 @@ final class UnifiedSearchCoordinator {
                 : UnifiedSearchSourceStatus(phase: .unavailable, message: "No TV guide is available.")
         } else if key.isGuideStale {
             programState = UnifiedSearchSourceStatus(phase: .unavailable, message: "The TV guide is out of date.")
-        } else if key.isSQLiteBacked {
-            programState = UnifiedSearchSourceStatus(phase: .unavailable,
-                                                     message: "TV program search isn't available for this guide.")
         } else {
             programState = UnifiedSearchSourceStatus(phase: .loaded, resultCount: 0)
         }
