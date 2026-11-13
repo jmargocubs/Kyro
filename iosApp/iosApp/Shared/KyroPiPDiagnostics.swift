@@ -12,5 +12,7 @@ enum KyroPiPDiagnostics {
 
     static func record(_ event: String, state: String = "") {
         logger.notice("KYRO_PIP_DIAG event=\(event, privacy: .public) state=\(state, privacy: .public)")
+        // Build 65: also kept on the device, so a PiP test can be read back without a device log.
+        KyroLifecycleJournal.record("pip", event, state)
     }
 }

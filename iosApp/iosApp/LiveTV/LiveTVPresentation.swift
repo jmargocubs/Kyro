@@ -67,8 +67,20 @@ final class LiveTVPresentation {
 
     static let restoreTimeoutSeconds: Double = 4
 
+    /// The phase without its channel, for the lifecycle journal.
+    static func journalName(_ phase: Phase) -> String {
+        switch phase {
+        case .idle: "idle"
+        case .presented: "presented"
+        case .pictureInPicture: "pip"
+        case .restoring: "restoring"
+        case .inline: "inline"
+        }
+    }
+
     private(set) var phase: Phase = .idle {
         didSet {
+            KyroLifecycleJournal.record("livetv", "presentation_phase", "\(Self.journalName(oldValue))->\(Self.journalName(phase))")
             switch phase {
             case .presented:
                 pictureInPictureOrigin = nil

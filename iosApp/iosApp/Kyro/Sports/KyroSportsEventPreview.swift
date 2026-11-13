@@ -49,6 +49,14 @@ struct KyroSportsEventPreview: View {
     let service: LiveTVService
     let canWatch: Bool
     let watch: () -> Void
+    /// Build 65: statistics and Players for a tennis singles match. Separate from the pinned event's
+    /// store, so opening details never replaces what the Stats tab shows.
+    var detailStore: KyroSportsEventDetailStore? = nil
+
+    private var showsTennisContext: Bool {
+        (game.league == .atp || game.league == .wta) && game.isSingles
+            && (mode == .completed || mode == .live || mode == .upcoming)
+    }
 
     @Environment(\.dismiss) private var dismiss
     @State private var matches: [KyroSportsStreamMatch] = []
@@ -76,6 +84,9 @@ struct KyroSportsEventPreview: View {
                     eventFacts
                     if mode == .upcoming || mode == .live { broadcasts }
                     if mode == .completed || mode == .live { results }
+                    if showsTennisContext, let detailStore {
+                        KyroTennisMatchContextSection(game: game, store: detailStore)
+                    }
                     if mode == .live && canWatch {
                         Button(action: watch) {
                             Label("Watch Live", systemImage: "play.fill")

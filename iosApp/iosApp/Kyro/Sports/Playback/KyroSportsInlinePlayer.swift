@@ -108,6 +108,7 @@ struct KyroSportsInlinePlayer: View {
         // Automatic Picture in Picture on leaving the app keeps the inline player; coming back
         // lands on it, so end the window into it.
         .onChange(of: scenePhase) { _, phase in
+            KyroLifecycleJournal.record("sports", "inline_scene_phase", "\(phase) inline=\(service.presentation.isInline)")
             guard phase == .active, service.presentation.isInline else { return }
             pictureInPicture.stopForReturnToPresentedPlayer(owner: session)
         }
@@ -128,9 +129,11 @@ struct KyroSportsInlinePlayer: View {
             // surface; the engine moves its one layer to whichever surface is bound last.
             AetherPlayerSurface(engine: aether)
                 .task {
+                    KyroLifecycleJournal.record("sports", "inline_surface", "mounted")
                     service.attachPictureInPicture()
                     service.presentation.inlinePlayerDidAppear(channel)
                 }
+                .onDisappear { KyroLifecycleJournal.record("sports", "inline_surface", "unmounted") }
         }
         Color.clear
             .contentShape(Rectangle())

@@ -86,16 +86,55 @@ final class PictureInPictureCoordinator {
     /// the delegate, so without this the user sees a button that does nothing.
     @ObservationIgnored private var onStartFailure: ((StartFailure) -> Void)?
     @ObservationIgnored private var isRestoringUserInterface = false
-    /// The pending start came from `toggle()` rather than automatic PiP.
-    @ObservationIgnored private var isStartingFromControl = false
+    /// Build 65: the start/stop requests that span AVKit callbacks (control start, a return to the
+    /// app while PiP is still starting). Reset on every did-stop and failed start, so a start AVKit
+    /// abandoned can never stop the next automatic window the moment it appears.
+    @ObservationIgnored private var transition = PictureInPictureTransition()
+    /// The session whose return stop waits for the app to finish becoming active.
+    @ObservationIgnored private weak var pendingReturnOwner: AnyObject?
     /// A source disappeared while PiP was engaged. Re-read Aether when PiP stops.
     @ObservationIgnored private var pendingRebind = false
     /// A backend-class transition cannot reuse the active controller safely.
     @ObservationIgnored private var shouldStopForSourceChange = false
-    /// The app came back to its on-screen player while PiP was still starting.
-    @ObservationIgnored private var shouldStopForForegroundReturn = false
+    @ObservationIgnored private var applicationObservers: [NSObjectProtocol] = []
+    /// Overridable for tests; production reads UIKit.
+    @ObservationIgnored var applicationState: () -> PictureInPictureTransition.ApplicationState = {
+        switch UIApplication.shared.applicationState {
+        case .active: .active
+        case .inactive: .inactive
+        default: .background
+        }
+    }
 
-    private init() {}
+    private init() {
+        let center = NotificationCenter.default
+        applicationObservers.append(center.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applicationDidBecomeActive() }
+        })
+        applicationObservers.append(center.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.transition.applicationDidEnterBackground()
+                self.pendingReturnOwner = nil
+                KyroPiPDiagnostics.record("pip_app_background", state: self.isEngaged ? "engaged" : "idle")
+            }
+        })
+    }
+
+    /// A return stop deferred because the app was still inactive when PiP finished starting.
+    private func applicationDidBecomeActive() {
+        guard transition.applicationDidBecomeActive() else { return }
+        let owner = pendingReturnOwner
+        pendingReturnOwner = nil
+        guard let owner, lifecycleOwner === owner,
+              isActive || controller?.isPictureInPictureActive == true else { return }
+        KyroPiPDiagnostics.record("pip_stop_foreground_return", state: "deferred_until_active")
+        controller?.stopPictureInPicture()
+    }
 
     /// Bind the coordinator to one Aether session. Repeated calls for the same
     /// owner/engine are idempotent; a new owner fully releases the previous graph.
@@ -305,7 +344,8 @@ final class PictureInPictureCoordinator {
             controller.stopPictureInPicture()
         } else if isTransitioning {
             // AVKit cannot stop a window that has not finished starting; stop it once it has.
-            shouldStopForForegroundReturn = true
+            // A deliberate close (failure, retune) stops whatever the app state.
+            transition.stopRequestedWhileStarting(requiresActiveApplication: false)
         }
     }
 
@@ -321,7 +361,7 @@ final class PictureInPictureCoordinator {
                 return
             }
             KyroPiPDiagnostics.record("pip_user_toggle", state: "start")
-            isStartingFromControl = true
+            transition.controlStartRequested()
             controller.startPictureInPicture()
         }
     }
@@ -362,17 +402,33 @@ final class PictureInPictureCoordinator {
             isActive: isActive || controller?.isPictureInPictureActive == true,
             // A start from the player's own control closes this cover once it
             // lands; it is the user's request, not a leftover automatic start.
-            isTransitioning: isTransitioning && !isStartingFromControl
+            isTransitioning: isTransitioning && !transition.isStartingFromControl
         )
+        guard action != .none else { return }
+        // Build 65: SwiftUI's `.active` is only a request to stop. The window is closed only while
+        // the app really is in the foreground; otherwise the automatic window that just appeared
+        // over the Home Screen would vanish with nothing in the app to restore into.
+        let state = applicationState()
         switch action {
         case .none:
             return
         case .stop:
-            Self.logger.info("App returned to the presented player; stopping PiP")
-            controller?.stopPictureInPicture()
+            if state == .active {
+                Self.logger.info("App returned to the presented player; stopping PiP")
+                KyroPiPDiagnostics.record("pip_stop_foreground_return", state: "active")
+                controller?.stopPictureInPicture()
+            } else {
+                // Not in front yet (or a stray `.active` during the swipe home): close it when the
+                // app really becomes active; leaving again cancels the request.
+                KyroPiPDiagnostics.record("pip_stop_foreground_return", state: "wait_for_active app=\(state)")
+                transition.deferStopUntilActive()
+                pendingReturnOwner = owner
+            }
         case .stopOnceStarted:
             Self.logger.info("App returned to the presented player while PiP was starting")
-            shouldStopForForegroundReturn = true
+            KyroPiPDiagnostics.record("pip_stop_foreground_return", state: "once_started")
+            transition.stopRequestedWhileStarting(requiresActiveApplication: true)
+            pendingReturnOwner = owner
         }
     }
 
@@ -454,6 +510,7 @@ final class PictureInPictureCoordinator {
             pendingRebind = true
             shouldStopForSourceChange = true
             Self.logger.info("Native PiP source changed while active; stopping for a safe rebind")
+            KyroPiPDiagnostics.record("pip_stop_source_change", state: "native_layer_changed")
             controller?.stopPictureInPicture()
             return
         }
@@ -472,6 +529,7 @@ final class PictureInPictureCoordinator {
         pendingRebind = false
         shouldStopForSourceChange = false
         Self.logger.info("PiP bound to Aether native player layer")
+        KyroPiPDiagnostics.record("pip_bound", state: "native")
     }
 
     private func bindSoftwareSource(_ source: SoftwarePiPSource) {
@@ -499,6 +557,7 @@ final class PictureInPictureCoordinator {
                 pendingRebind = false
                 shouldStopForSourceChange = false
                 Self.logger.info("PiP swapped to Aether's reloaded software source")
+                KyroPiPDiagnostics.record("pip_source_swapped", state: "software")
                 return
             }
         }
@@ -507,6 +566,7 @@ final class PictureInPictureCoordinator {
             pendingRebind = true
             shouldStopForSourceChange = true
             Self.logger.info("PiP backend class changed while active; stopping for a safe rebind")
+            KyroPiPDiagnostics.record("pip_stop_source_change", state: "backend_changed")
             controller?.stopPictureInPicture()
             return
         }
@@ -526,6 +586,7 @@ final class PictureInPictureCoordinator {
         pendingRebind = false
         shouldStopForSourceChange = false
         Self.logger.info("PiP bound to Aether software sample-buffer source")
+        KyroPiPDiagnostics.record("pip_bound", state: "software")
     }
 
     private func configureController(
@@ -569,7 +630,9 @@ final class PictureInPictureCoordinator {
         isActive = false
         isTransitioning = false
         isRestoringUserInterface = false
-        shouldStopForForegroundReturn = false
+        transition = PictureInPictureTransition()
+        pendingReturnOwner = nil
+        Self.logger.info("PiP controller released")
     }
 
     /// Release the bound graph.
@@ -586,6 +649,7 @@ final class PictureInPictureCoordinator {
     /// matters when the same owner rebinds a replacement engine: that session is
     /// not ending, so its cleanup must not run.
     private func tearDownBoundSession(continuingOwner: AnyObject?) {
+        KyroPiPDiagnostics.record("pip_teardown", state: "\(isEngaged ? "engaged" : "idle") continuing=\(continuingOwner != nil)")
         engine?.pictureInPictureActive = false
         engine?.setNativeSubtitleRendering(false)
         subscriptions.removeAll()
@@ -653,10 +717,13 @@ final class PictureInPictureCoordinator {
     // MARK: - AVKit delegate callbacks
 
     fileprivate func handleWillStart() {
-        KyroPiPDiagnostics.record("pip_will_start", state: sourceKind == .native ? "native" : "software")
+        let state = applicationState()
+        KyroPiPDiagnostics.record("pip_will_start",
+                                  state: "\(sourceKind == .native ? "native" : "software") app=\(state)")
         // This callback is synchronous on the main thread. Set Aether first so
         // its did-enter-background observer sees PiP as a keepalive reason.
         engine?.pictureInPictureActive = true
+        transition.willStart(application: state)
         engagedOwner = lifecycleOwner
         isTransitioning = true
         isRestoringUserInterface = false
@@ -669,15 +736,17 @@ final class PictureInPictureCoordinator {
         isActive = true
         syncNativeSubtitleRendering()
         Self.logger.info("PiP started")
-        KyroPiPDiagnostics.record("pip_did_start", state: "active")
-        let startedFromControl = isStartingFromControl
-        isStartingFromControl = false
-        let stopsForForegroundReturn = shouldStopForForegroundReturn
-        shouldStopForForegroundReturn = false
-        if shouldStopForSourceChange || stopsForForegroundReturn {
+        let action = transition.didStart(stopForSourceChange: shouldStopForSourceChange,
+                                         application: applicationState())
+        KyroPiPDiagnostics.record("pip_did_start", state: "action=\(action)")
+        switch action {
+        case .stop:
             controller?.stopPictureInPicture()
-        } else if startedFromControl {
+        case .announceControlStart:
             controlStartToken &+= 1
+        case .stopWhenActive, .none:
+            // `.stopWhenActive`: the app is still finishing its return; did-become-active stops it.
+            break
         }
     }
 
@@ -714,6 +783,8 @@ final class PictureInPictureCoordinator {
         engine?.pictureInPictureActive = false
         isTransitioning = false
         isActive = false
+        transition.didStop()
+        pendingReturnOwner = nil
         syncNativeSubtitleRendering()
         // True only when the app layer confirmed the full-screen player is back
         // on screen. A close-button stop, a failed restore, and a rebind stop
@@ -741,8 +812,8 @@ final class PictureInPictureCoordinator {
     }
 
     fileprivate func handleFailedToStart(_ error: Error) {
-        isStartingFromControl = false
-        shouldStopForForegroundReturn = false
+        transition.failedToStart()
+        pendingReturnOwner = nil
         engine?.pictureInPictureActive = false
         isTransitioning = false
         isActive = false

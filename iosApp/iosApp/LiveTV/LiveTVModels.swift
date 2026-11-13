@@ -695,6 +695,9 @@ final class LiveTVPlaybackController {
             if (oldValue == .buffering) != (state == .buffering) {
                 KyroPerformanceDiagnostics.playbackBuffering(state == .buffering)
             }
+            if oldValue != state {
+                KyroLifecycleJournal.record("livetv", "session_state", "\(oldValue)->\(state)")
+            }
         }
     }
     private(set) var errorMessage: String?
@@ -875,6 +878,7 @@ final class LiveTVPlaybackController {
     /// the channel. One recovery at a time, three per tune, then the channel fails with Retry.
     func liveSourceReset(generation: Int) {
         guard generation == self.generation, activeURL != nil else { return }
+        KyroLifecycleJournal.record("livetv", "live_source_reset", "state=\(state) retunes=\(retuneCount)")
         switch state {
         case .paused:
             sourceLostWhilePaused = true
@@ -987,6 +991,7 @@ final class LiveTVPlaybackController {
     }
 
     private func fail(_ failure: LiveTVPlaybackFailure, detail: String?) {
+        KyroLifecycleJournal.record("livetv", "session_failed", "\(failure)")
         invalidateCurrentStream()
         output?.clear(final: false)
         state = .failed

@@ -72,6 +72,8 @@ struct KyroSportsPlayerStatLine: Identifiable, Equatable, Sendable {
 
 struct KyroSportsNewsItem: Identifiable, Equatable, Sendable {
     enum Relevance: Int, Equatable, Sendable {
+        /// Build 64: names the event's tournament but neither player (tennis).
+        case tournament = 0
         case team = 1
         case matchup = 2
         case event = 3

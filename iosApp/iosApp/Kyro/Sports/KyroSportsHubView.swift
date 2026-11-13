@@ -67,6 +67,8 @@ struct KyroSportsHubView: View {
     /// never races the sheet's dismissal.
     @State private var pendingChoice: KyroSportsStreamChoice?
     @State private var eventPreview: KyroSportsEventSelection?
+    /// Build 65: Event Details' own lookups (statistics, Players), over the shared providers.
+    @State private var previewDetailStore = KyroSportsEventDetailStore()
     @State private var pendingPreviewWatch: KyroSportsGame?
     @State private var watchingTab: KyroSportsWatchingTab = .feed
     @State private var isShowingOtherStreams = false
@@ -225,6 +227,7 @@ struct KyroSportsHubView: View {
             // A player covering the hub is not leaving it; an attempt still connecting is, and
             // an inline stream ends with the hub rather than play on with nothing to show it.
             if playback.isBusy { liveTV.cancelSportsPlayback() }
+            liveTV.inlineHostWillDisappear()
             liveTV.presentation.inlineHostDisappeared()
         }
         .onChange(of: scenePhase) { _, phase in
@@ -271,7 +274,8 @@ struct KyroSportsHubView: View {
             let game = (store.liveGames + store.scheduleGames).first { $0.id == selection.id } ?? selection.game
             KyroSportsEventPreview(game: game, service: liveTV,
                                    canWatch: liveNow.canPlay(game),
-                                   watch: { pendingPreviewWatch = game; eventPreview = nil })
+                                   watch: { pendingPreviewWatch = game; eventPreview = nil },
+                                   detailStore: previewDetailStore)
         }
     }
 

@@ -1014,6 +1014,9 @@ struct LiveTVSettingsView: View {
     @State private var errorMessage: String?
     @State private var providerToRemove: LiveTVProvider?
     @AppStorage(KyroPerformanceDiagnostics.defaultsKey) private var performanceOverlayEnabled = false
+    #if os(iOS)
+    @State private var journalCopyStatus: String?
+    #endif
 #if KYRO_INTERNAL_EPG_STORAGE_TOGGLE
     @AppStorage(EPGStorageMode.defaultsKey) private var sqliteStorageEnabled = false
 #if os(iOS)
@@ -1140,6 +1143,16 @@ struct LiveTVSettingsView: View {
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(LiveTVAccent.primaryText)
                 }
+                Button("Copy Playback and Sports Log") {
+                    let log = KyroLifecycleJournal.contents()
+                    UIPasteboard.general.string = log
+                    let lines = log.split(separator: "\n").count
+                    journalCopyStatus = lines == 0 ? "The log is empty." : "Copied \(lines) lines."
+                }
+                .accessibilityIdentifier("kyroCopyLifecycleLog")
+                Text(journalCopyStatus ?? "Picture in Picture, app, audio and Live TV session events, and why tennis statistics were or were not found. No stream, channel or account details. Paste it into a message after a test.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
             }
 #endif
 #if KYRO_INTERNAL_EPG_STORAGE_TOGGLE

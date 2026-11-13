@@ -13,6 +13,10 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        #if os(iOS)
+        // Build 65: app, audio-session and PiP edges, kept on the device for playback diagnosis.
+        KyroLifecycleJournal.startObservingSystemEvents()
+        #endif
         // BGTaskScheduler requires every identifier to be registered before
         // launch finishes — the system traps when it launches the app for a
         // task with no handler.

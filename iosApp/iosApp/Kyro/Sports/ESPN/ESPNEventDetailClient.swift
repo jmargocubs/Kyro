@@ -27,7 +27,8 @@ actor ESPNEventDetailResponseCache {
         for request: URLRequest,
         key: String,
         fallbackFreshness: TimeInterval,
-        transport: any ESPNTransport
+        transport: any ESPNTransport,
+        ignoresServerFreshness: Bool = false
     ) async throws -> Data {
         let current = now()
         let stored = entries[key]
@@ -45,7 +46,11 @@ actor ESPNEventDetailResponseCache {
         let task = Task<Entry, Error> {
             let (data, response) = try await transport.send(conditional)
             try Task.checkCancellation()
-            let freshness = Self.freshness(from: response, fallback: fallbackFreshness)
+            // Build 65: TennisMyLife answers `max-age=0` for files it rewrites hourly or daily, which
+            // turned every lookup into two downloads and spent its 12-per-10-minutes budget.
+            let freshness = ignoresServerFreshness
+                ? fallbackFreshness
+                : Self.freshness(from: response, fallback: fallbackFreshness)
             switch response.statusCode {
             case 200...299:
                 guard data.count <= Self.maxResponseBytes else {
@@ -566,6 +571,15 @@ enum ESPNEventDetailMapping {
     }
 }
 
+/// Build 65: one instance of each supplement provider for the whole app. Every store (the pinned
+/// event's tabs, Event Details) then shares one response cache and one request budget per source,
+/// and a Sports Hub that is rebuilt does not start with empty caches.
+enum KyroSportsSharedProviders {
+    static let supplements: [any KyroSportsSupplementProviding] = [TheSportsDBClient(), WTAMatchStatsClient(), TMLMatchStatsClient()]
+    static let news: any KyroSportsNewsSupplementing = TennisNewsClient()
+    static let playerInfo: any KyroTennisPlayerInfoProviding = TheScoreTennisInfoClient()
+}
+
 @MainActor
 @Observable
 final class KyroSportsEventDetailStore {
@@ -583,10 +597,177 @@ final class KyroSportsEventDetailStore {
     private let client: ESPNEventDetailClient
     private let now: @Sendable () -> Date
 
+    /// Build 63: flag-guarded supplements. Kept apart from `details` so an ESPN load, refresh or
+    /// failure never touches them (and vice versa).
+    private(set) var supplement: KyroSportsSupplementalStatistics?
+    private(set) var supplementalNews: KyroSportsSupplementalNews?
+    private var supplementOutcomes: [KyroGameID: (outcome: KyroSportsSupplementOutcome, at: Date)] = [:]
+    private var newsOutcomes: [KyroGameID: (news: KyroSportsSupplementalNews?, at: Date)] = [:]
+    private var supplementToken = UUID()
+    private var newsToken = UUID()
+    /// Build 64: historical player context (ranking, head-to-head, recent form) for tennis.
+    private(set) var playerInfo: KyroTennisPlayerInfo?
+    private var playerInfoOutcomes: [KyroGameID: (info: KyroTennisPlayerInfo?, at: Date)] = [:]
+    private var playerInfoToken = UUID()
+    private let playerInfoProvider: (any KyroTennisPlayerInfoProviding)?
+    private let supplementProviders: [any KyroSportsSupplementProviding]
+    private let newsProvider: (any KyroSportsNewsSupplementing)?
+    private let flagEnabled: @Sendable (String) -> Bool
+
+    /// Build 65: what the last statistics lookup concluded for an event, so the screen can say why
+    /// none are shown (not yet published, not covered, or a source that could not be reached).
+    struct SupplementLookup: Equatable {
+        let gameID: KyroGameID
+        let outcome: KyroSportsSupplementOutcome
+    }
+    private(set) var supplementLookup: SupplementLookup?
+    private(set) var supplementLoadingGameID: KyroGameID?
+    /// The event whose player lookup finished (with or without a result).
+    private(set) var playerInfoLookedUpGameID: KyroGameID?
+    private(set) var playerInfoLoadingGameID: KyroGameID?
+
+    /// How long a lookup result is reused. Finding nothing for a match that finished recently is
+    /// rechecked after 20 minutes, because both datasets publish results hours after the match
+    /// (Build 64 kept "nothing yet" for 6 hours).
+    static func supplementTTL(_ outcome: KyroSportsSupplementOutcome, game: KyroSportsGame, now: Date) -> TimeInterval {
+        switch outcome {
+        case .providerUnavailable: return 10 * 60
+        case .noVerifiedMatch, .ambiguousMatch:
+            if let start = game.startTime, now.timeIntervalSince(start) < 36 * 3600 { return 20 * 60 }
+            return 6 * 3600
+        default: return 6 * 3600
+        }
+    }
+
+    static func journalLabel(_ outcome: KyroSportsSupplementOutcome) -> String {
+        switch outcome {
+        case .available(let stats): "available rows=\(stats.rows.count)"
+        case .notEligible: "not_eligible"
+        case .noVerifiedMatch: "no_verified_match"
+        case .ambiguousMatch: "ambiguous"
+        case .noAdditionalStatistics: "no_additional_statistics"
+        case .providerUnavailable: "provider_unavailable"
+        case .cancelled: "cancelled"
+        }
+    }
+
     init(client: ESPNEventDetailClient = ESPNEventDetailClient(),
+         supplementProviders: [any KyroSportsSupplementProviding] = KyroSportsSharedProviders.supplements,
+         newsProvider: (any KyroSportsNewsSupplementing)? = KyroSportsSharedProviders.news,
+         playerInfoProvider: (any KyroTennisPlayerInfoProviding)? = KyroSportsSharedProviders.playerInfo,
+         flagEnabled: @escaping @Sendable (String) -> Bool = { KyroSportsSupplementFlag.isEnabled(key: $0) },
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.client = client
+        self.supplementProviders = supplementProviders
+        self.newsProvider = newsProvider
+        self.playerInfoProvider = playerInfoProvider
+        self.flagEnabled = flagEnabled
         self.now = now
+    }
+
+    /// Fetches statistics from the one adapter that is enabled and eligible for the selected
+    /// event, once ESPN's details for it are on screen (tennis has no ESPN details, so its
+    /// `unsupportedLeague` placeholder counts). Outcomes, including "no verified match", are
+    /// remembered per event, so tab switches, refreshes and rapid event changes never repeat a
+    /// provider request.
+    func loadSupplement(for game: KyroSportsGame) async {
+        if supplement?.gameID != game.id { supplement = nil }
+        if supplementLookup?.gameID != game.id { supplementLookup = nil }
+        let providers = supplementProviders.filter { flagEnabled($0.flagKey) && $0.isEligible(game) }
+        guard !providers.isEmpty, hasBaseDetails(for: game) else { return }
+        if let known = supplementOutcomes[game.id] {
+            if now().timeIntervalSince(known.at) < Self.supplementTTL(known.outcome, game: game, now: now()) {
+                if case .available(let stats) = known.outcome { supplement = stats }
+                supplementLookup = SupplementLookup(gameID: game.id, outcome: known.outcome)
+                return
+            }
+        }
+        let token = UUID()
+        supplementToken = token
+        supplementLoadingGameID = game.id
+        defer { if supplementToken == token { supplementLoadingGameID = nil } }
+        let labels = details?.gameID == game.id ? (details?.teamStatistics.flatMap { $0.statistics.map(\.label) } ?? []) : []
+        // Build 64: adapters are tried in order and the first one with verified statistics wins
+        // (WTA's own feed first, then the TennisMyLife dataset). Each adapter keeps its own budget.
+        // The most informative miss is kept: "unavailable" only when no source answered at all.
+        var outcome = KyroSportsSupplementOutcome.noVerifiedMatch
+        var misses: [KyroSportsSupplementOutcome] = []
+        for provider in providers {
+            var result = await provider.supplementalStatistics(for: game, existingLabels: labels)
+            // Statistics are published only for the event they were requested for.
+            if case .available(let stats) = result, stats.gameID != game.id { result = .noVerifiedMatch }
+            KyroLifecycleJournal.record("sports", "stats_lookup",
+                                        "\(String(describing: type(of: provider))) league=\(game.league.rawValue) status=\(game.status) -> \(Self.journalLabel(result))")
+            outcome = result
+            if case .available = result { break }
+            if result == .cancelled || supplementToken != token { break }
+            misses.append(result)
+        }
+        guard supplementToken == token, outcome != .cancelled else { return }
+        if case .available = outcome {} else { outcome = Self.combinedMiss(misses) }
+        if supplementOutcomes.count >= 32 { supplementOutcomes.removeAll() }
+        supplementOutcomes[game.id] = (outcome, now())
+        if case .available(let stats) = outcome { supplement = stats }
+        supplementLookup = SupplementLookup(gameID: game.id, outcome: outcome)
+    }
+
+    /// Ambiguous first (a candidate was found and deliberately not shown). Then "could not reach":
+    /// one unreachable source may still have the match, so the short retry must win over another
+    /// source's "not found".
+    static func combinedMiss(_ misses: [KyroSportsSupplementOutcome]) -> KyroSportsSupplementOutcome {
+        if misses.contains(.ambiguousMatch) { return .ambiguousMatch }
+        if misses.contains(.providerUnavailable) { return .providerUnavailable }
+        if misses.contains(.noAdditionalStatistics) { return .noAdditionalStatistics }
+        if misses.contains(.noVerifiedMatch) { return .noVerifiedMatch }
+        return misses.last ?? .noVerifiedMatch
+    }
+
+    /// Ranking, head-to-head and recent form for the selected tennis match (Stats tab only). Missing
+    /// information is remembered for 30 minutes, found information for 6 hours; neither is polled.
+    func loadPlayerInfo(for game: KyroSportsGame) async {
+        if playerInfo?.gameID != game.id { playerInfo = nil }
+        if playerInfoLookedUpGameID != game.id { playerInfoLookedUpGameID = nil }
+        guard let provider = playerInfoProvider, flagEnabled(provider.flagKey), provider.isEligible(game) else { return }
+        if let known = playerInfoOutcomes[game.id],
+           now().timeIntervalSince(known.at) < (known.info == nil ? 30 * 60 : 6 * 3600) {
+            playerInfo = known.info
+            playerInfoLookedUpGameID = game.id
+            return
+        }
+        let token = UUID()
+        playerInfoToken = token
+        playerInfoLoadingGameID = game.id
+        defer { if playerInfoToken == token { playerInfoLoadingGameID = nil } }
+        let result = await provider.playerInfo(for: game)
+        guard playerInfoToken == token, !Task.isCancelled else { return }
+        KyroLifecycleJournal.record("sports", "player_info_lookup",
+                                    "league=\(game.league.rawValue) status=\(game.status) -> \(result.map { "found rank=\($0.away.rank != nil)/\($0.home.rank != nil) recent=\($0.away.recent.count)/\($0.home.recent.count)" } ?? "none")")
+        if playerInfoOutcomes.count >= 32 { playerInfoOutcomes.removeAll() }
+        playerInfoOutcomes[game.id] = (result, now())
+        playerInfo = result
+        playerInfoLookedUpGameID = game.id
+    }
+
+    /// Player headlines from tennis sources, for the News tab of the selected tennis event only.
+    func loadSupplementalNews(for game: KyroSportsGame) async {
+        if supplementalNews?.gameID != game.id { supplementalNews = nil }
+        guard let provider = newsProvider, flagEnabled(provider.flagKey), provider.isEligible(game) else { return }
+        if let known = newsOutcomes[game.id], now().timeIntervalSince(known.at) < 20 * 60 {
+            supplementalNews = known.news
+            return
+        }
+        let token = UUID()
+        newsToken = token
+        let result = await provider.supplementalNews(for: game)
+        guard newsToken == token, !Task.isCancelled else { return }
+        if newsOutcomes.count >= 32 { newsOutcomes.removeAll() }
+        newsOutcomes[game.id] = (result, now())
+        supplementalNews = result
+    }
+
+    private func hasBaseDetails(for game: KyroSportsGame) -> Bool {
+        if game.league == .atp || game.league == .wta { return true }
+        return details?.gameID == game.id
     }
 
     func load(for game: KyroSportsGame, force: Bool = false) async {

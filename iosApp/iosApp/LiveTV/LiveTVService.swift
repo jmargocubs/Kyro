@@ -730,9 +730,28 @@ final class LiveTVService {
 
     /// Stops the live stream and releases its Picture in Picture binding. Nothing keeps playing.
     func endPlayback() {
+        KyroLifecycleJournal.record("livetv", "end_playback", LiveTVPresentation.journalName(presentation.phase))
         playerSession.stop()
         #if os(iOS)
         PictureInPictureCoordinator.shared.endSession(owner: playerSession)
+        #endif
+    }
+
+    /// Build 65: Sports Hub is leaving the view hierarchy. An inline stream that automatic Picture in
+    /// Picture is showing is not headless: hand it to the window, exactly as the window's own button
+    /// does, so the hub's disappearance cannot close a window the viewer is watching. Returns true
+    /// when it did. A restore then brings the player back over the shell.
+    @discardableResult
+    func inlineHostWillDisappear() -> Bool {
+        #if os(iOS)
+        let engaged = PictureInPictureCoordinator.shared.ownsEngagedSession(playerSession)
+        KyroLifecycleJournal.record("sports", "hub_disappear",
+                                    "\(LiveTVPresentation.journalName(presentation.phase)) pip_engaged=\(engaged)")
+        guard presentation.isInline, engaged else { return false }
+        presentation.pictureInPictureStartedFromControl()
+        return true
+        #else
+        return false
         #endif
     }
 

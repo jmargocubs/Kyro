@@ -72,6 +72,87 @@ struct KyroSportsWatchingContent: View {
             guard tab == .game || tab == .stats || tab == .news else { return }
             await detailStore.keepCurrent(for: game)
         }
+        .task(id: supplementLoadKey) {
+            guard tab == .stats else { return }
+            await detailStore.loadSupplement(for: game)
+        }
+        .task(id: NewsLoadKey(gameID: game.id, isNewsTab: tab == .news)) {
+            guard tab == .news else { return }
+            await detailStore.loadSupplementalNews(for: game)
+        }
+        .task(id: NewsLoadKey(gameID: game.id, isNewsTab: tab == .stats && isTennis)) {
+            guard tab == .stats, isTennis else { return }
+            await detailStore.loadPlayerInfo(for: game)
+        }
+    }
+
+    /// Restarts the supplement request only for a different event or tab, or once ESPN's details
+    /// for this event have arrived. The score and clock are not part of it.
+    private var supplementLoadKey: SupplementLoadKey {
+        SupplementLoadKey(gameID: game.id, isStatsTab: tab == .stats,
+                          hasDetails: matchingDetails != nil, isFinal: game.status.isFinal)
+    }
+
+    private struct SupplementLoadKey: Hashable {
+        let gameID: KyroGameID
+        let isStatsTab: Bool
+        let hasDetails: Bool
+        let isFinal: Bool
+    }
+
+    private var matchingSupplement: KyroSportsSupplementalStatistics? {
+        guard let supplement = detailStore.supplement, supplement.gameID == game.id else { return nil }
+        return supplement
+    }
+
+    private var matchingPlayerInfo: KyroTennisPlayerInfo? {
+        guard let info = detailStore.playerInfo, info.gameID == game.id else { return nil }
+        return info
+    }
+
+    /// Supplemental headlines minus anything ESPN's own list already shows.
+    private var matchingSupplementalNews: KyroSportsSupplementalNews? {
+        guard let news = detailStore.supplementalNews, news.gameID == game.id else { return nil }
+        let espnURLs = Set((matchingDetails?.news ?? []).map(\.url))
+        let items = news.items.filter { !espnURLs.contains($0.url) }
+        return items.isEmpty ? nil : KyroSportsSupplementalNews(gameID: news.gameID, items: items)
+    }
+
+    private func supplementalNewsSection(_ news: KyroSportsSupplementalNews) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Player and tournament headlines")
+                .font(.headline)
+                .foregroundStyle(KyroTheme.textPrimary)
+            ForEach(news.items) { item in
+                Link(destination: item.url) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(item.headline)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(KyroTheme.textPrimary)
+                            .multilineTextAlignment(.leading)
+                        HStack(spacing: 6) {
+                            Text(item.source).font(.caption.weight(.semibold))
+                            if let date = item.publishedAt {
+                                Text(date.formatted(date: .abbreviated, time: .shortened)).font(.caption)
+                            }
+                            Text(item.relevance == .matchup ? "Both players" : (item.relevance == .tournament ? "Tournament" : "One player")).font(.caption)
+                        }
+                        .foregroundStyle(KyroTheme.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color.siloSurfaceElevated, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens the article on \(item.source)")
+            }
+            sourceNote("Headlines name the players or the tournament but are not match reports. Links open the publisher's article.")
+        }
+    }
+
+    private struct NewsLoadKey: Hashable {
+        let gameID: KyroGameID
+        let isNewsTab: Bool
     }
 
     /// The event, the tab and the kind of status. Build 59 also keyed on the clock and the score,
@@ -83,14 +164,27 @@ struct KyroSportsWatchingContent: View {
 
     private var isTennis: Bool { game.league == .atp || game.league == .wta }
 
+    /// Build 65: says which kind of miss it was (not published yet, not tied to this match, or a
+    /// source that could not be reached) instead of one fixed sentence.
+    private var tennisStatsMessage: KyroTennisStatsMessage? {
+        let lookup = detailStore.supplementLookup?.gameID == game.id ? detailStore.supplementLookup?.outcome : nil
+        return KyroTennisStatsMessage.make(status: game.status, outcome: lookup,
+                                           isLoading: detailStore.supplementLoadingGameID == game.id)
+            ?? KyroTennisStatsMessage(title: "Match statistics not available yet",
+                                      detail: "Serve and return statistics are added for completed matches only. Set scores are in Game.")
+    }
+
     @ViewBuilder
     private var statsContent: some View {
         if isTennis {
-            unavailable(
-                title: "Box score unavailable from ESPN",
-                symbol: "chart.bar.xaxis",
-                detail: "ESPN's public tennis feed provides scores and set results, but no match statistics. Set scores are in Game."
-            )
+            VStack(alignment: .leading, spacing: 22) {
+                if let supplement = matchingSupplement {
+                    KyroSportsSupplementalStatisticsView(supplement: supplement, game: game)
+                } else if let message = tennisStatsMessage {
+                    unavailable(title: message.title, symbol: "chart.bar.xaxis", detail: message.detail)
+                }
+                if let info = matchingPlayerInfo { KyroTennisPlayerInfoCard(info: info) }
+            }
         } else if let details = matchingDetails, details.hasStatistics {
             VStack(alignment: .leading, spacing: 22) {
                 if !details.teamStatistics.isEmpty {
@@ -100,6 +194,13 @@ struct KyroSportsWatchingContent: View {
                     playerBoxScore(team)
                 }
                 sourceNote("Box score from ESPN for this event. Live statistics may update after the score does.")
+                if let supplement = matchingSupplement {
+                    KyroSportsSupplementalStatisticsView(supplement: supplement, game: game)
+                }
+            }
+        } else if let supplement = matchingSupplement {
+            VStack(alignment: .leading, spacing: 22) {
+                KyroSportsSupplementalStatisticsView(supplement: supplement, game: game)
             }
         } else {
             detailState(
@@ -114,6 +215,19 @@ struct KyroSportsWatchingContent: View {
 
     @ViewBuilder
     private var newsContent: some View {
+        let hasESPNNews = !(matchingDetails?.news.isEmpty ?? true)
+        if hasESPNNews || matchingSupplementalNews != nil {
+            VStack(alignment: .leading, spacing: 22) {
+                if hasESPNNews { espnNewsContent }
+                if let news = matchingSupplementalNews { supplementalNewsSection(news) }
+            }
+        } else {
+            espnNewsContent
+        }
+    }
+
+    @ViewBuilder
+    private var espnNewsContent: some View {
         if let details = matchingDetails, !details.news.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Related to this matchup")
@@ -123,7 +237,7 @@ struct KyroSportsWatchingContent: View {
                     Link(destination: item.url) {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 7) {
-                                Text(item.relevance == .event ? "GAME" : (item.relevance == .matchup ? "MATCHUP" : "TEAM"))
+                                Text(item.relevance == .event ? "GAME" : (item.relevance == .matchup ? "MATCHUP" : (item.relevance == .tournament ? "TOURNAMENT" : "TEAM")))
                                     .font(.caption2.weight(.bold))
                                     .foregroundStyle(game.league.accentColor)
                                 Text(item.source)
