@@ -5,10 +5,18 @@ import SwiftUI
 /// so nothing is searched again.
 struct KyroSportsOtherStreamsSheet: View {
     let coordinator: KyroSportsPlaybackCoordinator
+    /// Build 70: the inline player's opening height (`KyroSportsOtherStreamsSheetLayout`); nil opens
+    /// at `.medium`, as the full-screen player's sheet does.
+    var openingHeight: Double? = nil
     let select: (KyroSportsStreamMatch) -> Void
     let dismiss: () -> Void
     /// What the guide shows now on rows without a matched listing. Loaded once, off the main actor.
     @State private var currentProgrammes: [String: EPGProgram] = [:]
+
+    private var detents: Set<PresentationDetent> {
+        guard let openingHeight else { return [.medium, .large] }
+        return [.height(CGFloat(openingHeight)), .large]
+    }
 
     var body: some View {
         NavigationStack {
@@ -57,9 +65,12 @@ struct KyroSportsOtherStreamsSheet: View {
                 currentProgrammes = await LiveTVService.shared.sportsCurrentProgrammes(for: channels)
             }
         }
-        // Half height by default: the current stream and the best alternatives fit without an
-        // empty full-height sheet; drag up for the rest.
-        .presentationDetents([.medium, .large])
+        // Partial height by default: the current stream and the best alternatives fit without an
+        // empty full-height sheet. Build 70: below the inline player rather than at half height,
+        // and a swipe up on the list grows the sheet to full height before the list scrolls, so
+        // every stream is reachable without scrolling a short window.
+        .presentationDetents(detents)
+        .presentationContentInteraction(.resizes)
         .presentationDragIndicator(.visible)
         .accessibilityIdentifier("kyroSportsOtherStreams")
     }

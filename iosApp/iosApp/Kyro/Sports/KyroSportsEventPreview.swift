@@ -61,6 +61,9 @@ struct KyroSportsEventPreview: View {
     /// Build 68: Game, Stats and News for any event, playable or not. Kept across status changes,
     /// so a game that starts while the sheet is open stays on the tab the viewer chose.
     @State private var tab: KyroSportsWatchingTab = .game
+    /// Build 70: kept here, not in the Stats content, which Game replaces; Stats → Game → Stats
+    /// returns to the same team.
+    @State private var boxScoreSelection = KyroSportsPlayerBoxScoreSelection()
 
     private var mode: KyroSportsEventPreviewPolicy.Mode {
         KyroSportsEventPreviewPolicy.mode(for: game.status)
@@ -85,7 +88,8 @@ struct KyroSportsEventPreview: View {
                     // The pinned event's Stats and News, over Event Details' own store: season
                     // figures before the start, the box score once it begins.
                     KyroSportsWatchingContent(tab: tab, game: game, detailStore: detailStore, channelName: nil,
-                                              hasOtherStreams: false, showOtherStreams: {})
+                                              hasOtherStreams: false, showOtherStreams: {},
+                                              boxScoreSelection: $boxScoreSelection)
                 } else {
                     overview
                 }

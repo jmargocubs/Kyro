@@ -22,7 +22,19 @@ struct KyroSportsInlinePlayer: View {
     @State private var controls = LiveTVControlsVisibility(scheduler: LiveTVTaskScheduler())
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
+    /// Build 70: the strip's bottom edge, for Other Streams. Not observed, so measuring it (the
+    /// entrance transition moves it every frame) never re-renders the player.
+    @State private var stripEdge = KyroSportsInlineStripEdge()
     @Environment(\.scenePhase) private var scenePhase
+
+    /// Other Streams opens just below the strip, so the video stays in view above it.
+    private var otherStreamsOpeningHeight: Double? {
+        let windowHeight = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow?.bounds.height }
+            .first ?? 0
+        return KyroSportsOtherStreamsSheetLayout.belowPlayerHeight(windowHeight: Double(windowHeight),
+                                                                   playerBottom: Double(stripEdge.bottom))
+    }
 
     private var playback: KyroSportsPlaybackCoordinator { service.sportsPlayback }
     private var session: LiveTVPlayerSession { service.playerSession }
@@ -48,8 +60,15 @@ struct KyroSportsInlinePlayer: View {
             .frame(maxWidth: .infinity)
             .background(Color.siloPageCanvas)
             .transition(.move(edge: .top).combined(with: .opacity))
+            // Build 70: where the strip ends, read when Other Streams opens.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.frame(in: .global).maxY.rounded()
+            } action: { [stripEdge] bottom in
+                stripEdge.bottom = bottom
+            }
             .sheet(isPresented: $isShowingOtherStreams) {
-                KyroSportsOtherStreamsSheet(coordinator: playback, select: { match in
+                KyroSportsOtherStreamsSheet(coordinator: playback, openingHeight: otherStreamsOpeningHeight,
+                                            select: { match in
                     guard playback.switchTo(match) else { return }
                     isShowingOtherStreams = false
                 }, dismiss: { isShowingOtherStreams = false })
@@ -384,5 +403,11 @@ struct KyroSportsInlinePlayer: View {
     private func syncControls() {
         controls.update(state: session.state, isOverlayPresented: isShowingOtherStreams)
     }
+}
+
+/// Build 70: the inline player's bottom edge in window coordinates (0 until measured). A plain
+/// class, not `@Observable`: writes never invalidate a view.
+final class KyroSportsInlineStripEdge {
+    var bottom: CGFloat = 0
 }
 #endif

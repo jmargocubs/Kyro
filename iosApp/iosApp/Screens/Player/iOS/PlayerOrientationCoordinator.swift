@@ -455,11 +455,15 @@ final class PlayerOrientationCoordinator {
 /// follows a cover's dismissal, when the player that asked for it is gone. A rotation the player
 /// requested runs with UIKit animations off until its transition completes; the cover already
 /// changed in one frame, so the result is a cut instead of the window spinning on black.
+/// Build 70: animations always come back on when the last such rotation ends (or at its deadline).
 struct PlayerRotationTransitionHost: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> Controller { Controller() }
     func updateUIViewController(_ controller: Controller, context: Context) {}
 
     final class Controller: UIViewController {
+        /// Build 70: one token per suppressed rotation (see `PlayerAnimationSuppression`).
+        private var suppression = PlayerAnimationSuppression()
+
         override func loadView() {
             let view = UIView()
             view.isUserInteractionEnabled = false
@@ -472,20 +476,39 @@ struct PlayerRotationTransitionHost: UIViewControllerRepresentable {
             super.viewWillTransition(to: size, with: coordinator)
             // UIKit forwards the container's new size; a square or empty size reads as unknown.
             let suppressAnimation = PlayerOrientationCoordinator.shared.rotationTransitionWillBegin(to: size)
-            // Preserve the process-wide UIKit animation state. The transition coordinator calls
-            // completion for both finished and interrupted transitions; restoring the captured
-            // value there (and when no transition was queued) prevents a failed/interrupted
-            // geometry request from leaving unrelated UIKit animations disabled or enabled.
-            let animationsWereEnabled = UIView.areAnimationsEnabled
-            if suppressAnimation { UIView.setAnimationsEnabled(false) }
-            let queued = coordinator.animate(alongsideTransition: nil) { _ in
-                if suppressAnimation { UIView.setAnimationsEnabled(animationsWereEnabled) }
+            let token = suppressAnimation ? beginSuppression() : nil
+            // The transition coordinator calls completion for finished and interrupted
+            // transitions alike; the deadline covers one that never reports back.
+            let queued = coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+                if let token { self?.endSuppression(token, reason: "completed") }
                 PlayerOrientationCoordinator.shared.refreshInterfaceOrientation()
             }
             if !queued {
-                if suppressAnimation { UIView.setAnimationsEnabled(animationsWereEnabled) }
+                if let token { endSuppression(token, reason: "not_queued") }
                 PlayerOrientationCoordinator.shared.refreshInterfaceOrientation()
             }
+        }
+
+        private func beginSuppression() -> Int {
+            if !suppression.isSuppressing, !UIView.areAnimationsEnabled {
+                // Nothing of ours holds them off; record it so a device journal can show who did.
+                KyroLifecycleJournal.record("orientation", "animations_found_off")
+            }
+            let token = suppression.begin()
+            UIView.setAnimationsEnabled(false)
+            KyroLifecycleJournal.record("orientation", "animations_suppressed", "outstanding=\(suppression.outstanding.count)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + PlayerAnimationSuppression.deadline) { [weak self] in
+                self?.endSuppression(token, reason: "deadline")
+            }
+            return token
+        }
+
+        /// Animations always come back on with the last token. Build 69 restored the value read
+        /// when the rotation began, which was `false` for an overlapping or nested rotation.
+        private func endSuppression(_ token: Int, reason: String) {
+            guard suppression.end(token) else { return }
+            UIView.setAnimationsEnabled(true)
+            KyroLifecycleJournal.record("orientation", "animations_restored", reason)
         }
     }
 }

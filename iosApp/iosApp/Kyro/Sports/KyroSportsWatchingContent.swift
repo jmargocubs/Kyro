@@ -42,6 +42,8 @@ struct KyroSportsWatchingContent: View {
     let channelName: String?
     let hasOtherStreams: Bool
     let showOtherStreams: () -> Void
+    /// Build 70: the team whose player box score Stats shows, owned by the screen with the tab bar.
+    @Binding var boxScoreSelection: KyroSportsPlayerBoxScoreSelection
 
     var body: some View {
         ScrollView {
@@ -194,9 +196,7 @@ struct KyroSportsWatchingContent: View {
                 if !details.teamStatistics.isEmpty {
                     teamStatistics(details.teamStatistics)
                 }
-                ForEach(details.playerBoxScores) { team in
-                    playerBoxScore(team)
-                }
+                playerBoxScores(details.playerBoxScores)
                 sourceNote("Box score from ESPN for this event. Live statistics may update after the score does.")
                 if let supplement = matchingSupplement {
                     KyroSportsSupplementalStatisticsView(supplement: supplement, game: game)
@@ -326,15 +326,59 @@ struct KyroSportsWatchingContent: View {
         .background(Color.siloSurfaceElevated, in: RoundedRectangle(cornerRadius: 12))
     }
 
+    /// Build 70: one team's players at a time, chosen above the tables. Every player of that team
+    /// is listed; the other team's are a tap away rather than below them.
+    @ViewBuilder
+    private func playerBoxScores(_ teams: [KyroSportsPlayerTeamBoxScore]) -> some View {
+        let ordered = KyroSportsPlayerBoxScoreSelection.orderedTeams(teams, game: game)
+        let selectedID = boxScoreSelection.resolvedTeamID(in: ordered, gameID: game.id)
+        if let team = ordered.first(where: { $0.id == selectedID }) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Player statistics")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                if ordered.count > 1 {
+                    let titles = KyroSportsPlayerBoxScoreSelection.segmentTitles(for: ordered, game: game)
+                    Picker("Team", selection: Binding(
+                        get: { selectedID ?? team.id },
+                        set: { boxScoreSelection.select($0, for: game.id) }
+                    )) {
+                        ForEach(ordered) { option in
+                            Text(titles[option.id] ?? option.abbreviation)
+                                .accessibilityLabel(KyroSportsPlayerBoxScoreSelection.accessibilityName(for: option, game: game))
+                                .tag(option.id)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("kyroSportsBoxScoreTeamPicker")
+                } else {
+                    Text(team.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(KyroTheme.textSecondary)
+                }
+                playerBoxScore(team)
+            }
+        }
+    }
+
     private func playerBoxScore(_ team: KyroSportsPlayerTeamBoxScore) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(team.displayName)
-                .font(.headline)
-            ForEach(team.groups) { group in
+        let groups = team.groups.filter { !$0.athletes.isEmpty }
+        let teamName = KyroSportsPlayerBoxScoreSelection.accessibilityName(for: team, game: game)
+        return VStack(alignment: .leading, spacing: 12) {
+            if groups.isEmpty {
+                Text("ESPN has not published player statistics for \(teamName) yet.")
+                    .font(.footnote)
+                    .foregroundStyle(KyroTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(groups) { group in
                 VStack(alignment: .leading, spacing: 8) {
                     Text(group.name)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(game.league.accentColor)
+                        // The table no longer sits under the team's name, so say whose it is.
+                        .accessibilityLabel("\(teamName), \(group.name)")
+                        .accessibilityAddTraits(.isHeader)
                     KyroSportsBoxScoreTable(group: group)
                 }
             }

@@ -71,6 +71,8 @@ struct KyroSportsHubView: View {
     @State private var previewDetailStore = KyroSportsEventDetailStore()
     @State private var pendingPreviewWatch: KyroSportsGame?
     @State private var watchingTab: KyroSportsWatchingTab = .feed
+    /// Build 70: the pinned event's player box-score team, kept here so Stats → Feed → Stats keeps it.
+    @State private var boxScoreSelection = KyroSportsPlayerBoxScoreSelection()
     @State private var isShowingOtherStreams = false
     /// The Feed's position while another tab covers it (Build 61). The tracker is not observed,
     /// so scrolling never invalidates the hub.
@@ -168,7 +170,8 @@ struct KyroSportsHubView: View {
                                           hasOtherStreams: (playback.context?.alternatives.count ?? 0)
                                             + (playback.context?.overflow.count ?? 0)
                                             + (playback.context?.broadcasters.count ?? 0) > 1,
-                                          showOtherStreams: { isShowingOtherStreams = true })
+                                          showOtherStreams: { isShowingOtherStreams = true },
+                                          boxScoreSelection: $boxScoreSelection)
             }
         }
         .siloScrollEdgeEffect()

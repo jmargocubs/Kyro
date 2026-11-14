@@ -172,3 +172,27 @@ extension LiveTVChannel {
         name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 }
+
+/// Build 70: how tall Other Streams opens over the inline player.
+///
+/// Build 69 opened it at `.medium`, which on an iPhone in portrait left room for about three and a
+/// half stream rows under the Now Playing card while the player and strip above kept the rest. The
+/// list then scrolled inside that half sheet. It now opens to just below the player's strip, so the
+/// video stays in view and the list gets the height between them; a swipe up grows it to full height.
+enum KyroSportsOtherStreamsSheetLayout {
+    /// Space left between the strip and the sheet's top edge.
+    static let gap: Double = 8
+    /// Below this share of the window (a very tall player: iPad, large text) `.medium` is used.
+    static let minimumShare: Double = 0.4
+    /// Never taller than this share, so the opening height stays below `.large`.
+    static let maximumShare: Double = 0.85
+
+    /// The opening height in points, or nil for the system `.medium` detent. Both values are in
+    /// window coordinates; an unmeasured player (zero) or one past the window falls back to nil.
+    static func belowPlayerHeight(windowHeight: Double, playerBottom: Double) -> Double? {
+        guard windowHeight > 0, playerBottom > 0, playerBottom < windowHeight else { return nil }
+        let height = (windowHeight - playerBottom - gap).rounded(.down)
+        guard height >= windowHeight * minimumShare else { return nil }
+        return min(height, (windowHeight * maximumShare).rounded(.down))
+    }
+}
