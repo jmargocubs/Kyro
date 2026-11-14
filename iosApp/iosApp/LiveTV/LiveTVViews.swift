@@ -129,13 +129,15 @@ struct LiveTVChannelSearchField: View {
                 if !text.isEmpty {
                     Button { text = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(Color.siloSecondaryText)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Clear search")
                 }
             }
             .padding(.horizontal, 12)
-            .frame(height: 40)
+            .frame(height: 44)
             .background(Color.white.opacity(0.09), in: Capsule())
             if isActive {
                 Button("Cancel") {
@@ -287,7 +289,7 @@ struct LiveTVView: View {
 
     private var browserTitle: String {
         if !searchText.isEmpty { return "Search Results" }
-        if favoritesOnly { return "Favorites" }
+        if favoritesOnly { return "Favorite Channels" }
         return selectedCategory ?? "Browse Channels"
     }
 
@@ -499,6 +501,16 @@ struct LiveTVView: View {
             .tint(LiveTVAccent.primaryText)
             .navigationTitle(browserTitle)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if favoritesOnly && searchText.isEmpty {
+                    ToolbarItem(placement: .principal) {
+                        Text(browserTitle)
+                            .font(.headline)
+                            .accessibilityAddTraits(.isHeader)
+                            .accessibilityIdentifier("liveTVFavoritesTitle")
+                    }
+                }
+            }
             .refreshable { await service.refreshSelectedProvider() }
             .sheet(isPresented: settingsBinding(whenBrowserPushed: true)) { settingsSheet }
             .modifier(LiveTVChannelCover(service: service, presenter: .list,
@@ -520,9 +532,11 @@ struct LiveTVView: View {
     private var browserList: some View {
         List {
             Section {
-                HStack {
-                    Spacer()
-                    Text(browserTitle).font(.headline).foregroundStyle(Color.siloOnSurface)
+                if !isBrowserPushed {
+                    HStack {
+                        Spacer()
+                        Text(browserTitle).font(.headline).foregroundStyle(Color.siloOnSurface)
+                    }
                 }
                 providerMenu
             }
@@ -603,11 +617,13 @@ struct LiveTVView: View {
         List {
             Section {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Favorites")
-                        .font(.title2.weight(.bold))
-                        .foregroundStyle(Color.siloOnSurface)
-                        .accessibilityAddTraits(.isHeader)
-                        .accessibilityIdentifier("liveTVFavoritesTitle")
+                    if !isBrowserPushed {
+                        Text("Favorite Channels")
+                            .font(.title2.weight(.bold))
+                            .foregroundStyle(Color.siloOnSurface)
+                            .accessibilityAddTraits(.isHeader)
+                            .accessibilityIdentifier("liveTVFavoritesTitle")
+                    }
                     Spacer()
                     if case .populated(let count) = favoritesState {
                         Text(count == 1 ? "1 channel" : "\(count) channels")
@@ -714,7 +730,7 @@ struct LiveTVView: View {
         if !service.channels.isEmpty, let error = LiveTVHomeErrorPresentation.message(service.errorMessage) {
             Section {
                 Label(error, systemImage: "exclamationmark.circle")
-                    .font(.footnote).foregroundStyle(.red)
+                    .font(.footnote).foregroundStyle(Color.siloErrorInk)
                     .listRowBackground(LiveTVSurface.row)
             }
         }
@@ -949,7 +965,7 @@ struct LiveTVView: View {
             } label: {
                 Image(systemName: service.isFavorite(channel) ? "star.fill" : "star")
                     .foregroundStyle(service.isFavorite(channel) ? LiveTVAccent.ember : Color.siloSecondaryText)
-                    .frame(width: 40, height: 44)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1122,7 +1138,7 @@ struct LiveTVSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(Color.siloSecondaryText)
                 if let errorMessage {
-                    Text(errorMessage).font(.footnote).foregroundStyle(.red)
+                    Text(errorMessage).font(.footnote).foregroundStyle(Color.siloErrorInk)
                 }
                 Button("Save Provider") { saveProvider() }
                     .disabled(providerKind == .m3u

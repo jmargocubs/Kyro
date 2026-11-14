@@ -446,7 +446,7 @@ struct KyroSportsRGB: Equatable, Sendable {
 /// keeps the Build 41 league card.
 struct KyroSportsMatchupArtwork: Equatable, Sendable {
     enum Backdrop: Equatable, Sendable {
-        /// Away colour on the leading side, home on the trailing side.
+        /// Away colour behind the away row (top), home behind the home row (bottom).
         case teams(away: KyroSportsRGB, home: KyroSportsRGB)
         /// The dark-blue card with the sport's accent.
         case league

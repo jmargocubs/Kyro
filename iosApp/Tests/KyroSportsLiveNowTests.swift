@@ -70,8 +70,9 @@ final class KyroSportsLiveNowTests: XCTestCase {
         XCTAssertEqual(model.liveEventCount, 1)
         XCTAssertFalse(model.canPlay(game("1")))
         let empty = KyroSportsLiveNowEmptyContent(status: model.status, liveEventCount: model.liveEventCount, category: .all)
-        XCTAssertEqual(empty.title, "1 game is live")
-        XCTAssertEqual(empty.message, "None is clearly on your channels. Follow the scores below.")
+        // Build 68: one compact row that says the game is live and why it has no card.
+        XCTAssertEqual(empty.title, "1 game is live · no matching channel")
+        XCTAssertEqual(empty.message, "Follow the scores below, or open a game for details.")
     }
 
     func testStreamCountCountsStrongEventMatchesOnly() async {

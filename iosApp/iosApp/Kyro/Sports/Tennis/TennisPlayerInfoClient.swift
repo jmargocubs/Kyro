@@ -41,6 +41,10 @@ struct KyroTennisPlayerInfo: Equatable, Sendable {
     let homeHeadToHeadWins: Int
     let awayHeadToHeadWins: Int
     let meetings: Int
+    /// Build 68: the tournament's playing surface and venue from the event the match was found in
+    /// (theScore `ground_type`, `tournament_stadium`), nil when the event does not say.
+    var surface: String? = nil
+    var venue: String? = nil
 }
 
 protocol KyroTennisPlayerInfoProviding: Sendable {
@@ -100,10 +104,20 @@ struct TheScoreEvent: Decodable, Sendable {
     let name: String?
     let start_date: String?
     let end_date: String?
+    /// Build 68: `hardcourt_outdoor`, `hardcourt_indoor`, `red_clay`, `grass` (2026 ATP list).
+    var ground_type: String? = nil
+    var stadiumName: String? = nil
+    var stadiumLocation: String? = nil
 
-    private enum CodingKeys: String, CodingKey { case id, name, start_date, end_date }
-    init(id: Int?, name: String?, start_date: String?, end_date: String?) {
+    private struct Stadium: Decodable {
+        let name: String?
+        let location: String?
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, start_date, end_date, ground_type, tournament_stadium }
+    init(id: Int?, name: String?, start_date: String?, end_date: String?, ground_type: String? = nil) {
         (self.id, self.name, self.start_date, self.end_date) = (id, name, start_date, end_date)
+        self.ground_type = ground_type
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -111,6 +125,19 @@ struct TheScoreEvent: Decodable, Sendable {
         name = c.theScoreLenient(String.self, .name)
         start_date = c.theScoreLenient(String.self, .start_date)
         end_date = c.theScoreLenient(String.self, .end_date)
+        ground_type = c.theScoreLenient(String.self, .ground_type)
+        let stadium = c.theScoreLenient(Stadium.self, .tournament_stadium)
+        stadiumName = stadium?.name
+        stadiumLocation = stadium?.location
+    }
+
+    /// `Kungliga Tennishallen, Stockholm, Sweden`.
+    var venue: String? {
+        let parts = [stadiumName, stadiumLocation].compactMap { value -> String? in
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+            return value
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 }
 
@@ -317,6 +344,7 @@ struct TheScoreTennisInfoClient: KyroTennisPlayerInfoProviding {
             let eventsData = try await fetch("\(tour)/events", key: "events|\(tour)", freshness: 6 * 3600)
             let events = await Task.detached(priority: .utility) { (try? JSONDecoder().decode(TheScoreLossyArray<TheScoreEvent>.self, from: eventsData))?.values ?? [] }.value
             var located: (Int, Bool)?
+            var locatedEvent: TheScoreEvent?
             for event in TheScoreTennisMapping.candidateEvents(for: game, in: events) {
                 guard let eventID = event.id else { continue }
                 try Task.checkCancellation()
@@ -325,14 +353,19 @@ struct TheScoreTennisInfoClient: KyroTennisPlayerInfoProviding {
                     let list = (try? JSONDecoder().decode(TheScoreLossyArray<TheScoreMatch>.self, from: listData))?.values ?? []
                     return TheScoreTennisMapping.matchID(for: game, in: list)
                 }.value
-                if located != nil { break }
+                if located != nil { locatedEvent = event; break }
             }
             guard let (matchID, homeIsTeam1) = located else { return nil }
             try Task.checkCancellation()
             let matchData = try await fetch("\(tour)/matches/\(matchID)", key: "match|\(tour)|\(matchID)", freshness: 30 * 60)
+            let surface = KyroTennisSurface.label(groundType: locatedEvent?.ground_type)
+            let venue = locatedEvent?.venue
             return await Task.detached(priority: .utility) { () -> KyroTennisPlayerInfo? in
                 guard let match = try? JSONDecoder().decode(TheScoreMatch.self, from: matchData), match.id == matchID else { return nil }
-                return TheScoreTennisMapping.info(game: game, match: match, homeIsTeam1: homeIsTeam1)
+                var info = TheScoreTennisMapping.info(game: game, match: match, homeIsTeam1: homeIsTeam1)
+                info?.surface = surface
+                info?.venue = venue
+                return info
             }.value
         } catch {
             return nil

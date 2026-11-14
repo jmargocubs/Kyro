@@ -59,6 +59,10 @@ struct LiveTVWatchView: View {
         .onAppear {
             orientationCoordinator.watchScreenDidAppear()
             if presentedEpoch == nil { presentedEpoch = presentation.presentationEpoch }
+            // Build 68.1: shows on the next device run whether the screen is rebuilt while the app
+            // goes to the background, and under which presentation.
+            KyroLifecycleJournal.record("livetv", "watch_appear",
+                                        "\(LiveTVPresentation.journalName(presentation.phase)) epoch=\(presentedEpoch ?? -1) pip_engaged=\(pictureInPicture.ownsEngagedSession(session)) app=\(KyroLifecycleJournal.applicationStateName())")
             attachQualityObservation()
             syncControls()
         }
@@ -119,8 +123,15 @@ struct LiveTVWatchView: View {
             // Close stops the session itself. This only catches the screen being taken down some
             // other way, and only while it is still the presentation that owns the stream: an
             // earlier screen finishing its dismissal must not stop what a newer one is playing.
-            if LiveTVWatchScreen.shouldStopWhenWatchScreenDisappears(
-                presentation: presentation, presentedAt: presentedEpoch) {
+            // Build 68.1: never while the Picture in Picture window is starting or showing this
+            // session; the window owns it until it closes or the app restores into a cover.
+            let isPictureInPictureEngaged = pictureInPicture.ownsEngagedSession(session)
+            let stops = LiveTVWatchScreen.shouldStopWhenWatchScreenDisappears(
+                presentation: presentation, presentedAt: presentedEpoch,
+                isPictureInPictureEngaged: isPictureInPictureEngaged)
+            KyroLifecycleJournal.record("livetv", "watch_disappear",
+                                        "\(LiveTVPresentation.journalName(presentation.phase)) epoch=\(presentedEpoch ?? -1) pip_engaged=\(isPictureInPictureEngaged) app=\(KyroLifecycleJournal.applicationStateName()) stop=\(stops)")
+            if stops {
                 session.stop()
             }
         }

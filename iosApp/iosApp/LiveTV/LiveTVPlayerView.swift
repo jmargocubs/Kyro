@@ -612,7 +612,18 @@ struct LiveTVPlayerView: View {
     private var shouldStopOnDisappear: Bool {
         guard let service else { return true }
         guard let presentedEpoch else { return false }
+        #if os(iOS)
+        // Build 68.1: the same rule as the watch screen. A full-screen player rebuilt while the
+        // automatic window shows its stream must not stop it.
+        let isPictureInPictureEngaged = pictureInPicture.ownsEngagedSession(session)
+        let stops = service.presentation.shouldStopWhenPlayerDisappears(
+            presentedAt: presentedEpoch, isPictureInPictureEngaged: isPictureInPictureEngaged)
+        KyroLifecycleJournal.record("livetv", "player_disappear",
+                                    "\(LiveTVPresentation.journalName(service.presentation.phase)) epoch=\(presentedEpoch) pip_engaged=\(isPictureInPictureEngaged) app=\(KyroLifecycleJournal.applicationStateName()) stop=\(stops)")
+        return stops
+        #else
         return service.presentation.shouldStopWhenPlayerDisappears(presentedAt: presentedEpoch)
+        #endif
     }
 
     /// The Sports Hub event this player is showing, when it has more than one stream. Ordinary

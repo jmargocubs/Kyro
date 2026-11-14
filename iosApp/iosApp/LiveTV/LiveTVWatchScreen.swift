@@ -20,9 +20,11 @@ enum LiveTVWatchScreen {
     /// The same rule for one watch screen instance, which may only end the stream while it is
     /// still the current presentation. A screen that never appeared owns nothing.
     @MainActor
-    static func shouldStopWhenWatchScreenDisappears(presentation: LiveTVPresentation, presentedAt epoch: Int?) -> Bool {
+    static func shouldStopWhenWatchScreenDisappears(presentation: LiveTVPresentation, presentedAt epoch: Int?,
+                                                    isPictureInPictureEngaged: Bool = false) -> Bool {
         guard let epoch, !presentation.isWatchExpanded else { return false }
-        return presentation.shouldStopWhenPlayerDisappears(presentedAt: epoch)
+        return presentation.shouldStopWhenPlayerDisappears(presentedAt: epoch,
+                                                           isPictureInPictureEngaged: isPictureInPictureEngaged)
     }
 }
 

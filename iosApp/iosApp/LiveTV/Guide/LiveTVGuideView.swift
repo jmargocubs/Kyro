@@ -221,6 +221,8 @@ struct LiveTVGuideView: View {
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(Color.siloSecondaryText)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Clear search")
@@ -228,7 +230,7 @@ struct LiveTVGuideView: View {
                 }
                 .font(.subheadline)
                 .padding(.horizontal, 10)
-                .frame(height: 34)
+                .frame(height: 44)
                 .background(LiveTVSurface.row, in: Capsule())
                 Button("Cancel") { closeSearch() }
                     .font(.subheadline.weight(.semibold))
@@ -242,6 +244,8 @@ struct LiveTVGuideView: View {
                         .padding(.horizontal, 12)
                         .frame(height: 34)
                         .background(LiveTVSurface.row, in: Capsule())
+                        .frame(height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("liveTVGuideSearch")
@@ -304,6 +308,8 @@ struct LiveTVGuideView: View {
                             clearSearchQuery()
                         } label: {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(Color.siloSecondaryText)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Clear search")
@@ -311,7 +317,7 @@ struct LiveTVGuideView: View {
                 }
                 .font(.subheadline)
                 .padding(.horizontal, 10)
-                .frame(height: 34)
+                .frame(height: 44)
                 .background(LiveTVSurface.row, in: Capsule())
                 Button("Cancel") { closeSearch() }
                     .font(.subheadline.weight(.semibold))
@@ -706,12 +712,6 @@ struct LiveTVGuideView: View {
         ToolbarItemGroup(placement: .topBarTrailing) {
             Button("Now") { scrollToNow() }
             .accessibilityHint("Scrolls the guide to the current time")
-            Button {
-                beginSearch()
-            } label: {
-                Image(systemName: "magnifyingglass")
-            }
-            .accessibilityLabel("Search channels")
             Button {
                 favoritesOnly.toggle()
             } label: {

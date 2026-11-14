@@ -334,9 +334,11 @@ struct KyroSportsLiveNowEmptyContent: Equatable {
             message = liveEventCount == 1 ? "1 game is live." : "\(liveEventCount) games are live."
             showsProgress = true
         case .ready:
-            symbol = "tv"
-            title = liveEventCount == 1 ? "1 game is live" : "\(liveEventCount) games are live"
-            message = "None is clearly on your channels. Follow the scores below."
+            // Build 68: live, but nothing playable. Says so in one row; the scores are below.
+            symbol = "tv.slash"
+            title = liveEventCount == 1 ? "1 game is live · no matching channel"
+                : "\(liveEventCount) games are live · no matching channels"
+            message = "Follow the scores below, or open a game for details."
             showsProgress = false
         }
     }

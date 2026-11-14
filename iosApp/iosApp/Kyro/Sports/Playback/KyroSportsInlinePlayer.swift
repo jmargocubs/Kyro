@@ -32,12 +32,15 @@ struct KyroSportsInlinePlayer: View {
     private var info: KyroSportsInlineInfo? {
         KyroSportsInlineInfo(mode: mode, context: playback.context, current: pinnedGame)
     }
+    private var strip: KyroSportsInlineStrip? {
+        .make(mode: mode, phase: playback.phase, context: playback.context, current: pinnedGame, games: games)
+    }
 
     var body: some View {
         if mode.isVisible {
             VStack(spacing: 0) {
                 frame
-                if let info { infoStrip(info) }
+                if let strip { infoStrip(strip) }
             }
             .padding(.horizontal, SiloTheme.padding)
             .padding(.bottom, 4)
@@ -191,68 +194,111 @@ struct KyroSportsInlinePlayer: View {
 
     // MARK: Information strip
 
-    /// Matchup and score on the first line; live status, the stream and its actions on the second.
-    private func infoStrip(_ info: KyroSportsInlineInfo) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(info.matchup)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(KyroTheme.textPrimary)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                if let score = info.score {
-                    Text(score)
-                        .font(.subheadline.weight(.bold))
-                        .monospacedDigit()
-                        .foregroundStyle(KyroTheme.textPrimary)
-                }
+    /// Build 67: a scoreboard line (logos, teams, the score in the strip's largest type) over the
+    /// clock, league and stream, with the actions beside both lines instead of under them. About
+    /// 20 points shorter than Build 66's two stacked rows, and drawn at the same height while the
+    /// stream is still connecting, so nothing below moves when it starts.
+    private func infoStrip(_ strip: KyroSportsInlineStrip) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                scoreLine(strip)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(strip.accessibilityMatchup)
+                metaLine(strip)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("kyroSportsInlineStream")
             }
-            .accessibilityElement(children: .combine)
-            HStack(spacing: 8) {
-                HStack(spacing: 5) {
-                    if info.isLive {
-                        Circle().fill(KyroTheme.live).frame(width: 6, height: 6)
+            Spacer(minLength: 4)
+            if strip.showsPlaybackActions {
+                if pictureInPicture.isSupported, pictureInPicture.hasSource {
+                    stripIconButton("pip.enter", label: "Picture in Picture",
+                                    identifier: "kyroSportsInlinePictureInPicture") {
+                        controls.interact()
+                        pictureInPicture.toggle()
                     }
-                    Text(info.league).foregroundStyle(KyroTheme.accentInk)
-                    Text(info.statusLine)
-                    if let channelName = info.channelName {
-                        Text("·")
-                        Text(channelName).lineLimit(1).truncationMode(.tail)
-                    }
-                    switch info.location {
-                    case .inline: EmptyView()
-                    case .fullScreen: Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    case .pictureInPicture: Image(systemName: "pip")
-                    }
+                    .disabled(!pictureInPicture.isPossible)
                 }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(KyroTheme.textSecondary)
-                .lineLimit(1)
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("kyroSportsInlineStream")
-                Spacer(minLength: 4)
-                if info.showsPlaybackActions {
-                    if pictureInPicture.isSupported, pictureInPicture.hasSource {
-                        stripIconButton("pip.enter", label: "Picture in Picture",
-                                        identifier: "kyroSportsInlinePictureInPicture") {
-                            controls.interact()
-                            pictureInPicture.toggle()
-                        }
-                        .disabled(!pictureInPicture.isPossible)
+                if strip.hasOtherStreams {
+                    LiveTVInlinePillButton(title: "Streams", symbol: "sportscourt",
+                                           identifier: "kyroSportsInlineOtherStreams") {
+                        controls.interact()
+                        isShowingOtherStreams = true
                     }
-                    if info.hasOtherStreams {
-                        LiveTVInlinePillButton(title: "Streams", symbol: "sportscourt",
-                                               identifier: "kyroSportsInlineOtherStreams") {
-                            controls.interact()
-                            isShowingOtherStreams = true
-                        }
-                        .accessibilityLabel("Other streams")
-                    }
+                    .accessibilityLabel("Other streams")
                 }
             }
         }
-        .padding(.top, 4)
+        .frame(minHeight: 48)
+        .padding(.top, 6)
         .padding(.horizontal, 2)
+    }
+
+    /// Logos, names and score for team sports (nicknames when they fit, otherwise abbreviations);
+    /// the matchup for tennis and unscored events.
+    @ViewBuilder
+    private func scoreLine(_ strip: KyroSportsInlineStrip) -> some View {
+        if let awayScore = strip.awayScore, let homeScore = strip.homeScore {
+            ViewThatFits(in: .horizontal) {
+                scoreboard(strip, away: strip.game.away.team.nickname, awayScore: awayScore,
+                           home: strip.game.home.team.nickname, homeScore: homeScore)
+                scoreboard(strip, away: strip.game.away.team.abbreviation, awayScore: awayScore,
+                           home: strip.game.home.team.abbreviation, homeScore: homeScore)
+            }
+        } else {
+            Text(strip.game.inlineMatchupTitle)
+                .font(.headline)
+                .foregroundStyle(KyroTheme.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+    }
+
+    private func scoreboard(_ strip: KyroSportsInlineStrip, away: String, awayScore: String,
+                            home: String, homeScore: String) -> some View {
+        HStack(spacing: 6) {
+            KyroSportsTeamLogo(team: strip.game.away.team, size: 20)
+            Text(away).font(.subheadline.weight(.semibold)).foregroundStyle(KyroTheme.silver)
+            Text(awayScore).font(.title3.weight(.bold)).monospacedDigit()
+            Text("–").font(.subheadline.weight(.semibold)).foregroundStyle(KyroTheme.textSecondary)
+            Text(homeScore).font(.title3.weight(.bold)).monospacedDigit()
+            Text(home).font(.subheadline.weight(.semibold)).foregroundStyle(KyroTheme.silver)
+            KyroSportsTeamLogo(team: strip.game.home.team, size: 20)
+        }
+        .foregroundStyle(KyroTheme.textPrimary)
+        .lineLimit(1)
+        .fixedSize()
+    }
+
+    /// The live clock first (it changes; everything else is identity), then league and stream.
+    private func metaLine(_ strip: KyroSportsInlineStrip) -> some View {
+        HStack(spacing: 5) {
+            if strip.isLive {
+                Circle().fill(KyroTheme.live).frame(width: 6, height: 6)
+            }
+            Text(strip.statusLine)
+                .monospacedDigit()
+                .foregroundStyle(strip.isLive ? KyroTheme.textPrimary : KyroTheme.textSecondary)
+                .layoutPriority(2)
+            Text(strip.league).foregroundStyle(KyroTheme.accentInk).layoutPriority(1)
+            switch strip.stream {
+            case .finding(let status):
+                ProgressView().controlSize(.mini)
+                Text(status).layoutPriority(1)
+            case .playing(let name, let location):
+                if let name {
+                    Text("·")
+                    Text(name).truncationMode(.tail)
+                }
+                switch location {
+                case .inline: EmptyView()
+                case .fullScreen: Image(systemName: "arrow.up.left.and.arrow.down.right")
+                case .pictureInPicture: Image(systemName: "pip")
+                }
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(KyroTheme.textSecondary)
+        .lineLimit(1)
     }
 
     private func stripIconButton(_ symbol: String, label: String, identifier: String,
@@ -273,27 +319,54 @@ struct KyroSportsInlinePlayer: View {
 
     // MARK: Finding and elsewhere
 
+    /// Build 67: the strip below already names the event, so the frame says what is happening
+    /// (finding, or connecting to which stream and which try) over a faint wash of the two teams'
+    /// colours instead of a black box with a one-line, truncated channel name.
     private var findingOverlay: some View {
-        VStack(spacing: 10) {
-            ProgressView().tint(.white)
-            if let status = KyroSportsConnectingStatus(phase: playback.phase, games: games) {
-                VStack(spacing: 2) {
-                    Text(status.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    if let detail = status.detail {
-                        Text(detail).font(.caption).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
-                    }
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityAddTraits(.updatesFrequently)
-                .accessibilityIdentifier("kyroSportsConnecting")
+        ZStack {
+            if let tint = findingTint {
+                LinearGradient(colors: tint, startPoint: .leading, endPoint: .trailing)
+                    .accessibilityHidden(true)
             }
-            Button("Cancel") { service.cancelSportsPlayback() }
-                .font(.subheadline.weight(.semibold))
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .accessibilityIdentifier("kyroSportsCancelConnecting")
+            VStack(spacing: 10) {
+                ProgressView().tint(.white)
+                if let status = KyroSportsConnectingStatus(phase: playback.phase, games: games) {
+                    VStack(spacing: 3) {
+                        Text(status.title).font(.headline).lineLimit(1)
+                        if let detail = status.detail {
+                            Text(detail).font(.caption).foregroundStyle(.white.opacity(0.8))
+                                .multilineTextAlignment(.center).lineLimit(2)
+                        }
+                        if let attempt = status.attempt {
+                            Text(attempt).font(.caption2.weight(.semibold)).foregroundStyle(.white.opacity(0.6))
+                                .monospacedDigit()
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.updatesFrequently)
+                    .accessibilityIdentifier("kyroSportsConnecting")
+                }
+                Button("Cancel") { service.cancelSportsPlayback() }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("kyroSportsCancelConnecting")
+            }
+            .padding(.horizontal, 24)
         }
-        .padding(.horizontal, 16)
+    }
+
+    /// The event's team colours, faint, for the connecting frame; nil when it has none.
+    private var findingTint: [Color]? {
+        guard let game = strip?.game else { return nil }
+        let away = KyroSportsMatchupArtwork.cardColor(for: game.away.team)
+        let home = KyroSportsMatchupArtwork.cardColor(for: game.home.team)
+        guard away != nil || home != nil else { return nil }
+        func color(_ rgb: KyroSportsRGB?) -> Color {
+            let rgb = rgb ?? KyroSportsMatchupArtwork.neutralSide
+            return Color(red: rgb.red, green: rgb.green, blue: rgb.blue).opacity(0.28)
+        }
+        return [color(away), color(home)]
     }
 
     private func elsewhereOverlay(isPictureInPicture: Bool) -> some View {

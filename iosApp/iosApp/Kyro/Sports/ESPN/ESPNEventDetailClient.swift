@@ -406,9 +406,213 @@ enum ESPNEventDetailMapping {
         if let exact = summary.article { articles.insert(exact, at: 0) }
         let news = newsItems(from: articles, exactArticleID: summary.article?.id,
                              selectedTeamIDs: selectedTeamIDs, game: game)
-        return KyroSportsEventDetails(gameID: game.id, providerEventID: eventID,
-                                      teamStatistics: teamStats, playerBoxScores: mergedPlayers,
-                                      matchEvents: matchEvents, news: news)
+
+        // Build 68: before the start ESPN fills `boxscore.teams` with season averages. They move
+        // to the pregame context, labelled as season figures, and the event's box score stays
+        // empty until the summary itself says the game has started.
+        let phase = statisticsPhase(summary: summary, eventID: eventID)
+        let carriesEventStatistics = phase.carriesEventStatistics
+        var details = KyroSportsEventDetails(
+            gameID: game.id, providerEventID: eventID,
+            teamStatistics: carriesEventStatistics ? teamStats : [],
+            playerBoxScores: carriesEventStatistics ? mergedPlayers : [],
+            matchEvents: carriesEventStatistics ? matchEvents : [],
+            news: news)
+        details.statisticsPhase = phase
+        if phase == .pregame {
+            let context = pregameContext(summary: summary, eventID: eventID, selectedTeamIDs: selectedTeamIDs,
+                                         seasonStatistics: teamStats, game: game)
+            details.pregame = context.isEmpty ? nil : context
+        }
+        return details
+    }
+
+    static func statisticsPhase(summary: ESPNEventSummaryResponse, eventID: String) -> KyroSportsStatisticsPhase {
+        let competitions = summary.header?.competitions ?? []
+        let competition = competitions.first { $0.id == eventID } ?? competitions.first
+        let type = competition?.status?.value?.type
+        return KyroSportsStatisticsPhase(espnState: type?.state, completed: type?.completed)
+    }
+
+    // MARK: Build 68 pregame context
+
+    static func pregameContext(
+        summary: ESPNEventSummaryResponse,
+        eventID: String,
+        selectedTeamIDs: Set<String>,
+        seasonStatistics: [KyroSportsTeamBoxScore],
+        game: KyroSportsGame
+    ) -> KyroSportsPregameContext {
+        let competitions = summary.header?.competitions ?? []
+        let competitors = (competitions.first { $0.id == eventID } ?? competitions.first)?.competitors ?? []
+        func team(_ side: String) -> KyroSportsPregameContext.Team? {
+            guard let competitor = competitors.first(where: { $0.homeAway?.lowercased() == side }),
+                  let id = competitor.team?.id ?? competitor.id, selectedTeamIDs.contains(id) else { return nil }
+            let abbreviation = nonempty(competitor.team?.abbreviation)
+                ?? (side == "home" ? game.home.team.abbreviation : game.away.team.abbreviation)
+            let season = seasonStatistics.first { $0.providerTeamID == id }?.statistics ?? []
+            var records = (competitor.record?.values ?? []).compactMap { record -> KyroSportsPregameContext.Record? in
+                guard let type = nonempty(record.type),
+                      let label = KyroSportsPregameRules.recordLabel(type: type, league: game.league),
+                      let value = nonempty(record.summary) ?? nonempty(record.displayValue) else { return nil }
+                return .init(label: label, value: value)
+            }
+            // Streak and last ten arrive among the averages; they are records, not quantities.
+            var averages: [KyroSportsStatistic] = []
+            for statistic in season {
+                if let label = KyroSportsPregameRules.recordLikeStatistics[statistic.label.lowercased()] {
+                    if !records.contains(where: { $0.label == label }) { records.append(.init(label: label, value: statistic.value)) }
+                } else {
+                    averages.append(statistic)
+                }
+            }
+            return KyroSportsPregameContext.Team(
+                providerTeamID: id, abbreviation: abbreviation, records: records,
+                recent: recentGames(summary: summary, teamID: id, game: game),
+                leaders: leaders(summary: summary, teamID: id),
+                injuries: injuries(summary: summary, teamID: id),
+                seasonStatistics: averages)
+        }
+        let venue = summary.gameInfo?.value?.venue.flatMap { venue -> String? in
+            guard let name = nonempty(venue.fullName) else { return nil }
+            let place = [venue.address?.city, venue.address?.state ?? venue.address?.country]
+                .compactMap(nonempty).joined(separator: ", ")
+            return place.isEmpty ? name : "\(name), \(place)"
+        }
+        return KyroSportsPregameContext(
+            away: team("away"), home: team("home"),
+            standings: standings(summary: summary, selectedTeamIDs: selectedTeamIDs, league: game.league),
+            series: series(summary: summary, eventID: eventID),
+            venue: venue)
+    }
+
+    static func recentGames(summary: ESPNEventSummaryResponse, teamID: String,
+                            game: KyroSportsGame) -> [KyroSportsPregameContext.RecentGame] {
+        guard let entry = (summary.lastFiveGames?.values ?? []).first(where: { $0.team?.id == teamID }) else { return [] }
+        let selectedCompetition = [game.tournament, KyroSoccerCompetitionRegistry.competition(for: game.competitionKey)?.name]
+            .compactMap { $0?.lowercased() }
+        let games = (entry.events?.values ?? []).compactMap { event -> KyroSportsPregameContext.RecentGame? in
+            guard let opponent = nonempty(event.opponent?.abbreviation) ?? nonempty(event.opponent?.displayName) else {
+                return nil
+            }
+            let homeID = event.homeTeamId?.stringValue
+            let awayID = event.awayTeamId?.stringValue
+            let isHome: Bool
+            if homeID == teamID { isHome = true }
+            else if awayID == teamID { isHome = false }
+            else { isHome = event.atVs?.lowercased() == "vs" }
+            let home = nonempty(event.homeTeamScore?.stringValue)
+            let away = nonempty(event.awayTeamScore?.stringValue)
+            let outcome = nonempty(event.gameResult).flatMap { KyroSportsPregameContext.RecentGame.Outcome(rawValue: $0.uppercased()) }
+            // Soccer sides play cups and European ties between league games: those are named, a
+            // game in the selected competition is not.
+            let competition = [nonempty(event.leagueAbbreviation), nonempty(event.leagueName)].compactMap { $0 }
+            let isOtherCompetition = game.league == .soccer && !selectedCompetition.isEmpty && !competition.isEmpty
+                && !competition.contains { name in
+                    let name = name.lowercased()
+                    return selectedCompetition.contains { $0 == name || $0.contains(name) || name.contains($0) }
+                }
+            return .init(id: event.id?.stringValue ?? "\(opponent)-\(event.gameDate ?? "")",
+                         date: parseDate(event.gameDate), outcome: outcome,
+                         teamScore: isHome ? home : away, opponentScore: isHome ? away : home,
+                         opponent: opponent, isHome: isHome,
+                         competition: isOtherCompetition ? competition.first : nil)
+        }
+        return games.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+    }
+
+    static func leaders(summary: ESPNEventSummaryResponse, teamID: String) -> [KyroSportsPregameContext.Leader] {
+        guard let entry = (summary.leaders?.values ?? []).first(where: { $0.team?.id == teamID }) else { return [] }
+        return (entry.leaders?.values ?? []).compactMap { category -> KyroSportsPregameContext.Leader? in
+            guard let key = nonempty(category.name) ?? nonempty(category.displayName),
+                  let title = nonempty(category.displayName) ?? nonempty(category.name),
+                  let top = category.leaders?.values.first,
+                  let athlete = nonempty(top.athlete?.displayName) ?? nonempty(top.athlete?.shortName),
+                  let value = nonempty(top.displayValue) else { return nil }
+            return .init(id: key, category: title, athlete: athlete, value: value)
+        }
+    }
+
+    static func injuries(summary: ESPNEventSummaryResponse, teamID: String) -> [KyroSportsPregameContext.Injury] {
+        guard let entry = (summary.injuries?.values ?? []).first(where: { $0.team?.id == teamID }) else { return [] }
+        return (entry.injuries?.values ?? []).compactMap { injury -> KyroSportsPregameContext.Injury? in
+            guard let name = nonempty(injury.athlete?.displayName), let status = nonempty(injury.status) else { return nil }
+            let detail = [injury.details?.type, injury.details?.detail].compactMap(nonempty).joined(separator: " ")
+            return .init(id: injury.athlete?.id ?? name, name: name,
+                         position: nonempty(injury.athlete?.position?.abbreviation),
+                         status: status, detail: detail.isEmpty ? nil : detail)
+        }
+    }
+
+    static func standings(summary: ESPNEventSummaryResponse, selectedTeamIDs: Set<String>,
+                          league: KyroSportLeague) -> [KyroSportsPregameContext.StandingsGroup] {
+        let preferred = KyroSportsPregameRules.standingsColumns(for: league)
+        return (summary.standings?.value?.groups?.values ?? []).enumerated().compactMap { index, group in
+            let entries = group.standings?.entries?.values ?? []
+            guard !entries.isEmpty, entries.contains(where: { $0.id.map(selectedTeamIDs.contains) == true }) else {
+                return nil
+            }
+            // The preferred columns that this group actually has; otherwise ESPN's first four.
+            let available = Set(entries.flatMap { ($0.stats?.values ?? []).compactMap(\.name) })
+            var columns = preferred.filter { available.contains($0.name) }
+            if columns.isEmpty {
+                columns = (entries.first?.stats?.values ?? []).prefix(4).compactMap { stat in
+                    guard let name = nonempty(stat.name) else { return nil }
+                    return (name, nonempty(stat.abbreviation) ?? name)
+                }
+            }
+            guard !columns.isEmpty else { return nil }
+            let rows = entries.enumerated().map { offset, entry -> KyroSportsPregameContext.StandingsGroup.Row in
+                let stats = entry.stats?.values ?? []
+                let values = columns.map { column in
+                    stats.first { $0.name == column.name }.flatMap { nonempty($0.displayValue) } ?? "–"
+                }
+                return .init(id: entry.id ?? "\(offset)", position: offset + 1,
+                             team: nonempty(entry.team) ?? "–",
+                             isSelected: entry.id.map(selectedTeamIDs.contains) ?? false, values: values)
+            }
+            let shown = rows.count > KyroSportsPregameRules.fullStandingsLimit ? rows.filter(\.isSelected) : rows
+            let title = nonempty(group.divisionHeader) ?? nonempty(group.conferenceHeader)
+                ?? nonempty(group.header).map(standingsTitle) ?? "Standings"
+            return .init(id: "\(index)-\(title)", title: title, columns: columns.map(\.header),
+                         rows: shown, totalTeams: rows.count)
+        }
+    }
+
+    /// `2026-27 Atlantic Standings` → `Atlantic`; `English Premier League Standings` → the league.
+    static func standingsTitle(_ header: String) -> String {
+        var words = header.split(separator: " ").map(String.init)
+        if words.last?.lowercased() == "standings" { words.removeLast() }
+        if let first = words.first, first.first?.isNumber == true { words.removeFirst() }
+        let title = words.joined(separator: " ")
+        return title.isEmpty ? header : title
+    }
+
+    static func series(summary: ESPNEventSummaryResponse, eventID: String) -> [KyroSportsPregameContext.Series] {
+        (summary.seasonseries?.values ?? []).enumerated().compactMap { index, series in
+            let events = (series.events?.values ?? []).filter { $0.id != eventID }
+            let completed = events.filter { $0.statusType?.completed == true }
+            let meetings = completed.compactMap { event -> KyroSportsPregameContext.Meeting? in
+                let competitors = event.competitors?.values ?? []
+                guard let home = competitors.first(where: { $0.homeAway == "home" }),
+                      let away = competitors.first(where: { $0.homeAway == "away" }),
+                      let homeName = nonempty(home.team?.abbreviation), let awayName = nonempty(away.team?.abbreviation) else {
+                    return nil
+                }
+                let winner = home.winner == true ? homeName : (away.winner == true ? awayName : nil)
+                return .init(id: event.id ?? "\(awayName)-\(homeName)-\(event.date ?? "")", date: parseDate(event.date),
+                             away: awayName, home: homeName,
+                             awayScore: nonempty(away.score?.stringValue), homeScore: nonempty(home.score?.stringValue),
+                             winner: winner)
+            }
+            .sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+            let upcoming = events.filter { $0.statusType?.state?.lowercased() == "pre" }.count
+            let summaryText = nonempty(series.summary)
+            guard !meetings.isEmpty || summaryText != nil else { return nil }
+            return .init(id: "\(index)-\(series.type ?? "")", title: nonempty(series.title) ?? "Previous meetings",
+                         summary: summaryText, meetings: Array(meetings.prefix(KyroSportsPregameRules.maxMeetings)),
+                         upcoming: upcoming)
+        }
     }
 
     private static func newsItems(
@@ -428,12 +632,16 @@ enum ESPNEventDetailMapping {
                                             taggedIDs: categoryTeamIDs, selectedIDs: selectedTeamIDs,
                                             headline: headline, game: game) else { continue }
             // Insert only after relevance is proven. The same article can arrive first without
-            // categories and later with verified team tags.
-            guard seen.insert(id).inserted else { continue }
-            output.append(KyroSportsNewsItem(
+            // categories and later with verified team tags. Build 68: also one entry per
+            // canonical URL, since team feeds can list one story under two IDs.
+            guard !seen.contains(id), seen.insert(KyroSportsNewsDedup.key(for: url)).inserted else { continue }
+            seen.insert(id)
+            var item = KyroSportsNewsItem(
                 id: id, headline: headline, publishedAt: parseDate(article.published),
                 url: url, source: "ESPN", relevance: relevance
-            ))
+            )
+            item.isPreview = relevance == .event && article.type?.lowercased() == "preview"
+            output.append(item)
         }
         return ranked(output)
     }
@@ -593,6 +801,13 @@ final class KyroSportsEventDetailStore {
     private(set) var phase: Phase = .idle
     private(set) var details: KyroSportsEventDetails?
     private var loadedAt: Date?
+    /// Build 68: scheduled (0), live (1) or final (2) when `details` loaded, so a game that starts
+    /// is reloaded at once instead of keeping its pregame answer until it goes stale.
+    private var loadedStatusKind: Int?
+    /// Build 68: the last few events' answers, so going back to an event (or reopening it) inside
+    /// its freshness window does not request it again. Keyed by stable event identity.
+    private var recent: [KyroGameID: (details: KyroSportsEventDetails, at: Date, statusKind: Int)] = [:]
+    static let recentLimit = 6
     private var loadToken = UUID()
     private let client: ESPNEventDetailClient
     private let now: @Sendable () -> Date
@@ -771,8 +986,18 @@ final class KyroSportsEventDetailStore {
     }
 
     func load(for game: KyroSportsGame, force: Bool = false) async {
-        if !force, details?.gameID == game.id, let loadedAt,
+        let statusKind = Self.statusKind(game.status)
+        if !force, details?.gameID == game.id, let loadedAt, loadedStatusKind == statusKind,
            now().timeIntervalSince(loadedAt) < freshness(for: game) {
+            return
+        }
+        if !force, let memo = recent[game.id], memo.statusKind == statusKind,
+           now().timeIntervalSince(memo.at) < freshness(for: game) {
+            loadToken = UUID()
+            details = memo.details
+            loadedAt = memo.at
+            loadedStatusKind = statusKind
+            phase = .loaded
             return
         }
         let token = UUID()
@@ -785,9 +1010,12 @@ final class KyroSportsEventDetailStore {
         do {
             let result = try await client.fetchDetails(for: game)
             guard loadToken == token else { return }
+            let at = now()
             details = result
-            loadedAt = now()
+            loadedAt = at
+            loadedStatusKind = statusKind
             phase = .loaded
+            remember(result, at: at, statusKind: statusKind)
         } catch let error as KyroSportsEventDetailError {
             guard loadToken == token else { return }
             // A cancelled request with nothing loaded must not leave a spinner that no later
@@ -797,6 +1025,18 @@ final class KyroSportsEventDetailStore {
             guard loadToken == token else { return }
             phase = .failed(.unavailable)
         }
+    }
+
+    private func remember(_ result: KyroSportsEventDetails, at: Date, statusKind: Int) {
+        recent[result.gameID] = (result, at, statusKind)
+        while recent.count > Self.recentLimit,
+              let oldest = recent.min(by: { $0.value.at < $1.value.at })?.key {
+            recent[oldest] = nil
+        }
+    }
+
+    nonisolated static func statusKind(_ status: KyroGameStatus) -> Int {
+        status.isLive ? 1 : (status.isFinal ? 2 : 0)
     }
 
     private func freshness(for game: KyroSportsGame) -> TimeInterval {
@@ -815,7 +1055,7 @@ final class KyroSportsEventDetailStore {
         init(game: KyroSportsGame, tab: String) {
             gameID = game.id
             self.tab = tab
-            statusKind = game.status.isLive ? 1 : (game.status.isFinal ? 2 : 0)
+            statusKind = KyroSportsEventDetailStore.statusKind(game.status)
         }
     }
 

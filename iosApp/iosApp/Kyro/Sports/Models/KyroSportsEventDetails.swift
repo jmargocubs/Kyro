@@ -10,6 +10,12 @@ struct KyroSportsEventDetails: Equatable, Sendable {
     let playerBoxScores: [KyroSportsPlayerTeamBoxScore]
     let matchEvents: [KyroSportsMatchEvent]
     let news: [KyroSportsNewsItem]
+    /// Build 68: what `teamStatistics` and `playerBoxScores` describe, from the response's own
+    /// status. Before the start both are empty and season figures live in `pregame`.
+    var statisticsPhase: KyroSportsStatisticsPhase = .unknown
+    /// Build 68: records, standings, recent form, meetings, leaders and season statistics, present
+    /// only while the event has not started.
+    var pregame: KyroSportsPregameContext? = nil
 
     var hasStatistics: Bool {
         teamStatistics.contains { !$0.statistics.isEmpty }
@@ -85,6 +91,8 @@ struct KyroSportsNewsItem: Identifiable, Equatable, Sendable {
     let url: URL
     let source: String
     let relevance: Relevance
+    /// Build 68: ESPN's own preview of this event (the summary's `article` before the start).
+    var isPreview = false
 }
 
 enum KyroSportsEventDetailError: Error, Equatable, Sendable {

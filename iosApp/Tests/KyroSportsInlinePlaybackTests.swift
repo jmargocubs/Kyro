@@ -252,6 +252,14 @@ final class KyroSportsInlinePlaybackTests: XCTestCase {
 
         var answers: [Bool] = []
         presentation.restoreRequested { answers.append($0) }
+        // Build 68.1: this expected an immediate answer, but since Build 62 the restore is answered
+        // only once the inline Aether surface has mounted, so AVKit never hands the layer back to
+        // nothing (`LiveTVPresentation.restoreRequested`). The test now checks that contract.
+        XCTAssertEqual(answers, [], "AVKit waits until the inline surface is back on screen")
+        XCTAssertEqual(presentation.phase, .inline(stream))
+        presentation.inlinePlayerDidAppear(channel("other"))
+        XCTAssertEqual(answers, [], "another channel's surface does not answer")
+        presentation.inlinePlayerDidAppear(stream)
         XCTAssertEqual(answers, [true], "the inline player is still on screen and takes the stream back")
         XCTAssertEqual(presentation.phase, .inline(stream))
         XCTAssertEqual(mode, .playing(stream))

@@ -53,14 +53,14 @@ struct KyroSportsEventPreview: View {
     /// store, so opening details never replaces what the Stats tab shows.
     var detailStore: KyroSportsEventDetailStore? = nil
 
-    private var showsTennisContext: Bool {
-        (game.league == .atp || game.league == .wta) && game.isSingles
-            && (mode == .completed || mode == .live || mode == .upcoming)
-    }
+    private var isTennis: Bool { game.league == .atp || game.league == .wta }
 
     @Environment(\.dismiss) private var dismiss
     @State private var matches: [KyroSportsStreamMatch] = []
     @State private var isChecking = false
+    /// Build 68: Game, Stats and News for any event, playable or not. Kept across status changes,
+    /// so a game that starts while the sheet is open stays on the tab the viewer chose.
+    @State private var tab: KyroSportsWatchingTab = .game
 
     private var mode: KyroSportsEventPreviewPolicy.Mode {
         KyroSportsEventPreviewPolicy.mode(for: game.status)
@@ -77,37 +77,58 @@ struct KyroSportsEventPreview: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    identity
-                    matchup
-                    eventFacts
-                    if mode == .upcoming || mode == .live { broadcasts }
-                    if mode == .completed || mode == .live { results }
-                    if showsTennisContext, let detailStore {
-                        KyroTennisMatchContextSection(game: game, store: detailStore)
-                    }
-                    if mode == .live && canWatch {
-                        Button(action: watch) {
-                            Label("Watch Live", systemImage: "play.fill")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity, minHeight: 48)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(KyroTheme.accent)
-                        .accessibilityIdentifier("kyroSportsPreviewWatch")
-                    }
+            VStack(spacing: 0) {
+                if detailStore != nil {
+                    KyroSportsWatchingTabBar(selection: $tab, tabs: KyroSportsEventDetailsLayout.tabs)
                 }
-                .frame(maxWidth: 640, alignment: .leading)
-                .frame(maxWidth: .infinity)
-                .padding(20)
+                if let detailStore, tab == .stats || tab == .news {
+                    // The pinned event's Stats and News, over Event Details' own store: season
+                    // figures before the start, the box score once it begins.
+                    KyroSportsWatchingContent(tab: tab, game: game, detailStore: detailStore, channelName: nil,
+                                              hasOtherStreams: false, showOtherStreams: {})
+                } else {
+                    overview
+                }
             }
             .background(KyroTheme.background)
+            // Build 66: pinned to the bottom edge, as the Guide's programme sheet pins Watch. At the
+            // end of the scroll view it sat below the fold of the half-height sheet.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if mode == .live && canWatch {
+                    Button(action: watch) {
+                        Label("Watch Live", systemImage: "play.fill")
+                            .font(.headline)
+                            .frame(maxWidth: 640, minHeight: 48)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(KyroTheme.accent)
+                    .accessibilityIdentifier("kyroSportsPreviewWatch")
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 10)
+                    .padding(.bottom, 8)
+                    .background(KyroTheme.background)
+                    .overlay(alignment: .top) { Divider() }
+                }
+            }
             .navigationTitle("Event Details")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .presentationDetents([.medium, .large])
+        // Build 68: one pregame request when an upcoming event opens (ESPN's summary, or theScore
+        // for a tennis singles match), whichever tab is showing. Nothing is fetched for events
+        // the viewer only scrolls past, and a reopened event inside its freshness is not refetched.
+        .task(id: KyroSportsEventDetailStore.LoadKey(game: game, tab: "eventDetails")) {
+            guard let detailStore,
+                  KyroSportsEventDetailsLayout.loadsPregame(league: game.league, status: game.status,
+                                                            isSingles: game.isSingles) else { return }
+            if isTennis {
+                await detailStore.loadPlayerInfo(for: game)
+            } else {
+                await detailStore.load(for: game)
+            }
+        }
         .task(id: matchKey) {
             matches = []
             isChecking = false
@@ -128,6 +149,83 @@ struct KyroSportsEventPreview: View {
         .accessibilityIdentifier("kyroSportsEventPreview")
     }
 
+    private var overview: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                identity
+                matchup
+                eventFacts
+                if mode == .upcoming || mode == .live { broadcasts }
+                if mode == .completed || mode == .live { results }
+                if mode == .upcoming { pregame }
+            }
+            .frame(maxWidth: 640, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .padding(20)
+        }
+    }
+
+    private var pregameContext: KyroSportsPregameContext? {
+        guard let details = detailStore?.details, details.gameID == game.id else { return nil }
+        return details.pregame
+    }
+
+    private var tennisInfo: KyroTennisPlayerInfo? {
+        guard let info = detailStore?.playerInfo, info.gameID == game.id else { return nil }
+        return info
+    }
+
+    /// Build 68: what the matchup looks like before the start: records, form, meetings, standings
+    /// and injuries (team sports), or rankings, head to head and surface (tennis singles).
+    @ViewBuilder
+    private var pregame: some View {
+        if let detailStore {
+            if isTennis {
+                if let tennisInfo {
+                    KyroTennisPregameSummary(info: tennisInfo)
+                } else if detailStore.playerInfoLoadingGameID == game.id {
+                    pregameLoading("Loading rankings and head to head…")
+                } else if detailStore.playerInfoLookedUpGameID == game.id {
+                    pregameNote("Rankings and head to head were not found for this match. theScore covers ATP and WTA tour singles, not doubles, Challenger, WTA 125 or ITF.")
+                } else if !game.isSingles {
+                    pregameNote("Rankings and head to head are listed for singles matches only.")
+                }
+            } else if let pregameContext, pregameContext.hasGameContent {
+                KyroSportsPregameGameSections(context: pregameContext, game: game)
+            } else if detailStore.details?.gameID == game.id {
+                pregameNote("ESPN has not published records or standings for this event yet.")
+            } else if case .failed(let error) = detailStore.phase {
+                pregameNote(error == .eventNotMatched
+                            ? "Kyro could not safely match ESPN's records to this event, so none are shown."
+                            : "Records and standings could not be loaded. Pull down on Stats or News to try again.")
+            } else if KyroSportsEventDetailsLayout.loadsPregame(league: game.league, status: game.status,
+                                                                isSingles: game.isSingles) {
+                pregameLoading("Loading records and standings…")
+            }
+        }
+    }
+
+    private func pregameLoading(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+            Text(text).font(.footnote).foregroundStyle(KyroTheme.textSecondary)
+        }
+    }
+
+    private func pregameNote(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote)
+            .foregroundStyle(KyroTheme.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The competition named once: the tournament (tennis, college bowls) or the soccer league.
+    private var competitionName: String? {
+        KyroSportsEventDetailsLayout.competitionName(tournament: game.tournament,
+                                                     soccerCompetition: KyroSoccerCompetitionRegistry
+                                                        .competition(for: game.competitionKey)?.name)
+    }
+
     private var identity: some View {
         HStack(spacing: 12) {
             Image(systemName: game.league.symbolName)
@@ -138,8 +236,9 @@ struct KyroSportsEventPreview: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(game.league.displayName).font(.headline).foregroundStyle(KyroTheme.textPrimary)
-                if let context = [game.tournament, game.round].compactMap({ $0 }).first {
-                    Text(context).font(.subheadline).foregroundStyle(KyroTheme.textSecondary)
+                if let competitionName {
+                    Text(competitionName).font(.subheadline).foregroundStyle(KyroTheme.textSecondary)
+                        .lineLimit(2)
                 }
             }
             Spacer(minLength: 0)
@@ -149,7 +248,9 @@ struct KyroSportsEventPreview: View {
 
     private var matchup: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if let note = game.note, !note.isEmpty {
+            // Build 68: tennis notes repeat the tournament named above; only a distinct note shows.
+            if let note = KyroSportsEventDetailsLayout.distinctNote(game.note, competition: competitionName,
+                                                                    round: game.round) {
                 Text(note).font(.subheadline.weight(.semibold)).foregroundStyle(game.league.accentColor)
             }
             Text("\(game.away.team.fullName) \(game.league == .atp || game.league == .wta ? "vs" : "at") \(game.home.team.fullName)")
@@ -187,16 +288,32 @@ struct KyroSportsEventPreview: View {
     private var eventFacts: some View {
         VStack(alignment: .leading, spacing: 11) {
             if let start = game.startTime {
-                Label(game.isStartTimeTBD
-                      ? "\(start.formatted(.dateTime.weekday(.wide).month(.wide).day())) · Time TBD"
-                      : start.formatted(.dateTime.weekday(.wide).month(.wide).day().hour().minute()),
-                      systemImage: "calendar")
+                // Build 68: the viewer's local time, with a countdown inside the next day.
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label(KyroSportsStartTimeText.line(start: start, isTimeTBD: game.isStartTimeTBD, now: context.date),
+                              systemImage: "calendar")
+                        if mode == .upcoming,
+                           let countdown = KyroSportsStartTimeText.countdown(start: start, isTimeTBD: game.isStartTimeTBD,
+                                                                            now: context.date) {
+                            Text(countdown)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(game.league.accentColor)
+                                .padding(.leading, 28)
+                        }
+                    }
+                }
             } else {
                 Label("Start time unavailable", systemImage: "calendar")
             }
-            if let venue = game.venue, !venue.isEmpty { Label(venue, systemImage: "mappin.and.ellipse") }
-            if let tournament = game.tournament, !tournament.isEmpty {
-                Label([tournament, game.round].compactMap { $0 }.joined(separator: " · "), systemImage: "trophy")
+            if let venue = (game.venue?.isEmpty == false ? game.venue : nil) ?? pregameContext?.venue ?? tennisInfo?.venue {
+                Label(venue, systemImage: "mappin.and.ellipse")
+            }
+            if let round = game.round, !round.isEmpty, round != competitionName {
+                Label(round, systemImage: "trophy")
+            }
+            if isTennis, let surface = tennisInfo?.surface {
+                Label(surface, systemImage: "square.grid.3x3.fill")
             }
             if let situation = game.situation, mode == .live { Label(situation, systemImage: "sportscourt") }
             if mode == .interrupted || mode == .unknown {

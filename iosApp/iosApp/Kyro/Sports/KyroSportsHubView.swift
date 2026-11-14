@@ -110,6 +110,18 @@ struct KyroSportsHubView: View {
     }
     #endif
 
+    /// Build 67: the event in the player above the Feed, from the tap on (searching, connecting,
+    /// playing, or moved to full screen or Picture in Picture). One value for every phase, so the
+    /// Feed reflows once when the player opens rather than again when the stream connects.
+    private var pinnedGameID: KyroGameID? {
+        #if os(iOS)
+        guard isInlinePlayerVisible else { return nil }
+        return activeGameID ?? selectedWatchingGame?.id
+        #else
+        return nil
+        #endif
+    }
+
     private var scrollState: PageChromeScrollState {
         shellHeader?.scrollState(for: .sports) ?? fallbackScrollState
     }
@@ -282,9 +294,12 @@ struct KyroSportsHubView: View {
     private var sportsFeed: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: SiloTheme.padding) {
-                KyroSportsHubHeading()
+                // Build 67: the player and its tabs already say where you are.
+                if pinnedGameID == nil {
+                    KyroSportsHubHeading()
+                }
                 KyroSportsLiveNowSection(model: liveNow, category: store.selectedCategory,
-                                         activeGameID: activeGameID,
+                                         activeGameID: activeGameID, pinnedGameID: pinnedGameID,
                                          isLoadingScores: store.isLoadingSelectedDay) { watch($0) }
                 KyroSportsScheduleHeader(selection: store.selectedCategory) { category in
                     guard category != store.selectedCategory else { return }
@@ -419,7 +434,7 @@ struct KyroSportsHubView: View {
                         switch row {
                         case .sportHeader(let league, let count):
                             KyroSportsSportHeader(league: league, gameCount: count)
-                                .padding(.top, 12)
+                                .padding(.top, 8)
                         case .game(let game):
                             gameRow(game, showsLeague: false)
                         }
@@ -484,20 +499,9 @@ private struct KyroSportsTennisMatchRow: View, Equatable {
                 Text([tournament, game.round].compactMap { $0 }.joined(separator: " · "))
                     .font(.caption.weight(.semibold)).foregroundStyle(game.league.accentColor).lineLimit(2)
             }
-            tennisPlayerLine(game.away, isWinner: game.winner?.team.id == game.away.team.id)
-            tennisPlayerLine(game.home, isWinner: game.winner?.team.id == game.home.team.id)
-            if !game.periods.isEmpty {
-                HStack(spacing: 10) {
-                    ForEach(game.periods) { set in
-                        VStack(spacing: 1) {
-                            Text(set.label.replacingOccurrences(of: "Set ", with: "S"))
-                                .font(.caption2).foregroundStyle(KyroTheme.textSecondary)
-                            Text("\(set.awayScore.map(String.init) ?? "–")–\(set.homeScore.map(String.init) ?? "–")")
-                                .font(.caption.weight(.semibold)).monospacedDigit()
-                        }
-                    }
-                }
-            }
+            // Build 67: each player's games per set sit on that player's row, as on a tennis
+            // scoreboard, instead of an "S1 6–4" strip under both names.
+            KyroSportsTennisSetRows(game: game)
             if let playableStreams {
                 KyroSportsWatchFooter(streamCount: playableStreams)
             }
@@ -507,27 +511,78 @@ private struct KyroSportsTennisMatchRow: View, Equatable {
         .kyroSportsEventCardChrome(league: game.league)
         .accessibilityIdentifier("kyroSportsTennisGame-\(game.id.rawID)")
     }
+}
 
-    private func tennisPlayerLine(_ side: KyroGameTeam, isWinner: Bool) -> some View {
-        HStack(spacing: 8) {
-            KyroSportsPlayerFlag(team: side.team)
-            if let rank = side.rank {
-                Text("(\(rank))").font(.caption.weight(.semibold)).foregroundStyle(KyroTheme.textSecondary)
-                    .monospacedDigit()
+/// Both players of a tennis card, one row each, with their games per set in fixed columns.
+private struct KyroSportsTennisSetRows: View {
+    let game: KyroSportsGame
+
+    @ScaledMetric(relativeTo: .body) private var setWidth: CGFloat = 22
+
+    var body: some View {
+        let winners = KyroSportsTennisSets.winners(of: game.periods, isFinal: game.status.isFinal)
+        Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 6) {
+            row(game.away, side: .away, winners: winners)
+            row(game.home, side: .home, winners: winners)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func row(_ player: KyroGameTeam, side: KyroSportsTennisSets.Winner,
+                     winners: [KyroSportsTennisSets.Winner?]) -> some View {
+        let isWinner = game.winner?.team.id == player.team.id
+        let isLoser = game.winner != nil && !isWinner
+        return GridRow {
+            HStack(spacing: 8) {
+                KyroSportsPlayerFlag(team: player.team)
+                if let rank = player.rank {
+                    Text("(\(rank))").font(.caption.weight(.semibold)).foregroundStyle(KyroTheme.textSecondary)
+                        .monospacedDigit()
+                }
+                // Two lines so a doubles pairing ("A / B") is never cut to one name.
+                Text(player.team.nickname)
+                    .font(.subheadline.weight(isWinner ? .bold : .semibold))
+                    .foregroundStyle(isLoser ? KyroTheme.silver : KyroTheme.textPrimary)
+                    .lineLimit(2)
+                if isWinner {
+                    Image(systemName: "checkmark.circle.fill").font(.caption).foregroundStyle(KyroTheme.accentInk)
+                }
+                Spacer(minLength: 6)
             }
-            // Two lines so a doubles pairing ("A / B") is never cut to one name.
-            Text(side.team.nickname)
-                .font(.subheadline.weight(isWinner ? .bold : .medium))
-                .foregroundStyle(KyroTheme.textPrimary).lineLimit(2)
-            Spacer()
-            if isWinner {
-                Image(systemName: "checkmark.circle.fill").font(.caption).foregroundStyle(KyroTheme.accentInk)
-                    .accessibilityLabel("Winner")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if game.periods.isEmpty {
+                if let score = player.score {
+                    Text(String(score)).font(.body.bold()).monospacedDigit()
+                        .frame(width: setWidth, alignment: .trailing)
+                }
+            } else {
+                ForEach(Array(game.periods.enumerated()), id: \.element.id) { index, set in
+                    let games = side == .away ? set.awayScore : set.homeScore
+                    let wonSet = winners[index] == side
+                    let lostSet = winners[index] != nil && !wonSet
+                    Text(games.map(String.init) ?? "–")
+                        .font(.body.weight(wonSet ? .bold : .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(lostSet ? KyroTheme.textSecondary : KyroTheme.textPrimary)
+                        .frame(width: setWidth)
+                }
             }
-            if let score = side.score { Text(String(score)).font(.subheadline.bold()).monospacedDigit() }
         }
     }
 
+    private var accessibilityLabel: String {
+        func name(_ side: KyroGameTeam) -> String {
+            var parts = [side.team.fullName]
+            if let rank = side.rank { parts.append("ranked \(rank)") }
+            if game.winner?.team.id == side.team.id { parts.append("winner") }
+            return parts.joined(separator: ", ")
+        }
+        let sets = game.periods.map { set in
+            "\(set.label) \(set.awayScore.map(String.init) ?? "none") to \(set.homeScore.map(String.init) ?? "none")"
+        }
+        return ([name(game.away), name(game.home)] + sets).joined(separator: ". ")
+    }
 }
 
 /// A tennis player's country: ESPN's own flag image when the payload carries one, otherwise the
@@ -731,15 +786,21 @@ private struct KyroSportsStreamMatchSheet: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(result.manualSearchSuggestions, id: \.self) { suggestion in
-                                Button(suggestion) { manualQuery = suggestion }
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(KyroTheme.accentInk)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 7)
-                                    .background { Capsule().fill(KyroTheme.selectedFill.opacity(0.6)) }
-                                    .overlay { Capsule().strokeBorder(KyroTheme.selectedBorder, lineWidth: 1) }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("Search for \(suggestion)")
+                                // Build 66: the capsule and a 44-point target are inside the label,
+                                // so the whole chip (not only its text) takes the tap.
+                                Button { manualQuery = suggestion } label: {
+                                    Text(suggestion)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(KyroTheme.accentInk)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 7)
+                                        .background { Capsule().fill(KyroTheme.selectedFill.opacity(0.6)) }
+                                        .overlay { Capsule().strokeBorder(KyroTheme.selectedBorder, lineWidth: 1) }
+                                        .frame(minHeight: 44)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Search for \(suggestion)")
                             }
                         }
                     }
@@ -797,16 +858,22 @@ private struct KyroSportsShellPlayerFallback: ViewModifier {
 struct KyroSportsConnectingStatus: Equatable {
     let title: String
     let detail: String?
+    /// "Stream 2 of 3" when more than one stream may be tried.
+    let attempt: String?
 
     init?(phase: KyroSportsPlaybackCoordinator.Phase, games: [KyroSportsGame]) {
         switch phase {
         case .searching(let id):
             let game = games.first { $0.id == id }
             title = "Finding a stream"
-            detail = game.map { "\($0.away.team.nickname) \($0.league == .atp || $0.league == .wta ? "vs" : "at") \($0.home.team.nickname)" }
+            detail = game?.inlineMatchupTitle
+            attempt = nil
         case .connecting(let name, let attempt, let total):
-            title = "Connecting to \(name)"
-            detail = total > 1 ? "Stream \(attempt) of \(total)" : nil
+            // Build 67: the channel on its own (up to two lines). Build 66 put it in the title
+            // ("Connecting to CA Prime Sportsnet Pacific FHD V2"), which cut it off.
+            title = "Connecting"
+            detail = LiveTVChannel.displayName(name)
+            self.attempt = total > 1 ? "Stream \(attempt) of \(total)" : nil
         case .idle, .presented, .exhausted, .unavailable:
             return nil
         }
@@ -927,8 +994,9 @@ private struct KyroSportsEventStatus: View {
         if KyroSportsEventCardStyle.showsLiveBadge(for: status) {
             HStack(spacing: 6) {
                 KyroSportsLiveBadge()
+                // Build 67: the clock is the line's news, one size up from the badge.
                 Text(detail)
-                    .font(.caption2.weight(.bold))
+                    .font(.caption.weight(.bold))
                     .monospacedDigit()
                     .foregroundStyle(KyroTheme.textPrimary)
                     .lineLimit(1)
@@ -974,6 +1042,9 @@ private struct KyroSportsDateStrip: View {
                         Label("Today", systemImage: "arrow.uturn.backward")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(KyroTheme.accentInk)
+                            .padding(.horizontal, 8)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("kyroSportsReturnToToday")
@@ -987,16 +1058,24 @@ private struct KyroSportsDateStrip: View {
                         Button {
                             action(day)
                         } label: {
-                            VStack(spacing: 4) {
-                                Text(day, format: .dateTime.weekday(.abbreviated))
-                                    .font(.caption2.weight(.semibold))
+                            // Build 67: two lines. "Today" takes the weekday's place instead of a
+                            // third line that every other day left blank.
+                            VStack(spacing: 2) {
+                                Group {
+                                    if isToday {
+                                        Text("Today").font(.caption2.weight(.heavy))
+                                    } else {
+                                        Text(day, format: .dateTime.weekday(.abbreviated))
+                                            .font(.caption2.weight(.semibold))
+                                    }
+                                }
+                                .lineLimit(1)
                                 Text(day, format: .dateTime.day())
                                     .font(.headline.weight(.bold))
-                                Text(isToday ? "Today" : " ")
-                                    .font(.system(size: 9, weight: .bold))
+                                    .monospacedDigit()
                             }
-                            .frame(width: 52)
-                            .padding(.vertical, 8)
+                            .frame(minWidth: 52)
+                            .padding(.vertical, 7)
                             .foregroundStyle(isSelected ? KyroTheme.accentInk : KyroTheme.textSecondary)
                             .background {
                                 RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -1059,22 +1138,26 @@ private struct KyroSportsSportHeader: View {
     let gameCount: Int
 
     var body: some View {
-        HStack(spacing: 12) {
+        // Build 67: a group label under "Scores & Schedule" rather than a second page title
+        // (title2 with a 42-point tile out-ranked the section it sits in).
+        HStack(spacing: 10) {
             Image(systemName: league.symbolName)
-                .font(.title3.weight(.semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(league.accentColor)
-                .frame(width: 42, height: 42)
-                .background(league.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                .frame(width: 30, height: 30)
+                .background(league.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .accessibilityHidden(true)
             Text(league.displayName)
-                .font(.title2.bold())
+                .font(.headline)
                 .foregroundStyle(KyroTheme.textPrimary)
+                .lineLimit(1)
             Spacer(minLength: 0)
             Text("\(gameCount) \(gameCount == 1 ? "game" : "games")")
-                .font(.caption)
+                .font(.caption.weight(.medium))
+                .monospacedDigit()
                 .foregroundStyle(KyroTheme.textSecondary)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
         .accessibilityIdentifier("kyroSportsSportSection-\(league.rawValue)")
@@ -1126,32 +1209,21 @@ private struct KyroSportsGameRow: View, Equatable {
     /// Strong streams when the game can be played from here; nil keeps the card informational.
     var playableStreams: Int?
 
-    /// Build 41.1 matchup card: both logos with their names, the score or start time between them,
-    /// and the teams' own colours behind each side. Static shapes and colours only; logos load
-    /// through the shared pipeline into fixed frames, so nothing moves when they arrive.
+    /// Build 67 scoreboard card: one row per team (logo, name, record), the line score beside it
+    /// and the total in the largest type on the card, or the start time for a game not yet played.
+    /// Build 66's side-by-side columns plus a separate line-score table drew the score twice and
+    /// took about 190 points; this is about 125 with the same facts. Static shapes and colours only.
     var body: some View {
         let artwork = KyroSportsMatchupArtwork(game: game)
-        VStack(alignment: .leading, spacing: 10) {
-            header
+        VStack(alignment: .leading, spacing: 8) {
+            if hasHeader { header }
             if let context = contextLine {
                 Text(context)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(KyroTheme.textSecondary)
                     .lineLimit(2)
             }
-            HStack(alignment: .top, spacing: 8) {
-                KyroSportsMatchupSide(side: game.away, logoURL: artwork.awayLogoURL,
-                                      isWinner: game.winner?.team.id == game.away.team.id,
-                                      isLoser: isLoser(game.away), showsScore: game.hasScore)
-                center
-                    .frame(minWidth: 84)
-                KyroSportsMatchupSide(side: game.home, logoURL: artwork.homeLogoURL,
-                                      isWinner: game.winner?.team.id == game.home.team.id,
-                                      isLoser: isLoser(game.home), showsScore: game.hasScore)
-            }
-            if !game.periods.isEmpty {
-                KyroSportsPeriodStrip(periods: game.periods, game: game)
-            }
+            KyroSportsScoreboardRows(game: game, artwork: artwork)
             if let playableStreams {
                 KyroSportsWatchFooter(streamCount: playableStreams)
             }
@@ -1165,11 +1237,6 @@ private struct KyroSportsGameRow: View, Equatable {
         .accessibilityIdentifier("kyroSportsGame-\(game.id.rawID)")
     }
 
-    private func isLoser(_ side: KyroGameTeam) -> Bool {
-        guard let winner = game.winner else { return false }
-        return winner.team.id != side.team.id
-    }
-
     /// Bowl or championship name and live situation (e.g. MLB outs), joined.
     private var contextLine: String? {
         let parts = [game.note, game.situation].compactMap { value -> String? in
@@ -1177,6 +1244,19 @@ private struct KyroSportsGameRow: View, Equatable {
             return value
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// A game not yet played shows its start time in the scoreboard, so its status pill would
+    /// repeat it; postponed and cancelled games still say so.
+    private var showsStatus: Bool { !game.status.isScheduled }
+
+    private var broadcast: String? {
+        guard let broadcast = game.broadcast, !broadcast.isEmpty else { return nil }
+        return broadcast
+    }
+
+    private var hasHeader: Bool {
+        showsLeague || showsStatus || game.weekLabel != nil || broadcast != nil
     }
 
     private var header: some View {
@@ -1195,9 +1275,17 @@ private struct KyroSportsGameRow: View, Equatable {
                     }
                     .accessibilityLabel(game.league.displayName)
             }
-            KyroSportsEventStatus(status: game.status, detail: compactStatus)
+            if showsStatus {
+                KyroSportsEventStatus(status: game.status, detail: compactStatus)
+            }
+            if let weekLabel = game.weekLabel {
+                Text(weekLabel)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(KyroTheme.textSecondary)
+                    .lineLimit(1)
+            }
             Spacer(minLength: 4)
-            if let broadcast = game.broadcast, !broadcast.isEmpty {
+            if let broadcast {
                 Text(broadcast)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(KyroTheme.textSecondary)
@@ -1212,89 +1300,160 @@ private struct KyroSportsGameRow: View, Equatable {
         }
         return game.statusLine
     }
-
-    /// The score for a game under way or over, otherwise its start time.
-    @ViewBuilder
-    private var center: some View {
-        VStack(spacing: 4) {
-            if game.hasScore {
-                HStack(spacing: 6) {
-                    scoreText(game.away)
-                    Text("–").foregroundStyle(KyroTheme.textSecondary)
-                    scoreText(game.home)
-                }
-                .font(.title2.weight(.bold))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Score \(game.away.score.map(String.init) ?? "none") to \(game.home.score.map(String.init) ?? "none")")
-            } else if game.isStartTimeTBD || game.startTime == nil {
-                Text("TBD")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(KyroTheme.textPrimary)
-            } else if let start = game.startTime {
-                Text(start, format: .dateTime.hour().minute())
-                    .font(.title3.weight(.bold))
-                    .monospacedDigit()
-                    .foregroundStyle(KyroTheme.textPrimary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
-            if let weekLabel = game.weekLabel {
-                Text(weekLabel)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(KyroTheme.textSecondary)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.top, 8)
-    }
-
-    private func scoreText(_ side: KyroGameTeam) -> some View {
-        Text(side.score.map(String.init) ?? "–")
-            .foregroundStyle(isLoser(side) ? KyroTheme.silver : KyroTheme.textPrimary)
-    }
 }
 
-/// One team in a matchup card: logo, short name and record, centred in its half.
-private struct KyroSportsMatchupSide: View {
-    let side: KyroGameTeam
-    let logoURL: URL?
-    let isWinner: Bool
-    let isLoser: Bool
-    let showsScore: Bool
+/// A schedule card's two team rows. Scored games line up period columns and the total in a grid;
+/// games not yet played put the start time beside both rows.
+private struct KyroSportsScoreboardRows: View {
+    let game: KyroSportsGame
+    let artwork: KyroSportsMatchupArtwork
 
-    @ScaledMetric(relativeTo: .title3) private var logoSize: CGFloat = 40
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .body) private var logoSize: CGFloat = 26
+    @ScaledMetric(relativeTo: .caption) private var periodWidth: CGFloat = 24
+    @ScaledMetric(relativeTo: .title3) private var totalWidth: CGFloat = 40
 
     var body: some View {
-        VStack(spacing: 6) {
-            KyroSportsTeamLogo(team: side.team, size: logoSize, url: logoURL)
-            Text(KyroSportsMatchupArtwork.columnName(for: side))
-                .font(.subheadline.weight(isWinner ? .bold : .semibold))
-                .foregroundStyle(isLoser ? KyroTheme.silver : KyroTheme.textPrimary)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.85)
-                .fixedSize(horizontal: false, vertical: true)
-            if let record = side.displayRecord {
-                Text(record)
-                    .font(.caption2)
-                    .foregroundStyle(KyroTheme.textSecondary)
+        Group {
+            if game.hasScore {
+                scored
+            } else {
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        teamCell(game.away, logo: artwork.awayLogoURL)
+                        teamCell(game.home, logo: artwork.homeLogoURL)
+                    }
+                    Spacer(minLength: 6)
+                    startTime
+                }
             }
         }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
     }
 
+    private var periods: [KyroGamePeriod] {
+        KyroSportsCardPeriods.shows(game.periods, isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
+            ? game.periods : []
+    }
+
+    private var scored: some View {
+        let periods = periods
+        return Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 6) {
+            if !periods.isEmpty {
+                GridRow {
+                    Color.clear.frame(height: 1).gridCellUnsizedAxes(.horizontal)
+                    ForEach(periods) { period in
+                        Text(period.label).lineLimit(1).minimumScaleFactor(0.7).frame(width: periodWidth)
+                    }
+                    Text("T").frame(width: totalWidth, alignment: .trailing)
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(KyroTheme.textSecondary)
+            }
+            row(game.away, logo: artwork.awayLogoURL, periods: periods)
+            row(game.home, logo: artwork.homeLogoURL, periods: periods)
+        }
+    }
+
+    private func row(_ side: KyroGameTeam, logo: URL?, periods: [KyroGamePeriod]) -> some View {
+        GridRow {
+            teamCell(side, logo: logo)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(periods) { period in
+                Text(periodScore(period, for: side))
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(KyroTheme.silver)
+                    .frame(width: periodWidth)
+            }
+            Text(side.score.map(String.init) ?? "–")
+                .font(.title3.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(isLoser(side) ? KyroTheme.silver : KyroTheme.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(width: totalWidth, alignment: .trailing)
+        }
+    }
+
+    /// Logo, name and record. The record goes first when the row is short of room, then the name
+    /// shrinks a little; it never wraps, so both rows keep one height.
+    private func teamCell(_ side: KyroGameTeam, logo: URL?) -> some View {
+        let name = Text(KyroSportsMatchupArtwork.columnName(for: side))
+            .font(.body.weight(isWinner(side) ? .bold : .semibold))
+            .foregroundStyle(isLoser(side) ? KyroTheme.silver : KyroTheme.textPrimary)
+        return HStack(spacing: 10) {
+            KyroSportsTeamLogo(team: side.team, size: logoSize, url: logo)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    name.lineLimit(1)
+                    if let record = side.displayRecord {
+                        Text(record)
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(KyroTheme.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
+                name.lineLimit(1)
+                name.lineLimit(1).minimumScaleFactor(0.75)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var startTime: some View {
+        if game.isStartTimeTBD || game.startTime == nil {
+            Text("TBD")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(KyroTheme.textPrimary)
+        } else if let start = game.startTime {
+            Text(start, format: .dateTime.hour().minute())
+                .font(.title3.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(KyroTheme.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+    }
+
+    private func isWinner(_ side: KyroGameTeam) -> Bool {
+        game.winner?.team.id == side.team.id
+    }
+
+    private func isLoser(_ side: KyroGameTeam) -> Bool {
+        guard let winner = game.winner else { return false }
+        return winner.team.id != side.team.id
+    }
+
+    private func periodScore(_ period: KyroGamePeriod, for side: KyroGameTeam) -> String {
+        let value = side.team.id == game.home.team.id ? period.homeScore : period.awayScore
+        return value.map(String.init) ?? "–"
+    }
+
     private var accessibilityLabel: String {
-        var parts = [side.team.fullName]
-        if let rank = side.rank, rank > 0 { parts.append("ranked number \(rank)") }
-        if let record = side.displayRecord { parts.append("record \(record)") }
-        if showsScore, let score = side.score { parts.append("score \(score)") }
-        if isWinner { parts.append("winner") }
-        return parts.joined(separator: ", ")
+        func describe(_ side: KyroGameTeam) -> String {
+            var parts = [side.team.fullName]
+            if let rank = side.rank, rank > 0 { parts.append("ranked number \(rank)") }
+            if let record = side.displayRecord { parts.append("record \(record)") }
+            if game.hasScore, let score = side.score { parts.append("score \(score)") }
+            if isWinner(side) { parts.append("winner") }
+            return parts.joined(separator: ", ")
+        }
+        var parts = [describe(game.away), describe(game.home)]
+        if !game.hasScore, let start = game.startTime, !game.isStartTimeTBD {
+            parts.append("starts \(start.formatted(date: .omitted, time: .shortened))")
+        }
+        let periods = periods
+        if !periods.isEmpty {
+            parts.append("Scoring by period")
+            parts += periods.map { period in
+                "\(period.label) \(game.away.team.abbreviation) \(period.awayScore.map(String.init) ?? "0"), "
+                    + "\(game.home.team.abbreviation) \(period.homeScore.map(String.init) ?? "0")"
+            }
+        }
+        return parts.joined(separator: ". ")
     }
 }
 
@@ -1401,71 +1560,6 @@ struct KyroSportsStatusPill: View {
     }
 }
 
-private struct KyroSportsPeriodStrip: View {
-    let periods: [KyroGamePeriod]
-    let game: KyroSportsGame
-
-    var body: some View {
-        Grid(alignment: .trailing, horizontalSpacing: 0, verticalSpacing: 4) {
-            GridRow {
-                Text("")
-                    .frame(width: 40, alignment: .leading)
-                ForEach(periods) { period in
-                    Text(period.label)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(KyroTheme.textSecondary)
-                        .frame(maxWidth: .infinity)
-                }
-                Text("T")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(KyroTheme.textSecondary)
-                    .frame(width: 34)
-            }
-            scoreRow(for: game.away)
-            scoreRow(for: game.home)
-        }
-        .padding(.top, 2)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
-    }
-
-    @ViewBuilder
-    private func scoreRow(for team: KyroGameTeam) -> some View {
-        GridRow {
-            Text(team.team.abbreviation)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(KyroTheme.textSecondary)
-                .frame(width: 40, alignment: .leading)
-            ForEach(periods) { period in
-                Text(periodScore(period, for: team))
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(KyroTheme.silver)
-                    .frame(maxWidth: .infinity)
-            }
-            Text(team.score.map(String.init) ?? "–")
-                .font(.caption2.weight(.bold))
-                .monospacedDigit()
-                .foregroundStyle(KyroTheme.textPrimary)
-                .frame(width: 34)
-        }
-    }
-
-    private func periodScore(_ period: KyroGamePeriod, for team: KyroGameTeam) -> String {
-        let value = team.team.id == game.home.team.id ? period.homeScore : period.awayScore
-        return value.map(String.init) ?? "–"
-    }
-
-    private var accessibilityLabel: String {
-        let quarters = periods.map { period in
-            let home = period.homeScore.map(String.init) ?? "0"
-            let away = period.awayScore.map(String.init) ?? "0"
-            return "\(period.label) \(game.away.team.abbreviation) \(away), \(game.home.team.abbreviation) \(home)"
-        }
-        return (["Scoring by period"] + quarters).joined(separator: ". ")
-    }
-}
-
 // MARK: - Live dot
 
 struct KyroLiveDot: View {
@@ -1522,10 +1616,14 @@ private struct KyroSportsMessageState: View {
                     .padding(.top, 2)
                     .accessibilityLabel("Refreshing")
             } else if let retry {
-                Button("Try Again", action: retry)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(KyroTheme.accentInk)
-                    .padding(.top, 2)
+                Button(action: retry) {
+                    Text("Try Again")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(KyroTheme.accentInk)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
         }
         .frame(maxWidth: .infinity)
@@ -1593,9 +1691,14 @@ private struct KyroSportsRefreshBanner: View {
             }
             Spacer(minLength: 4)
             if notice.kind != .refreshing {
-                Button("Refresh", action: retry)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(KyroTheme.accentInk)
+                Button(action: retry) {
+                    Text("Refresh")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(KyroTheme.accentInk)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 12)
@@ -1687,13 +1790,15 @@ struct KyroSportsEventCardChrome: ViewModifier {
                 case .league:
                     KyroSportsCardFill(shape: shape)
                 case .teams(let away, let home):
-                    // Two solid colour blocks with a slanted divide, inside the card's own outline
-                    // (no clip or mask), then one shading pass so the lower half reads darker.
+                    // Build 67: the teams are stacked (away above home), so their colours run top
+                    // to bottom behind their own rows: one two-stop fill, then the league tint
+                    // from the leading edge so the score column stays calm.
                     shape.fill(KyroSportsCardFill<RoundedRectangle>.staticBase)
-                    KyroSportsMatchupHalf(side: .leading).fill(Color(away).opacity(Self.teamColorOpacity))
-                    KyroSportsMatchupHalf(side: .trailing).fill(Color(home).opacity(Self.teamColorOpacity))
-                    shape.fill(LinearGradient(colors: [Color.black.opacity(0.05), Color.black.opacity(0.40)],
+                    shape.fill(LinearGradient(colors: [Color(away).opacity(Self.teamColorOpacity),
+                                                       Color(home).opacity(Self.teamColorOpacity)],
                                               startPoint: .top, endPoint: .bottom))
+                    shape.fill(LinearGradient(colors: [Color.clear, Color.black.opacity(0.30)],
+                                              startPoint: .leading, endPoint: .trailing))
                 }
                 shape.strokeBorder(accent.opacity(Self.outlineOpacity), lineWidth: 1)
                 Capsule()
@@ -1704,30 +1809,6 @@ struct KyroSportsEventCardChrome: ViewModifier {
             }
             .accessibilityHidden(true)
         }
-    }
-}
-
-/// One team's half of a matchup card: the card's rounded rectangle cut by a slanted divide. A
-/// shape rather than a clip, so the card stays a few static fills.
-private struct KyroSportsMatchupHalf: Shape {
-    enum Side { case leading, trailing }
-    let side: Side
-
-    func path(in rect: CGRect) -> Path {
-        let card = RoundedRectangle(cornerRadius: 14, style: .continuous).path(in: rect)
-        let slant = min(22, rect.width * 0.06)
-        let top = rect.midX + slant, bottom = rect.midX - slant
-        var half = Path()
-        switch side {
-        case .leading:
-            half.addLines([CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: top, y: rect.minY),
-                           CGPoint(x: bottom, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY)])
-        case .trailing:
-            half.addLines([CGPoint(x: top, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
-                           CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: bottom, y: rect.maxY)])
-        }
-        half.closeSubpath()
-        return card.intersection(half)
     }
 }
 

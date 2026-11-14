@@ -123,8 +123,18 @@ final class LiveTVPresentation {
     /// Whether a player view that appeared under `epoch` should end the stream as it disappears.
     /// Only the current presentation may, and only when nothing else (Picture in Picture, the
     /// inline player) holds the stream. An explicit close stops the session itself.
-    func shouldStopWhenPlayerDisappears(presentedAt epoch: Int) -> Bool {
-        epoch == presentationEpoch && LiveTVPictureInPicturePolicy.shouldStopWhenPlayerDisappears(phase)
+    ///
+    /// Build 68.1: `isPictureInPictureEngaged` is whether the system window is starting or showing
+    /// this session. Automatic Picture in Picture keeps the phase `.presented` (the cover stays, so
+    /// coming back lands on it), so the phase alone said "stop" while the window was on screen.
+    /// On the iPhone (Build 68 journal, 2026-11-13) the watch screen was rebuilt about 0.2 s after
+    /// the app entered the background: its disappearance stopped the session, the rebuilt screen
+    /// replayed the channel, the new video layer closed the window and playback ended. The window
+    /// owns the stream until it closes (`engagementEnded`) or the app returns and restores into
+    /// the cover, so a disappearing view never ends it.
+    func shouldStopWhenPlayerDisappears(presentedAt epoch: Int, isPictureInPictureEngaged: Bool = false) -> Bool {
+        guard !isPictureInPictureEngaged else { return false }
+        return epoch == presentationEpoch && LiveTVPictureInPicturePolicy.shouldStopWhenPlayerDisappears(phase)
     }
 
     /// The portrait watch screen (iPhone, opened from the guide) has handed its stream to the

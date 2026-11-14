@@ -38,15 +38,10 @@ struct KyroSportsSupplementalStatisticsView: View {
     private func rows(_ rows: [KyroSportsSupplementalStatistics.Row], showsHeader: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if showsHeader {
-                HStack(spacing: 8) {
-                    Text(isTennis ? game.away.team.shortName : game.away.team.abbreviation)
-                        .lineLimit(1).frame(width: 78, alignment: .leading)
-                    Text("STAT").frame(maxWidth: .infinity)
-                    Text(isTennis ? game.home.team.shortName : game.home.team.abbreviation)
-                        .lineLimit(1).frame(width: 78, alignment: .trailing)
-                }
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(KyroTheme.textSecondary)
+                // Build 67: column heads keyed to the comparison bars under each row.
+                KyroSportsStatComparisonHeader(away: isTennis ? game.away.team.shortName : game.away.team.abbreviation,
+                                               home: isTennis ? game.home.team.shortName : game.home.team.abbreviation,
+                                               columnWidth: 78)
             }
             ForEach(rows) { row in
                 if let group = row.group, row.id == rows.first(where: { $0.group == group })?.id {
@@ -56,16 +51,7 @@ struct KyroSportsSupplementalStatisticsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.top, row.id == rows.first?.id ? 0 : 6)
                 }
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(row.away).frame(width: 78, alignment: .leading)
-                    Text(row.label)
-                        .font(.caption)
-                        .foregroundStyle(KyroTheme.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
-                    Text(row.home).frame(width: 78, alignment: .trailing)
-                }
-                .font(.subheadline.monospacedDigit().weight(.semibold))
+                KyroSportsStatComparisonRow(label: row.label, away: row.away, home: row.home, columnWidth: 78)
                 if row.id != rows.last?.id { Divider() }
             }
         }
@@ -138,64 +124,5 @@ struct KyroSportsSourceNote: View {
     }
 }
 
-/// Statistics and Players for one tennis match, for Event Details. Loads only while shown, through
-/// the same cached, rate-limited providers as the Stats tab.
-struct KyroTennisMatchContextSection: View {
-    let game: KyroSportsGame
-    let store: KyroSportsEventDetailStore
-
-    private var supplement: KyroSportsSupplementalStatistics? {
-        guard let supplement = store.supplement, supplement.gameID == game.id else { return nil }
-        return supplement
-    }
-
-    private var playerInfo: KyroTennisPlayerInfo? {
-        guard let info = store.playerInfo, info.gameID == game.id else { return nil }
-        return info
-    }
-
-    private var message: KyroTennisStatsMessage? {
-        let outcome = store.supplementLookup?.gameID == game.id ? store.supplementLookup?.outcome : nil
-        return KyroTennisStatsMessage.make(status: game.status, outcome: outcome,
-                                           isLoading: store.supplementLoadingGameID == game.id)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if let supplement {
-                KyroSportsSupplementalStatisticsView(supplement: supplement, game: game)
-            } else if let message {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(message.title).font(.headline).foregroundStyle(KyroTheme.textPrimary)
-                    Text(message.detail).font(.footnote).foregroundStyle(KyroTheme.textSecondary)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("kyroTennisStatsMessage")
-            }
-            if let playerInfo {
-                KyroTennisPlayerInfoCard(info: playerInfo)
-            } else if store.playerInfoLoadingGameID == game.id {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("Loading rankings and recent results…").font(.footnote).foregroundStyle(KyroTheme.textSecondary)
-                }
-            } else if store.playerInfoLookedUpGameID == game.id {
-                Text("Rankings and recent results were not found for these players. theScore covers ATP and WTA tour events, not Challenger, WTA 125 or ITF.")
-                    .font(.footnote)
-                    .foregroundStyle(KyroTheme.textSecondary)
-            }
-        }
-        .task(id: KyroTennisMatchContextKey(gameID: game.id, isFinal: game.status.isFinal)) {
-            await store.loadSupplement(for: game)
-        }
-        .task(id: game.id) {
-            await store.loadPlayerInfo(for: game)
-        }
-        .accessibilityIdentifier("kyroTennisMatchContext")
-    }
-}
-
-private struct KyroTennisMatchContextKey: Hashable {
-    let gameID: KyroGameID
-    let isFinal: Bool
-}
+// Build 68: Event Details' tennis Statistics and Players moved to its Stats tab, which uses the same
+// `KyroSportsWatchingContent` as the pinned event, so `KyroTennisMatchContextSection` was removed.
