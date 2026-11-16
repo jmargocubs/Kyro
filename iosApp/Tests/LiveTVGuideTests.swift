@@ -82,6 +82,21 @@ final class LiveTVGuideTests: XCTestCase {
             ["News", "Sports", "Movies"])
     }
 
+    func testHomeBrowserAndGuidePickerPositionsRemainIndependent() {
+        let provider = UUID()
+        let categories = ["News", "Sports", "Movies"]
+        var home = LiveTVGuideCategoryPickerState()
+        var browser = LiveTVGuideCategoryPickerState()
+        var guide = LiveTVGuideCategoryPickerState()
+        home.remember(.category("News"), providerID: provider, categories: categories)
+        browser.remember(.category("Sports"), providerID: provider, categories: categories)
+        guide.remember(.category("Movies"), providerID: provider, categories: categories)
+
+        XCTAssertEqual(home.target(providerID: provider, selectedCategory: nil, categories: categories), .category("News"))
+        XCTAssertEqual(browser.target(providerID: provider, selectedCategory: nil, categories: categories), .category("Sports"))
+        XCTAssertEqual(guide.target(providerID: provider, selectedCategory: nil, categories: categories), .category("Movies"))
+    }
+
     func testTimelineAlignsToLocalHalfHoursAndBoundsTheWindow() throws {
         let now = date("2026-01-01T12:17:00Z")
         let timeline = LiveTVGuideTimeline(now: now, timeZone: utc)

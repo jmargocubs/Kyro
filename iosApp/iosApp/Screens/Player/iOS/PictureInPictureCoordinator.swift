@@ -828,9 +828,10 @@ final class PictureInPictureCoordinator {
             shouldStopForSourceChange = false
             adoptCurrentEngineSource()
         }
-        let endedOwner = engagedOwner
+        // A failed start never established a PiP engagement. Release the temporary strong owner,
+        // but do not run `onEngagementEnded`: that callback represents an established window
+        // closing and may legitimately stop playback.
         engagedOwner = nil
-        withExtendedLifetime(endedOwner) { onEngagementEnded?() }
     }
 
     fileprivate func softwareSetPlaying(_ playing: Bool) {

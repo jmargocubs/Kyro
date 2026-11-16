@@ -56,10 +56,14 @@ enum LiveTVWatchSurfaceMode: Equatable {
     /// The cover is on its way out (a stop, a removed provider, or an inline handoff).
     case none
 
-    static func make(phase: LiveTVPresentation.Phase, isExpanded: Bool) -> Self {
+    static func make(phase: LiveTVPresentation.Phase, isExpanded: Bool,
+                     isExpandedSurfaceMounted: Bool = true) -> Self {
         switch phase {
         case .presented(let channel, _), .restoring(let channel, _):
-            isExpanded ? .expanded(channel) : .video(channel)
+            // Keep the portrait surface until the incoming full-screen surface confirms that it
+            // mounted. Aether then owns the incoming view before SwiftUI dismantles the outgoing
+            // one, whose identity-guarded unbind cannot detach its successor.
+            isExpanded && isExpandedSurfaceMounted ? .expanded(channel) : .video(channel)
         case .pictureInPicture(let channel):
             .pictureInPicture(channel)
         case .idle, .inline:

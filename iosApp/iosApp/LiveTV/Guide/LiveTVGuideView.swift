@@ -19,11 +19,11 @@ struct LiveTVGuideView: View {
     var watch: LiveTVGuideWatchContext?
     @Environment(\.timeZone) private var timeZone
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedCategory: String?
     @State private var isShowingCategoryPicker = false
     @State private var categoryPickerPosition: LiveTVGuideCategoryPickerID?
     @State private var categoryPickerState = LiveTVGuideCategoryPickerState()
-    @State private var categoryPickerQuery = ""
     @State private var favoritesOnly = false
     @State private var rows: [LiveTVChannel] = []
     @State private var searchText = ""
@@ -84,10 +84,16 @@ struct LiveTVGuideView: View {
                     self.detail = nil
                 }
             }
-            .sheet(isPresented: $isShowingCategoryPicker, onDismiss: rememberCategoryPickerPosition) {
-                categoryPicker
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
+            // The full Guide pushes Categories. The watch screen's Guide is a tab under the player
+            // inside Watch's own cover, so it presents a fixed full-height page instead: no
+            // resizing detents, and Watch, playback and this Guide all stay where they are.
+            .navigationDestination(isPresented: categoryPushBinding) { categoryPicker }
+            .sheet(isPresented: categorySheetBinding) {
+                NavigationStack {
+                    categoryPicker
+                }
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
             }
             .onChange(of: watch?.activeChannelID) { _, channelID in
                 // A channel chosen outside this tab (the full-screen picker) is revealed here;
@@ -167,10 +173,7 @@ struct LiveTVGuideView: View {
         if watch != nil {
             content
                 .safeAreaInset(edge: .top, spacing: 0) {
-                    VStack(spacing: 0) {
-                        styleToggle
-                        compactBar
-                    }
+                    compactBar
                 }
                 .liveTVPageBackground()
                 .tint(LiveTVAccent.primaryText)
@@ -257,106 +260,165 @@ struct LiveTVGuideView: View {
         .overlay(alignment: .bottom) { Divider() }
     }
 
-    /// List or Grid. Choosing one stores the preference and leaves the filters and the player alone.
-    private var styleToggle: some View {
-        HStack(spacing: 4) {
-            ForEach(LiveTVEmbeddedGuideStyle.allCases) { style in
-                let isSelected = embeddedStyle == style
-                Button {
-                    selectGuideStyle(style)
-                } label: {
-                    Text(style.title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(isSelected ? Color.white : Color.siloOnSurface)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 28)
-                        .background(isSelected ? AnyShapeStyle(LiveTVAccent.primary) : AnyShapeStyle(LiveTVSurface.row),
-                                    in: Capsule())
+    /// The watch screen's one persistent control area. List/Grid moved into View so normal text
+    /// sizes reclaim the former selector row. When labels do not fit, filters use two comfortable
+    /// rows instead of compressing controls below their 44-point targets.
+    private var compactBar: some View {
+        Group {
+            if isSearchPresented {
+                HStack(spacing: 8) {
+                    compactSearchField
+                    Button("Cancel") { closeSearch() }
+                        .font(.subheadline.weight(.semibold))
                         .frame(minHeight: 44)
+                        .accessibilityIdentifier("liveTVWatchGuideSearchCancel")
+                }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    regularCompactControls
+                    expandedCompactControls
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 2)
+        .frame(minHeight: 44)
+        .background(LiveTVSurface.canvas)
+        .overlay(alignment: .bottom) { Divider() }
+        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: isSearchPresented)
+    }
+
+    private var compactSearchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(Color.siloSecondaryText)
+            TextField("Search channels", text: $searchText)
+                .focused($isCompactSearchFocused)
+                .submitLabel(.search)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .accessibilityIdentifier("liveTVWatchGuideSearchField")
+            if !searchText.isEmpty {
+                Button {
+                    clearSearchQuery()
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Color.siloSecondaryText)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(style == .list ? "List view" : "Grid view")
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                .accessibilityIdentifier("liveTVWatchGuideStyle.\(style.rawValue)")
+                .accessibilityLabel("Clear search")
             }
         }
-        .padding(.horizontal, 12)
-        .background(LiveTVSurface.canvas)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Guide view")
+        .font(.subheadline)
+        .padding(.leading, 10)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .background(LiveTVSurface.row, in: Capsule())
     }
 
-    /// The watch screen's filter bar: category, favorites and search on one 44-point row, with Now
-    /// to bring the grid back to the current time. Search expands in place of the filters.
-    private var compactBar: some View {
+    private var regularCompactControls: some View {
         HStack(spacing: 8) {
-            if isSearchPresented {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(Color.siloSecondaryText)
-                    TextField("Search channels", text: $searchText)
-                        .focused($isCompactSearchFocused)
-                        .submitLabel(.search)
-                        .autocorrectionDisabled()
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .accessibilityIdentifier("liveTVWatchGuideSearchField")
-                    if !searchText.isEmpty {
-                        Button {
-                            clearSearchQuery()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(Color.siloSecondaryText)
-                                .frame(width: 44, height: 44)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Clear search")
-                    }
-                }
-                .font(.subheadline)
-                .padding(.horizontal, 10)
-                .frame(height: 44)
-                .background(LiveTVSurface.row, in: Capsule())
-                Button("Cancel") { closeSearch() }
-                    .font(.subheadline.weight(.semibold))
-                    .accessibilityIdentifier("liveTVWatchGuideSearchCancel")
-            } else {
-                if !service.categories.isEmpty {
-                    compactChip(title: selectedCategory ?? "All Categories",
-                                symbol: "line.3.horizontal.decrease", isActive: selectedCategory != nil,
-                                identifier: "liveTVWatchGuideCategory") {
-                        openCategoryPicker()
-                    }
-                    .accessibilityLabel(selectedCategory.map { "Category, \($0)" } ?? "Category, all")
-                    .accessibilityHint("Choose which channel category the guide shows")
-                }
-                compactChip(title: "Favorites", symbol: favoritesOnly ? "star.fill" : "star",
-                            isActive: favoritesOnly, identifier: "liveTVWatchGuideFavorites") {
-                    favoritesOnly.toggle()
-                }
-                .accessibilityLabel(favoritesOnly ? "Show all channels" : "Show favorites only")
-                .accessibilityAddTraits(favoritesOnly ? .isSelected : [])
+            categoryControl
+            favoritesControl
+            Spacer(minLength: 0)
+            guideViewMenu
+            searchControl
+            guidePositionControl
+        }
+    }
+
+    private var expandedCompactControls: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                categoryControl
                 Spacer(minLength: 0)
-                compactIconButton("magnifyingglass", label: "Search channels",
-                                  identifier: "liveTVWatchGuideSearch") {
-                    beginSearch()
-                }
-                Button("Now") { scrollToNow() }
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal, 4)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-                    .accessibilityHint("Scrolls the guide to the current time")
-                    .accessibilityIdentifier("liveTVWatchGuideNow")
+                guideViewMenu
+            }
+            HStack(spacing: 8) {
+                favoritesControl
+                Spacer(minLength: 0)
+                searchControl
+                guidePositionControl
             }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 44)
-        .background(LiveTVSurface.canvas)
-        .overlay(alignment: .bottom) { Divider() }
-        .animation(.snappy(duration: 0.2), value: isSearchPresented)
+    }
+
+    @ViewBuilder
+    private var categoryControl: some View {
+        if !service.categories.isEmpty {
+            compactChip(title: selectedCategory ?? "All Categories",
+                        symbol: "line.3.horizontal.decrease", isActive: selectedCategory != nil,
+                        identifier: "liveTVWatchGuideCategory") {
+                openCategoryPicker()
+            }
+            .accessibilityLabel(selectedCategory.map { "Category, \($0)" } ?? "Category, all")
+            .accessibilityHint("Choose which channel category the guide shows")
+        }
+    }
+
+    private var favoritesControl: some View {
+        compactChip(title: "Favorites", symbol: favoritesOnly ? "star.fill" : "star",
+                    isActive: favoritesOnly, identifier: "liveTVWatchGuideFavorites") {
+            favoritesOnly.toggle()
+        }
+        .accessibilityLabel(favoritesOnly ? "Show all channels" : "Show favorite channels only")
+        .accessibilityAddTraits(favoritesOnly ? .isSelected : [])
+    }
+
+    private var searchControl: some View {
+        compactIconButton("magnifyingglass", label: "Search channels",
+                          identifier: "liveTVWatchGuideSearch") {
+            beginSearch()
+        }
+    }
+
+    private var guideViewMenu: some View {
+        Menu {
+            Picker("Guide View", selection: Binding(
+                get: { embeddedStyle },
+                set: { selectGuideStyle($0) })) {
+                    ForEach(LiveTVEmbeddedGuideStyle.allCases) { style in
+                        Label(style.title, systemImage: style == .list ? "list.bullet" : "rectangle.grid.1x2")
+                            .tag(style)
+                    }
+                }
+        } label: {
+            Label("View", systemImage: "rectangle.split.1x2")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color.siloOnSurface)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .background(LiveTVSurface.row, in: Capsule())
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Guide view")
+        .accessibilityValue(embeddedStyle.title)
+        .accessibilityHint("Choose List or Grid")
+        .accessibilityIdentifier("liveTVWatchGuideViewMenu")
+    }
+
+    @ViewBuilder
+    private var guidePositionControl: some View {
+        if embeddedStyle == .grid {
+            Button("Now") { scrollToNow() }
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 4)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                .accessibilityHint("Scrolls the grid to the current time")
+                .accessibilityIdentifier("liveTVWatchGuideNow")
+        } else {
+            Button("Playing") { revealPlayingChannel() }
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 4)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                .accessibilityHint("Reveals the playing channel when it is in these filters")
+                .accessibilityIdentifier("liveTVWatchGuidePlaying")
+        }
     }
 
     private func compactChip(title: String, symbol: String, isActive: Bool, identifier: String,
@@ -586,8 +648,8 @@ struct LiveTVGuideView: View {
 
     /// Scrolls the playing channel's row near the middle when it is in the list. A channel this
     /// list tuned is already on screen, and one outside the current filters is not searched for.
-    private func requestListReveal(activeChannelID: String?) {
-        guard let activeChannelID, activeChannelID != tunedFromGuideID,
+    private func requestListReveal(activeChannelID: String?, force: Bool = false) {
+        guard let activeChannelID, force || activeChannelID != tunedFromGuideID,
               let index = rows.firstIndex(where: { $0.id == activeChannelID }) else {
             listReveal = nil
             return
@@ -730,93 +792,38 @@ struct LiveTVGuideView: View {
         }
     }
 
+    private var categoryPresentation: LiveTVCategoryNavigation.Presentation {
+        LiveTVCategoryNavigation.guidePresentation(isWatchGuide: watch != nil)
+    }
+
+    private var categoryPushBinding: Binding<Bool> {
+        Binding(get: { isShowingCategoryPicker && categoryPresentation == .push }, set: { if !$0 { isShowingCategoryPicker = false } })
+    }
+
+    private var categorySheetBinding: Binding<Bool> {
+        Binding(get: { isShowingCategoryPicker && categoryPresentation == .fullHeightSheet }, set: { if !$0 { isShowingCategoryPicker = false } })
+    }
+
+    /// Only the chosen category reaches the Guide; scrolling the page writes no Guide state.
     private var categoryPicker: some View {
-        NavigationStack {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    categoryPickerRow(id: .allCategories, title: "All Categories", isSelected: selectedCategory == nil) {
-                        selectedCategory = nil
-                        isShowingCategoryPicker = false
-                    }
-                    let filtered = LiveTVGuideCategoryPickerModel.filteredCategories(service.categories, query: categoryPickerQuery)
-                    let frequent = categoryPickerQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? LiveTVGuideCategoryPickerModel.frequentCategories(
-                            categories: service.categories, channels: service.channels,
-                            favoriteIDs: service.favoriteChannelIDs)
-                        : []
-                    if !frequent.isEmpty {
-                        categoryPickerSectionHeader("Frequent")
-                        ForEach(frequent, id: \.self) { category in
-                            categoryPickerRow(id: .category(category), title: category,
-                                              isSelected: selectedCategory == category) {
-                                selectedCategory = category
-                                isShowingCategoryPicker = false
-                            }
-                        }
-                        categoryPickerSectionHeader("All Categories")
-                    }
-                    ForEach(filtered.filter { !frequent.contains($0) }, id: \.self) { category in
-                        categoryPickerRow(id: .category(category), title: category,
-                                          isSelected: selectedCategory == category) {
-                            selectedCategory = category
-                            isShowingCategoryPicker = false
-                        }
-                    }
-                }
-                .scrollTargetLayout()
-            }
-            .scrollPosition(id: $categoryPickerPosition, anchor: .top)
-            .scrollIndicators(.hidden)
-            .searchable(text: $categoryPickerQuery, prompt: "Search categories")
-            .accessibilityLabel("Live TV categories")
-            .navigationTitle("Filter by category")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { isShowingCategoryPicker = false }
-                }
-            }
-        }
-        .onAppear {
-            categoryPickerQuery = ""
-            guard let providerID = service.selectedProviderID else { return }
-            categoryPickerPosition = categoryPickerState.target(
-                providerID: providerID, selectedCategory: selectedCategory, categories: service.categories)
-        }
-    }
-
-    private func categoryPickerSectionHeader(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.caption.weight(.bold))
-            .foregroundStyle(Color.siloSecondaryText)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.top, 14)
-            .padding(.bottom, 4)
-    }
-
-    private func categoryPickerRow(id: LiveTVGuideCategoryPickerID, title: String, isSelected: Bool,
-                                   action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Text(title)
-                    .foregroundStyle(Color.siloOnSurface)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(LiveTVAccent.primaryText)
-                        .accessibilityHidden(true)
-                }
-            }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 20)
-            .frame(minHeight: 52)
-        }
-        .buttonStyle(.plain)
-        .id(id)
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        LiveTVCategoryBrowserPage(
+            title: "Categories",
+            allTitle: "All Categories",
+            mode: .filter(selected: selectedCategory),
+            categories: service.categories,
+            channels: service.channels,
+            favoriteIDs: service.favoriteChannelIDs,
+            catalogRevision: service.channelCatalogRevision,
+            initialPosition: categoryPickerPosition,
+            select: { choice in
+                selectedCategory = LiveTVCategoryNavigation.filterSelection(for: choice)
+                isShowingCategoryPicker = false
+            },
+            rememberPosition: { position in
+                categoryPickerPosition = position
+                rememberCategoryPickerPosition()
+            },
+            cancel: categoryPresentation == .push ? nil : { isShowingCategoryPicker = false })
     }
 
     private func openCategoryPicker() {
@@ -827,9 +834,13 @@ struct LiveTVGuideView: View {
     }
 
     private func scrollToNow() {
-        withAnimation(.easeInOut(duration: 0.3)) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
             position.scrollTo(x: timeline.scrollOffset(showing: .now))
         }
+    }
+
+    private func revealPlayingChannel() {
+        requestListReveal(activeChannelID: watch?.activeChannelID, force: true)
     }
 
     private func rememberCategoryPickerPosition() {

@@ -27,12 +27,16 @@ struct LiveTVWatchView: View {
     @State private var lastChannel: LiveTVChannel?
     /// The presentation this screen appeared under; see `LiveTVPresentation.presentationEpoch`.
     @State private var presentedEpoch: Int?
+    /// True only after the nested full-screen Aether surface has bound. Until then the portrait
+    /// surface remains mounted, preventing the previously observed empty-frame handoff.
+    @State private var fullscreenSurfaceMounted = false
     @Namespace private var tabIndicator
 
     private var presentation: LiveTVPresentation { service.presentation }
     private var session: LiveTVPlayerSession { service.playerSession }
     private var mode: LiveTVWatchSurfaceMode {
-        .make(phase: presentation.phase, isExpanded: presentation.isWatchExpanded)
+        .make(phase: presentation.phase, isExpanded: presentation.isWatchExpanded,
+              isExpandedSurfaceMounted: fullscreenSurfaceMounted)
     }
     private var channel: LiveTVChannel? { mode.channel ?? lastChannel }
 
@@ -98,6 +102,7 @@ struct LiveTVWatchView: View {
             controls.interact()
         }
         .onChange(of: presentation.isWatchExpanded) { _, expanded in
+            if !expanded { fullscreenSurfaceMounted = false }
             if !expanded, mode.hostsSurface { orientationCoordinator.watchScreenDidAppear() }
         }
         .onChange(of: session.state) { syncControls() }
@@ -105,7 +110,8 @@ struct LiveTVWatchView: View {
         // closes, exactly as the full-screen player's does. AVKit's restore re-presents it.
         .onChange(of: pictureInPicture.controlStartToken) { _, _ in
             // Expanded, the full-screen player above hands the stream over and closes both.
-            guard pictureInPicture.ownsEngagedSession(session), !presentation.isWatchExpanded else { return }
+            guard pictureInPicture.ownsEngagedSession(session), !presentation.isWatchExpanded,
+                  presentedEpoch == presentation.presentationEpoch else { return }
             presentation.pictureInPictureStartedFromControl()
             dismiss()
         }
@@ -143,7 +149,9 @@ struct LiveTVWatchView: View {
                 LiveTVPlayerView(channel: channel, channels: service.channels, session: session,
                                  service: service,
                                  naturalRotation: presentation.isWatchExpandedByRotation,
-                                 onCollapse: { LiveTVCoverTransition.immediate { presentation.collapseWatch() } })
+                                 onCollapse: { LiveTVCoverTransition.immediate { presentation.collapseWatch() } },
+                                 onSurfaceMounted: { fullscreenSurfaceMounted = true },
+                                 onSurfaceDismounted: { fullscreenSurfaceMounted = false })
             }
         }
     }
@@ -157,9 +165,7 @@ struct LiveTVWatchView: View {
             case .video(let channel):
                 video(channel)
             case .expanded:
-                // The full-screen player covers this frame whenever it is expanded, so the frame
-                // is seen only while that cover is arriving or leaving. A label here read as the
-                // portrait player failing mid-handoff (Build 50 recording, 3:15–3:24).
+                // Reached only after the incoming full-screen surface reported that it mounted.
                 EmptyView()
             case .pictureInPicture:
                 placeholder(symbol: "pip", title: "Playing in Picture in Picture")

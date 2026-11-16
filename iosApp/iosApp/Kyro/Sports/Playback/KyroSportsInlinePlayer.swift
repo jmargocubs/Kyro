@@ -214,9 +214,13 @@ struct KyroSportsInlinePlayer: View {
     // MARK: Information strip
 
     /// Build 67: a scoreboard line (logos, teams, the score in the strip's largest type) over the
-    /// clock, league and stream, with the actions beside both lines instead of under them. About
-    /// 20 points shorter than Build 66's two stacked rows, and drawn at the same height while the
-    /// stream is still connecting, so nothing below moves when it starts.
+    /// clock and stream, with the actions beside both lines instead of under them.
+    ///
+    /// Build 71.1: two tiers instead of one crowded meta line. The scoreboard leads; the second line
+    /// gives the live status and clock in primary type and the stream as a quieter trailing label
+    /// that truncates first. The league is shown only when there is no scoreboard (logos already
+    /// identify the event), so long college or channel names no longer push the clock off screen.
+    /// The strip's height and the actions are unchanged.
     private func infoStrip(_ strip: KyroSportsInlineStrip) -> some View {
         HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
@@ -224,10 +228,9 @@ struct KyroSportsInlinePlayer: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(strip.accessibilityMatchup)
                 metaLine(strip)
-                    .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("kyroSportsInlineStream")
             }
-            Spacer(minLength: 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
             if strip.showsPlaybackActions {
                 if pictureInPicture.isSupported, pictureInPicture.hasSource {
                     stripIconButton("pip.enter", label: "Picture in Picture",
@@ -252,16 +255,18 @@ struct KyroSportsInlinePlayer: View {
         .padding(.horizontal, 2)
     }
 
-    /// Logos, names and score for team sports (nicknames when they fit, otherwise abbreviations);
-    /// the matchup for tennis and unscored events.
+    /// Logos, names and score for team sports: nicknames, then abbreviations, then abbreviations
+    /// without logos (large Dynamic Type); the matchup for tennis and unscored events.
     @ViewBuilder
     private func scoreLine(_ strip: KyroSportsInlineStrip) -> some View {
         if let awayScore = strip.awayScore, let homeScore = strip.homeScore {
             ViewThatFits(in: .horizontal) {
                 scoreboard(strip, away: strip.game.away.team.nickname, awayScore: awayScore,
-                           home: strip.game.home.team.nickname, homeScore: homeScore)
+                           home: strip.game.home.team.nickname, homeScore: homeScore, showsLogos: true)
                 scoreboard(strip, away: strip.game.away.team.abbreviation, awayScore: awayScore,
-                           home: strip.game.home.team.abbreviation, homeScore: homeScore)
+                           home: strip.game.home.team.abbreviation, homeScore: homeScore, showsLogos: true)
+                scoreboard(strip, away: strip.game.away.team.abbreviation, awayScore: awayScore,
+                           home: strip.game.home.team.abbreviation, homeScore: homeScore, showsLogos: false)
             }
         } else {
             Text(strip.game.inlineMatchupTitle)
@@ -273,51 +278,74 @@ struct KyroSportsInlinePlayer: View {
     }
 
     private func scoreboard(_ strip: KyroSportsInlineStrip, away: String, awayScore: String,
-                            home: String, homeScore: String) -> some View {
+                            home: String, homeScore: String, showsLogos: Bool) -> some View {
         HStack(spacing: 6) {
-            KyroSportsTeamLogo(team: strip.game.away.team, size: 20)
+            if showsLogos { KyroSportsTeamLogo(team: strip.game.away.team, size: 20) }
             Text(away).font(.subheadline.weight(.semibold)).foregroundStyle(KyroTheme.silver)
             Text(awayScore).font(.title3.weight(.bold)).monospacedDigit()
             Text("–").font(.subheadline.weight(.semibold)).foregroundStyle(KyroTheme.textSecondary)
             Text(homeScore).font(.title3.weight(.bold)).monospacedDigit()
             Text(home).font(.subheadline.weight(.semibold)).foregroundStyle(KyroTheme.silver)
-            KyroSportsTeamLogo(team: strip.game.home.team, size: 20)
+            if showsLogos { KyroSportsTeamLogo(team: strip.game.home.team, size: 20) }
         }
         .foregroundStyle(KyroTheme.textPrimary)
         .lineLimit(1)
         .fixedSize()
     }
 
-    /// The live clock first (it changes; everything else is identity), then league and stream.
+    /// Status tier (live dot, clock) never truncates; the stream tier is smaller, dimmer and gives
+    /// way first.
     private func metaLine(_ strip: KyroSportsInlineStrip) -> some View {
-        HStack(spacing: 5) {
-            if strip.isLive {
-                Circle().fill(KyroTheme.live).frame(width: 6, height: 6)
-            }
-            Text(strip.statusLine)
-                .monospacedDigit()
-                .foregroundStyle(strip.isLive ? KyroTheme.textPrimary : KyroTheme.textSecondary)
-                .layoutPriority(2)
-            Text(strip.league).foregroundStyle(KyroTheme.accentInk).layoutPriority(1)
-            switch strip.stream {
-            case .finding(let status):
-                ProgressView().controlSize(.mini)
-                Text(status).layoutPriority(1)
-            case .playing(let name, let location):
-                if let name {
-                    Text("·")
-                    Text(name).truncationMode(.tail)
+        HStack(spacing: 8) {
+            HStack(spacing: 5) {
+                if strip.isLive {
+                    Circle().fill(KyroTheme.live).frame(width: 6, height: 6)
                 }
+                Text(strip.statusLine)
+                    .monospacedDigit()
+                    .foregroundStyle(strip.isLive ? KyroTheme.textPrimary : KyroTheme.textSecondary)
+                if strip.awayScore == nil {
+                    Text(strip.league).foregroundStyle(KyroTheme.accentInk)
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .fixedSize()
+            .accessibilityElement(children: .combine)
+            streamLabel(strip)
+                .layoutPriority(-1)
+        }
+        .lineLimit(1)
+    }
+
+    @ViewBuilder
+    private func streamLabel(_ strip: KyroSportsInlineStrip) -> some View {
+        switch strip.stream {
+        case .finding(let status):
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text(status).truncationMode(.tail)
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(KyroTheme.textSecondary)
+            .accessibilityElement(children: .combine)
+        case .playing(let name, let location):
+            HStack(spacing: 4) {
                 switch location {
-                case .inline: EmptyView()
+                case .inline: Image(systemName: "tv")
                 case .fullScreen: Image(systemName: "arrow.up.left.and.arrow.down.right")
                 case .pictureInPicture: Image(systemName: "pip")
                 }
+                if let compact = strip.compactChannelName {
+                    Text(compact).truncationMode(.tail)
+                }
             }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(KyroTheme.textSecondary.opacity(0.8))
+            .opacity(name == nil && location == .inline ? 0 : 1)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(name.map { "Watching \($0)" } ?? "")
+            .accessibilityHidden(name == nil)
         }
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(KyroTheme.textSecondary)
-        .lineLimit(1)
     }
 
     private func stripIconButton(_ symbol: String, label: String, identifier: String,

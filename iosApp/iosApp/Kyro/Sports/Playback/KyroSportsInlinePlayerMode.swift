@@ -108,6 +108,35 @@ struct KyroSportsInlineStrip: Equatable {
     let showsPlaybackActions: Bool
     let hasOtherStreams: Bool
 
+    /// Build 71.1: the stream name as the strip's quieter second tier shows it, with an IPTV
+    /// region prefix ("US| ", "USA: ") and trailing quality tags ("FHD", "HD", "4K") removed.
+    /// VoiceOver still reads the full name.
+    var compactChannelName: String? {
+        guard case .playing(let name?, _) = stream else { return nil }
+        return Self.compactChannelName(name)
+    }
+
+    static let channelQualityTags: Set<String> = ["HD", "FHD", "UHD", "SD", "4K", "HEVC", "H265", "60FPS", "ᴴᴰ", "ᴿᴬᵂ", "RAW"]
+
+    static func compactChannelName(_ name: String) -> String {
+        var words = name.split(whereSeparator: \.isWhitespace).map(String.init)
+        // "US|ESPN", "US| ESPN", "USA: ESPN": a 2–3 letter uppercase region code and a separator.
+        if let first = words.first, let range = first.range(of: #"^[A-Z]{2,3}\s*[:|]"#, options: .regularExpression) {
+            let rest = String(first[range.upperBound...])
+            if rest.isEmpty { words.removeFirst() } else { words[0] = rest }
+        } else if words.count > 1, let first = words.first,
+                  first.range(of: #"^[A-Z]{2,3}$"#, options: .regularExpression) != nil,
+                  ["|", ":", "-"].contains(words[1]) {
+            words.removeFirst(2)
+        }
+        while words.count > 1, let last = words.last,
+              channelQualityTags.contains(last.uppercased().trimmingCharacters(in: CharacterSet(charactersIn: "()[]"))) {
+            words.removeLast()
+        }
+        let compact = words.joined(separator: " ")
+        return compact.isEmpty ? LiveTVChannel.displayName(name) : compact
+    }
+
     var accessibilityMatchup: String {
         guard let awayScore, let homeScore else { return game.inlineMatchupTitle }
         return "\(game.away.team.fullName) \(awayScore), \(game.home.team.fullName) \(homeScore)"

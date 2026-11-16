@@ -48,6 +48,24 @@ final class LiveTVHomeSelectionTests: XCTestCase {
         XCTAssertEqual(Set(LiveTVHomeHeaderAction.allCases).count, 3)
     }
 
+    func testHomeQuickDestinationsRouteToExistingGuideAndBrowserActions() {
+        var events: [String] = []
+        let actions = LiveTVHomeActions(
+            browse: { filters in
+                if filters.favoritesOnly { events.append("favorite channels") }
+                else if filters == .channels { events.append("all channels") }
+            },
+            showGuide: { events.append("guide") })
+
+        for destination in LiveTVHomeQuickDestination.allCases {
+            destination.activate(actions)
+        }
+
+        XCTAssertEqual(events, ["guide", "all channels", "favorite channels"])
+        XCTAssertEqual(LiveTVHomeQuickDestination.favoriteChannels.title, "Favorite Channels")
+        XCTAssertEqual(Set(LiveTVHomeQuickDestination.allCases.map(\.accessibilityIdentifier)).count, 3)
+    }
+
     func testCachedCatalogErrorRemainsVisibleWhenListStateIsReady() {
         let state = LiveTVChannelListContentState.resolve(hasProviders: true, isLoading: false,
                                                           errorMessage: "Playback failed", channelCount: 2)

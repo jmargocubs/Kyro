@@ -211,6 +211,7 @@ final class LiveTVPlayerStabilizationTests: XCTestCase {
     }
 
     func testEmbeddedGuideDefaultsToListAndRemembersAChoice() {
+        XCTAssertEqual(LiveTVEmbeddedGuideStyle.defaultsKey, "liveTV.watchGuide.style.v1")
         XCTAssertEqual(LiveTVEmbeddedGuideStyle.resolve(stored: nil), .list)
         XCTAssertEqual(LiveTVEmbeddedGuideStyle.resolve(stored: ""), .list)
         XCTAssertEqual(LiveTVEmbeddedGuideStyle.resolve(stored: "timeline"), .list)

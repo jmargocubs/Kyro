@@ -93,7 +93,7 @@ struct LiveTVStreamStatsSheet: View {
     var body: some View {
         NavigationStack {
             LiveTVWatchStatsView(monitor: monitor)
-                .navigationTitle("Stream Stats")
+                .navigationTitle("Stream Information")
                 .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium, .large])

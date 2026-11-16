@@ -78,7 +78,10 @@ final class KyroAppHeaderUITests: XCTestCase {
         XCTAssertFalse(app.otherElements["liveTVTabHeader"].exists)
         XCTAssertFalse(app.otherElements["kyroLiveTVRow"].exists)
         XCTAssertFalse(app.staticTexts["Kyro Live"].exists, "no KYRO LIVE wordmark")
-        XCTAssertTrue(app.buttons["liveTVGuideButton"].isHittable, "one TV Guide button on Live TV Home")
+        XCTAssertTrue(app.buttons["liveTVHomeGuide"].isHittable, "Guide is visible on Live TV Home")
+        XCTAssertTrue(app.buttons["liveTVHomeAllChannels"].isHittable, "All Channels is visible on Live TV Home")
+        XCTAssertTrue(app.buttons["liveTVHomeFavoriteChannels"].isHittable,
+                      "Favorite Channels is visible even when the list is empty")
         XCTAssertFalse(app.buttons["liveTVSettingsLink"].exists, "Live TV Settings lives in Settings, not on Home")
         XCTAssertFalse(app.buttons["Live TV settings"].exists, "no Live TV gear")
     }
@@ -87,15 +90,15 @@ final class KyroAppHeaderUITests: XCTestCase {
         let app = launch()
         tab("Live TV", app).tap()
         XCTAssertTrue(app.staticTexts["liveTVHomeFavoritesHeader"].waitForExistence(timeout: 30))
-        app.buttons["View All"].firstMatch.tap()
+        app.buttons["liveTVHomeAllChannels"].tap()
         XCTAssertTrue(app.navigationBars.buttons.firstMatch.waitForExistence(timeout: 5), "browser's system Back")
         XCTAssertFalse(app.buttons["liveTVBrowserBack"].exists, "no second, custom Back")
         app.navigationBars.buttons.firstMatch.tap()
-        XCTAssertTrue(app.buttons["liveTVGuideButton"].waitForExistence(timeout: 5), "back on Live TV Home")
-        app.buttons["liveTVGuideButton"].tap()
+        XCTAssertTrue(app.buttons["liveTVHomeGuide"].waitForExistence(timeout: 5), "back on Live TV Home")
+        app.buttons["liveTVHomeGuide"].tap()
         XCTAssertTrue(app.navigationBars["TV Guide"].waitForExistence(timeout: 10), "Guide pushed")
         app.navigationBars.buttons.firstMatch.tap()
-        XCTAssertTrue(app.buttons["liveTVGuideButton"].waitForExistence(timeout: 5), "Guide returns to Live TV Home")
+        XCTAssertTrue(app.buttons["liveTVHomeGuide"].waitForExistence(timeout: 5), "Guide returns to Live TV Home")
     }
 
     /// The real Settings screen (Debug route, no server needed): Live TV is one entry that pushes a

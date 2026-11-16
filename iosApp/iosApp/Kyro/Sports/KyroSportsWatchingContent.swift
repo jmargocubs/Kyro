@@ -192,11 +192,20 @@ struct KyroSportsWatchingContent: View {
                 KyroSportsPregameStatsSections(context: pregame, game: game)
             }
         } else if let details = matchingDetails, details.hasStatistics {
+            let hasTeamStats = !details.teamStatistics.isEmpty
+            let hasPlayerStats = details.playerBoxScores.contains { $0.groups.contains { !$0.athletes.isEmpty } }
+            let section: KyroSportsPlayerBoxScoreSelection.Section = hasTeamStats && hasPlayerStats
+                ? boxScoreSelection.section(for: game.id)
+                : (hasTeamStats ? .team : .players)
             VStack(alignment: .leading, spacing: 22) {
-                if !details.teamStatistics.isEmpty {
-                    teamStatistics(details.teamStatistics)
+                if hasTeamStats && hasPlayerStats {
+                    statsSectionPicker(section)
                 }
-                playerBoxScores(details.playerBoxScores)
+                if section == .team {
+                    teamStatistics(details.teamStatistics)
+                } else {
+                    playerBoxScores(details.playerBoxScores)
+                }
                 sourceNote("Box score from ESPN for this event. Live statistics may update after the score does.")
                 if let supplement = matchingSupplement {
                     KyroSportsSupplementalStatisticsView(supplement: supplement, game: game)
@@ -302,6 +311,25 @@ struct KyroSportsWatchingContent: View {
                 .frame(maxWidth: .infinity, minHeight: 240)
             }
         }
+    }
+
+    /// Build 71.1: Team Stats | Player Stats. Changing it swaps content without animation so the
+    /// scroll view does not animate a large height change under the viewer's finger.
+    private func statsSectionPicker(_ section: KyroSportsPlayerBoxScoreSelection.Section) -> some View {
+        Picker("Statistics", selection: Binding(
+            get: { section },
+            set: { newValue in
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { boxScoreSelection.selectSection(newValue, for: game.id) }
+            }
+        )) {
+            ForEach(KyroSportsPlayerBoxScoreSelection.Section.allCases, id: \.self) { option in
+                Text(option.title).tag(option)
+            }
+        }
+        .pickerStyle(.segmented)
+        .accessibilityIdentifier("kyroSportsStatsSectionPicker")
     }
 
     private func teamStatistics(_ teams: [KyroSportsTeamBoxScore]) -> some View {

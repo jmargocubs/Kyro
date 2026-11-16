@@ -42,6 +42,47 @@ struct LiveTVHomeActions {
     var loadPrograms: (LiveTVChannel) -> LiveTVProgramPair = { _ in LiveTVProgramPair(current: nil, next: nil) }
 }
 
+/// The three common destinations shown before any Live TV Home rails.
+enum LiveTVHomeQuickDestination: CaseIterable, Hashable, Identifiable, Sendable {
+    case guide
+    case allChannels
+    case favoriteChannels
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .guide: "Guide"
+        case .allChannels: "All Channels"
+        case .favoriteChannels: "Favorite Channels"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .guide: "calendar.day.timeline.left"
+        case .allChannels: "rectangle.grid.2x2"
+        case .favoriteChannels: "star.fill"
+        }
+    }
+
+    var accessibilityIdentifier: String {
+        switch self {
+        case .guide: "liveTVHomeGuide"
+        case .allChannels: "liveTVHomeAllChannels"
+        case .favoriteChannels: "liveTVHomeFavoriteChannels"
+        }
+    }
+
+    func activate(_ actions: LiveTVHomeActions) {
+        switch self {
+        case .guide: actions.showGuide()
+        case .allChannels: actions.browse(.channels)
+        case .favoriteChannels: actions.browse(.favorites)
+        }
+    }
+}
+
 enum LiveTVHomeMetrics {
     static let margin: CGFloat = 20
     static let sectionTop: CGFloat = 28
@@ -100,8 +141,7 @@ struct LiveTVHomeContent: View {
 
     @ViewBuilder
     private var rails: some View {
-        // One TV Guide button, above the live channels. Live TV has no separate destination row.
-        LiveTVGuideButton(action: actions.showGuide)
+        LiveTVHomeQuickAccess(actions: actions)
             .padding(.horizontal, LiveTVHomeMetrics.margin)
             .padding(.top, 12)
 
@@ -161,8 +201,6 @@ struct LiveTVHomeContent: View {
                                     action: LiveTVHomeSectionAction(label: "View All", perform: actions.showAllCategories))
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 10) {
-                    LiveTVCategoryTile(title: "All Channels", symbol: LiveTVCategorySymbol.allChannels,
-                                       isHighlighted: true) { actions.browse(.channels) }
                     ForEach(LiveTVHomeSelection.categories(from: model.categories), id: \.self) { category in
                         LiveTVCategoryTile(title: category, symbol: LiveTVCategorySymbol.symbol(for: category)) {
                             actions.browse(.category(category))
@@ -764,32 +802,76 @@ enum LiveTVHomeCarouselPolicy {
     }
 }
 
-/// The Guide's one entry on Live TV Home.
-private struct LiveTVGuideButton: View {
-    let action: () -> Void
+/// Compact at normal sizes; at accessibility sizes the same destinations become full-width rows
+/// rather than squeezing three long labels into unusable targets.
+private struct LiveTVHomeQuickAccess: View {
+    let actions: LiveTVHomeActions
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: "calendar.day.timeline.left")
-                    .font(.body.weight(.semibold))
-                Text("TV Guide")
-                    .font(.body.weight(.semibold))
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.bold))
-                    .foregroundStyle(.white.opacity(0.6))
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 8) {
+                    ForEach(LiveTVHomeQuickDestination.allCases) { destination in
+                        button(destination, compact: false)
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(LiveTVHomeQuickDestination.allCases) { destination in
+                        button(destination, compact: true)
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Live TV destinations")
+    }
+
+    private func button(_ destination: LiveTVHomeQuickDestination, compact: Bool) -> some View {
+        Button { destination.activate(actions) } label: {
+            Group {
+                if compact {
+                    VStack(spacing: 7) {
+                        Image(systemName: destination.systemImage)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(LiveTVAccent.primaryText)
+                        Text(destination.title)
+                            .font(.caption.weight(.semibold))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 66)
+                } else {
+                    HStack(spacing: 12) {
+                        Image(systemName: destination.systemImage)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(LiveTVAccent.primaryText)
+                            .frame(width: 24)
+                        Text(destination.title)
+                            .font(.body.weight(.semibold))
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.bold))
+                            .foregroundStyle(.white.opacity(0.55))
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                }
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 18)
-            .frame(maxWidth: .infinity, minHeight: 48)
-            .background(Color.white.opacity(0.1), in: Capsule())
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 1))
-            .contentShape(Capsule())
+            .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("TV Guide")
-        .accessibilityIdentifier("liveTVGuideButton")
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel(destination.title)
+        .accessibilityHint("Opens \(destination.title) in Live TV")
+        .accessibilityIdentifier(destination.accessibilityIdentifier)
     }
 }
 

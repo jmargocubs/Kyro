@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// Stable scroll targets for the guide's category picker. The all-categories row is distinct from
 /// any provider category with the same display text.
@@ -66,4 +67,21 @@ enum LiveTVGuideCategoryPickerModel {
             .prefix(limit)
             .map(\.element)
     }
+
+    /// The rows the picker shows, derived once per render. `frequent` is ranked once
+    /// per picker presentation, so filtering never rescans the channel catalog.
+    struct Projection: Equatable {
+        let frequent: [String]
+        let remaining: [String]
+    }
+
+    static func projection(categories: [String], query: String, frequent: [String]) -> Projection {
+        let isSearching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let shownFrequent = isSearching ? [] : frequent
+        let excluded = Set(shownFrequent)
+        let filtered = filteredCategories(categories, query: query)
+        return Projection(frequent: shownFrequent,
+                          remaining: excluded.isEmpty ? filtered : filtered.filter { !excluded.contains($0) })
+    }
 }
+

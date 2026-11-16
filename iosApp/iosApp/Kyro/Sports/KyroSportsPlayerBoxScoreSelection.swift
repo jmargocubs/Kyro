@@ -6,13 +6,40 @@ import Foundation
 /// football Stats tab ran to several screens. A two-team selector now shows one team at a time.
 /// The screen that owns the tab bar keeps the choice (the hub, or Event Details), so it survives
 /// Stats → Game → Stats. It is tied to an event: another event starts on its first team.
+///
+/// Build 71.1: the same value also keeps the Stats tab's Team Stats | Player Stats choice, so both
+/// choices share one owner and one reset rule. A new event starts on Team Stats and its first team.
 struct KyroSportsPlayerBoxScoreSelection: Equatable {
+    enum Section: Hashable, CaseIterable {
+        case team, players
+
+        var title: String {
+            switch self {
+            case .team: return "Team Stats"
+            case .players: return "Player Stats"
+            }
+        }
+    }
+
     private(set) var gameID: KyroGameID?
     private(set) var teamID: String?
+    private var storedSection: Section = .team
 
     mutating func select(_ teamID: String, for gameID: KyroGameID) {
+        if self.gameID != gameID { storedSection = .team }
         self.gameID = gameID
         self.teamID = teamID
+    }
+
+    mutating func selectSection(_ section: Section, for gameID: KyroGameID) {
+        if self.gameID != gameID { teamID = nil }
+        self.gameID = gameID
+        storedSection = section
+    }
+
+    /// Team Stats unless the viewer chose otherwise for this event.
+    func section(for gameID: KyroGameID) -> Section {
+        self.gameID == gameID ? storedSection : .team
     }
 
     /// The viewer's choice for this event while that team still has a box score; otherwise the

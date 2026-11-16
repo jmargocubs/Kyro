@@ -199,5 +199,8 @@ final class LiveTVWatchStatsTests: XCTestCase {
         XCTAssertTrue(LiveTVPlayerControlCapabilities.canChangeAspect(route: .software))
         XCTAssertFalse(LiveTVPlayerControlCapabilities.canChangeAspect(route: .audioOnly))
         XCTAssertFalse(LiveTVPlayerControlCapabilities.canRouteOutput(route: .none))
+        XCTAssertTrue(LiveTVPlayerControlCapabilities.canShowStreamInformation(route: .remoteHLS))
+        XCTAssertTrue(LiveTVPlayerControlCapabilities.canShowStreamInformation(route: .audioOnly))
+        XCTAssertFalse(LiveTVPlayerControlCapabilities.canShowStreamInformation(route: .none))
     }
 }

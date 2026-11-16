@@ -116,6 +116,12 @@ enum LiveTVPlayerControlCapabilities {
     static func canRouteOutput(route: LiveTVStatsSample.Route) -> Bool {
         route != .none
     }
+
+    /// The same route gate the old player-overlay Stream Stats button used. Build 71 moves the
+    /// entry into Live TV Controls without changing which playing streams expose the metrics.
+    static func canShowStreamInformation(route: LiveTVStatsSample.Route) -> Bool {
+        route != .none
+    }
 }
 
 /// Presentation state for the badges that survive opening and closing Stream Stats. The

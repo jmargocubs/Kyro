@@ -116,6 +116,7 @@ enum KyroPerformanceCounter: String, CaseIterable {
 enum KyroPerformanceMetric: String, CaseIterable {
     case styleSwitch = "List/Grid switch"
     case categoryChange = "Category change"
+    case categoryDirectory = "Category data"
     case listReveal = "List reveal"
     case sportsDetailLoad = "Detail load"
 }

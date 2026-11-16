@@ -278,18 +278,26 @@ struct LiveTVPlayerView: View {
     /// Set when the iPhone watch screen expanded into this player. Back then returns there and
     /// the stream plays on; the watch screen owns stopping it.
     let onCollapse: (() -> Void)?
+    /// Watch-only surface handoff callbacks. The incoming surface reports mounted after Aether has
+    /// bound it, allowing the portrait surface to unmount without an empty-frame interval.
+    let onSurfaceMounted: (() -> Void)?
+    let onSurfaceDismounted: (() -> Void)?
     /// A system-driven watch expansion follows the device back to portrait; the manual button
     /// keeps the existing landscape override, including under Portrait Orientation Lock.
     let naturalRotation: Bool
 
     init(channel: LiveTVChannel, channels: [LiveTVChannel], session: LiveTVPlayerSession,
          service: LiveTVService? = nil, naturalRotation: Bool = false,
-         onCollapse: (() -> Void)? = nil) {
+         onCollapse: (() -> Void)? = nil,
+         onSurfaceMounted: (() -> Void)? = nil,
+         onSurfaceDismounted: (() -> Void)? = nil) {
         _channel = State(initialValue: channel)
         self.channels = channels
         self.session = session
         self.service = service
         self.onCollapse = onCollapse
+        self.onSurfaceMounted = onSurfaceMounted
+        self.onSurfaceDismounted = onSurfaceDismounted
         self.naturalRotation = naturalRotation
         #if os(iOS)
         let isPhone = UIDevice.current.userInterfaceIdiom == .phone
@@ -309,7 +317,11 @@ struct LiveTVPlayerView: View {
                 // remounts the view without recreating the engine.
                 ZStack {
                     AetherPlayerSurface(engine: aether)
-                        .task { service?.presentation.playerDidAppear(channel) }
+                        .task {
+                            onSurfaceMounted?()
+                            service?.presentation.playerDidAppear(channel)
+                        }
+                        .onDisappear { onSurfaceDismounted?() }
                     LiveTVSubtitleLayer(engine: aether)
                 }
                 .ignoresSafeArea()
@@ -762,7 +774,6 @@ struct LiveTVBasicControlsButton: View {
     @ObservedObject private var engine: AetherEngine
     let onPresentationChanged: (Bool) -> Void
     @State private var isShowingControls = false
-    @State private var isShowingStats = false
 
     init(engine: AetherEngine, onPresentationChanged: @escaping (Bool) -> Void) {
         _engine = ObservedObject(wrappedValue: engine)
@@ -795,17 +806,6 @@ struct LiveTVBasicControlsButton: View {
                 .accessibilityHint("Choose audio, subtitles, or picture aspect")
                 .accessibilityIdentifier("liveTVBasicControls")
 
-                Button {
-                    onPresentationChanged(true)
-                    isShowingStats = true
-                } label: {
-                    Image(systemName: "chart.xyaxis.line")
-                        .font(.headline.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-                .accessibilityLabel("Stream Stats")
-                .accessibilityIdentifier("liveTVStreamStats")
             }
 
             if LiveTVPlayerControlCapabilities.canRouteOutput(route: route) {
@@ -821,13 +821,7 @@ struct LiveTVBasicControlsButton: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $isShowingStats) {
-            LiveTVStreamStatsSheet(engine: engine)
-        }
         .onChange(of: isShowingControls) { _, shown in
-            onPresentationChanged(shown)
-        }
-        .onChange(of: isShowingStats) { _, shown in
             onPresentationChanged(shown)
         }
     }
@@ -837,6 +831,7 @@ private struct LiveTVBasicControlsSheet: View {
     @ObservedObject var engine: AetherEngine
     @Environment(\.dismiss) private var dismiss
     @State private var aspect: VideoGravity
+    @State private var isShowingStreamInformation = false
 
     init(engine: AetherEngine) {
         self._engine = ObservedObject(wrappedValue: engine)
@@ -915,6 +910,20 @@ private struct LiveTVBasicControlsSheet: View {
                         }
                     }
                 }
+
+                if LiveTVPlayerControlCapabilities.canShowStreamInformation(route: route) {
+                    Section("Support") {
+                        Button {
+                            isShowingStreamInformation = true
+                        } label: {
+                            Label("Stream Information", systemImage: "chart.xyaxis.line")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityHint("Shows technical information about the playing stream")
+                        .accessibilityIdentifier("liveTVStreamInformation")
+                    }
+                }
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Live TV Controls")
@@ -924,6 +933,9 @@ private struct LiveTVBasicControlsSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+        .sheet(isPresented: $isShowingStreamInformation) {
+            LiveTVStreamStatsSheet(engine: engine)
         }
         .preferredColorScheme(.dark)
     }

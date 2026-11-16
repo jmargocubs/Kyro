@@ -71,6 +71,29 @@ final class LiveTVWatchScreenTests: XCTestCase {
         XCTAssertEqual(pictureInPictureStops, 0)
     }
 
+    func testFullScreenKeepsPortraitSurfaceUntilIncomingSurfaceMounted() {
+        let a = channel("a")
+        openWatchScreen(a)
+        XCTAssertTrue(presentation.expandWatch())
+
+        let awaitingIncoming = LiveTVWatchSurfaceMode.make(
+            phase: presentation.phase, isExpanded: true, isExpandedSurfaceMounted: false)
+        XCTAssertEqual(awaitingIncoming, .video(a),
+                       "the outgoing surface remains until the replacement has bound")
+
+        let transferred = LiveTVWatchSurfaceMode.make(
+            phase: presentation.phase, isExpanded: true, isExpandedSurfaceMounted: true)
+        XCTAssertEqual(transferred, .expanded(a))
+        XCTAssertFalse(transferred.hostsSurface,
+                       "after confirmation only the full-screen surface owns the engine layer")
+
+        presentation.collapseWatch()
+        XCTAssertEqual(LiveTVWatchSurfaceMode.make(
+            phase: presentation.phase, isExpanded: false, isExpandedSurfaceMounted: true), .video(a),
+                       "collapse remounts portrait before the outgoing cover finishes")
+        XCTAssertEqual(stops, 0)
+    }
+
     func testFullScreenNeedsAPresentedStream() {
         XCTAssertFalse(presentation.expandWatch())
         XCTAssertFalse(presentation.isWatchExpanded)
