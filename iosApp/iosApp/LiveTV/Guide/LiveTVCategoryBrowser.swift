@@ -515,6 +515,15 @@ struct LiveTVCategoryBrowserPage: View {
         .onChange(of: favoriteIDs) { rebuildDirectory(keepingPosition: true) }
         .onChange(of: preferences) { preferences.save(providerID: providerID); refreshProjection() }
         .onChange(of: providerID) { preferences = LiveTVCategoryPreferences.load(providerID: providerID); rebuildDirectory(keepingPosition: true) }
+        #if os(iOS)
+        // A settings restore or Undo can change the layout and grouping while this page is alive.
+        // Reload only those two, so this page never saves its older copy back over them.
+        .onReceive(NotificationCenter.default.publisher(for: .kyroSettingsDidRestore)) { _ in
+            let saved = LiveTVCategoryPreferences.load(providerID: providerID)
+            if saved.appearance != preferences.appearance { preferences.appearance = saved.appearance }
+            if saved.grouping != preferences.grouping { preferences.grouping = saved.grouping }
+        }
+        #endif
     }
 
     // MARK: Data

@@ -1,0 +1,472 @@
+#if os(iOS) || KYRO_STANDALONE_TESTS
+import CryptoKit
+import Foundation
+import UniformTypeIdentifiers
+
+// Build 88: Settings Backup & Restore, the Foundation-only core.
+//
+// Nothing here knows about a concrete preference store. A `BackupSetting` is one explicitly
+// allowlisted setting with a typed validator and the existing store's own getter and setter, so the
+// document, preview and apply logic can be tested with in-memory fakes. Settings are never
+// discovered by scanning `UserDefaults`: a key that is not registered cannot be exported or
+// restored.
+
+// MARK: - File types
+
+/// The file types Backup & Restore uses.
+///
+/// Export uses the custom type declared in Info.plist (UTExportedTypeDeclarations), so a saved file
+/// gets the `.kyrosettings` extension. Import deliberately does NOT name that type. The Files picker
+/// runs in a separate process and decides which files are selectable by resolving every type in the
+/// list; a custom identifier that process cannot resolve (an app installed outside the App Store,
+/// a file made before the declaration was registered, a file provider that reports its own type)
+/// leaves the saved backup greyed out. System types always resolve, and every file passes the same
+/// size, schema, integrity and content checks before anything is previewed, whatever its name or type.
+enum SettingsBackupFileType {
+    static let exportIdentifier = "com.cubbiestream.kyro.settings-backup"
+    static let fileExtension = "kyrosettings"
+
+    /// Used only to name and type an exported file.
+    static let exportType = UTType(exportedAs: exportIdentifier, conformingTo: .json)
+
+    /// What the importer offers: JSON, any data file, and any item as the last resort for a file whose
+    /// provider reports an unexpected type. Never the custom identifier.
+    static let importerTypes: [UTType] = [.json, .data, .item]
+}
+
+// MARK: - Notification
+
+extension Notification.Name {
+    /// Posted on the main thread after a restore, an Undo or a recovery has written settings, so a
+    /// screen that keeps its own copy of a restored preference can reload it. Carries no payload.
+    static let kyroSettingsDidRestore = Notification.Name("kyro.settings.didRestore")
+}
+
+// MARK: - Values
+
+/// A backup value. Only scalars exist, so a file can never carry a nested structure, a number that
+/// is not an integer, or a null.
+enum BackupValue: Equatable, Sendable, Codable {
+    case bool(Bool)
+    case int(Int)
+    case string(String)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container, debugDescription: "Only booleans, integers and strings are allowed.")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .bool(let value): try container.encode(value)
+        case .int(let value): try container.encode(value)
+        case .string(let value): try container.encode(value)
+        }
+    }
+
+    /// Plain text for a setting without its own labels.
+    var plainText: String {
+        switch self {
+        case .bool(let value): value ? "On" : "Off"
+        case .int(let value): String(value)
+        case .string(let value): value
+        }
+    }
+}
+
+// MARK: - Groups
+
+/// The unit a user chooses to export or restore. Portable groups are on by default; device-specific
+/// groups are off by default and only restore onto the same kind of device they were saved from.
+enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable {
+    case navigation
+    case liveTVCategories
+    case guideLayout
+    case sports
+    case downloads
+    case playbackOptions
+    case pictureInPicture
+    case advancedAudioVideo
+    case navigationLayout
+
+    var id: String { rawValue }
+
+    var isDeviceSpecific: Bool {
+        switch self {
+        case .navigation, .liveTVCategories, .guideLayout, .sports, .downloads: false
+        case .playbackOptions, .pictureInPicture, .advancedAudioVideo, .navigationLayout: true
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .navigation: "Navigation"
+        case .liveTVCategories: "Live TV categories"
+        case .guideLayout: "Guide layout"
+        case .sports: "Sports sources"
+        case .downloads: "Downloads"
+        case .playbackOptions: "Playback options"
+        case .pictureInPicture: "Picture in Picture"
+        case .advancedAudioVideo: "Advanced audio & video"
+        case .navigationLayout: "Navigation layout & appearance"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .navigation: "The fourth tab."
+        case .liveTVCategories: "How categories look and group."
+        case .guideLayout: "List or grid guide on the watch screen."
+        case .sports: "Which extra Sports data sources are on."
+        case .downloads: "Wi-Fi only, quality, limits and sorting."
+        case .playbackOptions: "Buffering and lossless audio."
+        case .pictureInPicture: "Keep playing when you leave the app."
+        case .advancedAudioVideo: "Deinterlacing and TrueHD Atmos."
+        case .navigationLayout: "Floating navigation style and behavior."
+        }
+    }
+
+    static var portable: [SettingsBackupGroup] { allCases.filter { !$0.isDeviceSpecific } }
+    static var deviceSpecific: [SettingsBackupGroup] { allCases.filter(\.isDeviceSpecific) }
+    static var defaultSelection: Set<SettingsBackupGroup> { Set(portable) }
+}
+
+// MARK: - Settings
+
+/// One allowlisted setting. `read` and `write` are the owning store's own accessors; `write` must
+/// never reach the network or a server-backed contract.
+struct BackupSetting {
+    let id: String
+    let group: SettingsBackupGroup
+    let title: String
+    let validate: @MainActor (BackupValue) -> Bool
+    let read: @MainActor () -> BackupValue?
+    let write: @MainActor (BackupValue) throws -> Void
+    /// Non-nil when this device cannot use the setting; the text says why.
+    let unsupportedReason: @MainActor () -> String?
+    let label: @MainActor (BackupValue) -> String
+
+    init(
+        id: String,
+        group: SettingsBackupGroup,
+        title: String,
+        validate: @escaping @MainActor (BackupValue) -> Bool,
+        read: @escaping @MainActor () -> BackupValue?,
+        write: @escaping @MainActor (BackupValue) throws -> Void,
+        unsupportedReason: @escaping @MainActor () -> String? = { nil },
+        label: @escaping @MainActor (BackupValue) -> String = { $0.plainText }
+    ) {
+        self.id = id
+        self.group = group
+        self.title = title
+        self.validate = validate
+        self.read = read
+        self.write = write
+        self.unsupportedReason = unsupportedReason
+        self.label = label
+    }
+}
+
+struct SettingsBackupRegistry {
+    let settings: [BackupSetting]
+    /// "phone" or "pad": the kind of device this registry writes to.
+    let deviceIdiom: String
+
+    func setting(id: String) -> BackupSetting? { settings.first { $0.id == id } }
+    func settings(in group: SettingsBackupGroup) -> [BackupSetting] { settings.filter { $0.group == group } }
+}
+
+// MARK: - Safety limits
+
+enum SettingsBackupSafety {
+    static let maxFileBytes = 256 * 1024
+    static let maxNestingDepth = 8
+    static let maxEntries = 200
+    static let maxNameLength = 80
+    static let maxStringValueLength = 64
+
+    /// Name fragments that must never appear in a backup, in a group name or a key. A file that has
+    /// one is rejected rather than skipped: Kyro never writes it, so it was edited or made elsewhere.
+    private static let sensitiveFragments = [
+        "token", "password", "passwd", "secret", "credential", "apikey", "api_key", "api-key",
+        "bearer", "cookie", "keychain", "session", "authorization", "url", "host",
+        "uuid", "profile", "server", "provider", "account", "username", "email", "pairing",
+        "diagnostic", "cache", "database",
+    ]
+
+    static func isSensitiveName(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        return sensitiveFragments.contains { lowered.contains($0) }
+    }
+
+    /// A value that looks like a link, a credential or a path.
+    static func isSuspiciousValue(_ value: BackupValue) -> Bool {
+        guard case .string(let text) = value else { return false }
+        if text.count > maxStringValueLength { return true }
+        let lowered = text.lowercased()
+        return lowered.contains("://") || lowered.contains("bearer ") || lowered.hasPrefix("/")
+            || lowered.contains("..") || text.unicodeScalars.contains { $0.value < 0x20 }
+    }
+}
+
+// MARK: - Errors
+
+enum SettingsBackupError: Error, Equatable, LocalizedError {
+    case tooLarge
+    case empty
+    case malformed
+    case notABackup
+    case requiresNewerApp(minReaderVersion: Int)
+    case invalidVersion
+    case integrityMismatch
+    case unsafeContent
+    case nothingToExport
+    case unreadable
+    case registryUnsafe(id: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .tooLarge: "This file is too large to be a Kyro settings backup."
+        case .empty: "This file is empty."
+        case .malformed: "This file is damaged or is not a Kyro settings backup. Choose a .kyrosettings file saved from Backup & Restore."
+        case .notABackup: "This is not a Kyro settings backup. Choose a .kyrosettings file saved from Backup & Restore."
+        case .requiresNewerApp: "This backup was made by a newer version of Kyro. Update Kyro to import it."
+        case .invalidVersion: "This backup has an invalid version."
+        case .integrityMismatch: "This backup was changed or damaged after it was saved, so it was not imported."
+        case .unsafeContent: "This backup contains data Kyro never exports, so it was not imported."
+        case .nothingToExport: "There are no settings to export in the groups you chose."
+        case .unreadable: "Kyro couldn't read this file."
+        case .registryUnsafe(let id): "The setting \(id) cannot be backed up."
+        }
+    }
+}
+
+// MARK: - Document
+
+struct SettingsBackupAppInfo: Equatable, Sendable {
+    var version: String
+    var build: String
+    var platform: String
+    /// "phone" or "pad".
+    var idiom: String
+}
+
+/// A decoded, validated backup. Nothing in it has been applied.
+struct IncomingBackup: Equatable {
+    let schemaVersion: Int
+    let createdAt: String
+    let app: SettingsBackupAppInfo?
+    /// Group name → key → value, exactly as read. Names Kyro does not know are kept so the preview
+    /// can count what it skipped.
+    let groups: [String: [String: BackupValue]]
+
+    var isNewerThanSupported: Bool { schemaVersion > SettingsBackupCodec.currentSchemaVersion }
+}
+
+enum SettingsBackupCodec {
+    static let format = "kyro.settings-backup"
+    static let currentSchemaVersion = 1
+    /// The oldest reader that understands every file this build writes.
+    static let minReaderVersion = 1
+    static let fileExtension = SettingsBackupFileType.fileExtension
+
+    private struct Header: Decodable {
+        let format: String
+        let schemaVersion: Int
+        let minReaderVersion: Int
+    }
+
+    private struct AppInfoDTO: Codable {
+        var version: String
+        var build: String
+        var platform: String
+        var idiom: String
+    }
+
+    private struct Payload: Codable {
+        var groups: [String: [String: BackupValue]]
+    }
+
+    private struct Envelope: Codable {
+        var format: String
+        var schemaVersion: Int
+        var minReaderVersion: Int
+        var createdAt: String
+        var app: AppInfoDTO?
+        var payloadSha256: String
+        var payload: Payload
+    }
+
+    // MARK: Encode
+
+    static func encode(
+        values: [(id: String, group: SettingsBackupGroup, value: BackupValue)],
+        app: SettingsBackupAppInfo,
+        now: Date
+    ) throws -> Data {
+        var groups: [String: [String: BackupValue]] = [:]
+        for entry in values {
+            // The exporter only ever takes registered settings, but the document refuses anything
+            // sensitive on its own as well.
+            guard !SettingsBackupSafety.isSensitiveName(entry.id),
+                  !SettingsBackupSafety.isSuspiciousValue(entry.value) else {
+                throw SettingsBackupError.registryUnsafe(id: entry.id)
+            }
+            groups[entry.group.rawValue, default: [:]][entry.id] = entry.value
+        }
+        guard !groups.isEmpty else { throw SettingsBackupError.nothingToExport }
+        return try makeDocument(
+            groups: groups, schemaVersion: currentSchemaVersion, minReaderVersion: minReaderVersion, app: app, now: now)
+    }
+
+    /// Writes a document with a correct integrity hash. `encode` is the only production caller; tests
+    /// use it to build files with other versions or contents.
+    static func makeDocument(
+        groups: [String: [String: BackupValue]],
+        schemaVersion: Int,
+        minReaderVersion: Int,
+        app: SettingsBackupAppInfo,
+        now: Date
+    ) throws -> Data {
+        let payload = Payload(groups: groups)
+        let envelope = Envelope(
+            format: format,
+            schemaVersion: schemaVersion,
+            minReaderVersion: minReaderVersion,
+            createdAt: ISO8601DateFormatter().string(from: now),
+            app: AppInfoDTO(version: app.version, build: app.build, platform: app.platform, idiom: app.idiom),
+            payloadSha256: try hash(of: payload),
+            payload: payload
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(envelope)
+    }
+
+    private static func canonicalBytes(of payload: Payload) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(payload)
+    }
+
+    private static func hash(of payload: Payload) throws -> String {
+        SHA256.hash(data: try canonicalBytes(of: payload)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    // MARK: Decode
+
+    static func decode(_ data: Data) throws -> IncomingBackup {
+        guard data.count <= SettingsBackupSafety.maxFileBytes else { throw SettingsBackupError.tooLarge }
+        guard !data.isEmpty else { throw SettingsBackupError.empty }
+        guard nestingDepth(of: data) <= SettingsBackupSafety.maxNestingDepth else {
+            throw SettingsBackupError.malformed
+        }
+
+        let decoder = JSONDecoder()
+        let header: Header
+        do { header = try decoder.decode(Header.self, from: data) } catch { throw SettingsBackupError.malformed }
+        guard header.format == format else { throw SettingsBackupError.notABackup }
+        guard header.schemaVersion >= 1, header.minReaderVersion >= 1,
+              header.minReaderVersion <= header.schemaVersion else {
+            throw SettingsBackupError.invalidVersion
+        }
+        // A newer file that this build cannot read in full is refused before its payload is looked at.
+        guard header.minReaderVersion <= currentSchemaVersion else {
+            throw SettingsBackupError.requiresNewerApp(minReaderVersion: header.minReaderVersion)
+        }
+
+        let envelope: Envelope
+        do { envelope = try decoder.decode(Envelope.self, from: data) } catch { throw SettingsBackupError.malformed }
+
+        try validateContent(envelope.payload.groups)
+
+        guard envelope.payloadSha256.lowercased() == (try hash(of: envelope.payload)) else {
+            throw SettingsBackupError.integrityMismatch
+        }
+
+        return IncomingBackup(
+            schemaVersion: header.schemaVersion,
+            createdAt: envelope.createdAt,
+            app: envelope.app.map {
+                SettingsBackupAppInfo(version: $0.version, build: $0.build, platform: $0.platform, idiom: $0.idiom)
+            },
+            groups: envelope.payload.groups
+        )
+    }
+
+    private static func validateContent(_ groups: [String: [String: BackupValue]]) throws {
+        var entries = 0
+        for (groupName, values) in groups {
+            guard groupName.count <= SettingsBackupSafety.maxNameLength,
+                  !SettingsBackupSafety.isSensitiveName(groupName) else {
+                throw SettingsBackupError.unsafeContent
+            }
+            for (key, value) in values {
+                entries += 1
+                guard entries <= SettingsBackupSafety.maxEntries,
+                      key.count <= SettingsBackupSafety.maxNameLength,
+                      !SettingsBackupSafety.isSensitiveName(key),
+                      !SettingsBackupSafety.isSuspiciousValue(value) else {
+                    throw SettingsBackupError.unsafeContent
+                }
+            }
+        }
+    }
+
+    /// The deepest `{`/`[` nesting in the raw bytes, ignoring brackets inside strings. Checked before
+    /// decoding so a file made of thousands of opening brackets never reaches the parser.
+    static func nestingDepth(of data: Data) -> Int {
+        var depth = 0
+        var deepest = 0
+        var inString = false
+        var escaped = false
+        for byte in data {
+            if inString {
+                if escaped { escaped = false } else if byte == 0x5C { escaped = true } else if byte == 0x22 { inString = false }
+                continue
+            }
+            switch byte {
+            case 0x22: inString = true
+            case 0x7B, 0x5B:
+                depth += 1
+                deepest = max(deepest, depth)
+                if deepest > SettingsBackupSafety.maxNestingDepth { return deepest }
+            case 0x7D, 0x5D: depth = max(0, depth - 1)
+            default: break
+            }
+        }
+        return deepest
+    }
+}
+
+// MARK: - Export
+
+enum SettingsBackupExporter {
+    /// Builds a backup of the chosen groups from the registered settings only. A setting this device
+    /// cannot use, or cannot read, is left out.
+    @MainActor
+    static func export(
+        registry: SettingsBackupRegistry,
+        groups: Set<SettingsBackupGroup>,
+        app: SettingsBackupAppInfo,
+        now: Date = Date()
+    ) throws -> Data {
+        var values: [(id: String, group: SettingsBackupGroup, value: BackupValue)] = []
+        for setting in registry.settings where groups.contains(setting.group) {
+            guard setting.unsupportedReason() == nil, let value = setting.read(), setting.validate(value) else { continue }
+            values.append((setting.id, setting.group, value))
+        }
+        return try SettingsBackupCodec.encode(values: values, app: app, now: now)
+    }
+}
+#endif

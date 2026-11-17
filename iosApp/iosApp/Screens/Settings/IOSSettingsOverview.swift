@@ -48,7 +48,7 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
         case .downloadsStorage:
             ["downloads & storage", "downloads", "offline", "quality", "cleanup", "storage"]
         case .accountConnections:
-            ["account & connections", "account", "connections", "general", "profile", "startup", "server", "sign in", "tv", "sign out"]
+            ["account & connections", "account", "connections", "general", "profile", "startup", "server", "sign in", "tv", "sign out", "backup", "restore", "export settings", "import settings"]
         case .privacy:
             ["privacy", "privacy & support", "privacy policy", "crash reports", "crash reporting", "consent", "diagnostics sharing"]
         case .advancedDiagnostics:
@@ -370,6 +370,10 @@ private struct IOSAccountConnectionsSettingsView: View {
                 NavigationLink { GeneralSettingsView() } label: {
                     SettingsOverviewRow(title: "General", subtitle: "Profile selection and app startup", systemImage: "person.crop.circle.badge.checkmark", value: launchPreferences.behavior.title)
                 }
+                NavigationLink { SettingsBackupView() } label: {
+                    SettingsOverviewRow(title: "Backup & Restore", subtitle: "Export or import this device's preferences", systemImage: "externaldrive.badge.checkmark")
+                }
+                .accessibilityIdentifier("settings.backupRestore")
                 if accountSignIn.showsEntry {
                     NavigationLink { AccountSignInView(model: accountSignIn) } label: {
                         SettingsOverviewRow(title: "Sign-in", subtitle: "Connect or disconnect your sign-in provider", systemImage: "person.badge.key.fill", value: accountSignIn.identities.first?.providerName)
