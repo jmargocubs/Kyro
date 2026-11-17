@@ -65,6 +65,7 @@ Thumbs.db
 .swiftpm/
 docs/*
 !docs/tvos-focus.md
+!docs/tvos-keyboard-entry.md
 !docs/mac-builder.md
 !docs/tvos-player/
 docs/tvos-player/*

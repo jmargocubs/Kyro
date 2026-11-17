@@ -425,12 +425,14 @@ struct TVLiveTVProviderManagementView: View {
     @State private var password = ""
     @State private var localError: String?
     @State private var providerToRemove: LiveTVProvider?
+    @State private var showsPhoneSetup = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 34) {
                     providerList
+                    phoneSetupEntry
                     Divider().overlay(Color.white.opacity(0.18))
                     addProviderForm
                 }
@@ -446,6 +448,9 @@ struct TVLiveTVProviderManagementView: View {
             }
         }
         .onExitCommand { dismiss() }
+        .fullScreenCover(isPresented: $showsPhoneSetup) {
+            TVLiveTVPairingView(service: service)
+        }
         .confirmationDialog(
             "Remove \(providerToRemove?.name ?? "provider")?",
             isPresented: Binding(get: { providerToRemove != nil }, set: { if !$0 { providerToRemove = nil } })
@@ -512,6 +517,21 @@ struct TVLiveTVProviderManagementView: View {
                     .foregroundStyle(KyroTheme.live)
                     .font(.system(size: 20, weight: .medium))
             }
+        }
+    }
+
+    /// The recommended way to add a provider: send it from the Kyro iPhone app instead of typing
+    /// long URLs and passwords with the Siri Remote.
+    private var phoneSetupEntry: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                showsPhoneSetup = true
+            } label: {
+                Label("Set up with phone", systemImage: "iphone.and.arrow.forward")
+                    .font(.system(size: 28, weight: .semibold))
+            }
+            Text("Send a provider from the Kyro iPhone app. Nothing to type here.")
+                .font(.system(size: 20)).foregroundStyle(Color.siloSecondaryText)
         }
     }
 
