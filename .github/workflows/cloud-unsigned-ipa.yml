@@ -1,0 +1,211 @@
+name: Cloud unsigned IPA (free runner)
+
+# Builds UNSIGNED iOS and/or tvOS IPAs on a standard GitHub-hosted runner so the
+# local Mac is not used. Free for public repositories.
+#
+# Safety properties (do not weaken without review):
+#   - Manual trigger only. No push/PR/schedule trigger.
+#   - Read-only token, no secrets, no signing material, no releases.
+#   - Standard runner label only (xcode-27, arm64, 3 vCPU / 7 GB). Never a
+#     "-large" or "-xlarge" label: those are billed.
+#   - Output is a short-lived workflow artifact, never a published release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or full commit SHA to build (must exist on GitHub)'
+        required: true
+        type: string
+        default: kyro/m1-rebrand
+      platform:
+        description: 'Which platform(s) to build'
+        required: true
+        type: choice
+        default: ios
+        options:
+          - ios
+          - tvos
+          - both
+      build_number:
+        description: 'CURRENT_PROJECT_VERSION to stamp (for example 90)'
+        required: true
+        type: string
+      marketing_version:
+        description: 'MARKETING_VERSION to stamp'
+        required: true
+        type: string
+        default: '1.0.0'
+      use_cache:
+        description: 'Restore/save the SwiftPM package cache (turn off for a cold-build benchmark)'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-unsigned-ipa
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} unsigned IPA
+    runs-on: xcode-27 # standard free arm64 runner; Xcode 27.1 default
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ios
+            scheme: Silo
+            app: Silo
+            destination: generic/platform=iOS
+            extra: ''
+          - platform: tvos
+            scheme: SiloTV
+            app: SiloTV
+            destination: generic/platform=tvOS
+            extra: 'SILO_USER_INDEPENDENT_KEYCHAIN=NO'
+    steps:
+      - name: Skip platforms not requested
+        id: gate
+        env:
+          WANT: ${{ inputs.platform }}
+          THIS: ${{ matrix.platform }}
+        run: |
+          if [ "$WANT" = "both" ] || [ "$WANT" = "$THIS" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping $THIS (requested: $WANT)"
+          fi
+
+      - name: Validate inputs
+        if: steps.gate.outputs.run == 'true'
+        env:
+          BUILD: ${{ inputs.build_number }}
+          VERSION: ${{ inputs.marketing_version }}
+        run: |
+          [[ "$BUILD" =~ ^[0-9]{1,6}$ ]] || { echo "build_number must be digits"; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "marketing_version must look like 1.0.0"; exit 1; }
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Select Xcode 27.1 and record environment
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          xcodebuild -version
+          echo "BUILD_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+          echo "IMAGE_VERSION=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+          sysctl -n machdep.cpu.brand_string || true
+          sysctl -n hw.ncpu hw.memsize
+
+      - name: Install XcodeGen
+        if: steps.gate.outputs.run == 'true'
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Restore SwiftPM cache
+        id: spm
+        if: steps.gate.outputs.run == 'true' && inputs.use_cache
+        uses: actions/cache@v4
+        with:
+          path: iosApp/.spm-packages
+          key: spm-${{ matrix.platform }}-${{ hashFiles('iosApp/project.yml', 'iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Generate project and resolve packages
+        if: steps.gate.outputs.run == 'true'
+        working-directory: iosApp
+        run: |
+          xcodegen generate --spec project.yml
+          xcodebuild -resolvePackageDependencies -project Silo.xcodeproj -scheme "${{ matrix.scheme }}" \
+            -clonedSourcePackagesDirPath .spm-packages \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
+
+      - name: Archive (unsigned, Release)
+        if: steps.gate.outputs.run == 'true'
+        working-directory: iosApp
+        env:
+          BUILD: ${{ inputs.build_number }}
+          VERSION: ${{ inputs.marketing_version }}
+        run: |
+          set -o pipefail
+          T0=$(date +%s)
+          xcodebuild archive \
+            -project Silo.xcodeproj \
+            -scheme "${{ matrix.scheme }}" \
+            -configuration Release \
+            -destination "${{ matrix.destination }}" \
+            -archivePath "$RUNNER_TEMP/${{ matrix.app }}.xcarchive" \
+            -clonedSourcePackagesDirPath .spm-packages \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            -jobs 3 -showBuildTimingSummary \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' CODE_SIGN_ENTITLEMENTS='' \
+            SILO_BUILD_CHANNEL=sideload MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
+            ${{ matrix.extra }} \
+            | tee "$RUNNER_TEMP/xcodebuild.log" | tail -n 60
+          echo "ARCHIVE_SECONDS=$(( $(date +%s) - T0 ))" >> "$GITHUB_ENV"
+
+      - name: Package and verify IPA
+        if: steps.gate.outputs.run == 'true'
+        env:
+          BUILD: ${{ inputs.build_number }}
+          VERSION: ${{ inputs.marketing_version }}
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/${{ matrix.app }}.xcarchive/Products/Applications/${{ matrix.app }}.app"
+          test -d "$APP"
+          OUT="$GITHUB_WORKSPACE/out"; mkdir -p "$OUT/stage/Payload"
+          cp -R "$APP" "$OUT/stage/Payload/"
+          python3 scripts/ci/validate-subtitle-packaging.py "$OUT/stage/Payload/${{ matrix.app }}.app"
+          IPA="Kyro-${VERSION}-${BUILD}-${{ matrix.platform }}-unsigned-arm64.ipa"
+          (cd "$OUT/stage" && zip -qry "$OUT/$IPA" Payload)
+          rm -rf "$OUT/stage"
+          # Verify: structure, bundle id, min OS, architecture, no signature/profile.
+          unzip -l "$OUT/$IPA" | grep -q "Payload/${{ matrix.app }}.app/Info.plist"
+          if unzip -l "$OUT/$IPA" | grep -q embedded.mobileprovision; then echo "unexpected provisioning profile"; exit 1; fi
+          PLIST="$APP/Info.plist"
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")
+          MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$PLIST" 2>/dev/null || echo n/a)
+          PLIST_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")
+          ARCH=$(lipo -archs "$APP/${{ matrix.app }}")
+          [ "$PLIST_BUILD" = "$BUILD" ] || { echo "CFBundleVersion $PLIST_BUILD != $BUILD"; exit 1; }
+          SHA=$(shasum -a 256 "$OUT/$IPA" | awk '{print $1}')
+          SIZE=$(stat -f %z "$OUT/$IPA")
+          {
+            echo "ipa: $IPA"
+            echo "sha256: $SHA"
+            echo "size_bytes: $SIZE"
+            echo "source_commit: $(git rev-parse HEAD)"
+            echo "source_ref: ${{ inputs.ref }}"
+            echo "target: ${{ matrix.scheme }} (${{ matrix.platform }})"
+            echo "marketing_version: $VERSION"
+            echo "build_number: $BUILD"
+            echo "bundle_id: $BUNDLE_ID"
+            echo "min_os: $MIN_OS"
+            echo "architectures: $ARCH"
+            echo "signed: no"
+            echo "xcode: $(xcodebuild -version | tr '\n' ' ')"
+            echo "runner_image: $IMAGE_VERSION"
+            echo "archive_seconds: $ARCHIVE_SECONDS"
+            echo "total_seconds: $(( $(date +%s) - BUILD_STARTED ))"
+            echo "spm_cache: ${{ inputs.use_cache && (steps.spm.outputs.cache-hit == 'true' && 'hit' || 'miss') || 'disabled' }}"
+          } | tee "$OUT/BUILD-INFO-${{ matrix.platform }}.txt"
+          {
+            echo "### ${{ matrix.platform }} unsigned IPA"
+            echo '```'; cat "$OUT/BUILD-INFO-${{ matrix.platform }}.txt"; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          name: Kyro-${{ matrix.platform }}-unsigned-ipa-${{ inputs.build_number }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: error

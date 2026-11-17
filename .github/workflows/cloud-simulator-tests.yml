@@ -1,0 +1,146 @@
+name: Cloud Simulator tests (free runner)
+
+# Runs the iPhone (SiloTests) and/or Apple TV (SiloTVTests) unit-test bundles in
+# the Simulator on a standard GitHub-hosted runner. Free for public repositories.
+#
+# Manual trigger only, read-only token, no secrets, standard runner label only.
+# Tests run unsigned, so keychain-dependent tests may fail on a runner; that is
+# reported as-is rather than hidden. The .xcresult is kept as a short-lived artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or full commit SHA to test (must exist on GitHub)'
+        required: true
+        type: string
+        default: kyro/m1-rebrand
+      platform:
+        description: 'Which platform(s) to test'
+        required: true
+        type: choice
+        default: ios
+        options:
+          - ios
+          - tvos
+          - both
+      only_testing:
+        description: 'Optional -only-testing value, e.g. SiloTests/LiveTVEPGTests (empty = whole bundle)'
+        required: false
+        type: string
+        default: ''
+      use_cache:
+        description: 'Restore/save the SwiftPM package cache'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-simulator-tests
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: ${{ matrix.platform }} Simulator tests
+    runs-on: xcode-27 # standard free arm64 runner; Xcode 27.1 default
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ios
+            scheme: Silo
+            sim_platform: iOS
+            device: iPhone 17
+          - platform: tvos
+            scheme: SiloTV
+            sim_platform: tvOS
+            device: Apple TV 4K (3rd generation)
+    steps:
+      - name: Skip platforms not requested
+        id: gate
+        env:
+          WANT: ${{ inputs.platform }}
+          THIS: ${{ matrix.platform }}
+        run: |
+          if [ "$WANT" = "both" ] || [ "$WANT" = "$THIS" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Validate only_testing
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ONLY: ${{ inputs.only_testing }}
+        run: |
+          [ -z "$ONLY" ] || [[ "$ONLY" =~ ^[A-Za-z0-9_/]+$ ]] || { echo "only_testing has invalid characters"; exit 1; }
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Select Xcode 27.1
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          xcodebuild -version
+          echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+          xcrun simctl list devices available | grep -E "${{ matrix.sim_platform == 'iOS' && 'iPhone 17' || 'Apple TV' }}" | head -5 || true
+
+      - name: Install XcodeGen
+        if: steps.gate.outputs.run == 'true'
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Restore SwiftPM cache
+        id: spm
+        if: steps.gate.outputs.run == 'true' && inputs.use_cache
+        uses: actions/cache@v4
+        with:
+          path: iosApp/.spm-packages
+          key: spm-test-${{ matrix.platform }}-${{ hashFiles('iosApp/project.yml', 'iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Generate project
+        if: steps.gate.outputs.run == 'true'
+        working-directory: iosApp
+        run: xcodegen generate --spec project.yml
+
+      - name: Run tests
+        if: steps.gate.outputs.run == 'true'
+        working-directory: iosApp
+        env:
+          ONLY: ${{ inputs.only_testing }}
+        run: |
+          set -o pipefail
+          TARGET=$([ "${{ matrix.platform }}" = ios ] && echo SiloTests || echo SiloTVTests)
+          ARGS=()
+          [ -n "$ONLY" ] && ARGS+=(-only-testing:"$ONLY")
+          xcodebuild test \
+            -project Silo.xcodeproj -scheme "${{ matrix.scheme }}" \
+            -destination "platform=${{ matrix.sim_platform }} Simulator,name=${{ matrix.device }}" \
+            -clonedSourcePackagesDirPath .spm-packages \
+            -parallel-testing-enabled NO -jobs 3 \
+            -resultBundlePath "$RUNNER_TEMP/${{ matrix.platform }}.xcresult" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            "${ARGS[@]}" \
+            | tee "$RUNNER_TEMP/test.log" | tail -n 80
+
+      - name: Summarize
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          {
+            echo "### ${{ matrix.platform }} Simulator tests"
+            echo "commit: $(git rev-parse HEAD)  ref: ${{ inputs.ref }}"
+            echo "elapsed_seconds: $(( $(date +%s) - STARTED ))"
+            echo '```'; grep -E "Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED)" "$RUNNER_TEMP/test.log" | tail -4; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ -d "$RUNNER_TEMP/${{ matrix.platform }}.xcresult" ] && (cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/${{ matrix.platform }}.xcresult.zip" "${{ matrix.platform }}.xcresult") || true
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.gate.outputs.run == 'true'
+        with:
+          name: ${{ matrix.platform }}-xcresult
+          path: ${{ matrix.platform }}.xcresult.zip
+          retention-days: 3
+          if-no-files-found: ignore
