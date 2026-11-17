@@ -36,7 +36,8 @@ final class LiveTVPairingClient {
     /// Static text only: provider data never reaches the log.
     private static let log = Logger(subsystem: "com.cubbiestream.kyro", category: "livetv-pairing")
 
-    static let connectTimeout: Duration = .seconds(12)
+    /// Long enough for someone to answer the first-run Local Network prompt.
+    static let connectTimeout: Duration = .seconds(45)
 
     var isFinished: Bool {
         switch state {
@@ -99,8 +100,13 @@ final class LiveTVPairingClient {
         case .ready:
             sendHello()
             receive(on: connection)
-        case .failed, .waiting:
+        case .failed:
             if case .connecting = state { fail(.unreachable) }
+        case .waiting:
+            // iOS parks the connection here while it shows the first-run Local Network prompt,
+            // and resumes it once the person answers. Failing now would break every first pairing;
+            // the watchdog still ends a connection that never becomes ready.
+            break
         case .cancelled:
             if case .sending = state { fail(.unreachable) }
         default:
