@@ -1412,6 +1412,17 @@ final class LiveTVService {
         return LiveTVSnapshotSecrets(source: source)
     }
 
+    /// Phone-to-TV pairing: a saved provider as a transfer payload, read from the keychain-backed
+    /// secret store. The caller seals it before it leaves the process and never logs it.
+    func pairingPayload(for providerID: UUID) -> LiveTVPairingPayload? {
+        guard let provider = providers.first(where: { $0.id == providerID }),
+              let source = loadSourceConfiguration(providerID: providerID) else { return nil }
+        return LiveTVPairingPayload(
+            name: provider.name, kind: source.kind == .xtream ? .xtream : .m3u,
+            playlistURL: source.playlistURL, xmltvURL: source.xmltvURL,
+            serverURL: source.serverURL, username: source.username, password: source.password)
+    }
+
     private func loadSourceConfiguration(providerID: UUID) -> LiveTVSourceConfiguration? {
         guard let serialized = secretStore.read(account: Self.secretAccount(providerID)),
               let data = serialized.data(using: .utf8) else { return nil }
