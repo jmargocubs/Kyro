@@ -415,7 +415,7 @@ struct LiveTVPlayerView: View {
                     }
                     #endif
 
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     if let aether = (session.engine as? AetherLiveTVEngine)?.engine {
                         LiveTVBasicControlsButton(engine: aether) { presenting in
                             controls.update(state: session.state, isOverlayPresented: presenting)
@@ -501,6 +501,17 @@ struct LiveTVPlayerView: View {
             .foregroundStyle(.white)
         }
         .animation(.easeInOut(duration: 0.2), value: controls.isVisible)
+        #if os(tvOS)
+        .onPlayPauseCommand {
+            controls.interact()
+            session.togglePlayback()
+        }
+        .onExitCommand {
+            controls.cancel()
+            session.stop()
+            dismiss()
+        }
+        #endif
         #if os(iOS)
         .statusBarHidden()
         #endif
@@ -768,7 +779,7 @@ private struct LiveTVChannelPickerView: View {
     }
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 /// The shared Phase B1 entry point used by both the portrait watch frame and the full-screen
 /// Live TV player. It owns no playback state: all selections go directly to the session's one
 /// AetherEngine, and the sheet observes the engine's published track inventory.
@@ -810,6 +821,7 @@ struct LiveTVBasicControlsButton: View {
 
             }
 
+            #if os(iOS)
             if LiveTVPlayerControlCapabilities.canRouteOutput(route: route) {
                 AirPlayRoutePicker { presenting in
                     onPresentationChanged(presenting)
@@ -817,11 +829,14 @@ struct LiveTVBasicControlsButton: View {
                 .frame(width: 44, height: 44)
                 .siloPlayerGlass(in: Circle(), interactive: true)
             }
+            #endif
         }
         .sheet(isPresented: $isShowingControls) {
             LiveTVBasicControlsSheet(engine: engine)
+                #if os(iOS)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+                #endif
         }
         .onChange(of: isShowingControls) { _, shown in
             onPresentationChanged(shown)
@@ -913,6 +928,7 @@ private struct LiveTVBasicControlsSheet: View {
                     }
                 }
 
+                #if os(iOS)
                 if LiveTVPlayerControlCapabilities.canShowStreamInformation(route: route) {
                     Section("Support") {
                         Button {
@@ -926,19 +942,26 @@ private struct LiveTVBasicControlsSheet: View {
                         .accessibilityIdentifier("liveTVStreamInformation")
                     }
                 }
+                #endif
             }
+            #if os(iOS)
             .listStyle(.insetGrouped)
+            #endif
             .navigationTitle("Live TV Controls")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
             }
         }
+        #if os(iOS)
         .sheet(isPresented: $isShowingStreamInformation) {
             LiveTVStreamStatsSheet(engine: engine)
         }
+        #endif
         .preferredColorScheme(.dark)
     }
 }

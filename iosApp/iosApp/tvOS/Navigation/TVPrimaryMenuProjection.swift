@@ -2,11 +2,11 @@
 import Foundation
 
 /// The single Kyro Apple TV rule for which primary-menu items are renderable
-/// roots. Phase 1 intentionally exposes only the working media foundations:
-/// Home, Movies, and Series. Search and Settings are fixed shell actions;
-/// Live TV and Sports remain absent until their TV-native pages are ready.
+/// roots. Phase 2 exposes the working media foundations plus native Live TV.
+/// Search and Settings are fixed shell actions; Sports remains absent until
+/// its TV-native page is ready.
 enum TVPrimaryMenuProjection {
-    /// Supported Phase 1 roots in the user's stored order. Unsupported stored
+    /// Supported media roots in the user's stored order. Unsupported stored
     /// destinations remain untouched for other clients and later phases.
     static func visibleItems(
         in items: [PrimaryMenuItem],
@@ -27,7 +27,8 @@ enum TVPrimaryMenuProjection {
         }
     }
 
-    /// Bar roots in menu order, deduplicated, with Home forced first when absent.
+    /// Bar roots in menu order, deduplicated, with Home forced first when absent
+    /// and Live TV appended after the media roots.
     static func roots(
         for items: [PrimaryMenuItem],
         libraries: [Library]
@@ -46,6 +47,7 @@ enum TVPrimaryMenuProjection {
             if let root, !roots.contains(root) { roots.append(root) }
         }
         if !roots.contains(.home) { roots.insert(.home, at: 0) }
+        if !roots.contains(.liveTV) { roots.append(.liveTV) }
         return roots
     }
 }

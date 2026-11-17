@@ -121,7 +121,7 @@ struct TVGeneralSettingsPane: View {
             TVSettingsFooter("Start with Balanced, Compact, Cinema, or Artwork Only, then fine-tune size and captions. These choices sync with other TV-family devices on this profile.")
 
             TVSettingsSectionHeader("TOP MENU")
-            TVSettingsFooter("Home, Movies, and Series form the Kyro TV foundation. Search and Settings stay fixed. Live TV and Sports will appear only after their TV-native experiences are ready.")
+            TVSettingsFooter("Home, Movies, Series, and Live TV form the Kyro TV foundation. Search and Settings stay fixed. Sports will appear only after its TV-native experience is ready.")
 
             if let message = preferences.syncErrorMessage,
                message != preferences.capabilityMessage,

@@ -457,6 +457,24 @@ targets:
           - "KyroSportsShellPresentationTests.swift"
           - "KyroSportsStreamMatcherTests.swift"
           - "KyroSportsStreamPresentationTests.swift"
+          # Additional Kyro shell/Sports files whose production declarations live under Kyro/**.
+          - "KyroAppHeaderTests.swift"
+          - "KyroBuild65Tests.swift"
+          - "KyroBuild61RegressionTests.swift"
+          - "KyroBuild67SportsLayoutTests.swift"
+          - "KyroBuild68PregameTests.swift"
+          - "KyroBuild70SportsPolishTests.swift"
+          - "KyroBuild711CorrectionsTests.swift"
+          - "KyroSportsEventDetailPipelineTests.swift"
+          - "KyroSportsFeedScrollTests.swift"
+          - "KyroSettingsIntegrationTests.swift"
+          - "TennisBuild64Tests.swift"
+          - "TennisSupplementTests.swift"
+          - "TheSportsDBSupplementTests.swift"
+          # These exercise iPhone-only navigation and orientation APIs.
+          - "LiveTVHomeLayoutTests.swift"
+          - "LiveTVPlaybackTransitionTests.swift"
+          - "LiveTVFoundationTests.swift"
           # AutoDownloadRules / AutoDownloadSchedule are declared under #if !os(tvOS).
           - "AutoDownloadStatusTests.swift"
           # Same non-fixture files as SiloTests, re-added below with no phase.

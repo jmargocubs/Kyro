@@ -3,7 +3,7 @@ import XCTest
 @testable import Silo
 
 final class KyroTVFoundationTests: XCTestCase {
-    func testPhaseOneMenuExposesOnlyReadyKyroDestinations() {
+    func testPhaseTwoMenuExposesReadyKyroDestinations() {
         let libraries = [
             Library(id: 1, name: "Movies", type: "movies", sortOrder: 0, posterUrl: nil),
             Library(id: 2, name: "Series", type: "series", sortOrder: 1, posterUrl: nil),
@@ -20,7 +20,7 @@ final class KyroTVFoundationTests: XCTestCase {
 
         XCTAssertEqual(
             TVPrimaryMenuProjection.roots(for: stored, libraries: libraries),
-            [.home, .libraryType(.series), .libraryType(.movies)]
+            [.home, .libraryType(.series), .libraryType(.movies), .liveTV]
         )
     }
 
@@ -30,7 +30,7 @@ final class KyroTVFoundationTests: XCTestCase {
                 for: [.builtin(.movies), .builtin(.series)],
                 libraries: []
             ),
-            [.home]
+            [.home, .liveTV]
         )
     }
 

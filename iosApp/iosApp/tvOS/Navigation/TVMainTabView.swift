@@ -433,6 +433,13 @@ struct TVMainTabView: View {
                 isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
+        case .liveTV:
+            TVLiveTVRootView(
+                service: .shared,
+                focusRequest: contentFocusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
+            )
         case .recommendations:
             RecommendationsView(
                 focusRequest: contentFocusRequest,
@@ -561,7 +568,7 @@ struct TVMainTabView: View {
             switch root {
             case .libraryType, .libraryShortcut, .recommendations:
                 return .root(root)
-            case .home, .calendar, .requests:
+            case .home, .liveTV, .calendar, .requests:
                 return nil
             }
         }
@@ -687,7 +694,7 @@ struct TVMainTabView: View {
                 )
             case .recommendations:
                 forYouPanel(isActive: isActive)
-            case .home, .calendar, .requests:
+            case .home, .liveTV, .calendar, .requests:
                 EmptyView()
             }
         case .profile:

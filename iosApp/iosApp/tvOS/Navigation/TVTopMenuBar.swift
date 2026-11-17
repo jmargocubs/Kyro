@@ -80,6 +80,7 @@ enum TVLibraryTabType: String, CaseIterable, Hashable {
 
 enum TVRootDestination: Hashable {
     case home
+    case liveTV
     case recommendations
     case libraryType(TVLibraryTabType)
     case libraryShortcut(libraryId: Int, label: String)
@@ -89,7 +90,7 @@ enum TVRootDestination: Hashable {
 
     static func == (lhs: TVRootDestination, rhs: TVRootDestination) -> Bool {
         switch (lhs, rhs) {
-        case (.home, .home), (.recommendations, .recommendations), (.calendar, .calendar),
+        case (.home, .home), (.liveTV, .liveTV), (.recommendations, .recommendations), (.calendar, .calendar),
              (.requests, .requests):
             return true
         case (.libraryType(let lhsType), .libraryType(let rhsType)):
@@ -105,24 +106,27 @@ enum TVRootDestination: Hashable {
         switch self {
         case .home:
             hasher.combine(0)
-        case .recommendations:
+        case .liveTV:
             hasher.combine(1)
-        case .libraryType(let type):
+        case .recommendations:
             hasher.combine(2)
+        case .libraryType(let type):
+            hasher.combine(3)
             hasher.combine(type)
         case .libraryShortcut(let libraryId, _):
-            hasher.combine(3)
+            hasher.combine(4)
             hasher.combine(libraryId)
         case .calendar:
-            hasher.combine(4)
-        case .requests:
             hasher.combine(5)
+        case .requests:
+            hasher.combine(6)
         }
     }
 
     var title: String {
         switch self {
         case .home: return "Home"
+        case .liveTV: return "Live TV"
         case .recommendations: return "For You"
         case .libraryType(let type): return type.title
         case .libraryShortcut(_, let label): return label
@@ -492,7 +496,7 @@ struct TVTopMenuBar: View {
             return TVLibraryMenuRootKind.directShortcut.hasSectionCascade ? .root(root) : nil
         case .recommendations:
             return .root(root)
-        case .home, .calendar, .requests:
+        case .home, .liveTV, .calendar, .requests:
             return nil
         }
     }
@@ -505,7 +509,7 @@ struct TVTopMenuBar: View {
             return "Rest to choose a section"
         case .recommendations:
             return "Rest to choose Watchlist, Favorites, or Recommendations"
-        case .home, .calendar, .requests:
+        case .home, .liveTV, .calendar, .requests:
             return ""
         }
     }
