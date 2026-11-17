@@ -64,6 +64,8 @@ output/
 Thumbs.db
 .swiftpm/
 docs/*
+!docs/kyro-development/
+!docs/kyro-development/**
 !docs/tvos-focus.md
 !docs/mac-builder.md
 !docs/tvos-player/
