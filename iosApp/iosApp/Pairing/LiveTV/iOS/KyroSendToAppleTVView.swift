@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 import Network
 import Observation
 
@@ -26,30 +27,110 @@ final class KyroSendToAppleTVInbox {
 }
 
 /// Presents the send screen over the whole app when a pairing link arrives.
+///
+/// A SwiftUI `.sheet` on the app root cannot appear while another sheet or full-screen cover is
+/// already up (Settings, Live TV settings, the player), and a link arriving during a cold launch can
+/// land before the window exists. Both left the app open with no pairing screen. The screen is
+/// therefore presented by UIKit from the topmost presented controller, retrying briefly until a
+/// window is ready.
 struct KyroSendToAppleTVPresenter: ViewModifier {
     @State private var inbox = KyroSendToAppleTVInbox.shared
 
     func body(content: Content) -> some View {
-        content.sheet(item: Binding(get: { inbox.link }, set: { if $0 == nil { inbox.link = nil } })) { link in
-            KyroSendToAppleTVView(service: .shared, link: link)
+        content
+            .onChange(of: inbox.link) { _, link in if link != nil { presentPending() } }
+            .task { presentPending() }
+    }
+
+    private func presentPending() {
+        Task { @MainActor in
+            for _ in 0..<KyroSendToAppleTVPresentation.maxAttempts {
+                guard let link = inbox.link else { return }
+                if KyroSendToAppleTVPresentation.present(link: link) {
+                    inbox.link = nil
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
         }
     }
 }
 
-/// A Live TV settings row that opens the send screen without a scanned link.
+@MainActor
+enum KyroSendToAppleTVPresentation {
+    /// About five seconds of retries while a cold launch puts its window on screen.
+    static let maxAttempts = 20
+
+    /// Presents the send screen for `link` over whatever is on screen. A send screen that is
+    /// already open is replaced, so a newer QR always wins. Returns false when no window is ready.
+    @discardableResult
+    static func present(link: LiveTVPairingLink?) -> Bool {
+        guard let root = keyWindowRoot() else { return false }
+        let presenter = topmost(from: root)
+        if let existing = presenter as? KyroSendToAppleTVHostingController {
+            let base = existing.presentingViewController ?? root
+            existing.dismiss(animated: false) { show(link: link, from: base) }
+        } else {
+            show(link: link, from: presenter)
+        }
+        return true
+    }
+
+    /// Follows the presented-controller chain to the controller on top, skipping one that is
+    /// already being dismissed.
+    static func topmost(from root: UIViewController) -> UIViewController {
+        var current = root
+        while let next = current.presentedViewController, !next.isBeingDismissed {
+            current = next
+        }
+        return current
+    }
+
+    private static func keyWindowRoot() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let windows = scenes.filter { $0.activationState != .unattached }.flatMap(\.windows)
+        return (windows.first { $0.isKeyWindow } ?? windows.first)?.rootViewController
+    }
+
+    private static func show(link: LiveTVPairingLink?, from presenter: UIViewController) {
+        let controller = KyroSendToAppleTVHostingController(link: link)
+        presenter.present(controller, animated: true)
+    }
+}
+
+/// The send screen as a page sheet, closable from its own Cancel/Done.
+final class KyroSendToAppleTVHostingController: UIHostingController<AnyView> {
+    init(link: LiveTVPairingLink?) {
+        super.init(rootView: AnyView(EmptyView()))
+        rootView = AnyView(KyroSendToAppleTVView(service: .shared, link: link) { [weak self] in
+            self?.dismiss(animated: true)
+        })
+        modalPresentationStyle = .pageSheet
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+}
+
+/// A Live TV settings row that opens the send screen without a scanned link. Always visible, so
+/// the feature can be found; disabled with a reason while there is nothing to send.
 struct KyroSendToAppleTVRow: View {
     @Bindable var service: LiveTVService
-    @State private var isPresented = false
 
     var body: some View {
-        Button {
-            isPresented = true
-        } label: {
-            Label("Send provider to Apple TV", systemImage: "appletv")
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                KyroSendToAppleTVPresentation.present(link: nil)
+            } label: {
+                Label("Send provider to Apple TV", systemImage: "appletv")
+            }
+            .disabled(service.providers.isEmpty)
+            if service.providers.isEmpty {
+                Text("Add a provider on this iPhone first, then send it to your Apple TV.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
-        .sheet(isPresented: $isPresented) {
-            KyroSendToAppleTVView(service: service, link: nil)
-        }
+        .accessibilityIdentifier("liveTVSendToAppleTV")
     }
 }
 
@@ -60,6 +141,8 @@ struct KyroSendToAppleTVRow: View {
 struct KyroSendToAppleTVView: View {
     @Bindable var service: LiveTVService
     let link: LiveTVPairingLink?
+    /// Set when UIKit presented the screen; closes it from Cancel/Done.
+    var onClose: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var client = LiveTVPairingClient()
@@ -88,7 +171,7 @@ struct KyroSendToAppleTVView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(client.isFinished ? "Done" : "Cancel") {
                         if !client.isFinished { client.cancel() }
-                        dismiss()
+                        if let onClose { onClose() } else { dismiss() }
                     }
                 }
             }

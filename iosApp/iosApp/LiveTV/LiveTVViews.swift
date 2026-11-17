@@ -614,7 +614,7 @@ struct LiveTVSettingsView: View {
                     }
                 }
                 #if os(iOS)
-                if !service.providers.isEmpty { KyroSendToAppleTVRow(service: service) }
+                KyroSendToAppleTVRow(service: service)
                 #endif
             }
 
