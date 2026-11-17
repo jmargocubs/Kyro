@@ -1,0 +1,143 @@
+name: Cloud Simulator tests (free runner)
+
+# Runs the iPhone (SiloTests) or Apple TV (SiloTVTests) unit-test bundle in the
+# Simulator on a standard GitHub-hosted runner. Free for public repositories.
+#
+# Manual trigger only, read-only token, no secrets, standard runner label only.
+# Source is selected per run (ref + expected_sha). Inputs reach shell only
+# through env:. Tests run unsigned, so keychain-dependent tests may fail on a
+# runner; that is reported as-is. The .xcresult is a short-lived artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to test'
+        required: true
+        type: choice
+        default: ios
+        options:
+          - ios
+          - tvos
+      ref:
+        description: 'Branch, tag or commit SHA to check out (must exist on GitHub)'
+        required: true
+        type: string
+      expected_sha:
+        description: 'Commit SHA (7-40 hex) the checkout MUST resolve to'
+        required: true
+        type: string
+      only_testing:
+        description: 'Optional -only-testing value, e.g. SiloTests/LiveTVEPGTests (empty = whole bundle)'
+        required: false
+        type: string
+        default: ''
+      use_cache:
+        description: 'Restore/save the SwiftPM cache'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-simulator-tests
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: ${{ inputs.platform }} Simulator tests
+    runs-on: xcode-27 # standard free arm64 runner; Xcode 27.1 default
+    timeout-minutes: 90
+    env:
+      PLATFORM: ${{ inputs.platform }}
+      REF: ${{ inputs.ref }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      ONLY: ${{ inputs.only_testing }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          [[ "$PLATFORM" =~ ^(ios|tvos)$ ]] || { echo "bad platform"; exit 1; }
+          [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "ref has invalid characters"; exit 1; }
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{7,40}$ ]] || { echo "expected_sha must be 7-40 lowercase hex"; exit 1; }
+          [ -z "$ONLY" ] || [[ "$ONLY" =~ ^[A-Za-z0-9_/]{1,200}$ ]] || { echo "only_testing has invalid characters"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Verify checked-out commit
+        run: |
+          set -euo pipefail
+          HEAD_SHA=$(git rev-parse HEAD)
+          case "$HEAD_SHA" in
+            "$EXPECTED_SHA"*) echo "OK: $REF resolved to $HEAD_SHA" ;;
+            *) echo "::error::ref $REF resolved to $HEAD_SHA, expected $EXPECTED_SHA"; exit 1 ;;
+          esac
+          echo "SOURCE_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          if [ "$PLATFORM" = ios ]; then
+            { echo "SCHEME=Silo"; echo "SIMPLAT=iOS"; echo "DEVICE=iPhone 17"; } >> "$GITHUB_ENV"
+          else
+            { echo "SCHEME=SiloTV"; echo "SIMPLAT=tvOS"; echo "DEVICE=Apple TV 4K (3rd generation)"; } >> "$GITHUB_ENV"
+          fi
+          echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Select Xcode 27.1
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          xcodebuild -version
+          xcrun simctl list devices available | grep -E "iPhone 17|Apple TV" | head -6 || true
+
+      - name: Install XcodeGen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Restore SwiftPM cache
+        if: inputs.use_cache
+        uses: actions/cache@v4
+        with:
+          path: iosApp/.spm-packages
+          key: spm-test-${{ inputs.platform }}-${{ hashFiles('iosApp/project.yml', 'iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Generate project
+        working-directory: iosApp
+        run: xcodegen generate --spec project.yml
+
+      - name: Run tests
+        working-directory: iosApp
+        run: |
+          set -o pipefail
+          ARGS=()
+          [ -z "$ONLY" ] || ARGS+=("-only-testing:$ONLY")
+          xcodebuild test \
+            -project Silo.xcodeproj -scheme "$SCHEME" \
+            -destination "platform=$SIMPLAT Simulator,name=$DEVICE" \
+            -clonedSourcePackagesDirPath .spm-packages \
+            -parallel-testing-enabled NO -jobs 3 \
+            -resultBundlePath "$RUNNER_TEMP/$PLATFORM.xcresult" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            ${ARGS[@]+"${ARGS[@]}"} \
+            2>&1 | tee "$RUNNER_TEMP/test.log" | tail -n 80
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### $PLATFORM Simulator tests"
+            echo "commit: $SOURCE_SHA  ref: $REF"
+            echo "elapsed_seconds: $(( $(date +%s) - STARTED ))"
+            echo '```'; grep -E "Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED)" "$RUNNER_TEMP/test.log" | tail -4 || true; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -d "$RUNNER_TEMP/$PLATFORM.xcresult" ]; then
+            (cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/$PLATFORM.xcresult.zip" "$PLATFORM.xcresult")
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ inputs.platform }}-xcresult
+          path: ${{ inputs.platform }}.xcresult.zip
+          retention-days: 3
+          if-no-files-found: ignore

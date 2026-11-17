@@ -1,0 +1,231 @@
+name: Cloud unsigned IPA (free runner)
+
+# Builds ONE unsigned IPA (iOS or tvOS) on a standard GitHub-hosted runner so the
+# local Mac is not used. Free for public repositories.
+#
+# This workflow file lives on the default branch; the SOURCE to build is chosen
+# per run with `ref` + `expected_sha`, so iOS and tvOS can come from different
+# branches/commits.
+#
+# Safety properties (do not weaken without review):
+#   - Manual trigger only. No push/PR/schedule trigger.
+#   - Read-only token, no secrets, no signing material, no releases.
+#   - Standard runner label only (xcode-27, arm64, 3 vCPU / 7 GB). Never a
+#     "-large" or "-xlarge" label: those are billed.
+#   - Inputs are validated by strict regex and only ever reach shell through
+#     `env:`, never interpolated into script text.
+#   - Output is a short-lived workflow artifact, never a published release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build'
+        required: true
+        type: choice
+        default: ios
+        options:
+          - ios
+          - tvos
+      ref:
+        description: 'Branch, tag or commit SHA to check out (must exist on GitHub)'
+        required: true
+        type: string
+      expected_sha:
+        description: 'Commit SHA (7-40 hex) the checkout MUST resolve to; build aborts otherwise'
+        required: true
+        type: string
+      build_number:
+        description: 'CURRENT_PROJECT_VERSION to stamp (digits, e.g. 90 or 85)'
+        required: true
+        type: string
+      marketing_version:
+        description: 'MARKETING_VERSION to stamp'
+        required: true
+        type: string
+        default: '1.0.0'
+      use_cache:
+        description: 'Restore/save the SwiftPM cache (turn OFF for a cold-build benchmark)'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-unsigned-ipa
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ inputs.platform }} unsigned IPA
+    runs-on: xcode-27 # standard free arm64 runner; Xcode 27.1 default
+    timeout-minutes: 75
+    env:
+      PLATFORM: ${{ inputs.platform }}
+      REF: ${{ inputs.ref }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      BUILD: ${{ inputs.build_number }}
+      VERSION: ${{ inputs.marketing_version }}
+      USE_CACHE: ${{ inputs.use_cache }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          [[ "$PLATFORM" =~ ^(ios|tvos)$ ]] || { echo "bad platform"; exit 1; }
+          [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "ref has invalid characters"; exit 1; }
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{7,40}$ ]] || { echo "expected_sha must be 7-40 lowercase hex"; exit 1; }
+          [[ "$BUILD" =~ ^[0-9]{1,6}$ ]] || { echo "build_number must be digits"; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "marketing_version must look like 1.0.0"; exit 1; }
+          echo "QUEUE_PICKED_UP=$(date +%s)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Verify checked-out commit
+        run: |
+          set -euo pipefail
+          HEAD_SHA=$(git rev-parse HEAD)
+          case "$HEAD_SHA" in
+            "$EXPECTED_SHA"*) echo "OK: $REF resolved to $HEAD_SHA" ;;
+            *) echo "::error::ref $REF resolved to $HEAD_SHA, expected $EXPECTED_SHA"; exit 1 ;;
+          esac
+          echo "SOURCE_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+
+      - name: Resolve target
+        run: |
+          set -euo pipefail
+          if [ "$PLATFORM" = ios ]; then
+            { echo "SCHEME=Silo"; echo "APP=Silo"; echo "DEST=generic/platform=iOS"; echo "EXTRA="; } >> "$GITHUB_ENV"
+          else
+            { echo "SCHEME=SiloTV"; echo "APP=SiloTV"; echo "DEST=generic/platform=tvOS"; echo "EXTRA=SILO_USER_INDEPENDENT_KEYCHAIN=NO"; } >> "$GITHUB_ENV"
+          fi
+
+      - name: Select Xcode 27.1 and record environment
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          xcodebuild -version
+          echo "BUILD_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+          echo "IMAGE_VERSION=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+          sysctl -n machdep.cpu.brand_string || true
+          sysctl -n hw.ncpu hw.memsize
+          df -h "$RUNNER_TEMP" | tail -1
+
+      - name: Install XcodeGen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Restore SwiftPM cache
+        id: spm
+        if: inputs.use_cache
+        uses: actions/cache@v4
+        with:
+          path: iosApp/.spm-packages
+          key: spm-${{ inputs.platform }}-${{ hashFiles('iosApp/project.yml', 'iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Generate project and resolve packages
+        working-directory: iosApp
+        run: |
+          set -euo pipefail
+          T0=$(date +%s)
+          xcodegen generate --spec project.yml
+          xcodebuild -resolvePackageDependencies -project Silo.xcodeproj -scheme "$SCHEME" \
+            -clonedSourcePackagesDirPath .spm-packages \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
+          echo "RESOLVE_SECONDS=$(( $(date +%s) - T0 ))" >> "$GITHUB_ENV"
+
+      - name: Archive (unsigned, Release) with resource sampling
+        working-directory: iosApp
+        run: |
+          set -euo pipefail
+          T0=$(date +%s)
+          # Sample memory pressure/free memory every 15s for peak-resource info.
+          ( while true; do
+              echo "$(date +%s) $(vm_stat | awk '/Pages free/{f=$3} /Pages active/{a=$3} /Pages wired/{w=$4} END{print f,a,w}') $(uptime | sed 's/.*load averages*: //')"
+              sleep 15
+            done ) > "$RUNNER_TEMP/resources.log" 2>&1 &
+          SAMPLER=$!
+          set +e
+          # shellcheck disable=SC2086
+          xcodebuild archive \
+            -project Silo.xcodeproj -scheme "$SCHEME" -configuration Release \
+            -destination "$DEST" -archivePath "$RUNNER_TEMP/$APP.xcarchive" \
+            -clonedSourcePackagesDirPath .spm-packages \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            -jobs 3 -showBuildTimingSummary \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' CODE_SIGN_ENTITLEMENTS='' \
+            SILO_BUILD_CHANNEL=sideload MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
+            $EXTRA > "$RUNNER_TEMP/xcodebuild.log" 2>&1
+          RC=$?
+          set -e
+          kill "$SAMPLER" 2>/dev/null || true
+          tail -n 80 "$RUNNER_TEMP/xcodebuild.log"
+          echo "ARCHIVE_SECONDS=$(( $(date +%s) - T0 ))" >> "$GITHUB_ENV"
+          exit $RC
+
+      - name: Package and verify IPA
+        run: |
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/$APP.xcarchive/Products/Applications/$APP.app"
+          test -d "$APP_PATH"
+          OUT="$GITHUB_WORKSPACE/out"; mkdir -p "$OUT/stage/Payload"
+          cp -R "$APP_PATH" "$OUT/stage/Payload/"
+          python3 scripts/ci/validate-subtitle-packaging.py "$OUT/stage/Payload/$APP.app"
+          IPA="Kyro-${VERSION}-${BUILD}-${PLATFORM}-unsigned-arm64.ipa"
+          (cd "$OUT/stage" && zip -qry "$OUT/$IPA" Payload)
+          rm -rf "$OUT/stage"
+          unzip -l "$OUT/$IPA" | grep -q "Payload/$APP.app/Info.plist"
+          if unzip -l "$OUT/$IPA" | grep -q embedded.mobileprovision; then echo "unexpected provisioning profile"; exit 1; fi
+          PLIST="$APP_PATH/Info.plist"
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")
+          MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$PLIST" 2>/dev/null || echo n/a)
+          PLIST_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")
+          PLIST_VER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")
+          ARCH=$(lipo -archs "$APP_PATH/$APP")
+          [ "$PLIST_BUILD" = "$BUILD" ] || { echo "CFBundleVersion $PLIST_BUILD != $BUILD"; exit 1; }
+          [ "$PLIST_VER" = "$VERSION" ] || { echo "CFBundleShortVersionString $PLIST_VER != $VERSION"; exit 1; }
+          SHA=$(shasum -a 256 "$OUT/$IPA" | awk '{print $1}')
+          SIZE=$(stat -f %z "$OUT/$IPA")
+          {
+            echo "ipa: $IPA"
+            echo "sha256: $SHA"
+            echo "size_bytes: $SIZE"
+            echo "source_commit: $SOURCE_SHA"
+            echo "source_ref: $REF"
+            echo "target: $SCHEME ($PLATFORM)"
+            echo "marketing_version: $PLIST_VER"
+            echo "build_number: $PLIST_BUILD"
+            echo "bundle_id: $BUNDLE_ID"
+            echo "min_os: $MIN_OS"
+            echo "architectures: $ARCH"
+            echo "signed: no"
+            echo "xcode: $(xcodebuild -version | tr '\n' ' ')"
+            echo "runner_image: $IMAGE_VERSION"
+            echo "resolve_seconds: $RESOLVE_SECONDS"
+            echo "archive_seconds: $ARCHIVE_SECONDS"
+            echo "total_job_seconds_since_pickup: $(( $(date +%s) - QUEUE_PICKED_UP ))"
+            echo "spm_cache: $([ "$USE_CACHE" = true ] && echo "${SPM_HIT:-see step}" || echo disabled)"
+          } | tee "$OUT/BUILD-INFO-$PLATFORM.txt"
+          cp "$RUNNER_TEMP/resources.log" "$OUT/resources-$PLATFORM.log" || true
+          tail -n 40 "$RUNNER_TEMP/xcodebuild.log" > "$OUT/xcodebuild-tail-$PLATFORM.log" || true
+          { echo "### $PLATFORM unsigned IPA"; echo '```'; cat "$OUT/BUILD-INFO-$PLATFORM.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          SPM_HIT: ${{ steps.spm.outputs.cache-hit == 'true' && 'hit' || 'miss' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kyro-${{ inputs.platform }}-unsigned-ipa-${{ inputs.build_number }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-log-${{ inputs.platform }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/xcodebuild.log
+          retention-days: 3
+          if-no-files-found: ignore
