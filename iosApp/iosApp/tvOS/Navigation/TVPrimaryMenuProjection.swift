@@ -48,6 +48,7 @@ enum TVPrimaryMenuProjection {
         }
         if !roots.contains(.home) { roots.insert(.home, at: 0) }
         if !roots.contains(.liveTV) { roots.append(.liveTV) }
+        if !roots.contains(.sports) { roots.append(.sports) }
         return roots
     }
 }

@@ -107,7 +107,7 @@ final class LiveTVService {
     /// The pushed guide's filters and time position at the moment it chose a channel, read once by
     /// the watch screen's Guide tab. Never persisted.
     @ObservationIgnored var guideWatchHandoff: LiveTVGuideWatchHandoff?
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     /// One-tap Sports Hub playback over the same session and presentation.
     @ObservationIgnored private(set) lazy var sportsPlayback: KyroSportsPlaybackCoordinator = {
         let coordinator = KyroSportsPlaybackCoordinator(scheduler: LiveTVTaskScheduler())
@@ -779,7 +779,7 @@ final class LiveTVService {
         startupTrace.record("stream_url_available_and_validated")
         Task { await refreshShortEPG(for: channel) }
         // Ordinary Live TV playback never carries a Sports Hub event's Other Streams.
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         if sportsPlaybackIsActive { cancelSportsPlayback(); sportsPlayback.ordinaryPlaybackStarted() }
         #endif
         let selection = presentation.select(channel, from: presenter)
@@ -816,7 +816,7 @@ final class LiveTVService {
     /// The playback gate, for surfaces that should only offer channels playback will accept.
     func canPlay(_ channel: LiveTVChannel) -> Bool { isPlayable(channel) }
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     // MARK: Sports Hub streams
 
     /// Warms what an event tap needs: a downloaded (playable) catalog and its match index. Uses
@@ -1502,7 +1502,7 @@ private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 // MARK: - Sports Hub playback driver
 
 extension LiveTVService: KyroSportsPlaybackDriving {
@@ -1541,11 +1541,17 @@ extension LiveTVService: KyroSportsPlaybackDriving {
     func sportsPresentPlayer(_ channel: LiveTVChannel) {
         errorMessage = nil
         Task { await refreshShortEPG(for: channel) }
+        #if os(tvOS)
+        // Apple TV has no inline Sports player: the verified stream opens in the shared
+        // full-screen player over the Sports feed, and Back returns to the feed.
+        _ = presentation.select(channel, from: .shell)
+        #else
         if !presentation.showInline(channel) {
             // Only reachable if a cover or Picture in Picture took over between the attempt and
             // its success; the stream then opens full screen as before.
             _ = presentation.select(channel, from: .shell)
         }
+        #endif
     }
 
     /// The inline player's Stop. The event context ends with it.

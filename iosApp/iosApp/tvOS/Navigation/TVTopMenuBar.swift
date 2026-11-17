@@ -81,6 +81,8 @@ enum TVLibraryTabType: String, CaseIterable, Hashable {
 enum TVRootDestination: Hashable {
     case home
     case liveTV
+    /// Phase 3: Kyro's native Sports Hub.
+    case sports
     case recommendations
     case libraryType(TVLibraryTabType)
     case libraryShortcut(libraryId: Int, label: String)
@@ -90,7 +92,7 @@ enum TVRootDestination: Hashable {
 
     static func == (lhs: TVRootDestination, rhs: TVRootDestination) -> Bool {
         switch (lhs, rhs) {
-        case (.home, .home), (.liveTV, .liveTV), (.recommendations, .recommendations), (.calendar, .calendar),
+        case (.home, .home), (.liveTV, .liveTV), (.sports, .sports), (.recommendations, .recommendations), (.calendar, .calendar),
              (.requests, .requests):
             return true
         case (.libraryType(let lhsType), .libraryType(let rhsType)):
@@ -120,6 +122,8 @@ enum TVRootDestination: Hashable {
             hasher.combine(5)
         case .requests:
             hasher.combine(6)
+        case .sports:
+            hasher.combine(7)
         }
     }
 
@@ -127,6 +131,7 @@ enum TVRootDestination: Hashable {
         switch self {
         case .home: return "Home"
         case .liveTV: return "Live TV"
+        case .sports: return "Sports"
         case .recommendations: return "For You"
         case .libraryType(let type): return type.title
         case .libraryShortcut(_, let label): return label
@@ -496,7 +501,7 @@ struct TVTopMenuBar: View {
             return TVLibraryMenuRootKind.directShortcut.hasSectionCascade ? .root(root) : nil
         case .recommendations:
             return .root(root)
-        case .home, .liveTV, .calendar, .requests:
+        case .home, .liveTV, .sports, .calendar, .requests:
             return nil
         }
     }
@@ -509,7 +514,7 @@ struct TVTopMenuBar: View {
             return "Rest to choose a section"
         case .recommendations:
             return "Rest to choose Watchlist, Favorites, or Recommendations"
-        case .home, .liveTV, .calendar, .requests:
+        case .home, .liveTV, .sports, .calendar, .requests:
             return ""
         }
     }

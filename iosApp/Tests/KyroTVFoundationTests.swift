@@ -20,7 +20,7 @@ final class KyroTVFoundationTests: XCTestCase {
 
         XCTAssertEqual(
             TVPrimaryMenuProjection.roots(for: stored, libraries: libraries),
-            [.home, .libraryType(.series), .libraryType(.movies), .liveTV]
+            [.home, .libraryType(.series), .libraryType(.movies), .liveTV, .sports]
         )
     }
 
@@ -30,7 +30,7 @@ final class KyroTVFoundationTests: XCTestCase {
                 for: [.builtin(.movies), .builtin(.series)],
                 libraries: []
             ),
-            [.home, .liveTV]
+            [.home, .liveTV, .sports]
         )
     }
 

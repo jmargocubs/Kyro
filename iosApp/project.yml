@@ -153,6 +153,22 @@ targets:
           - "Info.plist"
           - "macOS/**"
           - "Kyro/**"
+      # Phase 3: the Sports Hub data layer (providers, store, matcher, playback
+      # coordinator) is shared with iPhone. Only the iPhone SwiftUI screens stay out;
+      # the tvOS screens live under iosApp/tvOS/Sports.
+      - path: iosApp/Kyro/Sports
+        excludes:
+          - "Diagnostics/KyroSportsMatchReportSection.swift"
+          - "KyroSportsEventPreview.swift"
+          - "KyroSportsFeedScroll.swift"
+          - "KyroSportsHubView.swift"
+          - "KyroSportsPregameViews.swift"
+          - "KyroSportsWatchingContent.swift"
+          - "KyroTennisMatchContext.swift"
+          - "LiveNow/KyroSportsLiveNowSection.swift"
+          - "Playback/KyroSportsInlinePlayer.swift"
+          - "Playback/KyroSportsOtherStreamsSheet.swift"
+          - "Playback/KyroSportsStreamRow.swift"
       - path: Resources
         buildPhase: resources
       # Silo's own license and App Store permission, shown under Settings >
@@ -432,31 +448,15 @@ targets:
           - "SiloControlTests.swift"
           # OnboardingTourViewModel / OnboardingTourAPI are declared under #if !os(tvOS).
           - "OnboardingInvitationTests.swift"
-          # Kyro/Sports is excluded from the SiloTV target (Kyro/** is iPhone-only),
-          # so the Sports Hub and its provider clients do not exist on tvOS.
-          - "KyroSportsDecodingTests.swift"
-          - "KyroSportsCacheTests.swift"
-          - "KyroSportsHubStoreTests.swift"
-          - "KyroSportsDashboardTests.swift"
-          - "KyroSportsLeagueStoreTests.swift"
+          # Phase 3: SiloTV compiles the Sports data layer, so its provider, store, matcher and
+          # playback-coordinator tests run on tvOS. These stay out: their subjects are iPhone
+          # SwiftUI screens (hub, inline player, feed scroll, shell, Live Now cards, previews).
           - "KyroSportsS6ScheduleTests.swift"
-          - "KyroESPNProviderTests.swift"
-          - "KyroESPNLeagueWindowTests.swift"
-          - "KyroESPNNFLPrimaryTests.swift"
-          - "KyroESPNTennisLiveTests.swift"
-          - "KyroSportsEventChannelMatchingTests.swift"
-          - "KyroSportsEventDetailTests.swift"
-          - "KyroSoccerTests.swift"
-          - "KyroSportsMatchReportTests.swift"
-          - "KyroSportsStreamDiscoveryCorrectionsTests.swift"
           - "KyroSportsEventPreviewTests.swift"
           - "KyroSportsLiveNowTests.swift"
-          - "KyroSportsPlaybackCoordinatorTests.swift"
           - "KyroSportsInlinePlaybackTests.swift"
           - "KyroSportsPlayerPolishTests.swift"
           - "KyroSportsShellPresentationTests.swift"
-          - "KyroSportsStreamMatcherTests.swift"
-          - "KyroSportsStreamPresentationTests.swift"
           # Additional Kyro shell/Sports files whose production declarations live under Kyro/**.
           - "KyroAppHeaderTests.swift"
           - "KyroBuild65Tests.swift"
@@ -465,12 +465,10 @@ targets:
           - "KyroBuild68PregameTests.swift"
           - "KyroBuild70SportsPolishTests.swift"
           - "KyroBuild711CorrectionsTests.swift"
-          - "KyroSportsEventDetailPipelineTests.swift"
           - "KyroSportsFeedScrollTests.swift"
           - "KyroSettingsIntegrationTests.swift"
           - "TennisBuild64Tests.swift"
           - "TennisSupplementTests.swift"
-          - "TheSportsDBSupplementTests.swift"
           # These exercise iPhone-only navigation and orientation APIs.
           - "LiveTVHomeLayoutTests.swift"
           - "LiveTVPlaybackTransitionTests.swift"

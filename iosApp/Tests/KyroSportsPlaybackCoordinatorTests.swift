@@ -253,6 +253,8 @@ final class KyroSportsPlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.context?.status(of: "a"), .failed, "what was tried stays known")
     }
 
+    // `KyroSportsStreamDiscovery` belongs to the iPhone hub view, which tvOS does not compile.
+    #if !os(tvOS)
     func testFailedChoiceFromChannelSearchIsReportedWhenDiscoveryReturns() {
         let game = tap([])
         guard case .exhausted(_, let shown) = coordinator.phase else { return XCTFail("\(coordinator.phase)") }
@@ -265,9 +267,12 @@ final class KyroSportsPlaybackCoordinatorTests: XCTestCase {
         XCTAssertNotNil(KyroSportsStreamDiscovery.notice(for: game, result: returned, now: now),
                         "the screen says the chosen stream did not play")
     }
+    #endif
 
     // MARK: Build 41: discovery wording and Picture in Picture
 
+    // `KyroSportsStreamDiscovery` belongs to the iPhone hub view, which tvOS does not compile.
+    #if !os(tvOS)
     func testFailedChoiceIsDescribedAsTheViewersPickNotTheBestStream() {
         let game = tap([candidate("a")])
         report(.failed)
@@ -285,6 +290,7 @@ final class KyroSportsPlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(chosen.attemptStatuses["a"], .failed, "earlier failures stay marked")
         XCTAssertEqual(chosen.attemptStatuses["search"], .failed)
     }
+    #endif
 
     func testChoiceThatPlaysIsNotReportedAsFailed() {
         let game = tap([candidate("a")])
