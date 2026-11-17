@@ -625,6 +625,9 @@ struct LiveTVSettingsView: View {
                         .accessibilityLabel("Remove \(provider.name)")
                     }
                 }
+                #if os(iOS)
+                if !service.providers.isEmpty { KyroSendToAppleTVRow(service: service) }
+                #endif
             }
 
             Section("Add IPTV Provider") {
