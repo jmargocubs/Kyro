@@ -284,7 +284,9 @@ struct LiveTVHomeToolbar: ToolbarContent {
                 backButton
                 LiveTVBrandWordmark()
             }
+            #if os(iOS)
                 .sharedBackgroundVisibility(.hidden)
+            #endif
         } else {
             ToolbarItemGroup(placement: .topBarLeading) {
                 backButton
@@ -629,7 +631,9 @@ struct LiveTVChannelInfoSheet: View {
             .safeAreaPadding(.bottom, 16)
             .background(LiveTVHomeBackground())
             .navigationTitle("Channel Info")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }

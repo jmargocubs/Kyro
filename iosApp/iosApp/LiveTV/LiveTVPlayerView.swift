@@ -752,7 +752,9 @@ private struct LiveTVChannelPickerView: View {
                 }
             }
             .navigationTitle("Select Channel")
+            #if !os(tvOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .searchable(text: $query, prompt: "Search channels")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .task { updateSearch() }

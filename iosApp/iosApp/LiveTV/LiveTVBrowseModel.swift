@@ -639,7 +639,9 @@ struct LiveTVChannelBrowserScreen: View {
                 }
             }
         }
+        #if os(iOS)
         .scrollContentBackground(.hidden)
+        #endif
         .scrollPosition($browse.listPosition)
         // Build 82.1: changing category / favorites / search must not keep another list's offset.
         .id(browse.browserListIdentity)
@@ -647,6 +649,8 @@ struct LiveTVChannelBrowserScreen: View {
         .liveTVBrowserSearchField {
             LiveTVChannelSearchField(text: $browse.searchText, isActive: $browse.isSearchPresented)
         }
+        #elseif os(tvOS)
+        .searchable(text: $browse.searchText, prompt: "Search channels")
         #else
         .searchable(text: $browse.searchText, isPresented: $browse.isSearchPresented, prompt: "Search channels")
         #endif
@@ -717,7 +721,9 @@ struct LiveTVChannelBrowserScreen: View {
                             .foregroundStyle(Color.siloSecondaryText)
                     }
                 }
+                #if os(iOS)
                 .listRowSeparator(.hidden)
+                #endif
                 providerMenu
             }
             #if os(iOS)
@@ -757,17 +763,21 @@ struct LiveTVChannelBrowserScreen: View {
                 Section {
                     ForEach(browse.searchModel.matches) { channel in
                         channelRow(channel)
+                            #if os(iOS)
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) { service.toggleFavorite(channel) } label: {
                                     Label("Remove from Favorites", systemImage: "star.slash")
                                 }
                             }
+                            #endif
                     }
                 }
                 .accessibilityIdentifier("liveTVFavoritesList")
             }
         }
+        #if os(iOS)
         .scrollContentBackground(.hidden)
+        #endif
         .scrollPosition($browse.listPosition)
         .id(browse.browserListIdentity)
     }

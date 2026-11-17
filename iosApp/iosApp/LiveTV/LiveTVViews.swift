@@ -295,7 +295,9 @@ struct LiveTVView: View {
         .liveTVPageBackground()
         .tint(LiveTVAccent.primaryText)
         .navigationTitle("")
+        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .navigationBarBackButtonHidden(true)
         .toolbar {
             if backPlacement == .toolbar {
@@ -315,11 +317,13 @@ struct LiveTVView: View {
             LiveTVSettingsSheet(service: service)
         }
         .toolbar {
+            #if !os(tvOS)
             ToolbarItem(placement: .secondaryAction) {
                 if LiveTVNavigationDiagnostics.isAvailable {
                     Button("Navigation Diagnostics", systemImage: "stethoscope") { showingNavigationDiagnostics = true }
                 }
             }
+            #endif
         }
         .sheet(isPresented: $showingNavigationDiagnostics) { LiveTVNavigationDiagnosticsView() }
         // The Guide stays a Boolean push from Home; it never shared the Categories routes.
@@ -706,10 +710,14 @@ struct LiveTVSettingsView: View {
 #endif
 #endif
         }
+        #if !os(tvOS)
         .scrollContentBackground(.hidden)
+        #endif
         .background(Color.siloBackground)
         .navigationTitle("Live TV Settings")
+        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
             if presentation.showsDoneButton {
                 ToolbarItem(placement: .confirmationAction) {

@@ -347,11 +347,13 @@ struct LiveTVNavigationDiagnosticsView: View {
                 Toggle("Record Categories navigation", isOn: $trace.enabled)
                 Text("Off by default. Keeps the latest 150 events in memory. Enable, reproduce Back, then return here to share the trace. No provider or category names are recorded. A \"push/pop\" line without a following \"destination resolved\" line means the screen did not resolve.")
                     .font(.footnote)
-                ShareLink("Share navigation trace", item: trace.export)
                 #if os(iOS)
+                ShareLink("Share navigation trace", item: trace.export)
                 Button("Copy navigation trace") { UIPasteboard.general.string = trace.export }
-                #endif
                 Text(trace.export).font(.caption.monospaced()).textSelection(.enabled)
+                #else
+                Text(trace.export).font(.caption.monospaced())
+                #endif
             }
             .navigationTitle("Navigation Diagnostics")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
@@ -862,7 +864,9 @@ private struct LiveTVManageCategoriesView: View {
         .navigationTitle("Manage Categories")
         .toolbar {
             ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            #if os(iOS)
             ToolbarItem(placement: .primaryAction) { EditButton() }
+            #endif
         }
     }
 }
