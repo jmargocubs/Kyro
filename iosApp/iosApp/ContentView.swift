@@ -3208,6 +3208,10 @@ struct MainTabView: View {
                 }
             }
             #endif
+            // Live TV's Categories and channel browser are typed routes on this path. They are
+            // registered here, beside `Route`, because the Live TV tab sits inside the TabView and
+            // a registration there is invisible to this stack (Build 81's blank pushes).
+            .liveTVShellRoutes(service: .shared, path: $router.path)
         }
     }
 
@@ -3436,6 +3440,7 @@ struct MainTabView: View {
                         }
                         #endif
                 }
+                .liveTVShellRoutes(service: .shared, path: $router.path)
         }
     }
 
@@ -3674,7 +3679,9 @@ struct MainTabView: View {
         case .secondaryDestination(let id):
             secondaryDestinationContent(for: MainTabDestinationID(id))
         case .liveTV:
+            // Pushed Live TV (the earlier shell): its routes go on the same shell path.
             LiveTVView(service: .shared)
+                .environment(\.liveTVRootPath, $router.path)
         case .libraryCollection(let libraryId, let collectionId, let title, let kind, let mediaScope):
             LibraryCollectionDetailView(
                 libraryId: libraryId,

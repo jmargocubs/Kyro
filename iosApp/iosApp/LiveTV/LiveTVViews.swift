@@ -10,22 +10,26 @@ struct LiveTVChannelCover: ViewModifier {
     let presenter: LiveTVPresenter
     let isEnabled: Bool
 
+    /// `isEnabled` gates the cover's binding, never the view tree. Build 79.1: an `if !isEnabled
+    /// { content }` branch gave `content` a new identity whenever Home's browser was pushed or
+    /// popped, and SwiftUI rebuilt every `navigationDestination` inside it. Popping the channel
+    /// browser then also tore down the Categories destination beneath it, so Back went Home.
     func body(content: Content) -> some View {
-        if !isEnabled {
-            content
-        } else if usesWatchScreen {
+        if usesWatchScreen {
             #if os(iOS)
             content.fullScreenCover(isPresented: Binding(
-                get: { service.presentation.channel(for: presenter) != nil },
-                set: { if !$0 { service.presentation.coverDismissed(from: presenter) } }
+                get: { isEnabled && service.presentation.channel(for: presenter) != nil },
+                set: { if !$0 && isEnabled { service.presentation.coverDismissed(from: presenter) } }
             )) {
                 LiveTVWatchView(service: service)
             }
+            #else
+            content
             #endif
         } else {
             content.fullScreenCover(item: Binding(
-                get: { service.presentation.coverItem(for: presenter) },
-                set: { if $0 == nil { service.presentation.coverDismissed(from: presenter) } }
+                get: { isEnabled ? service.presentation.coverItem(for: presenter) : nil },
+                set: { if $0 == nil && isEnabled { service.presentation.coverDismissed(from: presenter) } }
             )) { cover in
                 LiveTVPlayerView(channel: cover.channel, channels: service.channels,
                                  session: service.playerSession, service: service)
@@ -231,34 +235,16 @@ struct LiveTVView: View {
     @Bindable var service: LiveTVService
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
-    @State private var searchText = ""
-    @State private var searchModel = LiveTVChannelSearchModel()
-    @State private var selectedCategory: String?
-    @State private var favoritesOnly = false
-    @State private var showChannelBrowser = false
-    /// The browser's stack parent is fixed when it opens. Whether Categories is currently visible
-    /// is not a reliable proxy while SwiftUI is pushing or interactively popping a child.
-    @State private var browserOpenedFromCategories = false
-    @State private var isShowingCategories = false
-    @State private var homeCategoryPickerPosition: LiveTVGuideCategoryPickerID?
-    @State private var homeCategoryPickerState = LiveTVGuideCategoryPickerState()
-    @State private var isShowingBrowserCategories = false
-    @State private var browserCategoryPickerPosition: LiveTVGuideCategoryPickerID?
-    @State private var browserCategoryPickerState = LiveTVGuideCategoryPickerState()
-    @State private var isShowingSettings = false
+    /// The shell stack's path. Categories and the channel browser are typed routes on it, resolved
+    /// where the shell registers its destinations (`liveTVShellRoutes`), never inside this tab.
+    @Environment(\.liveTVRootPath) private var rootNavigationPath
+    @State private var showingNavigationDiagnostics = false
     @State private var isShowingGuide = false
-    @State private var listPosition = ScrollPosition(idType: String.self)
-    @State private var browsingContextToRestore: LiveTVBrowsingContext?
-    @State private var restoredContextProviderID: UUID?
-    @State private var isSearchPresented = false
     @SceneStorage("liveTV.listBrowsingContext.v1") private var savedBrowsingContext = ""
 
-    private var contentState: LiveTVChannelListContentState {
-        LiveTVChannelListContentState.resolve(hasProviders: !service.providers.isEmpty,
-                                              isLoading: service.isLoading,
-                                              errorMessage: service.errorMessage,
-                                              channelCount: service.channels.count)
-    }
+    /// Build 82: the one owner of browsing state, shared with the shell-level Categories and
+    /// channel-browser screens. Home here only reads it and sends intents.
+    private var browse: LiveTVBrowseModel { LiveTVBrowseModel.model(for: service) }
 
     /// Set when Kyro's shell draws the one header, so Live TV draws none of its own.
     #if os(iOS)
@@ -285,25 +271,15 @@ struct LiveTVView: View {
     }
 
     private var backPlacement: LiveTVBackPlacement {
-        LiveTVNavigationPolicy.homeBackPlacement(isTabRoot: isTabRoot, showingBrowser: showChannelBrowser)
-    }
-
-    private var isBrowserPushed: Bool {
-        LiveTVNavigationPolicy.isBrowserPushed(isTabRoot: isTabRoot, showingBrowser: showChannelBrowser)
-    }
-
-    private var browserTitle: String {
-        if !searchText.isEmpty { return "Search Results" }
-        if favoritesOnly { return "Favorite Channels" }
-        return selectedCategory ?? "Browse Channels"
+        LiveTVNavigationPolicy.homeBackPlacement(isTabRoot: isTabRoot, showingBrowser: browse.showChannelBrowser)
     }
 
     var body: some View {
         // A ZStack rather than a Group: Group would hand these appear/disappear handlers to each
         // branch, so switching between Home and the browser would cancel search and save state.
         ZStack {
-            if showChannelBrowser && !LiveTVNavigationPolicy.pushesBrowser(isTabRoot: isTabRoot) {
-                browserPage
+            if browse.showChannelBrowser && rootNavigationPath == nil {
+                LiveTVChannelBrowserScreen(service: service, browse: browse, isPushed: false)
             } else {
                 LiveTVHomeContent(model: homeModel, epg: homeEPG, actions: homeActions,
                                   topRunway: hostedHeader?.runway ?? 0,
@@ -324,7 +300,7 @@ struct LiveTVView: View {
         .toolbar {
             if backPlacement == .toolbar {
                 LiveTVHomeToolbar(back: handleBack,
-                                  backLabel: LiveTVNavigationPolicy.backLabel(showingBrowser: showChannelBrowser),
+                                  backLabel: LiveTVNavigationPolicy.backLabel(showingBrowser: browse.showChannelBrowser),
                                   search: { performHeaderAction(.search) },
                                   guide: { performHeaderAction(.guide) },
                                   settings: { performHeaderAction(.settings) })
@@ -333,11 +309,20 @@ struct LiveTVView: View {
         .refreshable { await service.refreshSelectedProvider() }
         // Home presents Settings; once the browser is pushed it presents its own (a sheet from a
         // screen the browser covers would not appear).
-        .sheet(isPresented: settingsBinding(whenBrowserPushed: false)) { settingsSheet }
-        // Categories is a pushed page, not a sheet. A category chosen there pushes the browser on
-        // top of it, so Back returns to Categories and then Home.
-        .navigationDestination(isPresented: homeCategoriesBinding) { homeCategoriesPage }
-        .navigationDestination(isPresented: browserPushBinding(fromCategories: false)) { pushedBrowser }
+        .sheet(isPresented: Binding(
+            get: { browse.isShowingSettings && !browse.isBrowserPushed },
+            set: { if !$0 { browse.isShowingSettings = false } })) {
+            LiveTVSettingsSheet(service: service)
+        }
+        .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                if LiveTVNavigationDiagnostics.isAvailable {
+                    Button("Navigation Diagnostics", systemImage: "stethoscope") { showingNavigationDiagnostics = true }
+                }
+            }
+        }
+        .sheet(isPresented: $showingNavigationDiagnostics) { LiveTVNavigationDiagnosticsView() }
+        // The Guide stays a Boolean push from Home; it never shared the Categories routes.
         .navigationDestination(isPresented: $isShowingGuide) {
             #if os(iOS)
             LiveTVGuideView(service: service, navigation: KyroLiveTVNavigationRoute(
@@ -347,59 +332,54 @@ struct LiveTVView: View {
             #endif
         }
         .modifier(LiveTVChannelCover(service: service, presenter: .list,
-                                     isEnabled: !isBrowserPushed))
+                                     isEnabled: !browse.isBrowserPushed))
         .task(id: service.selectedProviderID) {
-            restoreBrowsingContext(for: service.selectedProviderID)
-            updateSearch()
+            prepareBrowse()
             await service.prepareSelectedProvider()
         }
         .onAppear {
-            restoreBrowsingContext(for: service.selectedProviderID)
-            updateSearch()
+            prepareBrowse()
             service.presentation.surfaceAppeared(.list)
         }
         .onDisappear {
-            // A tab stays alive while another tab shows. Saving or cancelling here re-renders the
-            // hidden list, which then returns to the top; backgrounding still saves (`scenePhase`).
-            guard !isTabRoot else {
+            // A tab stays alive while another tab shows, and Home stays beneath its own pushed
+            // Categories or browser. Saving or cancelling there re-renders the hidden list (and
+            // would cancel the search the pushed browser just started); backgrounding still saves.
+            guard !isTabRoot && !browse.hasPushedRoutes else {
                 // Covered by its own pushed browser, which presents the player in its place; Live
                 // TV is still the visible surface, so the presentation keeps counting it.
-                if !isBrowserPushed { service.presentation.surfaceDisappeared(.list) }
+                if !browse.isBrowserPushed { service.presentation.surfaceDisappeared(.list) }
                 return
             }
-            saveBrowsingContext()
-            searchModel.cancel()
+            browse.saveBrowsingContext()
+            browse.searchModel.cancel()
             service.presentation.surfaceDisappeared(.list)
         }
-        .onChange(of: searchText) { _, query in
-            if !query.isEmpty, !showChannelBrowser {
-                enterBrowser(using: .search(query: query), resumingSavedPosition: false)
-            } else if !query.isEmpty {
-                showChannelBrowser = true
+        .onChange(of: browse.searchText) { _, query in
+            if !query.isEmpty, !browse.showChannelBrowser {
+                browse.enterBrowser(using: .search(query: query), resumingSavedPosition: false)
             }
-            updateSearch()
+            browse.updateSearch()
         }
-        .onChange(of: selectedCategory) { updateSearch() }
-        .onChange(of: favoritesOnly) { updateSearch() }
-        .onChange(of: service.favoriteChannelIDs) { updateSearch() }
-        .onChange(of: service.channelCatalogRevision) {
-            if browserOpenedFromCategories, let selectedCategory,
-               let providerID = service.selectedProviderID, service.hasCatalog(for: providerID),
-               !service.categories.contains(selectedCategory) {
-                // A refreshed catalog removed the selected category. Leave the obsolete channel
-                // route and show its Categories parent rather than silently browsing All.
-                returnHome()
-            }
-            reconcileBrowsingContext()
-            reconcileCategoryPickers()
-            updateSearch()
+        .onChange(of: browse.selectedCategory) { browse.updateSearch() }
+        .onChange(of: browse.favoritesOnly) { browse.updateSearch() }
+        .onChange(of: service.favoriteChannelIDs) { browse.updateSearch() }
+        .onChange(of: service.channelCatalogRevision) { browse.catalogDidChange() }
+        .onChange(of: service.selectedProviderID) { _, providerID in browse.providerDidChange(to: providerID) }
+        .onChange(of: browse.savedBrowsingContexts) { _, contexts in
+            if savedBrowsingContext != contexts { savedBrowsingContext = contexts }
         }
-        .onChange(of: service.selectedProviderID) { _, providerID in
-            restoreBrowsingContext(for: providerID)
-            resetCategoryPickerPositions(for: providerID)
-            updateSearch()
-        }
-        .onChange(of: scenePhase) { _, phase in if phase == .background { saveBrowsingContext() } }
+        .onChange(of: scenePhase) { _, phase in if phase == .background { browse.saveBrowsingContext() } }
+    }
+
+    /// Scene storage is adopted once, the shell path attached (the shell modifier attaches the
+    /// same one), then the provider's saved browser restored as in Build 80.
+    private func prepareBrowse() {
+        let contexts = browse.syncSavedContexts(from: savedBrowsingContext)
+        if contexts != savedBrowsingContext { savedBrowsingContext = contexts }
+        if let rootNavigationPath { browse.attach(rootPath: rootNavigationPath) }
+        browse.restoreBrowsingContext(for: service.selectedProviderID)
+        browse.updateSearch()
     }
 
     // MARK: Home
@@ -411,15 +391,15 @@ struct LiveTVView: View {
             selectedProviderID: service.selectedProviderID,
             channelCount: service.channels.count,
             isLoading: service.isLoading,
-            contentState: contentState,
+            contentState: browse.contentState,
             errorMessage: service.channels.isEmpty ? nil : LiveTVHomeErrorPresentation.message(service.errorMessage),
             sections: LiveTVHomeSections(recents: service.homeRecentChannels,
                                          favorites: service.homeFavoriteChannels,
                                          isPlayable: { service.canPlay($0) }),
             upNext: service.homeUpNext,
             categories: service.categories,
-            carouselEnabled: !showChannelBrowser && !isShowingCategories && !isShowingSettings && !isShowingGuide &&
-                scenePhase == .active && service.presentation.phase == .idle)
+            carouselEnabled: !browse.showChannelBrowser && !browse.isShowingCategories && !browse.isShowingSettings
+                && !isShowingGuide && scenePhase == .active && service.presentation.phase == .idle)
     }
 
     private var homeEPG: LiveTVHomeEPG {
@@ -429,14 +409,15 @@ struct LiveTVView: View {
     }
 
     private var homeActions: LiveTVHomeActions {
-        LiveTVHomeActions(
+        let browse = browse
+        return LiveTVHomeActions(
             play: { service.choose($0, from: .list) },
             toggleFavorite: { service.toggleFavorite($0) },
-            browse: { enterBrowser(using: $0) },
-            showAllCategories: { openHomeCategoryPicker() },
+            browse: { browse.enterBrowser(using: $0) },
+            showAllCategories: { browse.openHomeCategoryPicker() },
             showGuide: { performHeaderAction(.guide) },
             showSettings: { performHeaderAction(.settings) },
-            selectProvider: { selectProvider($0) },
+            selectProvider: { browse.selectProvider($0) },
             retry: { Task { await service.refreshSelectedProvider() } },
             isFavorite: { service.isFavorite($0) },
             loadPrograms: { channel in
@@ -445,592 +426,62 @@ struct LiveTVView: View {
             })
     }
 
-    private func selectProvider(_ providerID: UUID) {
-        saveBrowsingContext(for: service.selectedProviderID)
-        // A nested browser cannot retain its old provider's category when the catalog changes.
-        // Return to its Categories parent; that page will rebuild for the new provider.
-        if browserOpenedFromCategories && showChannelBrowser { returnHome() }
-        restoredContextProviderID = nil
-        service.selectProvider(providerID)
-    }
-
     private func handleBack() {
-        switch LiveTVNavigationPolicy.backDestination(showingBrowser: showChannelBrowser) {
+        switch LiveTVNavigationPolicy.backDestination(showingBrowser: browse.showChannelBrowser) {
         case .home:
-            returnHome()
+            browse.returnHome(reason: "toolbar Back")
         case .exitLiveTV:
             dismiss()
         }
     }
 
-    // MARK: Pushed browser
-
-    /// The stack's view of the browser. `showChannelBrowser` stays the one source of truth: the
-    /// stack only ever tells us it popped.
-    /// Exactly one destination owns the pushed browser: Home's when it was opened from Home, the
-    /// Categories page's when it was opened from there.
-    private func browserPushBinding(fromCategories: Bool) -> Binding<Bool> {
-        Binding(
-            get: { LiveTVCategoryNavigation.ownsPushedBrowser(
-                fromCategories: fromCategories, isBrowserPushed: isBrowserPushed,
-                openedFromCategories: browserOpenedFromCategories) },
-            set: { presented in
-                // SwiftUI may write `false` to an inactive destination during a nested push.
-                // Only the destination that actually owns this browser may handle its pop.
-                if LiveTVCategoryNavigation.shouldHandleBrowserPop(
-                    fromCategories: fromCategories, openedFromCategories: browserOpenedFromCategories,
-                    showingBrowser: showChannelBrowser, stackShowsBrowser: presented) {
-                    returnHome()
-                }
-            })
-    }
-
-    private func settingsBinding(whenBrowserPushed pushed: Bool) -> Binding<Bool> {
-        Binding(
-            get: { isShowingSettings && isBrowserPushed == pushed },
-            set: { if !$0 { isShowingSettings = false } })
-    }
-
-    private var settingsSheet: some View {
-        NavigationStack {
-            LiveTVSettingsView(service: service)
-        }
-        .tint(LiveTVAccent.primaryText)
-    }
-
-    /// Where the browser pushes, a choice pushes it over Categories. Where the browser replaces
-    /// Home in place (Live TV itself pushed), Categories pops and the browser shows beneath it.
-    private func chooseFromCategories(_ filters: LiveTVBrowserFilters) {
-        if LiveTVCategoryNavigation.popsCategoriesOnChoice(isTabRoot: isTabRoot) { isShowingCategories = false }
-        enterBrowser(using: filters, fromCategories: isTabRoot)
-    }
-
-    private func openHomeCategoryPicker() {
-        guard let providerID = service.selectedProviderID else { return }
-        homeCategoryPickerPosition = homeCategoryPickerState.target(
-            providerID: providerID, selectedCategory: nil, categories: service.categories)
-        isShowingCategories = true
-    }
-
-    /// Popping Categories while a browser it pushed is still up (a pop-to-root) also closes that
-    /// browser, so Home's own destination never re-pushes it.
-    private var homeCategoriesBinding: Binding<Bool> {
-        Binding(
-            get: { isShowingCategories },
-            set: { presented in
-                guard !presented else { return }
-                // A child push is not a request to leave Categories. The child's own binding
-                // handles Back and interactive swipe before this parent can be dismissed.
-                guard LiveTVCategoryNavigation.shouldDismissCategories(
-                    showingCategories: isShowingCategories,
-                    browserPushedFromCategories: browserOpenedFromCategories && isBrowserPushed) else { return }
-                isShowingCategories = false
-                if isBrowserPushed { returnHome() }
-            })
-    }
-
-    private var homeCategoriesPage: some View {
-        LiveTVCategoryBrowserPage(
-            title: "Categories",
-            allTitle: "All Channels",
-            mode: .browse,
-            categories: service.categories,
-            channels: service.channels,
-            favoriteIDs: service.favoriteChannelIDs,
-            catalogRevision: service.channelCatalogRevision,
-            showsFavorites: true,
-            initialPosition: homeCategoryPickerPosition,
-            select: { chooseFromCategories(LiveTVCategoryNavigation.homeFilters(for: $0)) },
-            rememberPosition: { position in
-                guard let providerID = service.selectedProviderID else { return }
-                homeCategoryPickerState.remember(position, providerID: providerID, categories: service.categories)
-            })
-            .navigationDestination(isPresented: browserPushBinding(fromCategories: true)) { pushedBrowser }
-    }
-
-    /// The pushed screen: the browser under the system navigation bar. Back, a completed swipe and
-    /// a canceled swipe all go through the stack, never a second custom control.
-    private var pushedBrowser: some View {
-        browserPage
-            .liveTVPageBackground()
-            .tint(LiveTVAccent.primaryText)
-            .navigationTitle(browserTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                if favoritesOnly && searchText.isEmpty {
-                    ToolbarItem(placement: .principal) {
-                        Text(browserTitle)
-                            .font(.headline)
-                            .accessibilityAddTraits(.isHeader)
-                            .accessibilityIdentifier("liveTVFavoritesTitle")
-                    }
-                }
-            }
-            .refreshable { await service.refreshSelectedProvider() }
-            .sheet(isPresented: settingsBinding(whenBrowserPushed: true)) { settingsSheet }
-            .modifier(LiveTVChannelCover(service: service, presenter: .list,
-                                         isEnabled: isBrowserPushed))
-            .onAppear { service.presentation.surfaceAppeared(.list) }
-    }
-
-    // MARK: Channel browser
-
-    @ViewBuilder
-    private var browserPage: some View {
-        if favoritesOnly && searchText.isEmpty {
-            favoritesList
-        } else {
-            browserList
-        }
-    }
-
-    private var browserList: some View {
-        List {
-            Section {
-                if !isBrowserPushed {
-                    HStack {
-                        Spacer()
-                        Text(browserTitle).font(.headline).foregroundStyle(Color.siloOnSurface)
-                    }
-                }
-                providerMenu
-            }
-            // Sits on the page itself, so the page shows through.
-            #if os(iOS)
-            .listRowBackground(Color.clear)
-            #else
-            .listRowBackground(Color.siloBackground)
-            #endif
-            browserStatus
-            if !service.providers.isEmpty {
-                Section {
-                    Button(action: openBrowserCategoryPicker) {
-                        HStack(spacing: 10) {
-                            Label(selectedCategory ?? "All Categories", systemImage: "line.3.horizontal.decrease")
-                                .foregroundStyle(LiveTVAccent.primaryText)
-                                .lineLimit(2)
-                            Spacer(minLength: 8)
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(Color.siloSecondaryText)
-                        }
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Category")
-                    .accessibilityValue(selectedCategory ?? "All Categories")
-                    .accessibilityHint("Chooses which channel category to browse")
-                    .accessibilityIdentifier("liveTVBrowserCategory")
-                    .listRowBackground(LiveTVSurface.row)
-                }
-                if searchModel.resultCount == 0 {
-                    Section { ContentUnavailableView.search(text: searchText).listRowBackground(LiveTVSurface.row) }
-                } else {
-                    ForEach(searchModel.orderedCategories, id: \.self) { category in
-                        Section(category) {
-                            ForEach(searchModel.groups[category] ?? []) { channel in channelRow(channel) }
-                        }
-                    }
-                }
-            }
-        }
-        .scrollContentBackground(.hidden)
-        .scrollPosition($listPosition)
-        #if os(iOS)
-        .liveTVBrowserSearchField {
-            LiveTVChannelSearchField(text: $searchText, isActive: $isSearchPresented)
-        }
-        #else
-        .searchable(text: $searchText, isPresented: $isSearchPresented, prompt: "Search channels")
-        #endif
-        // A pushed page: choosing applies the filter and pops back; Back or a swipe changes nothing.
-        .navigationDestination(isPresented: $isShowingBrowserCategories) { browserCategoriesPage }
-    }
-
-    private var browserCategoriesPage: some View {
-        LiveTVCategoryBrowserPage(
-            title: "Categories",
-            allTitle: "All Categories",
-            mode: .filter(selected: selectedCategory),
-            categories: service.categories,
-            channels: service.channels,
-            favoriteIDs: service.favoriteChannelIDs,
-            catalogRevision: service.channelCatalogRevision,
-            initialPosition: browserCategoryPickerPosition,
-            select: { choice in
-                selectedCategory = LiveTVCategoryNavigation.filterSelection(for: choice)
-                isShowingBrowserCategories = false
-            },
-            rememberPosition: { position in
-                browserCategoryPickerPosition = position
-                rememberBrowserCategoryPosition()
-            })
-    }
-
-    private func openBrowserCategoryPicker() {
-        guard let providerID = service.selectedProviderID else { return }
-        browserCategoryPickerPosition = browserCategoryPickerState.target(
-            providerID: providerID, selectedCategory: selectedCategory, categories: service.categories)
-        isShowingBrowserCategories = true
-    }
-
-    private func rememberBrowserCategoryPosition() {
-        guard let providerID = service.selectedProviderID else { return }
-        browserCategoryPickerState.remember(browserCategoryPickerPosition, providerID: providerID,
-                                             categories: service.categories)
-    }
-
-    private func resetCategoryPickerPositions(for providerID: UUID?) {
-        guard let providerID else {
-            homeCategoryPickerPosition = nil
-            browserCategoryPickerPosition = nil
-            return
-        }
-        homeCategoryPickerPosition = homeCategoryPickerState.target(
-            providerID: providerID, selectedCategory: nil, categories: service.categories)
-        browserCategoryPickerPosition = browserCategoryPickerState.target(
-            providerID: providerID, selectedCategory: selectedCategory, categories: service.categories)
-    }
-
-    private func reconcileCategoryPickers() {
-        guard let providerID = service.selectedProviderID else { return }
-        homeCategoryPickerState.reconcile(providerID: providerID, categories: service.categories)
-        browserCategoryPickerState.reconcile(providerID: providerID, categories: service.categories)
-        if isShowingCategories || isShowingBrowserCategories {
-            resetCategoryPickerPositions(for: providerID)
-        }
-    }
-
-    /// Provider switching, shown only when more than one provider is configured.
-    @ViewBuilder
-    private var providerMenu: some View {
-        if service.providers.count > 1, let provider = service.selectedProvider {
-            Menu {
-                ForEach(service.providers) { option in
-                    Button { selectProvider(option.id) } label: {
-                        if option.id == provider.id {
-                            Label(option.name, systemImage: "checkmark")
-                        } else { Text(option.name) }
-                    }
-                }
-            } label: {
-                Label("Provider: \(provider.name)", systemImage: "antenna.radiowaves.left.and.right")
-                    .font(.subheadline)
-            }
-            .accessibilityLabel("Live TV provider: \(provider.name). Switch provider")
-        }
-    }
-
-    // MARK: Favorites
-
-    private var favoritesState: LiveTVFavoritesState {
-        LiveTVFavoritesState.resolve(contentState: contentState, visibleCount: searchModel.resultCount,
-                                     isSearching: searchModel.isSearching)
-    }
-
-    /// The Favorites destination: the starred channels of the active provider, each with what is
-    /// on now and next, in catalog order. Tapping plays; the star (or a swipe) removes.
-    private var favoritesList: some View {
-        List {
-            Section {
-                HStack(alignment: .firstTextBaseline) {
-                    if !isBrowserPushed {
-                        Text("Favorite Channels")
-                            .font(.title2.weight(.bold))
-                            .foregroundStyle(Color.siloOnSurface)
-                            .accessibilityAddTraits(.isHeader)
-                            .accessibilityIdentifier("liveTVFavoritesTitle")
-                    }
-                    Spacer()
-                    if case .populated(let count) = favoritesState {
-                        Text(count == 1 ? "1 channel" : "\(count) channels")
-                            .font(.subheadline)
-                            .foregroundStyle(Color.siloSecondaryText)
-                    }
-                }
-                .listRowSeparator(.hidden)
-                providerMenu
-            }
-            #if os(iOS)
-            .listRowBackground(Color.clear)
-            #else
-            .listRowBackground(Color.siloBackground)
-            #endif
-            browserStatus
-            switch favoritesState {
-            case .unavailable:
-                EmptyView()
-            case .loading:
-                Section {
-                    HStack(spacing: 12) {
-                        ProgressView()
-                        Text("Loading Favorites…").foregroundStyle(Color.siloSecondaryText)
-                    }
-                    .listRowBackground(LiveTVSurface.row)
-                }
-            case .empty:
-                Section {
-                    ContentUnavailableView {
-                        Label("No Favorites Yet", systemImage: "star")
-                    } description: {
-                        Text(LiveTVFavoritesState.emptyDescription)
-                    } actions: {
-                        Button("Browse Channels") { enterBrowser(using: .channels) }
-                            .tint(LiveTVAccent.primaryText)
-                    }
-                    .accessibilityIdentifier("liveTVFavoritesEmpty")
-                    .listRowBackground(Color.clear)
-                }
-            case .populated:
-                Section {
-                    ForEach(searchModel.matches) { channel in
-                        channelRow(channel)
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) { service.toggleFavorite(channel) } label: {
-                                    Label("Remove from Favorites", systemImage: "star.slash")
-                                }
-                            }
-                    }
-                }
-                .accessibilityIdentifier("liveTVFavoritesList")
-            }
-        }
-        .scrollContentBackground(.hidden)
-        .scrollPosition($listPosition)
-    }
-
-    @ViewBuilder
-    private var browserStatus: some View {
-        if case .loading = contentState {
-            Section {
-                HStack(spacing: 12) {
-                    ProgressView()
-                    Text("Loading channels…").foregroundStyle(Color.siloSecondaryText)
-                }
-                .listRowBackground(LiveTVSurface.row)
-            }
-        } else if case .failed(let error) = contentState {
-            Section {
-                ContentUnavailableView {
-                    Label("Couldn’t Load Channels", systemImage: "wifi.exclamationmark")
-                } description: {
-                    Text(error)
-                } actions: {
-                    Button("Try Again") { Task { await service.refreshSelectedProvider() } }
-                        .tint(LiveTVAccent.primaryText)
-                }
-                .listRowBackground(LiveTVSurface.row)
-            }
-        } else if case .setup = contentState {
-            Section {
-                ContentUnavailableView {
-                    Label("Set Up Live TV", systemImage: "antenna.radiowaves.left.and.right")
-                } description: {
-                    Text("Add an M3U playlist or Xtream Codes account to browse live channels.")
-                } actions: {
-                    Button("Add Playlist") { isShowingSettings = true }
-                        .buttonStyle(.borderedProminent)
-                        .tint(LiveTVAccent.primary)
-                }
-                .listRowBackground(LiveTVSurface.row)
-            }
-        } else if case .noChannels = contentState {
-            Section {
-                ContentUnavailableView(
-                    "No Channels",
-                    systemImage: "tv",
-                    description: Text("Refresh the playlist or check its settings.")
-                )
-                .listRowBackground(LiveTVSurface.row)
-            }
-        }
-        if !service.channels.isEmpty, let error = LiveTVHomeErrorPresentation.message(service.errorMessage) {
-            Section {
-                Label(error, systemImage: "exclamationmark.circle")
-                    .font(.footnote).foregroundStyle(Color.siloErrorInk)
-                    .listRowBackground(LiveTVSurface.row)
-            }
-        }
-    }
-
-    private func updateSearch() {
-        // Favorites shows one flat list in catalog order; every other screen groups by category.
-        searchModel.update(channels: service.channels, query: searchText, category: selectedCategory,
-                           favoritesOnly: favoritesOnly, favoriteIDs: service.favoriteChannelIDs,
-                           includeGroups: !(favoritesOnly && searchText.isEmpty))
-        guard let context = browsingContextToRestore,
-              context.providerID == service.selectedProviderID,
-              let providerID = service.selectedProviderID else { return }
-        Task { @MainActor in
-            await searchModel.waitForCurrentSearch()
-            guard browsingContextToRestore == context, service.selectedProviderID == providerID,
-                  service.hasCatalog(for: providerID),
-                  showChannelBrowser,
-                  searchText == context.searchQuery, selectedCategory == context.category,
-                  favoritesOnly == context.favoritesOnly else { return }
-            let visibleLists = Array(searchModel.groups.values) + [searchModel.matches]
-            if let channelID = context.channelID,
-               visibleLists.contains(where: { $0.contains(where: { $0.id == channelID }) }) {
-                listPosition.scrollTo(id: channelID, anchor: .top)
-            } else if let x = context.offsetX, let y = context.offsetY {
-                listPosition.scrollTo(point: CGPoint(x: x, y: y))
-            }
-            browsingContextToRestore = nil
-        }
-    }
-
-    private func restoreBrowsingContext(for providerID: UUID?) {
-        guard let providerID, restoredContextProviderID != providerID else { return }
-        restoredContextProviderID = providerID
-        selectedCategory = nil
-        favoritesOnly = false
-        searchText = ""
-        listPosition = ScrollPosition(idType: String.self)
-        browserOpenedFromCategories = false
-        // A Home snapshot leaves Home showing with clean filters; its position waits in storage
-        // until the user re-enters the same browser.
-        if let context = storedBrowsingContext(for: providerID), context.shouldPresentBrowser,
-           !LiveTVNavigationPolicy.restoresBrowserOnAppear(isTabRoot: isTabRoot) {
-            // The browser is pushed, so it never opens by itself. Keep the snapshot as a Home
-            // choice: re-entering the same browser still resumes its position.
-            storeBrowsingContext(context.returningHome())
-            browsingContextToRestore = nil
-            showChannelBrowser = false
-        } else if let context = storedBrowsingContext(for: providerID), context.shouldPresentBrowser {
-            browsingContextToRestore = context
-            selectedCategory = context.category
-            favoritesOnly = context.favoritesOnly
-            searchText = context.searchQuery
-            showChannelBrowser = true
-        } else {
-            browsingContextToRestore = nil
-            showChannelBrowser = false
-        }
-        reconcileBrowsingContext()
-    }
-
-    private func reconcileBrowsingContext() {
-        guard let providerID = service.selectedProviderID,
-              let valid = browsingContextToRestore?.validatedWhenReady(
-                  selectedProviderID: providerID, catalogIsLoaded: service.hasCatalog(for: providerID),
-                  categories: service.categories, channels: service.channels) else { return }
-        browsingContextToRestore = valid
-        if selectedCategory != valid.category { selectedCategory = valid.category }
-    }
-
-    private func storedBrowsingContext(for providerID: UUID) -> LiveTVBrowsingContext? {
-        LiveTVBrowsingContextCollection.decoded(savedBrowsingContext)?.context(for: providerID)
-    }
-
-    private func saveBrowsingContext() {
-        saveBrowsingContext(for: service.selectedProviderID)
-    }
-
-    private func saveBrowsingContext(for providerID: UUID?) {
-        guard showChannelBrowser, let providerID else { return }
-        storeBrowsingContext(currentBrowsingContext(for: providerID))
-    }
-
-    /// The browser as it stands. A restore that has not run yet (its catalog is still loading)
-    /// keeps its saved position, so leaving early does not overwrite it with an empty one.
-    private func currentBrowsingContext(for providerID: UUID) -> LiveTVBrowsingContext {
-        if let pending = browsingContextToRestore, pending.providerID == providerID,
-           pending.category == selectedCategory, pending.favoritesOnly == favoritesOnly,
-           pending.searchQuery == searchText {
-            var context = pending
-            context.isBrowserVisible = showChannelBrowser
-            return context
-        }
-        let point = listPosition.point
-        return LiveTVBrowsingContext(providerID: providerID, category: selectedCategory,
-                                     favoritesOnly: favoritesOnly, searchQuery: searchText,
-                                     channelID: listPosition.viewID(type: String.self),
-                                     offsetX: point.map { Double($0.x) }, offsetY: point.map { Double($0.y) },
-                                     isBrowserVisible: showChannelBrowser)
-    }
-
-    private func storeBrowsingContext(_ context: LiveTVBrowsingContext) {
-        let collection = LiveTVBrowsingContextCollection.decoded(savedBrowsingContext) ?? LiveTVBrowsingContextCollection()
-        if let encoded = collection.replacing(context).encoded() { savedBrowsingContext = encoded }
-    }
-
-    /// An intentional return to Home is persisted, so the browser does not reopen on the next visit.
-    private func returnHome() {
-        if let providerID = service.selectedProviderID {
-            storeBrowsingContext(currentBrowsingContext(for: providerID).returningHome())
-        }
-        browsingContextToRestore = nil
-        showChannelBrowser = false
-        browserOpenedFromCategories = false
-        isSearchPresented = false
-        searchText = ""
-        selectedCategory = nil
-        favoritesOnly = false
-    }
-
-    /// Every entry point starts from its own filters. Re-entering the browser the user left for
-    /// Home resumes its saved position; any other entry drops a pending restore.
-    private func enterBrowser(using filters: LiveTVBrowserFilters, resumingSavedPosition: Bool = true,
-                              fromCategories: Bool = false) {
-        searchText = filters.query
-        selectedCategory = filters.category
-        favoritesOnly = filters.favoritesOnly
-        browserOpenedFromCategories = fromCategories
-        showChannelBrowser = true
-        listPosition = ScrollPosition(idType: String.self)
-        browsingContextToRestore = resumingSavedPosition
-            ? service.selectedProviderID.flatMap { storedBrowsingContext(for: $0)?.resumedBrowser(for: filters) }
-            : nil
-        reconcileBrowsingContext()
-        updateSearch()
-    }
-
     private func performHeaderAction(_ action: LiveTVHomeHeaderAction) {
+        let browse = browse
         action.activate(
             search: {
-                enterBrowser(using: .search(query: searchText), resumingSavedPosition: false)
+                browse.enterBrowser(using: .search(query: browse.searchText), resumingSavedPosition: false)
                 // The field belongs to the browser List, which may only appear in this update.
-                Task { @MainActor in isSearchPresented = true }
+                Task { @MainActor in browse.isSearchPresented = true }
             },
             guide: { isShowingGuide = true },
-            settings: { isShowingSettings = true })
+            settings: { browse.isShowingSettings = true })
     }
 
 #if os(iOS)
     // MARK: Kyro floating navigation
 
     private var activeNavigationDestination: KyroLiveTVDestination {
-        KyroLiveTVActiveDestination.resolve(showingGuide: isShowingGuide, showingBrowser: showChannelBrowser,
-                                            searching: isSearchPresented || !searchText.isEmpty,
-                                            favoritesOnly: favoritesOnly)
+        KyroLiveTVActiveDestination.resolve(showingGuide: isShowingGuide, showingBrowser: browse.showChannelBrowser,
+                                            searching: browse.isSearchPresented || !browse.searchText.isEmpty,
+                                            favoritesOnly: browse.favoritesOnly)
     }
 
     /// Reaches the screens Live TV already has, through the same paths as the header and Home.
     private func navigate(to destination: KyroLiveTVDestination) {
+        let browse = browse
         let leavingGuide = isShowingGuide && destination != .guide
         switch destination {
         case .home:
             isShowingGuide = false
-            if showChannelBrowser { returnHome() }
+            if browse.showChannelBrowser { browse.returnHome(reason: "Live TV navigation Home") }
         case .guide:
             isShowingGuide = true
         case .favorites:
             isShowingGuide = false
-            isSearchPresented = false
-            enterBrowser(using: .favorites)
+            browse.isSearchPresented = false
+            browse.enterBrowser(using: .favorites)
         case .channels:
             isShowingGuide = false
-            isSearchPresented = false
-            enterBrowser(using: .channels)
+            browse.isSearchPresented = false
+            browse.enterBrowser(using: .channels)
         case .search:
             isShowingGuide = false
-            enterBrowser(using: .search(query: searchText), resumingSavedPosition: false)
+            browse.enterBrowser(using: .search(query: browse.searchText), resumingSavedPosition: false)
             Task { @MainActor in
                 // The search field belongs to the browser List; after leaving the Guide it
                 // exists only once the pop has finished.
                 if leavingGuide { try? await Task.sleep(for: .milliseconds(450)) }
-                isSearchPresented = true
+                browse.isSearchPresented = true
             }
         case .sportsHub:
             // Never offered until a Sports Hub exists (`KyroLiveTVDestination.isAvailable`).
@@ -1038,67 +489,6 @@ struct LiveTVView: View {
         }
     }
 #endif
-
-    private func channelRow(_ channel: LiveTVChannel) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                service.choose(channel, from: .list)
-            } label: {
-                HStack(spacing: 12) {
-                    channelLogo(channel)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(channel.name)
-                            .font(.body.weight(.medium))
-                            .foregroundStyle(Color.siloOnSurface)
-                            .lineLimit(1)
-                        if !service.isGuideStale {
-                            let pair = service.programPair(for: channel)
-                            if let current = pair.current {
-                                Text("Now · \(current.title)")
-                                    .font(.caption)
-                                    .foregroundStyle(Color.siloSecondaryText)
-                                    .lineLimit(1)
-                            }
-                            if let next = pair.next {
-                                Text("Next · \(next.title)")
-                                    .font(.caption2)
-                                    .foregroundStyle(Color.siloSecondaryText.opacity(0.8))
-                                    .lineLimit(1)
-                            }
-                        } else if service.guideMessage != nil || service.isGuideStale {
-                            Text("Program guide unavailable")
-                                .font(.caption)
-                                .foregroundStyle(Color.siloSecondaryText)
-                                .lineLimit(1)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "play.fill")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(LiveTVAccent.primaryText)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Play \(channel.name)")
-
-            Button {
-                service.toggleFavorite(channel)
-            } label: {
-                Image(systemName: service.isFavorite(channel) ? "star.fill" : "star")
-                    .foregroundStyle(service.isFavorite(channel) ? LiveTVAccent.ember : Color.siloSecondaryText)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(service.isFavorite(channel) ? "Remove \(channel.name) from Favorites" : "Add \(channel.name) to Favorites")
-        }
-        .listRowBackground(LiveTVSurface.row)
-    }
-
-    private func channelLogo(_ channel: LiveTVChannel) -> some View {
-        LiveTVChannelLogo(channel: channel, size: CGSize(width: 50, height: 42))
-    }
 }
 
 /// A channel's logo, or a TV placeholder when it has none.

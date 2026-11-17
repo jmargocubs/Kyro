@@ -105,7 +105,9 @@ private struct KyroDebugSearchFixtureStack: View {
 /// stack's root instead (the Build 14 arrangement).
 private struct KyroDebugLiveTVFixtureStack: View {
     let service: LiveTVService
-    @State private var path: [Int] = CommandLine.arguments.contains("-kyroDebugLiveTVFixtureRoot") ? [] : [0]
+    // A `NavigationPath`, like the app's shell, so Live TV's typed Categories and channel routes
+    // can share it with the fixture's `Int` routes.
+    @State private var path = NavigationPath(CommandLine.arguments.contains("-kyroDebugLiveTVFixtureRoot") ? [] : [0])
     @State private var tab = AppTab.home.id
 
     var body: some View {
@@ -116,13 +118,16 @@ private struct KyroDebugLiveTVFixtureStack: View {
                 } else {
                     SiloTabBar(items: AppTab.visibleCases, selection: $tab, title: \.rawValue, icon: \.icon,
                                selectedIcon: \.selectedIcon) { _ in
-                        Button("Open Live TV") { path = [0] }
+                        Button("Open Live TV") { path = NavigationPath([0]) }
                             .accessibilityIdentifier("kyroDebugOpenLiveTV")
                     }
                     .tint(KyroTheme.shellTint)
                 }
             }
-            .navigationDestination(for: Int.self) { _ in LiveTVView(service: service) }
+            .navigationDestination(for: Int.self) { _ in
+                LiveTVView(service: service).environment(\.liveTVRootPath, $path)
+            }
+            .liveTVShellRoutes(service: service, path: $path)
         }
     }
 }
@@ -138,7 +143,7 @@ private struct KyroDebugLiveTVFixtureStack: View {
 /// reload its playlist while another tab shows.
 private struct KyroDebugUnifiedShell: View {
     let service: LiveTVService
-    @State private var path: [Int] = []
+    @State private var path = NavigationPath()
     @State private var store = KyroGlobalNavigationStore.shared
     /// The shell's one header, as `MainTabView` hosts it: a real `KyroAppHeader` over the tab bar.
     @State private var router = AppRouter()
@@ -206,6 +211,7 @@ private struct KyroDebugUnifiedShell: View {
             .overlay(alignment: .top) {
                 KyroAppHeader(router: router, scrollStates: scrollStates, store: store)
             }
+            .liveTVShellRoutes(service: service, path: $path)
         }
         .environment(router)
         .environment(siloControl)

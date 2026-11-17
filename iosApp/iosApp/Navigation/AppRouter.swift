@@ -1,6 +1,9 @@
 import SwiftUI
 
 extension EnvironmentValues {
+    /// The existing shell stack, not a nested Live TV stack. Home browsing appends typed
+    /// destinations here so UIKit Back and interactive pop mutate the same path as pushes.
+    @Entry var liveTVRootPath: Binding<NavigationPath>? = nil
     /// Set only by library browse surfaces; detail destinations carry a copy in their route.
     @Entry var browseLibraryId: Int? = nil
     /// False where picking a title must not start solo playback (the Watch

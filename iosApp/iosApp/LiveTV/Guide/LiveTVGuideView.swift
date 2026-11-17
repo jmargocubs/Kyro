@@ -807,6 +807,7 @@ struct LiveTVGuideView: View {
     /// Only the chosen category reaches the Guide; scrolling the page writes no Guide state.
     private var categoryPicker: some View {
         LiveTVCategoryBrowserPage(
+            providerID: service.selectedProviderID,
             title: "Categories",
             allTitle: "All Categories",
             mode: .filter(selected: selectedCategory),
