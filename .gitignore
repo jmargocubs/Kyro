@@ -66,6 +66,7 @@ Thumbs.db
 docs/*
 !docs/tvos-focus.md
 !docs/tvos-keyboard-entry.md
+!docs/livetv-phone-pairing.md
 !docs/mac-builder.md
 !docs/tvos-player/
 docs/tvos-player/*
