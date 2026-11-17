@@ -68,6 +68,7 @@ struct KyroSendToAppleTVView: View {
     @State private var codeInput = ""
     @State private var providerID: UUID?
     @State private var usedCode = ""
+    @State private var sendError: String?
 
     var body: some View {
         NavigationStack {
@@ -160,6 +161,13 @@ struct KyroSendToAppleTVView: View {
     @ViewBuilder
     private func readyToSend(tvName: String) -> some View {
         Section {
+            if service.providers.isEmpty {
+                Text("There are no Live TV providers on this iPhone. Add one in Live TV settings, then send it.")
+                    .foregroundStyle(.secondary)
+            }
+            if let sendError {
+                Label(sendError, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
             ForEach(service.providers) { provider in
                 Button {
                     providerID = provider.id
@@ -198,8 +206,12 @@ struct KyroSendToAppleTVView: View {
             Label(title, systemImage: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .foregroundStyle(isError ? Color.orange : Color.green)
             Text(detail).foregroundStyle(.secondary)
-            if isError, link == nil {
-                Button("Try Again") { client.cancel(); resetToChooser() }
+            if isError, client.state == .failed(.unreachable) {
+                Text("Check that this iPhone and the Apple TV are on the same Wi-Fi, and that Local Network access is on for Kyro in Settings › Privacy & Security › Local Network.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if isError {
+                Button("Try Again") { retry() }
             }
         }
     }
@@ -219,15 +231,30 @@ struct KyroSendToAppleTVView: View {
     }
 
     private func sendSelected() {
-        guard let providerID, let payload = service.pairingPayload(for: providerID) else { return }
+        guard let providerID else { return }
+        guard let payload = service.pairingPayload(for: providerID) else {
+            // The keychain entry is missing or unreadable. Say so instead of doing nothing; the
+            // message names no provider detail.
+            sendError = "Kyro could not read this provider's saved details. Re-add it in Live TV settings."
+            return
+        }
+        sendError = nil
         client.send(payload)
     }
 
-    private func resetToChooser() {
+    /// A scanned QR reconnects to the same TV session while it is still open; otherwise the
+    /// person picks a TV and types the code again.
+    private func retry() {
+        client.cancel()
         client = LiveTVPairingClient()
-        selectedTV = nil
-        codeInput = ""
-        browser.start()
+        sendError = nil
+        if let link {
+            connect(link)
+        } else {
+            selectedTV = nil
+            codeInput = ""
+            browser.start()
+        }
     }
 }
 #endif
