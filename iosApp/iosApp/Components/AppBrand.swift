@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// The app's own name, as users read it. The iPhone and iPad app is Kyro;
-/// Apple TV and Mac keep their existing wording for now.
+/// The app's own name, as users read it. iPhone, iPad, and Apple TV are Kyro;
+/// Mac keeps its existing wording for now.
 ///
 /// This is the app's identity only. The backend is still Silo Server, so
 /// server terminology ("Silo server", "Silo password"), network contracts,
 /// device names sent to the server and internal identifiers never use it.
 enum AppBrand {
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     static let name = "Kyro"
     #else
     static let name = "Silo"

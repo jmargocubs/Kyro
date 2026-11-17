@@ -897,7 +897,9 @@ struct ContentView: View {
     }
 
     private var usesKyroStartup: Bool {
-        #if os(iOS)
+        #if os(tvOS)
+        true
+        #elseif os(iOS)
         KyroBrand.usesCinematicStartup
         #else
         false
@@ -933,7 +935,9 @@ struct ContentView: View {
 
     @ViewBuilder
     private var startupSplashVisual: some View {
-        #if os(iOS)
+        #if os(tvOS)
+        TVKyroStartupSplashView { finishStartupSplash() }
+        #elseif os(iOS)
         if usesKyroStartup {
             KyroCinematicSplashView { finishStartupSplash() }
         } else {

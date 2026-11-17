@@ -5,7 +5,9 @@ import SwiftUI
 /// Mac uses its page canvas so Settings matches every other page.
 struct SettingsBackdrop: View {
     var body: some View {
-        #if os(macOS)
+        #if os(tvOS)
+        TVKyroAmbientBackdrop()
+        #elseif os(macOS)
         SiloPageBackdrop()
         #else
         Color.siloBackground

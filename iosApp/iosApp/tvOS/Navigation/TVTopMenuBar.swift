@@ -175,6 +175,7 @@ struct TVTopMenuBar: View {
     let panelEntersFocus: Bool
     let onSelectRoot: (TVRootDestination) -> Void
     let onSearch: () -> Void
+    let onSettings: () -> Void
     /// A bar element rested under focus for the dwell interval, or focus
     /// left every dwellable element (`nil` → close any open panel). §5.3.
     let onDwell: (TVTopMenuPanel?) -> Void
@@ -228,6 +229,8 @@ struct TVTopMenuBar: View {
 
                 Spacer(minLength: SiloTheme.Skyline.tabSpacing)
 
+                settingsButton
+                    .padding(.trailing, 18)
                 profileButton
             }
         }
@@ -349,7 +352,7 @@ struct TVTopMenuBar: View {
     /// Brand logo (mark + wordmark asset), sized to the bar row so it sits
     /// on the same centre line as the tab capsules and trailing icons.
     private var wordmark: some View {
-        SiloWordmarkView(width: SiloTheme.Skyline.wordmarkWidth)
+        TVKyroWordmarkView(width: 142)
             .frame(height: SiloTheme.Skyline.barHeight)
             .accessibilityHidden(true)
     }
@@ -590,6 +593,27 @@ struct TVTopMenuBar: View {
         .accessibilityLabel("Search")
     }
 
+    private var settingsButton: some View {
+        let isFocused = focusedItem == .settings && !panelHasFocus
+
+        return Button(action: onSettings) {
+            Image(systemName: "gearshape.fill")
+                .font(.system(size: 25, weight: .semibold))
+                .foregroundStyle(isFocused ? Color.siloBackground : KyroTheme.silver.opacity(0.76))
+                .frame(
+                    width: SiloTheme.Skyline.barIconSize,
+                    height: SiloTheme.Skyline.barIconSize
+                )
+                .modifier(TVTopMenuCapsuleChrome(isSelected: false, isFocused: isFocused))
+        }
+        .buttonStyle(.siloFlat)
+        .focused($focusedItem, equals: .settings)
+        .onMoveCommand { direction in
+            if direction == .down { onEnterContent() }
+        }
+        .accessibilityLabel("Settings")
+    }
+
     // MARK: - Profile
 
     private var profileButton: some View {
@@ -715,7 +739,7 @@ struct TVTopMenuBar: View {
             return rootPanel(root)
         case .profile:
             return .profile
-        case .search, .none:
+        case .search, .settings, .none:
             return nil
         }
     }
@@ -730,6 +754,7 @@ enum TVTopMenuPanel: Hashable {
 private enum TVTopMenuFocus: Hashable {
     case root(TVRootDestination)
     case search
+    case settings
     case profile
 
     /// Whether this focused element is the anchor of the given open panel —

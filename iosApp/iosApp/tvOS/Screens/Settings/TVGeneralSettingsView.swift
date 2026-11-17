@@ -10,9 +10,7 @@ struct TVGeneralSettingsPane: View {
     @State private var titleArt = TitleArtPreferences.shared
     @State private var themeMusic = ThemeMusicPreferences.shared
     @State private var launchPreferences = ProfileLaunchPreferences.shared
-    @State private var navPrefs = AppNavPreferences.shared
     @State private var activePicker: PickerKind?
-    @State private var showsMenuEditor = false
     @State private var registry = ServerRegistry.shared
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
@@ -27,7 +25,7 @@ struct TVGeneralSettingsPane: View {
             TVSettingsSectionHeader("APPLE TV USER")
 
             TVSettingsPickerRow(
-                title: "Paired Silo Profile",
+                title: "Paired \(AppBrand.name) Profile",
                 value: pairedProfileName,
                 action: changePairedProfile
             )
@@ -123,36 +121,7 @@ struct TVGeneralSettingsPane: View {
             TVSettingsFooter("Start with Balanced, Compact, Cinema, or Artwork Only, then fine-tune size and captions. These choices sync with other TV-family devices on this profile.")
 
             TVSettingsSectionHeader("TOP MENU")
-
-            if preferences.supportProjection == .knownUnsupported {
-                TVSettingsToggleRow(
-                    title: "Show Audiobooks",
-                    isOn: navPrefs.showAudiobooks
-                ) {
-                    navPrefs.setShowAudiobooks(!navPrefs.showAudiobooks)
-                }
-                .focused(detailFocus, equals: .generalTopMenu)
-
-                TVSettingsFooter("This server uses the legacy device-local menu preference. Adds an Audiobooks tab when an audiobook library is available.")
-            } else {
-                Button { showsMenuEditor = true } label: {
-                    HStack(spacing: 16) {
-                        Text("Customize Top Menu")
-                            .font(.system(size: 26))
-                        Spacer(minLength: 16)
-                        Text("\(visibleMenuCount) items")
-                            .font(.system(size: 24))
-                            .opacity(0.68)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 18, weight: .semibold))
-                            .opacity(0.55)
-                    }
-                }
-                .buttonStyle(TVSettingsPaneRowStyle())
-                .disabled(!preferences.allowsEditing)
-
-                TVSettingsFooter("Reorder or hide destinations and pin individual libraries. Search and Profile stay fixed so remote navigation always has stable anchors.")
-            }
+            TVSettingsFooter("Home, Movies, and Series form the Kyro TV foundation. Search and Settings stay fixed. Live TV and Sports will appear only after their TV-native experiences are ready.")
 
             if let message = preferences.syncErrorMessage,
                message != preferences.capabilityMessage,
@@ -168,9 +137,6 @@ struct TVGeneralSettingsPane: View {
         }
         .fullScreenCover(item: $activePicker) { picker in
             pickerSheet(for: picker)
-        }
-        .fullScreenCover(isPresented: $showsMenuEditor) {
-            TVMenuCustomizationSheet(libraries: libraries)
         }
         .task {
             async let preferencesRefresh: Void = preferences.refresh()
@@ -259,13 +225,6 @@ struct TVGeneralSettingsPane: View {
         }
     }
 
-    private var visibleMenuCount: Int {
-        TVPrimaryMenuProjection.visibleItems(
-            in: preferences.resolvedPrimaryMenuItems(),
-            libraries: libraries
-        ).count
-    }
-
     private var pairedProfileName: String {
         guard let serverID = registry.activeServerId,
               let remembered = launchPreferences.rememberedProfile(for: serverID) else {
@@ -281,7 +240,7 @@ struct TVGeneralSettingsPane: View {
     private var pairingDescription: String {
         let base = appleTVUserContext.pairingDescription
         guard launchPreferences.behavior == .askEveryLaunch else { return base }
-        return "\(base) Ask Every Time is on, so Silo will still show Who's Watching at launch."
+        return "\(base) Ask Every Time is on, so \(AppBrand.name) will still show Who's Watching at launch."
     }
 
     @ViewBuilder

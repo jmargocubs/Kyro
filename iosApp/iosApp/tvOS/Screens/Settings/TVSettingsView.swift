@@ -211,7 +211,7 @@ struct TVSettingsView: View {
 
             signOutRow
 
-            Text("Silo \(Self.versionString)")
+            Text("\(AppBrand.name) \(Self.versionString)")
                 .font(.system(size: 18))
                 .foregroundColor(.siloSecondaryText.opacity(0.7))
                 .padding(.leading, 20)

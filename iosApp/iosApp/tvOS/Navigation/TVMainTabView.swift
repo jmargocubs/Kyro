@@ -159,6 +159,7 @@ struct TVMainTabView: View {
                     panelEntersFocus: panelEntersFocus,
                     onSelectRoot: selectRoot(_:),
                     onSearch: { navigateFromBar(.search) },
+                    onSettings: { navigateFromBar(.settings) },
                     onDwell: handleDwell(_:),
                     onEnterPanel: enterPanelFor,
                     onEnterContent: enterContentFromBar,
@@ -1018,13 +1019,10 @@ struct TVMainTabView: View {
     /// fixed outside this list, which keeps their focus anchors stable while
     /// the user rearranges content tabs.
     private var visibleRoots: [TVRootDestination] {
-        var roots = TVPrimaryMenuProjection.roots(
+        let roots = TVPrimaryMenuProjection.roots(
             for: uiCustomization.resolvedPrimaryMenuItems(),
             libraries: libraries
         )
-        // Requests is a server capability, not a customizable menu item: it
-        // trails the content tabs whenever the server has it enabled.
-        if RequestsFeatureStore.shared.isEnabled { roots.append(.requests) }
         return roots
     }
 

@@ -131,7 +131,7 @@ struct TVRootHeroBackdrop: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.siloBackground
+            TVKyroAmbientBackdrop()
 
             tintBackground
 

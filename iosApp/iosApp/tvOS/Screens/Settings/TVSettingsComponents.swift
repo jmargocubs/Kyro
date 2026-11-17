@@ -601,7 +601,7 @@ struct TVPrivacyPolicyOverlay: View {
                         .font(.system(size: 42, weight: .bold))
                         .foregroundStyle(Color.siloOnSurface)
 
-                    Text("Scan this code with your phone or tablet to read Silo's privacy policy.")
+                    Text("Scan this code with your phone or tablet to read \(AppBrand.name)'s privacy policy.")
                         .font(.system(size: 23))
                         .foregroundStyle(Color.siloSecondaryText)
                         .fixedSize(horizontal: false, vertical: true)

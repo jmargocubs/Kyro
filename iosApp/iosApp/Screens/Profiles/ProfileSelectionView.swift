@@ -113,7 +113,7 @@ struct ProfileSelectionView: View {
                 viewModel.answerRememberOffer(remember: false, router: router)
             }
         } message: {
-            Text("Silo can skip Who's Watching and open this profile when it starts on this Apple TV. You can change this later in Settings > General > Profile Selection.")
+            Text("\(AppBrand.name) can skip Who's Watching and open this profile when it starts on this Apple TV. You can change this later in Settings > General > Profile Selection.")
         }
         #endif
     }

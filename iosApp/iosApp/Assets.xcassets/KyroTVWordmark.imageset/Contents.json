@@ -1,0 +1,13 @@
+{
+  "images" : [
+    {
+      "filename" : "Kyro_C3_Wordmark_Transparent.png",
+      "idiom" : "tv",
+      "scale" : "1x"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

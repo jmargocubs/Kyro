@@ -61,15 +61,15 @@ extension Color {
     // MARK: - Skyline chrome (guide §4)
 
     /// Selected-but-unfocused tab/pill capsule fill — `chrome.selected`, white @ 14%.
-    /// Kyro: electric blue on iPhone and iPad (`KyroTheme`), Silo's elsewhere.
-    #if os(iOS)
+    /// Kyro: electric blue on iPhone, iPad, and Apple TV (`KyroTheme`).
+    #if os(iOS) || os(tvOS)
     static let siloChromeSelectedFill = KyroTheme.selectedFill
     #else
     static let siloChromeSelectedFill = Color.white.opacity(0.14)
     #endif
 
     /// Inner border of the selected capsule — white @ 10%. Kyro: see above.
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     static let siloChromeSelectedBorder = KyroTheme.selectedBorder
     #else
     static let siloChromeSelectedBorder = Color.white.opacity(0.10)

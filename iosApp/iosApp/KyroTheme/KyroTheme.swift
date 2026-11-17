@@ -56,10 +56,9 @@ enum KyroTheme {
     /// The active destination's gradient in Kyro's navigation.
     static let activeGradient = LinearGradient(colors: [accent, depth], startPoint: .top, endPoint: .bottom)
 
-    /// The interactive tint for the app shell: electric-blue ink on iPhone and
-    /// iPad, Silo's near-white elsewhere (Apple TV focus and the Mac keep theirs).
+    /// The interactive tint for Kyro's app shells. Mac keeps the neutral tint.
     static var shellTint: Color {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         accentInk
         #else
         Color.siloOnSurface
