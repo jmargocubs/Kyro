@@ -96,8 +96,8 @@ struct TVLiveTVPairingView: View {
                 Text("Your credentials are sent encrypted and are never shown in the code.")
                     .font(.system(size: 19)).foregroundStyle(Color.siloSecondaryText)
                 HStack(spacing: 24) {
-                    Button("Cancel") { receiver.cancel() }.focused($focus, equals: .cancel)
-                    Button("New Code") { receiver.start() }.focused($focus, equals: .retry)
+                    Button("Cancel") { receiver.cancel() }.buttonStyle(TVKyroChipStyle()).focused($focus, equals: .cancel)
+                    Button("New Code") { receiver.start() }.buttonStyle(TVKyroChipStyle()).focused($focus, equals: .retry)
                 }
             }
         }
@@ -138,8 +138,8 @@ struct TVLiveTVPairingView: View {
             Text("Expires in \(Self.clock(receiver.remaining))")
                 .font(.system(size: 22).monospacedDigit()).foregroundStyle(Color.siloSecondaryText)
             HStack(spacing: 24) {
-                Button("Allow") { receiver.approve() }.focused($focus, equals: .allow)
-                Button("Decline") { receiver.decline() }.focused($focus, equals: .decline)
+                Button("Allow") { receiver.approve() }.buttonStyle(TVKyroChipStyle(isSelected: true)).focused($focus, equals: .allow)
+                Button("Decline") { receiver.decline() }.buttonStyle(TVKyroChipStyle(isDestructive: true)).focused($focus, equals: .decline)
             }
         }
         .task { focus = .allow }
@@ -161,8 +161,8 @@ struct TVLiveTVPairingView: View {
                 Text(detail).font(.system(size: 26)).foregroundStyle(Color.siloSecondaryText).multilineTextAlignment(.center)
             }
             HStack(spacing: 24) {
-                if canRetry { Button("Try Again") { receiver.start() }.focused($focus, equals: .retry) }
-                if showsDone { Button("Done") { receiver.stop(); dismiss() }.focused($focus, equals: .done) }
+                if canRetry { Button("Try Again") { receiver.start() }.buttonStyle(TVKyroChipStyle(isSelected: true)).focused($focus, equals: .retry) }
+                if showsDone { Button("Done") { receiver.stop(); dismiss() }.buttonStyle(TVKyroChipStyle()).focused($focus, equals: .done) }
             }
         }
         .frame(maxWidth: .infinity)

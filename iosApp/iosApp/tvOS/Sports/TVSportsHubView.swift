@@ -108,8 +108,8 @@ struct TVSportsHubView: View {
                 Task { await store.refresh() }
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
-                    .font(.system(size: 24, weight: .semibold))
             }
+            .buttonStyle(TVKyroChipStyle())
             .focused($focus, equals: .refresh)
             .disabled(store.isRefreshing)
             .onMoveCommand { if $0 == .up { onTopMenuFocusRequest() } }
@@ -170,10 +170,8 @@ struct TVSportsHubView: View {
                 if let systemImage { Image(systemName: systemImage) }
                 Text(title)
             }
-            .font(.system(size: 24, weight: selected ? .bold : .medium))
-            .foregroundStyle(selected ? KyroTheme.accentInk : Color.siloOnSurface)
-            .padding(.horizontal, 6)
         }
+        .buttonStyle(TVKyroChipStyle(isSelected: selected))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -187,10 +185,12 @@ struct TVSportsHubView: View {
             Spacer()
             if banner.showsCancel {
                 Button("Cancel") { service.cancelSportsPlayback() }
+                    .buttonStyle(TVKyroChipStyle())
                     .focused($focus, equals: .bannerAction)
             }
             if banner.showsRetry, let lastPlayedGame {
                 Button("Retry") { service.playSportsEvent(lastPlayedGame) }
+                    .buttonStyle(TVKyroChipStyle(isSelected: true))
                     .focused($focus, equals: .bannerAction)
             }
         }

@@ -154,7 +154,7 @@ struct TVLiveTVRootView: View {
                 } label: {
                     Label(item.title, systemImage: item.symbol)
                 }
-                .buttonStyle(TVBrowseControlPillStyle(active: section == item))
+                .buttonStyle(TVKyroChipStyle(isSelected: section == item))
                 .focused($focusedControl, equals: .section(item))
                 .onMoveCommand { if $0 == .up { onTopMenuFocusRequest() } }
             }
@@ -162,14 +162,14 @@ struct TVLiveTVRootView: View {
             Button { showsGuide = true } label: {
                 Label("TV Guide", systemImage: "calendar.day.timeline.left")
             }
-            .buttonStyle(TVBrowseControlPillStyle())
+            .buttonStyle(TVKyroChipStyle())
             .focused($focusedControl, equals: .guide)
             .onMoveCommand { if $0 == .up { onTopMenuFocusRequest() } }
 
             Button { showsProviders = true } label: {
                 Label("Providers", systemImage: "antenna.radiowaves.left.and.right")
             }
-            .buttonStyle(TVBrowseControlPillStyle(active: service.providers.isEmpty))
+            .buttonStyle(TVKyroChipStyle(isSelected: service.providers.isEmpty))
             .focused($focusedControl, equals: .providers)
             .onMoveCommand { if $0 == .up { onTopMenuFocusRequest() } }
 
@@ -249,7 +249,7 @@ struct TVLiveTVRootView: View {
             .padding(24)
             .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
-        .buttonStyle(TVCardFocusButtonStyle(scale: 1.035))
+        .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 20))
         .focused($focusedControl, equals: .category(category ?? "__all__"))
     }
 
@@ -279,6 +279,7 @@ struct TVLiveTVRootView: View {
                                 channel: channel,
                                 program: service.programPair(for: channel),
                                 isFavorite: service.isFavorite(channel),
+                                isPlaying: service.playerSession.activeChannelID == channel.id,
                                 focus: $focusedControl,
                                 play: { service.choose(channel, from: .list) },
                                 toggleFavorite: { service.toggleFavorite(channel) }
@@ -311,7 +312,7 @@ struct TVLiveTVRootView: View {
                 .frame(maxWidth: 760)
             if let buttonTitle, let action {
                 Button(buttonTitle, action: action)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(TVKyroChipStyle(isSelected: true))
                     .focused($focusedControl, equals: .retry)
             }
         }
@@ -354,6 +355,7 @@ private struct TVLiveTVChannelCard: View {
     let channel: LiveTVChannel
     let program: LiveTVProgramPair
     let isFavorite: Bool
+    let isPlaying: Bool
     let focus: FocusState<TVLiveTVRootView.FocusTarget?>.Binding
     let play: () -> Void
     let toggleFavorite: () -> Void
@@ -369,17 +371,20 @@ private struct TVLiveTVChannelCard: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     LinearGradient(colors: [.clear, .black.opacity(0.78)], startPoint: .center, endPoint: .bottom)
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    if program.current != nil {
-                        Text("LIVE")
-                            .font(.system(size: 16, weight: .black))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(KyroTheme.live, in: Capsule())
-                            .padding(14)
+                    HStack(spacing: 8) {
+                        if program.current != nil {
+                            Text("LIVE")
+                                .font(.system(size: 16, weight: .black))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(KyroTheme.live, in: Capsule())
+                        }
+                        if isPlaying { TVKyroPlayingBadge() }
                     }
+                    .padding(14)
                 }
             }
-            .buttonStyle(TVCardFocusButtonStyle(scale: 1.04))
+            .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 18))
             .focused(focus, equals: .channel(channel.id))
             .accessibilityLabel("Watch \(channel.name)")
 
@@ -404,9 +409,9 @@ private struct TVLiveTVChannelCard: View {
                     Image(systemName: isFavorite ? "star.fill" : "star")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(isFavorite ? KyroTheme.highlight : Color.siloSecondaryText)
-                        .frame(width: 42, height: 42)
+                        .frame(width: 46, height: 46)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 23))
                 .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
             }
         }
@@ -426,29 +431,28 @@ struct TVLiveTVProviderManagementView: View {
     @State private var localError: String?
     @State private var providerToRemove: LiveTVProvider?
     @State private var showsPhoneSetup = false
+    @FocusState private var focus: TVLiveTVProviderFocus?
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 34) {
-                    providerList
-                    phoneSetupEntry
-                    Divider().overlay(Color.white.opacity(0.18))
-                    addProviderForm
-                }
-                .padding(.horizontal, 120)
-                .padding(.vertical, 70)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 34) {
+                header
+                providerList
+                phoneSetupEntry
+                Divider().overlay(Color.white.opacity(0.18))
+                addProviderForm
             }
-            .background(TVKyroAmbientBackdrop())
-            .navigationTitle("Live TV Providers")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
+            .padding(.horizontal, 120)
+            .padding(.vertical, 60)
         }
+        .background(TVKyroAmbientBackdrop())
+        // Back/Menu always leaves the screen. While a text field is editing, the system keyboard
+        // takes Menu first, so typing (and the nearby-iPhone keyboard) is unaffected.
         .onExitCommand { dismiss() }
-        .fullScreenCover(isPresented: $showsPhoneSetup) {
+        .onAppear {
+            if focus == nil { focus = TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: service.providers.map(\.id)) }
+        }
+        .fullScreenCover(isPresented: $showsPhoneSetup, onDismiss: { restoreFocus(.phoneSetup) }) {
             TVLiveTVPairingView(service: service)
         }
         .confirmationDialog(
@@ -458,9 +462,42 @@ struct TVLiveTVProviderManagementView: View {
             Button("Remove Provider", role: .destructive) {
                 guard let provider = providerToRemove else { return }
                 providerToRemove = nil
+                let remaining = service.providers.map(\.id).filter { $0 != provider.id }
                 Task { await service.removeProvider(provider.id) }
+                restoreFocus(TVLiveTVProviderFocusPlanner.afterRemoval(remainingProviderIDs: remaining))
             }
-            Button("Cancel", role: .cancel) { providerToRemove = nil }
+            Button("Cancel", role: .cancel) {
+                if let provider = providerToRemove { restoreFocus(.remove(provider.id)) }
+                providerToRemove = nil
+            }
+        }
+    }
+
+    /// The screen's own Back control, directly above the list. A toolbar button in the top-right
+    /// corner was the only thing above the content, so Up from the left-aligned controls found
+    /// nothing until focus was moved sideways under it.
+    private var header: some View {
+        HStack(spacing: 24) {
+            Button { dismiss() } label: { Label("Live TV", systemImage: "chevron.left") }
+                .buttonStyle(TVKyroChipStyle())
+                .focused($focus, equals: .back)
+            Text("Live TV Providers").font(.system(size: 46, weight: .bold))
+            Spacer()
+        }
+        .focusSection()
+    }
+
+    /// Up from the topmost row goes to Back explicitly, whichever column it starts in.
+    private func upToBack(_ direction: MoveCommandDirection, from origin: TVLiveTVProviderFocus) {
+        guard direction == .up,
+              TVLiveTVProviderFocusPlanner.escapesToBack(origin, providerIDs: service.providers.map(\.id)) else { return }
+        focus = .back
+    }
+
+    private func restoreFocus(_ target: TVLiveTVProviderFocus) {
+        Task { @MainActor in
+            await Task.yield()
+            focus = target
         }
     }
 
@@ -494,19 +531,25 @@ struct TVLiveTVProviderManagementView: View {
                             .padding(20)
                             .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 16))
                         }
-                        .buttonStyle(TVCardFocusButtonStyle(scale: 1.02))
+                        .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 16))
+                        .focused($focus, equals: .provider(provider.id))
+                        .onMoveCommand { upToBack($0, from: .provider(provider.id)) }
 
                         Button {
                             service.selectProvider(provider.id)
                             Task { await service.refresh(providerID: provider.id) }
                         } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(TVKyroChipStyle())
                         .disabled(service.isLoading)
+                        .focused($focus, equals: .refresh(provider.id))
+                        .onMoveCommand { upToBack($0, from: .refresh(provider.id)) }
 
                         Button(role: .destructive) { providerToRemove = provider } label: {
                             Label("Remove", systemImage: "trash")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(TVKyroChipStyle(isDestructive: true))
+                        .focused($focus, equals: .remove(provider.id))
+                        .onMoveCommand { upToBack($0, from: .remove(provider.id)) }
                     }
                 }
             }
@@ -518,6 +561,7 @@ struct TVLiveTVProviderManagementView: View {
                     .font(.system(size: 20, weight: .medium))
             }
         }
+        .focusSection()
     }
 
     /// The recommended way to add a provider: send it from the Kyro iPhone app instead of typing
@@ -528,11 +572,14 @@ struct TVLiveTVProviderManagementView: View {
                 showsPhoneSetup = true
             } label: {
                 Label("Set up with phone", systemImage: "iphone.and.arrow.forward")
-                    .font(.system(size: 28, weight: .semibold))
             }
+            .buttonStyle(TVKyroChipStyle(isSelected: true))
+            .focused($focus, equals: .phoneSetup)
+            .onMoveCommand { upToBack($0, from: .phoneSetup) }
             Text("Send a provider from the Kyro iPhone app. Nothing to type here.")
                 .font(.system(size: 20)).foregroundStyle(Color.siloSecondaryText)
         }
+        .focusSection()
     }
 
     private var addProviderForm: some View {
@@ -569,9 +616,11 @@ struct TVLiveTVProviderManagementView: View {
             } label: {
                 Label("Save and Connect", systemImage: "plus.circle.fill")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(TVKyroChipStyle(isSelected: true))
             .disabled(!canSave)
+            .focused($focus, equals: .save)
         }
+        .focusSection()
     }
 
     private var canSave: Bool {
@@ -600,6 +649,8 @@ struct TVLiveTVProviderManagementView: View {
             localError = nil
             password = ""
             Task { await service.refresh(providerID: id) }
+            // Land on the new provider's row instead of a cleared form.
+            restoreFocus(.provider(id))
         } catch {
             localError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -628,7 +679,7 @@ struct TVLiveTVGuideView: View {
     @State private var rows: [LiveTVChannel] = []
     @State private var detail: TVLiveTVGuideDetail?
     @State private var navigationState = TVLiveTVGuideNavigationState()
-    @FocusState private var focusedChannelID: String?
+    @FocusState private var focus: TVLiveTVGuideFocus?
 
     private let channelWidth: CGFloat = 310
     private let rowHeight: CGFloat = 112
@@ -636,10 +687,12 @@ struct TVLiveTVGuideView: View {
     var body: some View {
         ZStack {
             TVKyroAmbientBackdrop()
-            VStack(alignment: .leading, spacing: 18) {
-                guideHeader
-                timelineHeader
-                guideGrid
+            ScrollViewReader { proxy in
+                VStack(alignment: .leading, spacing: 18) {
+                    guideHeader(proxy)
+                    timelineHeader
+                    guideGrid
+                }
             }
             .padding(.horizontal, 58)
             .padding(.vertical, 42)
@@ -647,18 +700,24 @@ struct TVLiveTVGuideView: View {
         .modifier(LiveTVChannelCover(service: service, presenter: .guide, isEnabled: true))
         .onAppear {
             service.presentation.surfaceAppeared(.guide)
+            if let last = TVLiveTVGuideMemory.lastChannelID { navigationState.focus(channelID: last) }
             rebuildRows()
+            // Opening the guide lands on the filters, so the first Down is the predictable one.
+            if focus == nil { focus = .category }
         }
         .onDisappear { service.presentation.surfaceDisappeared(.guide) }
         .onChange(of: category) { rebuildRows() }
         .onChange(of: favoritesOnly) { rebuildRows() }
         .onChange(of: service.favoriteChannelIDs) { if favoritesOnly { rebuildRows() } }
         .onChange(of: service.channelCatalogRevision) { rebuildRows() }
-        .onChange(of: focusedChannelID) { _, id in
-            if let id { navigationState.focus(channelID: id) }
+        .onChange(of: focus) { _, newFocus in
+            if let id = newFocus?.channelID {
+                navigationState.focus(channelID: id)
+                TVLiveTVGuideMemory.lastChannelID = id
+            }
         }
         .onExitCommand { dismiss() }
-        .sheet(item: $detail) { detail in
+        .sheet(item: $detail, onDismiss: restoreAfterDetail) { detail in
             TVLiveTVProgramDetail(detail: detail) {
                 service.choose(detail.channel, from: .guide)
                 self.detail = nil
@@ -666,10 +725,14 @@ struct TVLiveTVGuideView: View {
         }
     }
 
-    private var guideHeader: some View {
+    // MARK: Header
+
+    private func guideHeader(_ proxy: ScrollViewProxy) -> some View {
         HStack(spacing: 16) {
             Button { dismiss() } label: { Label("Back", systemImage: "chevron.left") }
-                .buttonStyle(.bordered)
+                .buttonStyle(TVKyroChipStyle())
+                .focused($focus, equals: .back)
+                .onMoveCommand { if $0 == .down { enterGrid(proxy) } }
             Text("TV Guide").font(.system(size: 46, weight: .bold))
             Spacer()
             Menu {
@@ -680,19 +743,26 @@ struct TVLiveTVGuideView: View {
             } label: {
                 Label(category ?? "All Categories", systemImage: "line.3.horizontal.decrease.circle")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(TVKyroChipStyle(isSelected: category != nil))
+            .focused($focus, equals: .category)
+            .onMoveCommand { if $0 == .down { enterGrid(proxy) } }
             Button {
                 favoritesOnly.toggle()
             } label: {
                 Label("Favorites", systemImage: favoritesOnly ? "star.fill" : "star")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(TVKyroChipStyle(isSelected: favoritesOnly))
+            .focused($focus, equals: .favorites)
+            .onMoveCommand { if $0 == .down { enterGrid(proxy) } }
             Button {
                 Task { await service.refreshSelectedProvider() }
             } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-            .buttonStyle(.bordered)
+            .buttonStyle(TVKyroChipStyle())
             .disabled(service.isLoading || service.isGuideLoading)
+            .focused($focus, equals: .refresh)
+            .onMoveCommand { if $0 == .down { enterGrid(proxy) } }
         }
+        .focusSection()
     }
 
     private var timelineHeader: some View {
@@ -712,11 +782,14 @@ struct TVLiveTVGuideView: View {
         .frame(height: 38)
     }
 
+    // MARK: Grid
+
     private var guideGrid: some View {
         ScrollView([.horizontal, .vertical]) {
             LazyVStack(alignment: .leading, spacing: 8) {
                 ForEach(rows) { channel in
                     guideRow(channel)
+                        .id(channel.id)
                         .task { await service.refreshShortEPG(for: channel) }
                 }
             }
@@ -742,7 +815,11 @@ struct TVLiveTVGuideView: View {
                     LiveTVChannelLogo(channel: channel, size: CGSize(width: 80, height: 52))
                     VStack(alignment: .leading, spacing: 4) {
                         Text(channel.name).font(.system(size: 22, weight: .semibold)).lineLimit(1)
-                        Text(channel.category).font(.system(size: 16)).foregroundStyle(Color.siloSecondaryText).lineLimit(1)
+                        if isPlaying(channel) {
+                            TVKyroPlayingBadge()
+                        } else {
+                            Text(channel.category).font(.system(size: 16)).foregroundStyle(Color.siloSecondaryText).lineLimit(1)
+                        }
                     }
                     Spacer()
                 }
@@ -750,8 +827,9 @@ struct TVLiveTVGuideView: View {
                 .frame(width: channelWidth, height: rowHeight)
                 .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 14))
             }
-            .buttonStyle(TVCardFocusButtonStyle(scale: 1.025))
-            .focused($focusedChannelID, equals: channel.id)
+            .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 14))
+            .focused($focus, equals: .channel(channel.id))
+            .onMoveCommand { moveUpIfTopRow($0, from: .channel(channel.id)) }
 
             programTimeline(for: channel)
         }
@@ -772,8 +850,11 @@ struct TVLiveTVGuideView: View {
                         .foregroundStyle(Color.siloSecondaryText)
                         .frame(width: 520, height: rowHeight - 8, alignment: .leading)
                         .padding(.horizontal, 18)
+                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
                 }
-                .buttonStyle(TVBrowsePanelRowStyle())
+                .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 12))
+                .focused($focus, equals: .noGuide(channel.id))
+                .onMoveCommand { moveUpIfTopRow($0, from: .noGuide(channel.id)) }
             } else {
                 ForEach(cells) { cell in
                     Button {
@@ -795,8 +876,12 @@ struct TVLiveTVGuideView: View {
                         .frame(width: max(cell.width - 6, 80), height: rowHeight - 8, alignment: .leading)
                         .background(programColor(cell.program), in: RoundedRectangle(cornerRadius: 12))
                     }
-                    .buttonStyle(TVCardFocusButtonStyle(scale: 1.025))
-                    .offset(x: cell.x)
+                    .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 12))
+                    .focused($focus, equals: .program(channelID: channel.id, programID: cell.program.id))
+                    .onMoveCommand { moveUpIfTopRow($0, from: .program(channelID: channel.id, programID: cell.program.id)) }
+                    // Placed by layout, not `.offset`: the focus engine then searches from where
+                    // the cell is actually drawn, so Down/Right/Left pick the visible neighbour.
+                    .padding(.leading, cell.x)
                 }
             }
 
@@ -810,7 +895,7 @@ struct TVLiveTVGuideView: View {
                 }
             }
         }
-        .frame(width: timeline.width, height: rowHeight)
+        .frame(width: timeline.width, height: rowHeight, alignment: .leading)
     }
 
     private func programColor(_ program: EPGProgram) -> Color {
@@ -821,6 +906,51 @@ struct TVLiveTVGuideView: View {
         }
     }
 
+    private func isPlaying(_ channel: LiveTVChannel) -> Bool {
+        service.playerSession.activeChannelID == channel.id
+    }
+
+    // MARK: Focus
+
+    /// Down from the filters: the live column of the remembered (or first) channel, scrolled into
+    /// view with the timeline back at its start, where "now" is.
+    private func enterGrid(_ proxy: ScrollViewProxy) {
+        let rowIDs = rows.map(\.id)
+        guard let target = TVLiveTVGuideFocusPlanner.entryTarget(
+            rowIDs: rowIDs, remembered: navigationState.focusedChannelID,
+            currentProgramID: { currentProgramID(for: $0) }) else { return }
+        if let channelID = target.channelID {
+            proxy.scrollTo(channelID, anchor: UnitPoint(x: 0, y: 0.2))
+        }
+        Task { @MainActor in
+            await Task.yield()
+            focus = target
+        }
+    }
+
+    private func moveUpIfTopRow(_ direction: MoveCommandDirection, from origin: TVLiveTVGuideFocus) {
+        guard direction == .up,
+              let target = TVLiveTVGuideFocusPlanner.upTarget(from: origin, rowIDs: rows.map(\.id)) else { return }
+        focus = target
+    }
+
+    private func currentProgramID(for channelID: String) -> String? {
+        guard let channel = rows.first(where: { $0.id == channelID }) else { return nil }
+        let programs = service.guidePrograms(for: channel, overlapping: timeline.interval)
+        return TVLiveTVGuideFocusPlanner.currentProgram(in: programs, at: .now)?.id
+    }
+
+    /// Back from a program's details returns to that program.
+    private func restoreAfterDetail() {
+        guard let channelID = navigationState.focusedChannelID else { return }
+        Task { @MainActor in
+            await Task.yield()
+            if focus == nil { focus = .channel(channelID) }
+        }
+    }
+
+    /// Filters and catalog updates rebuild the rows without moving focus. Focus moves only when it
+    /// sat on a row that is gone, and then to the filter it came from, never into the grid.
     private func rebuildRows() {
         rows = LiveTVChannelFiltering.filter(
             service.channels,
@@ -830,7 +960,7 @@ struct TVLiveTVGuideView: View {
             favoriteIDs: service.favoriteChannelIDs
         )
         navigationState.reconcile(visibleChannelIDs: rows.map(\.id))
-        if let target = navigationState.focusedChannelID { focusedChannelID = target }
+        if TVLiveTVGuideFocusPlanner.mustRelocate(focus, rowIDs: rows.map(\.id)) { focus = .category }
     }
 }
 

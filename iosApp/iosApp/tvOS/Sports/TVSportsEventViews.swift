@@ -72,12 +72,11 @@ struct TVSportsEventCard: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(isPlaying ? KyroTheme.accentInk : .clear, lineWidth: 3)
-            )
+            .overlay(alignment: .topTrailing) {
+                if isPlaying { TVKyroPlayingBadge().padding(14) }
+            }
         }
-        .buttonStyle(TVCardFocusButtonStyle(scale: 1.04))
+        .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 22))
         .contextMenu { Button("Event Details", systemImage: "info.circle", action: openDetails) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
@@ -232,13 +231,13 @@ struct TVSportsEventDetailView: View {
         HStack(spacing: 18) {
             ForEach(TVSportsDetailTab.allCases) { option in
                 Button(option.title) { tab = option }
-                    .font(.system(size: 24, weight: tab == option ? .bold : .medium))
-                    .foregroundStyle(tab == option ? KyroTheme.accentInk : Color.siloOnSurface)
+                    .buttonStyle(TVKyroChipStyle(isSelected: tab == option))
                     .focused($focusedTab, equals: option)
                     .accessibilityAddTraits(tab == option ? .isSelected : [])
             }
             Spacer()
-            Button("Back", action: close).font(.system(size: 24, weight: .medium))
+            Button(action: close) { Label("Back", systemImage: "chevron.left") }
+                .buttonStyle(TVKyroChipStyle())
         }
         .focusSection()
     }
@@ -292,7 +291,7 @@ struct TVSportsEventDetailView: View {
             HStack(spacing: 18) {
                 ForEach(Array(teams.enumerated()), id: \.element.id) { offset, team in
                     Button(team.abbreviation) { playerTeamIndex = offset }
-                        .font(.system(size: 22, weight: index == offset ? .bold : .medium))
+                        .buttonStyle(TVKyroChipStyle(isSelected: index == offset))
                 }
             }
             ForEach(teams[index].groups) { group in
@@ -356,7 +355,7 @@ struct TVSportsEventDetailView: View {
                     .padding(20)
                     .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                .buttonStyle(TVCardFocusButtonStyle(scale: 1.02))
+                .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 16))
             }
         } else {
             row("Streams", "No channel in your Live TV provider matches this event.")
