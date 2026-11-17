@@ -60,6 +60,10 @@ struct SiloApp: App {
                         #endif
                         return
                     }
+                    #if os(iOS)
+                    // A pairing QR from an Apple TV's "Set up with phone" screen.
+                    if KyroSendToAppleTVInbox.shared.receive(url) { return }
+                    #endif
                     SiloDeepLinkCoordinator.shared.receive(url)
                 }
                 #if os(iOS)
@@ -67,6 +71,7 @@ struct SiloApp: App {
                 .background { PlayerRotationTransitionHost().frame(width: 0, height: 0) }
                 // Off unless Live TV Settings → Diagnostics turned it on for this launch.
                 .kyroPerformanceOverlay()
+                .modifier(KyroSendToAppleTVPresenter())
                 #endif
                 #if os(macOS)
                 // Deliver URLs to this window instead of opening a new one.

@@ -67,6 +67,7 @@
 		<string>_silopair._tcp</string>
 		<string>_silocast._tcp</string>
 		<string>_silo._tcp</string>
+		<string>_kyrolive._tcp</string>
 	</array>
 	<key>SiloBuildChannel</key>
 	<string>$(SILO_BUILD_CHANNEL)</string>
