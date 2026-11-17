@@ -1,10 +1,10 @@
 #if os(iOS)
 import SwiftUI
 
-/// One-line Settings destination row in the system Settings idiom: icon
-/// tile, title, and the current value. The longer description is spoken as
-/// the accessibility hint instead of printed. The containing NavigationLink
-/// supplies its own chevron; plain buttons ask for one with `showsChevron`.
+/// Settings destination row in the system Settings idiom: icon tile, title,
+/// short description, and an optional current value. The containing
+/// NavigationLink supplies its own chevron; plain buttons ask for one with
+/// `showsChevron`.
 struct SettingsOverviewRow: View {
     let title: String
     let subtitle: String
@@ -12,20 +12,49 @@ struct SettingsOverviewRow: View {
     var value: String? = nil
     var showsChevron = false
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// A short value reads best at the trailing edge, like the system
+    /// Settings app. A long one (a provider or server name) takes its own
+    /// line under the description instead of squeezing the title.
+    private var valueBelow: Bool {
+        SettingsOverviewRowLayout.placesValueBelow(value, isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
+    }
+
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .center, spacing: 14) {
             SettingsIconTile(systemImage: systemImage)
 
-            Text(title)
-                .foregroundStyle(Color.siloOnSurface)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let value, valueBelow {
+                    Text(value)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(Color.siloOnSurface.opacity(0.85))
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+            }
+            .layoutPriority(1)
 
             Spacer(minLength: 8)
 
-            if let value {
+            if let value, !valueBelow {
                 Text(value)
                     .foregroundStyle(Color.siloSecondaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(2)
             }
 
             if showsChevron {
@@ -34,8 +63,22 @@ struct SettingsOverviewRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
+        // The full value is the accessibility value however it is laid out.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(value ?? "")
         .accessibilityHint(subtitle)
+    }
+}
+
+/// Where a row's current value goes. Pure, so the rule is testable.
+enum SettingsOverviewRowLayout {
+    /// Values longer than this leave the trailing edge for their own line.
+    static let trailingValueLimit = 14
+
+    static func placesValueBelow(_ value: String?, isAccessibilitySize: Bool) -> Bool {
+        guard let value, !value.isEmpty else { return false }
+        return isAccessibilitySize || value.count > trailingValueLimit
     }
 }
 

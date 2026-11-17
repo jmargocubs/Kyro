@@ -541,16 +541,8 @@ struct LiveTVSettingsView: View {
     @State private var providerKind: LiveTVProviderKind = .m3u
     @State private var errorMessage: String?
     @State private var providerToRemove: LiveTVProvider?
-    @AppStorage(KyroPerformanceDiagnostics.defaultsKey) private var performanceOverlayEnabled = false
-    #if os(iOS)
-    @State private var journalCopyStatus: String?
-    #endif
-#if KYRO_INTERNAL_EPG_STORAGE_TOGGLE
-    @AppStorage(EPGStorageMode.defaultsKey) private var sqliteStorageEnabled = false
-#if os(iOS)
-    @AppStorage(KyroSportsDiagnosticsVisibility.defaultsKey) private var sportsDiagnosticsVisible = false
-#endif
-#endif
+    // Performance overlay, the playback log and the internal test toggles
+    // live in Settings → Advanced & Diagnostics → Live TV Diagnostics.
 
     var body: some View {
         Form {
@@ -659,52 +651,6 @@ struct LiveTVSettingsView: View {
                                 || username.isEmpty || password.isEmpty)
             }
 
-#if os(iOS)
-            Section("Diagnostics") {
-                Toggle("Performance overlay", isOn: $performanceOverlayEnabled)
-                    .accessibilityIdentifier("kyroPerformanceOverlayToggle")
-                Text("Shows frame pacing, main-thread stalls and guide update counts in a corner of the screen. Tap the overlay to copy a report; press and hold to reset it. Takes effect after force-quitting and reopening Kyro. Leave it off for normal use.")
-                    .font(.footnote)
-                    .foregroundStyle(Color.siloSecondaryText)
-                if performanceOverlayEnabled != KyroPerformanceDiagnostics.isEnabled {
-                    Text("Restart Kyro to apply.")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(LiveTVAccent.primaryText)
-                }
-                Button("Copy Playback and Sports Log") {
-                    let log = KyroLifecycleJournal.contents()
-                    UIPasteboard.general.string = log
-                    let lines = log.split(separator: "\n").count
-                    journalCopyStatus = lines == 0 ? "The log is empty." : "Copied \(lines) lines."
-                }
-                .accessibilityIdentifier("kyroCopyLifecycleLog")
-                Text(journalCopyStatus ?? "Picture in Picture, app, audio and Live TV session events, and why tennis statistics were or were not found. No stream, channel or account details. Paste it into a message after a test.")
-                    .font(.footnote)
-                    .foregroundStyle(Color.siloSecondaryText)
-            }
-#endif
-#if KYRO_INTERNAL_EPG_STORAGE_TOGGLE
-            Section("INTERNAL TEST — EPG Storage") {
-                Toggle("Use experimental SQLite guide", isOn: $sqliteStorageEnabled)
-                Text("Currently active: \(service.activeEPGStorageMode == .sqlite ? "SQLite" : "Existing in-memory backend"). Changes apply after force-quitting and reopening Kyro. This control is included only in the owner’s experimental test build.")
-                    .font(.footnote)
-                    .foregroundStyle(Color.siloSecondaryText)
-                if sqliteStorageEnabled != (service.activeEPGStorageMode == .sqlite) {
-                    Text("Restart required to activate the selected backend.")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(LiveTVAccent.primaryText)
-                }
-            }
-#if os(iOS)
-            Section("INTERNAL TEST — Sports Diagnostics") {
-                Toggle("Show Sports Match Report", isOn: $sportsDiagnosticsVisible)
-                    .accessibilityIdentifier("kyroSportsDiagnosticsToggle")
-                Text("Adds the Sports Match Report to Choose a Stream and Other Streams. Off by default so the normal interface stays clean.")
-                    .font(.footnote)
-                    .foregroundStyle(Color.siloSecondaryText)
-            }
-#endif
-#endif
         }
         .scrollContentBackground(.hidden)
         .background(Color.siloBackground)

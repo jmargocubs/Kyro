@@ -22,13 +22,14 @@ struct SettingsAccountCard: View {
                     Text(name)
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(Color.siloOnSurface)
-                        .lineLimit(1)
+                        .lineLimit(2)
 
                     Text(subtitle)
                         .font(.subheadline)
                         .foregroundStyle(Color.siloSecondaryText)
-                        .lineLimit(1)
+                        .lineLimit(3)
                 }
+                .layoutPriority(1)
 
                 Spacer(minLength: 8)
 

@@ -5,15 +5,10 @@ struct DiagnosticsSettingsView: View {
     @Bindable var model: DiagnosticsViewModel
     let profile: UserProfile?
 
-    @State private var selectedMode: DiagnosticsConsentChoice = .ask
-    @State private var selectedDestination: DiagnosticsDestinationChoice = .hosted
-    @State private var showAlwaysConfirmation = false
-    @State private var showNeverConfirmation = false
-
     var body: some View {
         List {
             availabilitySection
-            preferencesSection
+            loggingSection
             pendingSection
             manualSection
             sentHistorySection
@@ -24,14 +19,6 @@ struct DiagnosticsSettingsView: View {
         .siloToolbarColorSchemeDark()
         .task {
             await model.load(profile: profile)
-            selectedMode = model.consentMode
-            selectedDestination = model.selectedDestination
-        }
-        .onChange(of: model.consentMode) { _, mode in
-            selectedMode = mode
-        }
-        .onChange(of: model.selectedDestination) { _, destination in
-            selectedDestination = destination
         }
     }
 
@@ -49,64 +36,12 @@ struct DiagnosticsSettingsView: View {
         .listRowBackground(Color.siloGroupedCell)
     }
 
-    private var preferencesSection: some View {
+    private var loggingSection: some View {
         Section {
-            Picker("Send Reports To", selection: $selectedDestination) {
-                Text("Silo Diagnostics").tag(DiagnosticsDestinationChoice.hosted)
-                Text("My Silo Server").tag(DiagnosticsDestinationChoice.selfHosted)
-            }
-            .onChange(of: selectedDestination) { oldValue, newValue in
-                guard oldValue != newValue, newValue != model.selectedDestination else { return }
-                Task { await model.setDestination(newValue) }
-            }
-
             Toggle("Debug Logging", isOn: $model.debugLoggingEnabled)
                 .tint(.siloSwitchOn)
-
-            Picker("Crash Reports", selection: $selectedMode) {
-                Text("Ask").tag(DiagnosticsConsentChoice.ask)
-                if model.allowsAlwaysSend {
-                    Text("Always").tag(DiagnosticsConsentChoice.always)
-                }
-                Text("Never").tag(DiagnosticsConsentChoice.never)
-            }
-            .disabled(!model.canChangeConsent)
-            .onChange(of: selectedMode) { oldValue, newValue in
-                guard oldValue != newValue, newValue != model.consentMode else { return }
-                requestModeChange(newValue)
-            }
-            .confirmationDialog(
-                "Always Send Crash Reports?",
-                isPresented: $showAlwaysConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button("Always Send") {
-                    Task { await model.setConsentMode(.always) }
-                }
-                Button("Cancel", role: .cancel, action: cancelModeChange)
-            } message: {
-                Text("Any pending reports and future crash or hang reports for this server account will be sent automatically. You can change this at any time.")
-            }
-            .alert("Turn Off Crash Reports?", isPresented: $showNeverConfirmation) {
-                Button("Turn Off and Delete", role: .destructive) {
-                    Task { await model.setConsentMode(.never) }
-                }
-                Button("Cancel", role: .cancel, action: cancelModeChange)
-            } message: {
-                if model.selectedDestination == .hosted {
-                    Text("Pending local reports will be deleted. Reports already received by Silo Diagnostics will also be queued for deletion. The in-memory basic log will continue running and is never sent without an explicit action.")
-                } else {
-                    Text("Pending reports for this server account will be deleted. The in-memory basic log will continue running and is never sent without an explicit action.")
-                }
-            }
-        } header: {
-            Text("Capture")
         } footer: {
-            if model.selectedDestination == .hosted {
-                Text(model.hostedPrivacyDisclosure)
-            } else {
-                Text("Crash report consent is tied to this server account. Debug logging is a setting for this device.")
-            }
+            Text("Technical logging is stored on this device. Crash-report consent and sharing destination are managed under Privacy.")
         }
         .listRowBackground(Color.siloGroupedCell)
     }
@@ -197,20 +132,6 @@ struct DiagnosticsSettingsView: View {
         .listRowBackground(Color.siloGroupedCell)
     }
 
-    private func requestModeChange(_ mode: DiagnosticsConsentChoice) {
-        switch mode {
-        case .ask:
-            Task { await model.setConsentMode(.ask) }
-        case .always:
-            showAlwaysConfirmation = true
-        case .never:
-            showNeverConfirmation = true
-        }
-    }
-
-    private func cancelModeChange() {
-        selectedMode = model.consentMode
-    }
 }
 
 private extension DiagnosticsSentReport {

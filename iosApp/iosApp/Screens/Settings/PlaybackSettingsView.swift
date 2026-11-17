@@ -22,19 +22,17 @@ struct PlaybackSettingsView: View {
                 rejectedChangeSection
             }
             qualitySection
-            #if os(iOS)
-            cellularQualitySection
-            #endif
             if viewModel.showsConnectionGroup {
                 connectionSection
             }
-            streamingSection
+            audioVideoSection
             behaviorSection
             // Hidden entirely on servers that do not serve the two keys.
             if spoilers.showsSettings {
                 EpisodeSpoilerSettingsSection(store: spoilers)
             }
             SeekIntervalSettingsSections()
+            advancedPlaybackEntry
             resetSection
         }
         .task { await spoilers.refresh() }
@@ -78,17 +76,18 @@ struct PlaybackSettingsView: View {
                 )
             }
 
-            // The sentence wraps, so Reset takes its own row rather than
-            // sitting under it inside the same cell.
-            if let limit = viewModel.learnedConnectionLimitText {
-                Text(limit)
-                    .foregroundStyle(Color.siloOnSurface)
-                Button("Reset") {
-                    Task { await viewModel.resetLearnedConnectionLimit() }
-                }
-            }
+            // iPhone and iPad only. One preset list, since bitrate is what
+            // matters on a data plan.
+            #if os(iOS)
+            choiceRow(
+                "Cellular Quality",
+                .cellularQuality,
+                value: viewModel.cellularQualityLabel,
+                options: cellularQualityChoices
+            )
+            #endif
         } header: {
-            Text("Quality")
+            Text(PlaybackSettingsLayout.Group.streamingQuality.title)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             Text(qualityFooterText)
@@ -97,16 +96,16 @@ struct PlaybackSettingsView: View {
         .listRowBackground(Color.siloGroupedCell)
     }
 
-    /// The quality note, the buffering description, then a failed Reset, one
-    /// line each.
+    /// The quality note, the buffering description, then the cellular note,
+    /// one line each.
     private var qualityFooterText: String {
         var lines = [viewModel.qualityFooterText]
         if viewModel.showsBufferingQualityMode {
             lines.append(SettingsViewModel.bufferingQualityDescription)
         }
-        if let error = viewModel.learnedLimitResetError {
-            lines.append(error)
-        }
+        #if os(iOS)
+        lines.append(SettingsViewModel.cellularQualityFooterText)
+        #endif
         return lines.joined(separator: "\n")
     }
 
@@ -154,28 +153,9 @@ struct PlaybackSettingsView: View {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
-    #if os(iOS)
-    /// iPhone and iPad only. One preset list, since bitrate is what matters
-    /// on a data plan.
-    private var cellularQualitySection: some View {
-        Section {
-            choiceRow(
-                "Cellular Quality",
-                .cellularQuality,
-                value: viewModel.cellularQualityLabel,
-                options: cellularQualityChoices
-            )
-        } footer: {
-            Text(SettingsViewModel.cellularQualityFooterText)
-                .foregroundStyle(Color.siloSecondaryText)
-        }
-        .listRowBackground(Color.siloGroupedCell)
-    }
-    #endif
+    // MARK: - Audio & Video
 
-    // MARK: - Streaming
-
-    private var streamingSection: some View {
+    private var audioVideoSection: some View {
         Section {
             choiceRow("Audio Language", .audioLanguage, value: audioLanguageLabel, options: audioLanguageChoices)
 
@@ -188,42 +168,6 @@ struct PlaybackSettingsView: View {
                 .tint(.siloSwitchOn)
                 .disabled(!viewModel.hdrEnabled)
 
-            Toggle("Seek Cache", isOn: $viewModel.seekCacheEnabled)
-                .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloSwitchOn)
-
-            Picker("Buffer Ahead", selection: $viewModel.bufferAhead) {
-                ForEach(BufferAheadMode.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-            .foregroundStyle(Color.siloOnSurface)
-            .settingsPickerStyle()
-
-            Toggle("Lossless Multichannel Audio", isOn: $viewModel.losslessAudioEnabled)
-                .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloSwitchOn)
-
-            Toggle("TrueHD Atmos and DTS:X", isOn: $viewModel.trueHDAtmosEnabled)
-                .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloSwitchOn)
-
-            Picker("Deinterlacing", selection: $viewModel.deinterlaceMode) {
-                ForEach(DeinterlacePreference.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-            .foregroundStyle(Color.siloOnSurface)
-            .settingsPickerStyle()
-
-            Picker("Deinterlacing Field Rate", selection: $viewModel.deinterlaceFieldRate) {
-                ForEach(DeinterlaceFieldRatePreference.allCases, id: \.self) { rate in
-                    Text(rate.label).tag(rate)
-                }
-            }
-            .foregroundStyle(Color.siloOnSurface)
-            .settingsPickerStyle()
-
             // iOS only: the engine's background policy is driven by the app
             // lifecycle notifications, which macOS does not post — a toggle
             // there would control nothing.
@@ -233,20 +177,37 @@ struct PlaybackSettingsView: View {
                 .tint(.siloSwitchOn)
             #endif
         } header: {
-            Text("Streaming")
+            Text(PlaybackSettingsLayout.Group.audioVideo.title)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
-            Text(streamingFooterText)
+            Text(SettingsViewModel.hdrFooterText)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
     }
 
-    private var streamingFooterText: String {
-        var text = SettingsViewModel.hdrFooterText
-        text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
-        text += " With TrueHD Atmos and DTS:X on, those tracks keep their height channels but play as compressed audio."
-        return text
+    // MARK: - Advanced Playback
+
+    /// iPhone and iPad push the expert settings onto their own page so the
+    /// everyday controls stay short; the Mac, which has no pushed pages here,
+    /// shows the same sections inline.
+    @ViewBuilder private var advancedPlaybackEntry: some View {
+        #if os(macOS)
+        PlaybackAdvancedSettingsSections(viewModel: viewModel)
+        #else
+        Section {
+            NavigationLink {
+                PlaybackAdvancedSettingsView(viewModel: viewModel)
+            } label: {
+                Text(PlaybackSettingsLayout.Group.advanced.title)
+                    .foregroundStyle(Color.siloOnSurface)
+            }
+        } footer: {
+            Text(PlaybackSettingsLayout.advancedEntryFooter)
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .listRowBackground(Color.siloGroupedCell)
+        #endif
     }
 
     // MARK: - Behavior
@@ -285,7 +246,7 @@ struct PlaybackSettingsView: View {
                 options: onOffChoices
             )
         } header: {
-            Text("Episodes")
+            Text(PlaybackSettingsLayout.Group.episodeBehavior.title)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -410,6 +371,151 @@ struct PlaybackSettingsView: View {
             (60, "1 minute before end"),
             (120, "2 minutes before end"),
         ]
+    }
+}
+
+/// The order and wording of the Playback page. Presentation only: it names
+/// where each existing control sits and owns no value or storage.
+enum PlaybackSettingsLayout {
+    enum Group: CaseIterable {
+        case streamingQuality, audioVideo, episodeBehavior, playerControls, advanced
+
+        var title: String {
+            switch self {
+            case .streamingQuality: "Streaming Quality"
+            case .audioVideo: "Audio & Video"
+            case .episodeBehavior: "Episode Behavior"
+            case .playerControls: "Player Controls"
+            case .advanced: "Advanced Playback"
+            }
+        }
+
+        /// Row titles in display order. Rows that depend on the platform or
+        /// the server are listed too; the page decides whether to show them.
+        var controls: [String] {
+            switch self {
+            case .streamingQuality:
+                ["Resolution", "Maximum Bitrate", "Cellular Quality", "Buffering Quality"]
+            case .audioVideo:
+                ["Audio Language", "HDR", "Dolby Vision", "Background Playback"]
+            case .episodeBehavior:
+                ["Auto-Play Next Episode", "Show Next Up", "Skip Intros", "Skip Credits",
+                 "Blur unwatched episode images", "Hide unwatched episode descriptions"]
+            case .playerControls:
+                ["Skip Back", "Skip Forward"]
+            case .advanced:
+                ["Seek Cache", "Buffer Ahead", "Lossless Multichannel Audio", "TrueHD Atmos and DTS:X",
+                 "Deinterlacing", "Deinterlacing Field Rate", "Reset"]
+            }
+        }
+    }
+
+    static let learnedLimitGroupTitle = "Learned Connection Limit"
+    static let spoilerProtectionTitle = "Spoiler Protection"
+    static let videoSkipTitle = "Video Skip Intervals"
+    static let audiobookSkipTitle = "Audiobook Skip Intervals"
+    static let advancedEntryFooter = "Seek cache, buffering, lossless audio, and deinterlacing. The defaults suit most devices."
+    static let advancedPageFooter = "Change these only to fix a playback problem on this device."
+    static let advancedAudioFooter = "If surround plays as stereo, turn off Lossless Multichannel Audio. With TrueHD Atmos and DTS:X on, those tracks keep their height channels but play as compressed audio."
+}
+
+#if os(iOS)
+/// The pushed "Advanced Playback" page on iPhone and iPad.
+struct PlaybackAdvancedSettingsView: View {
+    @Bindable var viewModel: SettingsViewModel
+
+    var body: some View {
+        List {
+            PlaybackAdvancedSettingsSections(viewModel: viewModel)
+        }
+        .settingsListChrome()
+        .navigationTitle(PlaybackSettingsLayout.Group.advanced.title)
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloToolbarColorSchemeDark()
+    }
+}
+#endif
+
+/// Seek cache, buffering, audio passthrough, deinterlacing, and the learned
+/// connection limit. The bindings are the ones the Playback page used before.
+struct PlaybackAdvancedSettingsSections: View {
+    @Bindable var viewModel: SettingsViewModel
+
+    var body: some View {
+        Section {
+            Toggle("Seek Cache", isOn: $viewModel.seekCacheEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
+
+            Picker("Buffer Ahead", selection: $viewModel.bufferAhead) {
+                ForEach(BufferAheadMode.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .foregroundStyle(Color.siloOnSurface)
+            .settingsPickerStyle()
+        } header: {
+            Text(PlaybackSettingsLayout.Group.advanced.title)
+                .foregroundStyle(Color.siloSecondaryText)
+        } footer: {
+            Text(PlaybackSettingsLayout.advancedPageFooter)
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .listRowBackground(Color.siloGroupedCell)
+
+        Section {
+            Toggle("Lossless Multichannel Audio", isOn: $viewModel.losslessAudioEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
+
+            Toggle("TrueHD Atmos and DTS:X", isOn: $viewModel.trueHDAtmosEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
+        } footer: {
+            Text(PlaybackSettingsLayout.advancedAudioFooter)
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .listRowBackground(Color.siloGroupedCell)
+
+        Section {
+            Picker("Deinterlacing", selection: $viewModel.deinterlaceMode) {
+                ForEach(DeinterlacePreference.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .foregroundStyle(Color.siloOnSurface)
+            .settingsPickerStyle()
+
+            Picker("Deinterlacing Field Rate", selection: $viewModel.deinterlaceFieldRate) {
+                ForEach(DeinterlaceFieldRatePreference.allCases, id: \.self) { rate in
+                    Text(rate.label).tag(rate)
+                }
+            }
+            .foregroundStyle(Color.siloOnSurface)
+            .settingsPickerStyle()
+        }
+        .listRowBackground(Color.siloGroupedCell)
+
+        // The sentence wraps, so Reset takes its own row rather than sitting
+        // under it inside the same cell.
+        if let limit = viewModel.learnedConnectionLimitText {
+            Section {
+                Text(limit)
+                    .foregroundStyle(Color.siloOnSurface)
+                Button("Reset") {
+                    Task { await viewModel.resetLearnedConnectionLimit() }
+                }
+            } header: {
+                Text(PlaybackSettingsLayout.learnedLimitGroupTitle)
+                    .foregroundStyle(Color.siloSecondaryText)
+            } footer: {
+                if let error = viewModel.learnedLimitResetError {
+                    Text(error)
+                        .foregroundStyle(Color.siloSecondaryText)
+                }
+            }
+            .listRowBackground(Color.siloGroupedCell)
+        }
     }
 }
 

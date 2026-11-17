@@ -21,7 +21,7 @@ struct EpisodeSpoilerSettingsSection: View {
                 description: "Hide an episode's description until you start watching it."
             )
         } header: {
-            Text("Spoilers")
+            Text(PlaybackSettingsLayout.spoilerProtectionTitle)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             Text(footerText)

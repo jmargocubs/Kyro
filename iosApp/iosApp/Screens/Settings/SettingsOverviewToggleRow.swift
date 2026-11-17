@@ -9,11 +9,19 @@ struct SettingsOverviewToggleRow: View {
 
     var body: some View {
         Toggle(isOn: $isOn) {
-            HStack(spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
                 SettingsIconTile(systemImage: systemImage)
 
-                Text(title)
-                    .foregroundStyle(Color.siloOnSurface)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .foregroundStyle(Color.siloOnSurface)
+                        .multilineTextAlignment(.leading)
+
+                    Text(subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .multilineTextAlignment(.leading)
+                }
             }
         }
         .tint(.siloSwitchOn)

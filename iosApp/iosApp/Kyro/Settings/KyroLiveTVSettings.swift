@@ -39,24 +39,28 @@ enum KyroLiveTVNavigationSettingsPolicy {
 #if os(iOS)
 /// One labelled Live TV entry in the Settings overview. It pushes the existing Live TV settings as a
 /// normal subpage of Settings.
-struct KyroLiveTVSettingsSection: View {
+struct KyroLiveTVSettingsRow: View {
     private let service = LiveTVService.shared
 
     var body: some View {
-        Section {
-            NavigationLink {
-                LiveTVSettingsView(service: service, presentation: .pushed)
-            } label: {
-                SettingsOverviewRow(
-                    title: KyroLiveTVSettingsEntry.title,
-                    subtitle: KyroLiveTVSettingsEntry.subtitle,
-                    systemImage: KyroLiveTVSettingsEntry.systemImage,
-                    value: KyroLiveTVSettingsEntry.summary(providers: service.providers,
-                                                           selectedProviderID: service.selectedProviderID)
-                )
-            }
-            .accessibilityIdentifier("kyroSettingsLiveTV")
+        NavigationLink {
+            LiveTVSettingsView(service: service, presentation: .pushed)
+        } label: {
+            SettingsOverviewRow(
+                title: KyroLiveTVSettingsEntry.title,
+                subtitle: KyroLiveTVSettingsEntry.subtitle,
+                systemImage: KyroLiveTVSettingsEntry.systemImage,
+                value: KyroLiveTVSettingsEntry.summary(providers: service.providers,
+                                                       selectedProviderID: service.selectedProviderID)
+            )
         }
+        .accessibilityIdentifier("kyroSettingsLiveTV")
+    }
+}
+
+struct KyroLiveTVSettingsSection: View {
+    var body: some View {
+        Section { KyroLiveTVSettingsRow() }
     }
 }
 #endif

@@ -29,23 +29,27 @@ extension KyroFourthTab {
 
 #if os(iOS)
 /// The Navigation row in the Settings overview.
-struct KyroNavigationSettingsSection: View {
+struct KyroNavigationSettingsRow: View {
     @State private var store = KyroGlobalNavigationStore.shared
 
     var body: some View {
-        Section {
-            NavigationLink {
-                KyroNavigationSettingsView(store: store)
-            } label: {
-                SettingsOverviewRow(
-                    title: KyroNavigationSettingsEntry.title,
-                    subtitle: KyroNavigationSettingsEntry.subtitle,
-                    systemImage: KyroNavigationSettingsEntry.systemImage,
-                    value: store.preferences.fourthTab.title
-                )
-            }
-            .accessibilityIdentifier("kyroSettingsNavigation")
+        NavigationLink {
+            KyroNavigationSettingsView(store: store)
+        } label: {
+            SettingsOverviewRow(
+                title: KyroNavigationSettingsEntry.title,
+                subtitle: KyroNavigationSettingsEntry.subtitle,
+                systemImage: KyroNavigationSettingsEntry.systemImage,
+                value: store.preferences.fourthTab.title
+            )
         }
+        .accessibilityIdentifier("kyroSettingsNavigation")
+    }
+}
+
+struct KyroNavigationSettingsSection: View {
+    var body: some View {
+        Section { KyroNavigationSettingsRow() }
     }
 }
 

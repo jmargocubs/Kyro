@@ -21,7 +21,7 @@ struct SeekIntervalSettingsSections: View {
     var body: some View {
         Group {
             section(
-                title: "Video",
+                title: PlaybackSettingsLayout.videoSkipTitle,
                 media: .video,
                 surface: .videoPlayer,
                 footer: Self.videoFooter
@@ -30,7 +30,7 @@ struct SeekIntervalSettingsSections: View {
             // every child, which would refresh once per section.
             .task { await store.refresh() }
             section(
-                title: "Audiobooks",
+                title: PlaybackSettingsLayout.audiobookSkipTitle,
                 media: .audiobook,
                 surface: .audiobook,
                 footer: "Used by the audiobook player's skip buttons."

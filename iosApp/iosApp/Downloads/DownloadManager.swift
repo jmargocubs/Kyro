@@ -1097,16 +1097,29 @@ final class DownloadManager {
 
     /// On failure the cached capability stays, so an unreachable or
     /// update-required server keeps completed downloads visible and playable.
-    func refreshCapability() async {
-        guard let owner = await captureScopeOwner() else { return }
+    /// Returns whether the server's answer for the current scope was stored,
+    /// so a caller can tell a failed refresh from an answer of "disabled".
+    @discardableResult
+    func refreshCapability() async -> Bool {
+        guard let owner = await captureScopeOwner() else { return false }
         do {
             let capability = try await SiloAPI.shared.apiV2Client.downloadCapability(auth: owner.auth)
-            guard isCurrent(owner) else { return }
+            guard isCurrent(owner) else { return false }
             file.capability = capability
             file.capabilityFetchedAt = Date()
             persist()
+            // Only the support flags: no URLs, identifiers or credentials.
+            Self.logger.info("""
+            capability state=\(capability.state, privacy: .public) \
+            allowed=\(capability.allowed, privacy: .public) \
+            enabled=\(capability.enabled, privacy: .public) \
+            downloadAllowed=\(capability.downloadAllowed, privacy: .public) \
+            usable=\(capability.isUsable, privacy: .public)
+            """)
+            return true
         } catch {
             Self.logger.warning("capability refresh failed: \(String(describing: error), privacy: .public)")
+            return false
         }
     }
 
