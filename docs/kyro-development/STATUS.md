@@ -1,7 +1,7 @@
 # Kyro Development & Platform Status
 
 **Last Updated:** 2026-11-17  
-**Repository:** `/Users/paolazanetti/.t3/scratch/kyro-silo`  
+**Repository:** `<repo>`  
 **Tracking System Version:** 1.2.0
 
 ---
@@ -10,8 +10,8 @@
 
 Kyro iOS and tvOS development branches have completed their planned integrations and stand ready for independent candidate packaging:
 
-- **iOS Mainline (`kyro/m1-rebrand`):** HEAD at [`6eb3befc`](/Users/paolazanetti/.t3/scratch/kyro-silo). Fully integrates **Settings Redesign** (Build 86.1, `94d9ad78`), **Backup & Restore with Build 88.2 importer fix** (`557ee779`), and **iPhone Live TV Pairing Sender** (cherry-picked commits `45f2e160`, `bdb4fc7a`, `7e72762e`, `e4750bd7`). Configured for **iPhone Build 90**.
-- **tvOS Canonical Branch (`kyro/tvos`):** HEAD at [`5bc4cd6e`](/Users/paolazanetti/.t3/worktrees/kyro-silo/kyro-tvos). Verified and **fast-forwarded** to include **Phase 3A Siri Remote focus visibility & grid navigation**. Configured for **Apple TV Build 85**.
+- **iOS Mainline (`kyro/m1-rebrand`):** HEAD at [`6eb3befc`](<repo>). Fully integrates **Settings Redesign** (Build 86.1, `94d9ad78`), **Backup & Restore with Build 88.2 importer fix** (`557ee779`), and **iPhone Live TV Pairing Sender** (cherry-picked commits `45f2e160`, `bdb4fc7a`, `7e72762e`, `e4750bd7`). Configured for **iPhone Build 90**.
+- **tvOS Canonical Branch (`kyro/tvos`):** HEAD at [`5bc4cd6e`](<worktrees>/kyro-tvos). Verified and **fast-forwarded** to include **Phase 3A Siri Remote focus visibility & grid navigation**. Configured for **Apple TV Build 85**.
 - **Integration State:** All intended features are integrated without duplication or conflicts. Source code is verified and prepared for candidate compilation.
 
 ---
@@ -20,20 +20,20 @@ Kyro iOS and tvOS development branches have completed their planned integrations
 
 | Worktree Path | Active Branch | HEAD Commit | Commit Subject | Tree Status | Status / Purpose |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `/Users/paolazanetti/.t3/scratch/kyro-silo` | `kyro/m1-rebrand` | `6eb3befc` | `chore(ios): set CURRENT_PROJECT_VERSION to 90 for iPhone release candidate` | Clean of code | Canonical iOS branch ready for Build 90 packaging |
-| `/Users/paolazanetti/.t3/worktrees/kyro-silo/kyro-tvos` | `kyro/tvos` | `5bc4cd6e` | `fix(tvos): make Siri Remote focus predictable and visible` | Clean | Canonical tvOS branch fast-forwarded to Phase 3A; ready for Build 85 packaging |
-| `/Users/paolazanetti/.t3/worktrees/kyro-silo/kyro-tvos-3a` | `kyro/tvos-phase3a` | `5bc4cd6e` | `fix(tvos): make Siri Remote focus predictable and visible` | Clean | Reference branch (now aligned with `kyro/tvos`) |
-| `/Users/paolazanetti/.t3/worktrees/kyro-silo/kyro-ios-b86` | `kyro/ios-pairing-b86` | `4bf10084` | `fix(ios): open the Apple TV pairing screen from any state` | Clean | Historical source branch for pairing commits; fully integrated into `kyro/m1-rebrand` |
-| `/Users/paolazanetti/.t3/worktrees/kyro-silo/kyro-ios-integration` | `kyro/ios-pairing-integration` | `87685dc8` | `fix(ios): make phone pairing survive first run and report failures` | Clean | Historical integration attempt |
-| `/Users/paolazanetti/.t3/worktrees/kyro-silo/kyro-ios-pairing` | `kyro/ios-tv-pairing` | `5dbee415` | `feat(ios): send a Live TV provider to Apple TV` | Clean | Historical sender branch |
-| `/Users/paolazanetti/.t3/worktrees/kyro-silo/t3-0357580d` | `t3/epg-program-search-index` | `31e1ed26` | `chore(kyro): make unified navigation default and stabilize test configuration` | Clean | Historical search index branch |
+| `<repo>` | `kyro/m1-rebrand` | `6eb3befc` | `chore(ios): set CURRENT_PROJECT_VERSION to 90 for iPhone release candidate` | Clean of code | Canonical iOS branch ready for Build 90 packaging |
+| `<worktrees>/kyro-tvos` | `kyro/tvos` | `5bc4cd6e` | `fix(tvos): make Siri Remote focus predictable and visible` | Clean | Canonical tvOS branch fast-forwarded to Phase 3A; ready for Build 85 packaging |
+| `<worktrees>/kyro-tvos-3a` | `kyro/tvos-phase3a` | `5bc4cd6e` | `fix(tvos): make Siri Remote focus predictable and visible` | Clean | Reference branch (now aligned with `kyro/tvos`) |
+| `<worktrees>/kyro-ios-b86` | `kyro/ios-pairing-b86` | `4bf10084` | `fix(ios): open the Apple TV pairing screen from any state` | Clean | Historical source branch for pairing commits; fully integrated into `kyro/m1-rebrand` |
+| `<worktrees>/kyro-ios-integration` | `kyro/ios-pairing-integration` | `87685dc8` | `fix(ios): make phone pairing survive first run and report failures` | Clean | Historical integration attempt |
+| `<worktrees>/kyro-ios-pairing` | `kyro/ios-tv-pairing` | `5dbee415` | `feat(ios): send a Live TV provider to Apple TV` | Clean | Historical sender branch |
+| `<worktrees>/t3-0357580d` | `t3/epg-program-search-index` | `31e1ed26` | `chore(kyro): make unified navigation default and stabilize test configuration` | Clean | Historical search index branch |
 
 ---
 
 ## 3. Platform Status & Release Candidates
 
 ### iOS Platform Status (Build 90 Candidate)
-- **Candidate HEAD:** [`6eb3befc`](/Users/paolazanetti/.t3/scratch/kyro-silo)
+- **Candidate HEAD:** [`6eb3befc`](<repo>)
 - **Included Features:**
   - `FEAT-CAT-84`: Verified Categories navigation, layouts, grouping, search, pinning, and scroll restoration.
   - `FEAT-SET-86`: Settings overview redesign and Live TV diagnostics repositioning.
@@ -43,7 +43,7 @@ Kyro iOS and tvOS development branches have completed their planned integrations
 - **Physical Device Gate:** Pending physical installation and verification on iPhone 16 Plus.
 
 ### tvOS Platform Status (Build 85 Candidate)
-- **Candidate HEAD:** [`5bc4cd6e`](/Users/paolazanetti/.t3/worktrees/kyro-silo/kyro-tvos)
+- **Candidate HEAD:** [`5bc4cd6e`](<worktrees>/kyro-tvos)
 - **Included Features:**
   - `FEAT-TV-NATIVE`: Native tvOS foundation and Top Shelf bundle ID alignment.
   - `FEAT-TV-LIVETV`: Native full-screen Live TV experience.

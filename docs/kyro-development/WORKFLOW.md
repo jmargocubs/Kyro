@@ -113,5 +113,5 @@ To prevent resource starvation, DerivedData lock contention, and build collision
 
 ### Usage
 ```bash
-/Users/paolazanetti/.t3/scratch/kyro-silo/docs/kyro-development/scripts/kyro-build-lock.sh <command>
+<repo>/docs/kyro-development/scripts/kyro-build-lock.sh <command>
 ```

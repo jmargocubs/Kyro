@@ -41,8 +41,8 @@ release_record:
 
 | Release Candidate | Platform | Target | Build No. | Source Branch & Commit | Included Features | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **iPhone Build 90**<br>`Kyro-v1.0.0-Build90-Unsigned.ipa` | iOS | Silo | 90 | `kyro/m1-rebrand`<br>[`6eb3befc`](/Users/paolazanetti/.t3/scratch/kyro-silo) | `FEAT-CAT-84`<br>`FEAT-SET-86`<br>`FEAT-BAK-88` (with 88.2 fix)<br>`FEAT-PAIR-CORE`<br>`FEAT-PAIR-IOS` | Ready for packaging under build lock |
-| **Apple TV Build 85**<br>`Kyro-tvOS-v1.0.0-Build85-Unsigned.ipa` | tvOS | SiloTV | 85 | `kyro/tvos`<br>[`5bc4cd6e`](/Users/paolazanetti/.t3/worktrees/kyro-silo/kyro-tvos) | `FEAT-TV-NATIVE`<br>`FEAT-TV-LIVETV`<br>`FEAT-TV-SPORTS`<br>`FEAT-PAIR-CORE`<br>`FEAT-PAIR-TV`<br>`FEAT-TV-FOCUS` (Phase 3A) | Ready for packaging under build lock |
+| **iPhone Build 90**<br>`Kyro-v1.0.0-Build90-Unsigned.ipa` | iOS | Silo | 90 | `kyro/m1-rebrand`<br>[`6eb3befc`](<repo>) | `FEAT-CAT-84`<br>`FEAT-SET-86`<br>`FEAT-BAK-88` (with 88.2 fix)<br>`FEAT-PAIR-CORE`<br>`FEAT-PAIR-IOS` | Ready for packaging under build lock |
+| **Apple TV Build 85**<br>`Kyro-tvOS-v1.0.0-Build85-Unsigned.ipa` | tvOS | SiloTV | 85 | `kyro/tvos`<br>[`5bc4cd6e`](<worktrees>/kyro-tvos) | `FEAT-TV-NATIVE`<br>`FEAT-TV-LIVETV`<br>`FEAT-TV-SPORTS`<br>`FEAT-PAIR-CORE`<br>`FEAT-PAIR-TV`<br>`FEAT-TV-FOCUS` (Phase 3A) | Ready for packaging under build lock |
 
 ---
 
