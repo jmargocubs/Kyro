@@ -1,0 +1,149 @@
+name: Publish approved IPA and update catalog
+
+on:
+  workflow_run:
+    workflows: ["Cloud unsigned IPA (free runner)"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-approved-ipa
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Only the two trusted Kyro branches can publish. Pull requests, forks, and
+    # every other branch are deliberately excluded.
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.head_branch == 'kyro/m1-rebrand' ||
+       github.event.workflow_run.head_branch == 'kyro/tvos') }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.KYRO_CATALOG_TOKEN }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      KYRO_REPO: jmargocubs/Kyro
+      CATALOG_REPO: jmargocubs/feather-apps
+    steps:
+      - name: Require catalog token
+        run: test -n "$GH_TOKEN"
+
+      - name: Download the exact build artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/build"
+          mapfile -t artifacts < <(gh api "repos/$KYRO_REPO/actions/runs/$RUN_ID/artifacts" --paginate --jq '.artifacts[] | select(.expired == false and (.name | startswith("Kyro-ios-unsigned-ipa-") or startswith("Kyro-tvos-unsigned-ipa-"))) | .name')
+          test "${#artifacts[@]}" -eq 1
+          gh run download "$RUN_ID" --repo "$KYRO_REPO" --name "${artifacts[0]}" --dir "$RUNNER_TEMP/build"
+
+      - name: Validate IPA and derive release metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa=$(find "$RUNNER_TEMP/build" -type f -name '*.ipa' -print -quit)
+          test -n "$ipa" && test "$(find "$RUNNER_TEMP/build" -type f -name '*.ipa' | wc -l | tr -d ' ')" = 1
+          test -z "$(unzip -Z1 "$ipa" | grep -Ei 'embedded\.mobileprovision|\.p8$|\.p12$|\.cer$|\.mobileprovision$' || true)"
+          app_plist=$(unzip -Z1 "$ipa" | grep -E '^Payload/[^/]+\.app/Info\.plist$' | head -1)
+          test -n "$app_plist"
+          unzip -p "$ipa" "$app_plist" > "$RUNNER_TEMP/app.plist"
+          bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$RUNNER_TEMP/app.plist")
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RUNNER_TEMP/app.plist")
+          build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$RUNNER_TEMP/app.plist")
+          min_os=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$RUNNER_TEMP/app.plist")
+          arch=$(unzip -p "$ipa" "Payload/$(basename "${app_plist%/Info.plist}")/$(basename "${app_plist%/Info.plist}" .app)" > "$RUNNER_TEMP/app-bin" 2>/dev/null || true; file "$RUNNER_TEMP/app-bin" | grep -o 'arm64' | head -1)
+          info="$RUNNER_TEMP/build/BUILD-INFO-$(basename "$ipa" | grep -q tvos && echo tvos || echo ios).txt"
+          test -f "$info"
+          source_sha=$(awk -F': ' '$1 == "source_commit" {print $2}' "$info")
+          platform=$(awk -F': ' '$1 == "target" {print $2}' "$info" | grep -q SiloTV && echo tvos || echo ios)
+          expected_bundle=com.cubbiestream.kyro
+          test "$bundle" = "$expected_bundle"
+          test "$arch" = arm64
+          if [ "$platform" = tvos ]; then
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$RUNNER_TEMP/app.plist")" = AppleTVOS
+            catalog=tvos-source.json
+            name='Kyro Apple TV'
+          else
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$RUNNER_TEMP/app.plist")" = iPhoneOS
+            catalog=source.json
+            name=Kyro
+          fi
+          sha=$(shasum -a 256 "$ipa" | awk '{print $1}')
+          ipa_size=$(wc -c < "$ipa" | tr -d ' ')
+          printf '%s  %s\n' "$sha" "$(basename "$ipa")" > "$RUNNER_TEMP/$(basename "$ipa").sha256"
+          echo "ipa=$ipa" >> "$GITHUB_OUTPUT"
+          echo "platform=$platform" >> "$GITHUB_OUTPUT"
+          echo "catalog=$catalog" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "min_os=$min_os" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "ipa_size=$ipa_size" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Create or verify Kyro pre-release
+        shell: bash
+        env:
+          IPA: ${{ steps.metadata.outputs.ipa }}
+          SHA: ${{ steps.metadata.outputs.sha }}
+          IPA_SIZE: ${{ steps.metadata.outputs.ipa_size }}
+          PLATFORM: ${{ steps.metadata.outputs.platform }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          BUILD: ${{ steps.metadata.outputs.build }}
+          SOURCE_SHA: ${{ steps.metadata.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          tag="kyro-${PLATFORM}-v${VERSION}-build${BUILD}-rc1"
+          title="Kyro ${PLATFORM} ${VERSION} Build ${BUILD}"
+          checksum="$RUNNER_TEMP/$(basename "$IPA").sha256"
+          if gh release view "$tag" --repo "$KYRO_REPO" >/dev/null 2>&1; then
+            test "$(gh release view "$tag" --repo "$KYRO_REPO" --json isPrerelease --jq .isPrerelease)" = true
+          else
+            gh release create "$tag" "$IPA" "$checksum" --repo "$KYRO_REPO" --target "$SOURCE_SHA" --prerelease --title "$title" --notes "UNSIGNED PRE-RELEASE — NOT YET DEVICE VERIFIED. Users must sign and sideload this ${PLATFORM} application themselves. SHA-256: $SHA"
+          fi
+
+      - name: Update feather-apps catalog
+        shell: bash
+        env:
+          IPA: ${{ steps.metadata.outputs.ipa }}
+          PLATFORM: ${{ steps.metadata.outputs.platform }}
+          CATALOG: ${{ steps.metadata.outputs.catalog }}
+          APP_NAME: ${{ steps.metadata.outputs.name }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          BUILD: ${{ steps.metadata.outputs.build }}
+          MIN_OS: ${{ steps.metadata.outputs.min_os }}
+          SHA: ${{ steps.metadata.outputs.sha }}
+          IPA_SIZE: ${{ steps.metadata.outputs.ipa_size }}
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:$GH_TOKEN@github.com/$CATALOG_REPO.git" "$RUNNER_TEMP/catalog"
+          python3 - "$RUNNER_TEMP/catalog/$CATALOG" "$APP_NAME" "$PLATFORM" "$VERSION" "$BUILD" "$MIN_OS" "$SHA" "$IPA_SIZE" <<'PY'
+          import json, pathlib, sys
+          path, name, platform, version, build, min_os, sha, ipa_size = sys.argv[1:]
+          build_i = int(build)
+          data = json.loads(pathlib.Path(path).read_text())
+          app = next(a for a in data["apps"] if a["name"] == name)
+          url = f"https://github.com/jmargocubs/Kyro/releases/download/kyro-{platform}-v{version}-build{build}-rc1/" + (f"Kyro-{version}-{build}-tvos-unsigned-arm64.ipa" if platform == "tvos" else f"Kyro-v{version}-Build{build}-Unsigned.ipa")
+          expected = {"version": version, "buildVersion": build, "downloadURL": url, "size": int(ipa_size), "minOSVersion": min_os}
+          for old in app.get("versions", []):
+              if old.get("version") == version and old.get("buildVersion") == build:
+                  if old.get("downloadURL") != url or old.get("size") != expected["size"]:
+                      raise SystemExit("existing version/build differs; refusing overwrite")
+                  print("catalog entry already present")
+                  raise SystemExit(0)
+          if any(int(v.get("buildVersion", 0)) >= build_i for v in app.get("versions", []) if v.get("version") == version):
+              raise SystemExit("refusing platform catalog downgrade")
+          app["versions"].insert(0, expected)
+          app["size"] = expected["size"]
+          pathlib.Path(path).write_text(json.dumps(data, indent=2) + "\n")
+          PY
+          cd "$RUNNER_TEMP/catalog"
+          git config user.name kyro-release-bot
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$CATALOG"
+          git diff --cached --quiet || git commit -m "Update Kyro $PLATFORM to Build $BUILD"
+          git push origin HEAD:main
