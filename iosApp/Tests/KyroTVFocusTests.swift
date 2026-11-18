@@ -69,6 +69,17 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertNil(TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: [], remembered: "news") { _ in "x" })
     }
 
+    func testIdleToolbarEntryPreferenceExpiresAtTheNextListingBoundary() {
+        let programs = [program("news", from: -60, to: 60), program("news", from: 120, to: 600)]
+        XCTAssertEqual(TVLiveTVGuideFocusPlanner.nextListingBoundary(in: programs, after: now), now.addingTimeInterval(60))
+        XCTAssertEqual(TVLiveTVGuideFocusPlanner.nextListingBoundary(in: programs, after: now.addingTimeInterval(60)), now.addingTimeInterval(120))
+        XCTAssertNil(TVLiveTVGuideFocusPlanner.nextListingBoundary(in: [], after: now))
+        var history = TVLiveTVGuideFocusHistory()
+        history.observe(.program(channelID: "news", programID: "old"))
+        XCTAssertEqual(history.gridDefault(entry: .program(channelID: "news", programID: "new")), history.grid,
+                       "A schedule boundary is not permission to move active focus")
+    }
+
     func testCurrentProgramIsTheOneAiringNowNotTheNextOne() {
         let programs = [program("news", from: -3_600, to: -60), program("news", from: -60, to: 1_740),
                         program("news", from: 1_740, to: 3_600)]

@@ -46,6 +46,10 @@ No private APIs, local Simulator, archive, IPA or Build 88 version bump.
 - Entry preferences update only while the toolbar owns focus. Async EPG results
   cannot change the active grid's default to a different/current program.
   Short-guide and SQLite residency revisions update the preference too.
+  A cancellable listing-boundary task refreshes only this inactive preference
+  when a program ends or a gap ends. It never assigns focus, and is ignored
+  while the grid owns focus. Waiting on the toolbar must not leave a stale
+  "current program" preference until the next provider refresh.
 - Grid entry is ineligible until geometry confirms the intended lazy row is
   laid out. An early Down stays on the toolbar instead of selecting a wrong
   cell; it is not replayed later. This gate never disables an active grid.

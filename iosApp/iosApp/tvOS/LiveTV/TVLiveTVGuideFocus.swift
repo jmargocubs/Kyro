@@ -56,6 +56,10 @@ enum TVLiveTVGuideFocusPlanner {
     static func currentProgram(in programs: [EPGProgram], at now: Date) -> EPGProgram? {
         programs.first { $0.start <= now && now < $0.end }
     }
+
+    static func nextListingBoundary(in programs: [EPGProgram], after now: Date) -> Date? {
+        programs.flatMap { [$0.start, $0.end] }.filter { $0 > now }.min()
+    }
 }
 
 /// Native region preferences, not a directional-command dispatcher. Nil focus
