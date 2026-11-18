@@ -43,30 +43,28 @@ final class KyroTVFocusTests: XCTestCase {
 
     // MARK: Guide: Down from the filters
 
-    func testDownFromFiltersEntersTheCurrentProgramOfTheRememberedChannel() {
-        let target = TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: rows, remembered: "sports") { channel in
-            channel == "sports" ? "sports-now" : "other-now"
-        }
-        XCTAssertEqual(target, .program(channelID: "sports", programID: "sports-now"))
+    func testDownFromFiltersEntersTheRememberedChannelTile() {
+        let target = TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: rows, remembered: "sports")
+        XCTAssertEqual(target, .channel("sports"))
     }
 
     func testDownFromFiltersFallsBackToTheFirstChannelWhenNothingIsRemembered() {
-        let target = TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: rows, remembered: nil) { "\($0)-now" }
-        XCTAssertEqual(target, .program(channelID: "news", programID: "news-now"))
+        let target = TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: rows, remembered: nil)
+        XCTAssertEqual(target, .channel("news"))
     }
 
     func testRememberedChannelRemovedByAFilterFallsBackToTheFirstRow() {
-        let target = TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: ["movies"], remembered: "sports") { "\($0)-now" }
-        XCTAssertEqual(target, .program(channelID: "movies", programID: "movies-now"))
+        let target = TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: ["movies"], remembered: "sports")
+        XCTAssertEqual(target, .channel("movies"))
     }
 
     func testChannelWithoutCurrentListingsLandsOnItsNameTile() {
-        let target = TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: rows, remembered: "news") { _ in nil }
+        let target = TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: rows, remembered: "news")
         XCTAssertEqual(target, .channel("news"), "predictable fallback, never a future cell")
     }
 
     func testEmptyGuideHasNoEntryTarget() {
-        XCTAssertNil(TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: [], remembered: "news") { _ in "x" })
+        XCTAssertNil(TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: [], remembered: "news"))
     }
 
     func testIdleToolbarEntryPreferenceExpiresAtTheNextListingBoundary() {
@@ -76,7 +74,7 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertNil(TVLiveTVGuideFocusPlanner.nextListingBoundary(in: [], after: now))
         var history = TVLiveTVGuideFocusHistory()
         history.observe(.program(channelID: "news", programID: "old"))
-        XCTAssertEqual(history.gridDefault(entry: .program(channelID: "news", programID: "new")), history.grid,
+        XCTAssertEqual(history.gridDefault(entry: .channel("news")), history.grid,
                        "A schedule boundary is not permission to move active focus")
     }
 
@@ -106,6 +104,55 @@ final class KyroTVFocusTests: XCTestCase {
         }
     }
 
+    func testBackFromDeepGuideReturnsToFiltersAndDownRestoresChannelTile() {
+        var history = TVLiveTVGuideFocusHistory()
+        history.observe(.favorites)
+        for index in 0..<500 {
+            history.observe(.program(channelID: "channel-\(index)", programID: "live"))
+        }
+        XCTAssertTrue(history.returnToHeader())
+        XCTAssertEqual(history.header, .favorites)
+        XCTAssertEqual(history.gridDefault(entry: .channel("channel-0")), .channel("channel-499"))
+        XCTAssertTrue(history.allowsGridEntry(.channel("channel-0"), laidOutRows: ["channel-499"]))
+        history.observe(history.header)
+        XCTAssertFalse(history.isInGrid)
+        let restored = history.gridDefault(entry: .channel("channel-0"))
+        history.observe(restored)
+        XCTAssertEqual(history.grid, .channel("channel-499"))
+    }
+
+    func testBackFromFiltersExitsWhetherOrNotGridWasEntered() {
+        var history = TVLiveTVGuideFocusHistory()
+        history.observe(.category)
+        XCTAssertFalse(history.returnToHeader(), "Back from untouched filters exits Live TV Home")
+        history.observe(.channel("news"))
+        XCTAssertTrue(history.returnToHeader())
+        history.observe(.category)
+        XCTAssertFalse(history.returnToHeader(), "The second Back exits; it cannot re-enter the grid")
+    }
+
+    func testRepeatedBackPressesDoNotBounceBetweenGridAndFilters() {
+        var history = TVLiveTVGuideFocusHistory()
+        history.observe(.channel("news"))
+        XCTAssertTrue(history.returnToHeader())
+        for _ in 0..<10 {
+            XCTAssertFalse(history.returnToHeader())
+        }
+        XCTAssertEqual(history.gridDefault(entry: .channel("sports")), .channel("news"))
+    }
+
+    func testPastListingsDoNotCompeteWithLiveAndUpcomingForRightFocus() {
+        XCTAssertFalse(TVLiveTVGuideFocusPlanner.canFocusProgram(
+            program("news", from: -600, to: -60), at: now, isFocused: false))
+        XCTAssertTrue(TVLiveTVGuideFocusPlanner.canFocusProgram(
+            program("news", from: -60, to: 600), at: now, isFocused: false))
+        XCTAssertTrue(TVLiveTVGuideFocusPlanner.canFocusProgram(
+            program("news", from: 600, to: 1_200), at: now, isFocused: false))
+        XCTAssertTrue(TVLiveTVGuideFocusPlanner.canFocusProgram(
+            program("news", from: -600, to: -60), at: now, isFocused: true),
+            "A listing boundary cannot evict the focused program")
+    }
+
     func testGuideCannotEnterAnotherRowWhileItsLazyTargetIsNotLaidOut() {
         var history = TVLiveTVGuideFocusHistory()
         let target = TVLiveTVGuideFocus.program(channelID: "sports", programID: "now")
@@ -122,12 +169,12 @@ final class KyroTVFocusTests: XCTestCase {
         for index in 0..<1_000 {
             let target = TVLiveTVGuideFocus.program(channelID: "news", programID: "\(index)")
             history.observe(.favorites)
-            XCTAssertEqual(history.gridDefault(entry: target), target)
+            XCTAssertEqual(history.gridDefault(entry: .channel("news")), .channel("news"))
             history.observe(target)
             history.observe(nil)
             XCTAssertEqual(history.gridDefault(entry: .channel("other")), target)
             history.observe(.category)
-            XCTAssertEqual(history.gridDefault(entry: .channel("other")), .channel("other"))
+            XCTAssertEqual(history.gridDefault(entry: .channel("other")), .channel("news"))
         }
     }
 
@@ -188,7 +235,7 @@ final class KyroTVFocusTests: XCTestCase {
     func testReopenedGuideReturnsToTheLastChannel() {
         TVLiveTVGuideMemory.lastChannelID = "movies"
         defer { TVLiveTVGuideMemory.lastChannelID = nil }
-        let target = TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: rows, remembered: TVLiveTVGuideMemory.lastChannelID) { "\($0)-now" }
+        let target = TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: rows, remembered: TVLiveTVGuideMemory.lastChannelID)
         XCTAssertEqual(target?.channelID, "movies")
     }
 

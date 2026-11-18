@@ -27,9 +27,8 @@ enum TVLiveTVGuideFocus: Hashable {
 
 /// The guide's focus rules, free of SwiftUI so they are unit-tested.
 ///
-/// - Down from any header control enters the live column: the current program on the remembered
-///   channel, or on the first channel. A channel without a current listing lands on its name tile,
-///   which is always at the same place.
+/// - Down from any header control enters the name tile of the remembered channel, or the first
+///   channel. Native focus then moves Right through the live and upcoming listings.
 /// - Up into the toolbar uses its remembered native region default, not a
 ///   correction after the engine has already highlighted another control.
 /// - Changing a filter never moves focus, unless focus was on a row the filter removed.
@@ -39,10 +38,8 @@ enum TVLiveTVGuideFocusPlanner {
         return rowIDs.first
     }
 
-    static func entryTarget(rowIDs: [String], remembered: String?,
-                            currentProgramID: (String) -> String?) -> TVLiveTVGuideFocus? {
+    static func entryTarget(rowIDs: [String], remembered: String?) -> TVLiveTVGuideFocus? {
         guard let channel = entryChannel(rowIDs: rowIDs, remembered: remembered) else { return nil }
-        if let program = currentProgramID(channel) { return .program(channelID: channel, programID: program) }
         return .channel(channel)
     }
 
@@ -55,6 +52,12 @@ enum TVLiveTVGuideFocusPlanner {
     /// The program airing at `now`, if the listings cover it.
     static func currentProgram(in programs: [EPGProgram], at now: Date) -> EPGProgram? {
         programs.first { $0.start <= now && now < $0.end }
+    }
+
+    /// Past cells stay visible but cannot intercept Left/Right from the channel or live cell.
+    /// Do not revoke focus from a cell that becomes past while the user is on it.
+    static func canFocusProgram(_ program: EPGProgram, at now: Date, isFocused: Bool) -> Bool {
+        isFocused || LiveTVGuideProgramState(program, at: now) != .past
     }
 
     static func nextListingBoundary(in programs: [EPGProgram], after now: Date) -> Date? {
@@ -81,12 +84,23 @@ struct TVLiveTVGuideFocusHistory: Equatable {
     }
 
     func gridDefault(entry: TVLiveTVGuideFocus?) -> TVLiveTVGuideFocus? {
-        isInGrid ? grid : entry
+        if isInGrid { return grid }
+        // Back keeps the row and scroll position, but Down starts at its channel tile.
+        if let channelID = grid?.channelID { return .channel(channelID) }
+        return entry
+    }
+
+    /// Back is a boundary handoff, not a dismissal, while the grid owns focus.
+    /// Commit the ownership change before writing focus so rapid repeated presses cannot loop.
+    mutating func returnToHeader() -> Bool {
+        guard isInGrid else { return false }
+        isInGrid = false
+        return true
     }
 
     func allowsGridEntry(_ entry: TVLiveTVGuideFocus?, laidOutRows: Set<String>) -> Bool {
         if isInGrid { return true }
-        guard let channelID = entry?.channelID else { return false }
+        guard let channelID = gridDefault(entry: entry)?.channelID else { return false }
         return laidOutRows.contains(channelID)
     }
 
