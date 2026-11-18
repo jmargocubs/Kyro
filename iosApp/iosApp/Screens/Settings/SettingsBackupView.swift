@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct SettingsBackupFileDocument: FileDocument {
@@ -16,7 +17,8 @@ struct SettingsBackupView: View {
     @State private var model: SettingsBackupModel
     @State private var exportDocument: SettingsBackupFileDocument?
     @State private var showsExporter = false
-    @State private var showsImporter = false
+    @State private var showsPaste = false
+    @State private var filePicker = SettingsBackupFilePicker()
     @State private var confirmsApply = false
 
     init() {
@@ -57,11 +59,9 @@ struct SettingsBackupView: View {
             }
             exportDocument = nil
         }
-        .fileImporter(isPresented: $showsImporter, allowedContentTypes: SettingsBackupFileType.importerTypes) { result in
-            switch result {
-            case .success(let url): Task { await model.loadImport(from: url) }
-            case .failure: model.didExport(success: false, message: "Kyro couldn't open that file.")
-            }
+        // Import deliberately does not use SwiftUI's `.fileImporter`; see SettingsBackupFilePicker.
+        .sheet(isPresented: $showsPaste) {
+            SettingsBackupPasteView(model: model)
         }
         .confirmationDialog(
             "Apply \(model.selectedChangeCount) change\(model.selectedChangeCount == 1 ? "" : "s")?",
@@ -132,6 +132,19 @@ struct SettingsBackupView: View {
             }
             .disabled(model.exportSelection.isEmpty)
             .accessibilityIdentifier("settingsBackup.export")
+
+            Button {
+                if let text = model.exportText() {
+                    UIPasteboard.general.string = text
+                    model.didCopyExport()
+                }
+            } label: {
+                Label("Copy Settings as Text", systemImage: "doc.on.doc")
+            }
+            .disabled(model.exportSelection.isEmpty)
+            .accessibilityIdentifier("settingsBackup.copyText")
+        } footer: {
+            Text("Copy Settings as Text makes the same backup without a file. Paste it into Paste Backup Text, here or on another device.")
         }
         .listRowBackground(Color.siloGroupedCell)
     }
@@ -159,18 +172,41 @@ struct SettingsBackupView: View {
     private var importSection: some View {
         Section {
             Button {
-                showsImporter = true
+                presentFilePicker()
             } label: {
-                Label("Import Settings…", systemImage: "square.and.arrow.down")
+                Label("Import from Files…", systemImage: "square.and.arrow.down")
             }
             .disabled(model.needsRecovery)
             .accessibilityIdentifier("settingsBackup.import")
+
+            Button {
+                showsPaste = true
+            } label: {
+                Label("Paste Backup Text…", systemImage: "doc.on.clipboard")
+            }
+            .disabled(model.needsRecovery)
+            .accessibilityIdentifier("settingsBackup.paste")
+        } header: {
+            Text("Import")
         } footer: {
             Text(model.needsRecovery
                  ? "Roll back the interrupted restore before importing again."
-                 : "You'll see what would change first. Nothing is applied until you confirm.")
+                 : "Choose a .kyrosettings file, or paste a backup's text if the file can't be chosen. You'll see what would change first. Nothing is applied until you confirm.")
         }
         .listRowBackground(Color.siloGroupedCell)
+    }
+
+    private func presentFilePicker() {
+        let shown = filePicker.present { url in
+            guard let url else { return }
+            Task {
+                await model.loadImport(from: url)
+                SettingsBackupFilePicker.discardCopy(url)
+            }
+        }
+        if !shown {
+            model.didExport(success: false, message: "Kyro couldn't open Files. Use Paste Backup Text instead.")
+        }
     }
 
     private var undoSection: some View {

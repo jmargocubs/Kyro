@@ -54,6 +54,15 @@ final class SettingsBackupModel {
         }
     }
 
+    /// The same backup as `exportDocument()`, as text for the clipboard.
+    func exportText() -> String? {
+        exportDocument().map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    func didCopyExport() {
+        banner = Banner(kind: .success, text: "Settings copied as text. Paste them into Backup & Restore → Paste Backup Text. The text has no sign-in details, server addresses or Live TV providers.")
+    }
+
     var exportFilename: String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -108,15 +117,49 @@ final class SettingsBackupModel {
 
     func loadImport(data: Data) {
         do {
-            let incoming = try SettingsBackupCodec.decode(data)
-            let result = SettingsBackupPlanner.preview(incoming, registry: registry)
-            preview = result
-            importSelection = Set(result.groups.filter { $0.canRestore && !$0.group.isDeviceSpecific }.map(\.group))
-            banner = nil
+            try loadPreview(data)
         } catch let error as SettingsBackupError {
             reject(error)
         } catch {
             reject(.malformed)
+        }
+    }
+
+    /// Loads a backup pasted as text, through the same decoder, size limit, integrity check and
+    /// preview as a file. Returns nil when the preview is ready, or the reason the text was refused.
+    /// A refusal is returned rather than shown as a banner, so the paste screen can show it in place.
+    func loadImport(text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            guard trimmed.utf8.count <= SettingsBackupSafety.maxFileBytes else { throw SettingsBackupError.tooLarge }
+            try loadPreview(Data(trimmed.utf8))
+            return nil
+        } catch {
+            preview = nil
+            importSelection = []
+            return Self.pastedTextMessage(error as? SettingsBackupError ?? .malformed)
+        }
+    }
+
+    private func loadPreview(_ data: Data) throws {
+        let incoming = try SettingsBackupCodec.decode(data)
+        let result = SettingsBackupPlanner.preview(incoming, registry: registry)
+        preview = result
+        importSelection = Set(result.groups.filter { $0.canRestore && !$0.group.isDeviceSpecific }.map(\.group))
+        banner = nil
+    }
+
+    /// File errors talk about "this file"; pasted text gets wording that fits what the person did.
+    nonisolated static func pastedTextMessage(_ error: SettingsBackupError) -> String {
+        switch error {
+        case .tooLarge:
+            "This text is too long to be a Kyro settings backup. A backup is at most \(SettingsBackupSafety.maxFileBytes / 1024) KB."
+        case .empty:
+            "Paste the backup text first."
+        case .malformed, .notABackup, .unreadable:
+            "This text isn't a Kyro settings backup. Paste the whole backup, from the first { to the last }."
+        default:
+            error.localizedDescription
         }
     }
 

@@ -18,6 +18,7 @@ on:
         default: ios
         options:
           - ios
+          - ios-ui
           - tvos
       ref:
         description: 'Branch, tag or commit SHA to check out (must exist on GitHub)'
@@ -59,7 +60,7 @@ jobs:
       - name: Validate inputs
         run: |
           set -euo pipefail
-          [[ "$PLATFORM" =~ ^(ios|tvos)$ ]] || { echo "bad platform"; exit 1; }
+          [[ "$PLATFORM" =~ ^(ios|ios-ui|tvos)$ ]] || { echo "bad platform"; exit 1; }
           [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "ref has invalid characters"; exit 1; }
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{7,40}$ ]] || { echo "expected_sha must be 7-40 lowercase hex"; exit 1; }
           [ -z "$ONLY" ] || [[ "$ONLY" =~ ^[A-Za-z0-9_/]{1,200}$ ]] || { echo "only_testing has invalid characters"; exit 1; }
@@ -80,6 +81,9 @@ jobs:
           echo "SOURCE_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           if [ "$PLATFORM" = ios ]; then
             { echo "SCHEME=Silo"; echo "SIMPLAT=iOS"; echo "DEVICE=iPhone 17"; } >> "$GITHUB_ENV"
+          elif [ "$PLATFORM" = ios-ui ]; then
+            # UI tests (Debug app + KyroIntroUITests bundle) on the iPhone simulator.
+            { echo "SCHEME=KyroIntroUITests"; echo "SIMPLAT=iOS"; echo "DEVICE=iPhone 17"; } >> "$GITHUB_ENV"
           else
             { echo "SCHEME=SiloTV"; echo "SIMPLAT=tvOS"; echo "DEVICE=Apple TV 4K (3rd generation)"; } >> "$GITHUB_ENV"
           fi
@@ -132,6 +136,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -d "$RUNNER_TEMP/$PLATFORM.xcresult" ]; then
             (cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/$PLATFORM.xcresult.zip" "$PLATFORM.xcresult")
+            # Screenshots the tests attached, as plain image files for review without Xcode.
+            mkdir -p "$GITHUB_WORKSPACE/attachments"
+            xcrun xcresulttool export attachments --path "$RUNNER_TEMP/$PLATFORM.xcresult" \
+              --output-path "$GITHUB_WORKSPACE/attachments" || echo "attachment export failed"
           fi
 
       - uses: actions/upload-artifact@v4
@@ -140,4 +148,12 @@ jobs:
           name: ${{ inputs.platform }}-xcresult
           path: ${{ inputs.platform }}.xcresult.zip
           retention-days: 3
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ inputs.platform }}-screenshots
+          path: attachments
+          retention-days: 7
           if-no-files-found: ignore
