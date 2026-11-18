@@ -84,15 +84,22 @@ struct TVKyroCardFocusStyle: ButtonStyle {
 struct TVKyroChipStyle: ButtonStyle {
     var isSelected = false
     var isDestructive = false
+    var fontSize: CGFloat = 24
+    var minHeight: CGFloat = 58
+    var horizontalPadding: CGFloat = 24
 
     func makeBody(configuration: Configuration) -> some View {
-        StyledBody(configuration: configuration, isSelected: isSelected, isDestructive: isDestructive)
+        StyledBody(configuration: configuration, isSelected: isSelected, isDestructive: isDestructive,
+                   fontSize: fontSize, minHeight: minHeight, horizontalPadding: horizontalPadding)
     }
 
     private struct StyledBody: View {
         let configuration: ButtonStyleConfiguration
         let isSelected: Bool
         let isDestructive: Bool
+        let fontSize: CGFloat
+        let minHeight: CGFloat
+        let horizontalPadding: CGFloat
         @Environment(\.isFocused) private var isFocused
         @Environment(\.isEnabled) private var isEnabled
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -104,10 +111,10 @@ struct TVKyroChipStyle: ButtonStyle {
                 }
                 configuration.label
             }
-            .font(.system(size: 24, weight: isSelected || isFocused ? .bold : .medium))
+            .font(.system(size: fontSize, weight: isSelected || isFocused ? .bold : .medium))
             .foregroundStyle(foreground)
-            .padding(.horizontal, 24)
-            .frame(minHeight: 58)
+            .padding(.horizontal, horizontalPadding)
+            .frame(minHeight: minHeight)
             .background(background, in: Capsule())
             .overlay {
                 if isFocused {

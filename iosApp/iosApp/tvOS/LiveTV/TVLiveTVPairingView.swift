@@ -122,26 +122,34 @@ struct TVLiveTVPairingView: View {
     // MARK: Approval
 
     private func approval(summary: LiveTVPairingPayload.Summary, deviceName: String) -> some View {
-        VStack(alignment: .leading, spacing: 26) {
-            Text("Add this provider?").font(.system(size: 52, weight: .heavy))
-            VStack(alignment: .leading, spacing: 12) {
-                Text(summary.name).font(.system(size: 40, weight: .bold))
+        VStack(alignment: .leading, spacing: 38) {
+            Text("Add this provider?").font(.system(size: 64, weight: .heavy))
+            VStack(alignment: .leading, spacing: 18) {
+                Text(summary.name).font(.system(size: 48, weight: .bold))
                 Text("\(summary.kind == .xtream ? "Xtream Codes" : "M3U playlist") · \(summary.host)")
-                    .font(.system(size: 26)).foregroundStyle(Color.siloSecondaryText)
-                Text("Sent by \(deviceName)").font(.system(size: 24)).foregroundStyle(Color.siloSecondaryText)
+                    .font(.system(size: 34)).foregroundStyle(Color.siloSecondaryText)
+                Text("Sent by \(deviceName)").font(.system(size: 32)).foregroundStyle(Color.siloSecondaryText)
             }
-            .padding(28)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(42)
+            .frame(maxWidth: .infinity, minHeight: 210, alignment: .leading)
             .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             Text("Only allow this if you just sent it from your own iPhone. Credentials are saved in the Apple TV keychain.")
-                .font(.system(size: 22)).foregroundStyle(Color.siloSecondaryText)
+                .font(.system(size: 30, weight: .medium)).foregroundStyle(Color.siloOnSurface)
+                .fixedSize(horizontal: false, vertical: true)
             Text("Expires in \(Self.clock(receiver.remaining))")
-                .font(.system(size: 22).monospacedDigit()).foregroundStyle(Color.siloSecondaryText)
-            HStack(spacing: 24) {
-                Button("Allow") { receiver.approve() }.buttonStyle(TVKyroChipStyle(isSelected: true)).focused($focus, equals: .allow)
-                Button("Decline") { receiver.decline() }.buttonStyle(TVKyroChipStyle(isDestructive: true)).focused($focus, equals: .decline)
+                .font(.system(size: 30, weight: .semibold).monospacedDigit()).foregroundStyle(Color.siloOnSurface)
+            HStack(spacing: 40) {
+                Button("Allow") { receiver.approve() }
+                    .buttonStyle(TVKyroChipStyle(isSelected: true, fontSize: 32, minHeight: 88, horizontalPadding: 48))
+                    .focused($focus, equals: .allow)
+                    .accessibilityIdentifier("liveTV.approval.allow")
+                Button("Decline") { receiver.decline() }
+                    .buttonStyle(TVKyroChipStyle(isDestructive: true, fontSize: 32, minHeight: 88, horizontalPadding: 48))
+                    .focused($focus, equals: .decline)
+                    .accessibilityIdentifier("liveTV.approval.decline")
             }
         }
+        .frame(maxWidth: 1480, alignment: .leading)
         .task { focus = .allow }
     }
 

@@ -439,7 +439,7 @@ struct TVLiveTVProviderManagementView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 34) {
+            VStack(alignment: .leading, spacing: 42) {
                 header
                 providerList
                 phoneSetupEntry
@@ -447,7 +447,7 @@ struct TVLiveTVProviderManagementView: View {
                 addProviderForm
             }
             .padding(.horizontal, 120)
-            .padding(.vertical, 60)
+            .padding(.vertical, 68)
         }
         .background(TVKyroAmbientBackdrop())
         // Back/Menu always leaves the screen. While a text field is editing, the system keyboard
@@ -506,12 +506,12 @@ struct TVLiveTVProviderManagementView: View {
     }
 
     private var providerList: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 20) {
             Text("Connected Providers")
                 .font(.system(size: 34, weight: .bold))
             if service.providers.isEmpty {
                 Text("No providers configured. Credentials are stored in the Apple TV keychain.")
-                    .font(.system(size: 22))
+                    .font(.system(size: 28))
                     .foregroundStyle(Color.siloSecondaryText)
             } else {
                 ForEach(service.providers) { provider in
@@ -571,29 +571,32 @@ struct TVLiveTVProviderManagementView: View {
     /// The recommended way to add a provider: send it from the Kyro iPhone app instead of typing
     /// long URLs and passwords with the Siri Remote.
     private var phoneSetupEntry: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 18) {
             Button {
                 showsPhoneSetup = true
             } label: {
                 Label("Set up with phone", systemImage: "iphone.and.arrow.forward")
             }
-            .buttonStyle(TVKyroChipStyle(isSelected: true))
+            .buttonStyle(TVKyroChipStyle(isSelected: true, fontSize: 29, minHeight: 76, horizontalPadding: 32))
             .focused($focus, equals: .phoneSetup)
             .onMoveCommand { upToBack($0, from: .phoneSetup) }
             Text("Send a provider from the Kyro iPhone app. Nothing to type here.")
-                .font(.system(size: 20)).foregroundStyle(Color.siloSecondaryText)
+                .font(.system(size: 27)).foregroundStyle(Color.siloSecondaryText)
         }
         .focusSection()
     }
 
     private var addProviderForm: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 24) {
             Text("Add Provider").font(.system(size: 34, weight: .bold))
             Picker("Provider Type", selection: $kind) {
                 Text("M3U Playlist").tag(LiveTVProviderKind.m3u)
                 Text("Xtream Codes").tag(LiveTVProviderKind.xtream)
             }
             .pickerStyle(.segmented)
+            .font(.system(size: 30, weight: .semibold))
+            .frame(minHeight: 76)
+            .accessibilityIdentifier("liveTV.providerType")
 
             TextField("Provider name", text: $name)
                 .modifier(TVLiveTVProviderFieldStyle())
@@ -612,7 +615,7 @@ struct TVLiveTVProviderManagementView: View {
             }
 
             Text("Kyro stores provider configuration in the device keychain. URLs and credentials are never written into the app bundle.")
-                .font(.system(size: 19))
+                .font(.system(size: 27))
                 .foregroundStyle(Color.siloSecondaryText)
 
             Button {
@@ -620,7 +623,7 @@ struct TVLiveTVProviderManagementView: View {
             } label: {
                 Label("Save and Connect", systemImage: "plus.circle.fill")
             }
-            .buttonStyle(TVKyroChipStyle(isSelected: true))
+            .buttonStyle(TVKyroChipStyle(isSelected: true, fontSize: 29, minHeight: 76, horizontalPadding: 32))
             .disabled(!canSave)
             .focused($focus, equals: .save)
         }
@@ -665,9 +668,9 @@ private struct TVLiveTVProviderFieldStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
             .textFieldStyle(.plain)
-            .font(.system(size: 24))
-            .padding(.horizontal, 18)
-            .frame(minHeight: 58)
+            .font(.system(size: 30))
+            .padding(.horizontal, 24)
+            .frame(minHeight: 72)
             .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
