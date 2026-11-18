@@ -54,7 +54,6 @@ struct TVLiveTVRootView: View {
     @State private var search = LiveTVChannelSearchModel()
     @State private var showsGuide = false
     @State private var showsProviders = false
-    @State private var focusedChannelID: String?
     @FocusState private var focusedControl: FocusTarget?
 
     fileprivate enum FocusTarget: Hashable {
@@ -64,7 +63,6 @@ struct TVLiveTVRootView: View {
         case search
         case category(String)
         case channel(String)
-        case favorite(String)
         case retry
     }
 
@@ -72,6 +70,7 @@ struct TVLiveTVRootView: View {
         repeating: GridItem(.flexible(minimum: 250, maximum: 340), spacing: 34),
         count: 5
     )
+    @State private var categoryCounts: [String: Int] = [:]
 
     var body: some View {
         ZStack {
@@ -106,6 +105,7 @@ struct TVLiveTVRootView: View {
         .onAppear {
             service.presentation.surfaceAppeared(.list)
             updateSearch()
+            updateCategoryCounts()
         }
         .onDisappear {
             search.cancel()
@@ -117,14 +117,15 @@ struct TVLiveTVRootView: View {
         }
         .onChange(of: selectedCategory) { updateSearch() }
         .onChange(of: service.favoriteChannelIDs) { updateSearch() }
-        .onChange(of: service.channelCatalogRevision) { updateSearch() }
+        .onChange(of: service.channelCatalogRevision) {
+            updateSearch()
+            updateCategoryCounts()
+        }
         .onChange(of: service.selectedProviderID) {
             query = ""
             selectedCategory = nil
             updateSearch()
-        }
-        .onChange(of: focusedControl) { _, target in
-            if case .channel(let id) = target { focusedChannelID = id }
+            updateCategoryCounts()
         }
     }
 
@@ -188,6 +189,13 @@ struct TVLiveTVRootView: View {
             .onMoveCommand { if $0 == .up { onTopMenuFocusRequest() } }
         }
         .focusSection()
+        .onMoveCommand { direction in
+            // When there is no provider, the setup button is the only page
+            // action. Every chip in this row must reach it with one Down.
+            if direction == .down, service.providers.isEmpty {
+                focusedControl = .retry
+            }
+        }
     }
 
     @ViewBuilder
@@ -234,7 +242,6 @@ struct TVLiveTVRootView: View {
         Button {
             selectedCategory = category
             section = .channels
-            updateSearch(categoryOverride: category)
         } label: {
             VStack(alignment: .leading, spacing: 12) {
                 Image(systemName: category == nil ? "rectangle.stack" : "square.grid.2x2")
@@ -269,7 +276,7 @@ struct TVLiveTVRootView: View {
                 statusPage(symbol: section == .favorites ? "star.slash" : "magnifyingglass",
                            title: section == .favorites ? "No favorite channels" : "No matching channels",
                            message: section == .favorites
-                               ? "Use the star on a channel card to add it here."
+                               ? "Manage favorites from channel playback."
                                : "Try a different search or category.")
             } else {
                 ScrollView {
@@ -281,8 +288,7 @@ struct TVLiveTVRootView: View {
                                 isFavorite: service.isFavorite(channel),
                                 isPlaying: service.playerSession.activeChannelID == channel.id,
                                 focus: $focusedControl,
-                                play: { service.choose(channel, from: .list) },
-                                toggleFavorite: { service.toggleFavorite(channel) }
+                                play: { service.choose(channel, from: .list) }
                             )
                         }
                     }
@@ -319,8 +325,10 @@ struct TVLiveTVRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var categoryCounts: [String: Int] {
-        Dictionary(grouping: service.channels, by: \.category).mapValues(\.count)
+    private func updateCategoryCounts() {
+        var counts: [String: Int] = [:]
+        for channel in service.channels { counts[channel.category, default: 0] += 1 }
+        categoryCounts = counts
     }
 
     private var providerSummary: String {
@@ -329,12 +337,11 @@ struct TVLiveTVRootView: View {
         return "\(provider.name) · \(provider.channelCount) \(suffix)"
     }
 
-    private func updateSearch(categoryOverride: String? = nil) {
-        let category = categoryOverride ?? selectedCategory
+    private func updateSearch() {
         search.update(
             channels: service.channels,
             query: query,
-            category: category,
+            category: selectedCategory,
             favoritesOnly: section == .favorites,
             favoriteIDs: service.favoriteChannelIDs,
             includeGroups: false
@@ -358,7 +365,6 @@ private struct TVLiveTVChannelCard: View {
     let isPlaying: Bool
     let focus: FocusState<TVLiveTVRootView.FocusTarget?>.Binding
     let play: () -> Void
-    let toggleFavorite: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -405,14 +411,12 @@ private struct TVLiveTVChannelCard: View {
                     }
                 }
                 Spacer(minLength: 4)
-                Button(action: toggleFavorite) {
-                    Image(systemName: isFavorite ? "star.fill" : "star")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(isFavorite ? KyroTheme.highlight : Color.siloSecondaryText)
-                        .frame(width: 46, height: 46)
+                if isFavorite {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(KyroTheme.highlight)
+                        .accessibilityLabel("Favorite")
                 }
-                .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 23))
-                .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
             }
         }
     }
@@ -678,7 +682,9 @@ struct TVLiveTVGuideView: View {
     @State private var favoritesOnly = false
     @State private var rows: [LiveTVChannel] = []
     @State private var detail: TVLiveTVGuideDetail?
+    @State private var detailReturnFocus: TVLiveTVGuideFocus?
     @State private var navigationState = TVLiveTVGuideNavigationState()
+    @State private var didSeedInitialFocus = false
     @FocusState private var focus: TVLiveTVGuideFocus?
 
     private let channelWidth: CGFloat = 310
@@ -703,13 +709,17 @@ struct TVLiveTVGuideView: View {
             if let last = TVLiveTVGuideMemory.lastChannelID { navigationState.focus(channelID: last) }
             rebuildRows()
             // Opening the guide lands on the filters, so the first Down is the predictable one.
-            if focus == nil { focus = .category }
+            if !didSeedInitialFocus {
+                didSeedInitialFocus = true
+                focus = .category
+            }
         }
         .onDisappear { service.presentation.surfaceDisappeared(.guide) }
         .onChange(of: category) { rebuildRows() }
         .onChange(of: favoritesOnly) { rebuildRows() }
         .onChange(of: service.favoriteChannelIDs) { if favoritesOnly { rebuildRows() } }
         .onChange(of: service.channelCatalogRevision) { rebuildRows() }
+        .onChange(of: service.guideRevision) { reconcileFocusedProgram() }
         .onChange(of: focus) { _, newFocus in
             if let id = newFocus?.channelID {
                 navigationState.focus(channelID: id)
@@ -790,7 +800,10 @@ struct TVLiveTVGuideView: View {
                 ForEach(rows) { channel in
                     guideRow(channel)
                         .id(channel.id)
-                        .task { await service.refreshShortEPG(for: channel) }
+                        .task {
+                            await service.refreshShortEPG(for: channel)
+                            if focus?.channelID == channel.id { reconcileFocusedProgram() }
+                        }
                 }
             }
         }
@@ -829,7 +842,6 @@ struct TVLiveTVGuideView: View {
             }
             .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 14))
             .focused($focus, equals: .channel(channel.id))
-            .onMoveCommand { moveUpIfTopRow($0, from: .channel(channel.id)) }
 
             programTimeline(for: channel)
         }
@@ -854,13 +866,13 @@ struct TVLiveTVGuideView: View {
                 }
                 .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 12))
                 .focused($focus, equals: .noGuide(channel.id))
-                .onMoveCommand { moveUpIfTopRow($0, from: .noGuide(channel.id)) }
             } else {
                 ForEach(cells) { cell in
                     Button {
                         if LiveTVGuideAction(cell.program, at: .now) == .tune {
                             service.choose(channel, from: .guide)
                         } else {
+                            detailReturnFocus = .program(channelID: channel.id, programID: cell.program.id)
                             detail = TVLiveTVGuideDetail(channel: channel, program: cell.program)
                         }
                     } label: {
@@ -878,7 +890,6 @@ struct TVLiveTVGuideView: View {
                     }
                     .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 12))
                     .focused($focus, equals: .program(channelID: channel.id, programID: cell.program.id))
-                    .onMoveCommand { moveUpIfTopRow($0, from: .program(channelID: channel.id, programID: cell.program.id)) }
                     // Placed by layout, not `.offset`: the focus engine then searches from where
                     // the cell is actually drawn, so Down/Right/Left pick the visible neighbour.
                     .padding(.leading, cell.x)
@@ -919,19 +930,17 @@ struct TVLiveTVGuideView: View {
         guard let target = TVLiveTVGuideFocusPlanner.entryTarget(
             rowIDs: rowIDs, remembered: navigationState.focusedChannelID,
             currentProgramID: { currentProgramID(for: $0) }) else { return }
+        // Claim the intended target in the same input transaction. The old
+        // Task.yield allowed the focus engine to highlight a future cell for
+        // one frame before the correction arrived.
         if let channelID = target.channelID {
-            proxy.scrollTo(channelID, anchor: UnitPoint(x: 0, y: 0.2))
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(channelID, anchor: UnitPoint(x: 0, y: 0.2))
+                focus = target
+            }
         }
-        Task { @MainActor in
-            await Task.yield()
-            focus = target
-        }
-    }
-
-    private func moveUpIfTopRow(_ direction: MoveCommandDirection, from origin: TVLiveTVGuideFocus) {
-        guard direction == .up,
-              let target = TVLiveTVGuideFocusPlanner.upTarget(from: origin, rowIDs: rows.map(\.id)) else { return }
-        focus = target
     }
 
     private func currentProgramID(for channelID: String) -> String? {
@@ -942,10 +951,19 @@ struct TVLiveTVGuideView: View {
 
     /// Back from a program's details returns to that program.
     private func restoreAfterDetail() {
-        guard let channelID = navigationState.focusedChannelID else { return }
-        Task { @MainActor in
-            await Task.yield()
-            if focus == nil { focus = .channel(channelID) }
+        guard let target = detailReturnFocus else { return }
+        detailReturnFocus = nil
+        focus = target
+        reconcileFocusedProgram()
+    }
+
+    private func reconcileFocusedProgram() {
+        guard case .program(let channelID, let programID) = focus,
+              let channel = rows.first(where: { $0.id == channelID }) else { return }
+        let programs = service.guidePrograms(for: channel, overlapping: timeline.interval)
+        if !programs.contains(where: { $0.id == programID }) {
+            // Keep the same row when an EPG refresh replaces the focused cell.
+            focus = .channel(channelID)
         }
     }
 

@@ -9,6 +9,34 @@ final class KyroTVFocusTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private let rows = ["news", "sports", "movies"]
 
+    func testEnteredDropdownExcludesBackgroundButPreviewDoesNot() {
+        XCTAssertFalse(tvPanelDisablesUnderlyingContent(isOpen: false, isEntered: false))
+        XCTAssertFalse(tvPanelDisablesUnderlyingContent(isOpen: true, isEntered: false))
+        XCTAssertTrue(tvPanelDisablesUnderlyingContent(isOpen: true, isEntered: true))
+    }
+
+    func testSingleLibraryDropdownWalksEveryVisibleOptionWithoutEscaping() {
+        let pills = TVLibraryPill.allCases
+        let ids = [7]
+        let recommended = TVCascadeSelection.section(7, .recommended)
+        let collections = TVCascadeSelection.section(7, .collections)
+        let browse = TVCascadeSelection.section(7, .browse)
+        XCTAssertEqual(TVCascadeFocusPlanner.move(from: recommended, direction: .down, libraryIDs: ids, pills: pills, singleLibrary: true), .select(collections))
+        XCTAssertEqual(TVCascadeFocusPlanner.move(from: collections, direction: .down, libraryIDs: ids, pills: pills, singleLibrary: true), .select(browse))
+        XCTAssertEqual(TVCascadeFocusPlanner.move(from: browse, direction: .up, libraryIDs: ids, pills: pills, singleLibrary: true), .select(collections))
+        XCTAssertEqual(TVCascadeFocusPlanner.move(from: browse, direction: .down, libraryIDs: ids, pills: pills, singleLibrary: true), .content)
+        XCTAssertEqual(TVCascadeFocusPlanner.move(from: recommended, direction: .up, libraryIDs: ids, pills: pills, singleLibrary: true), .close)
+    }
+
+    func testCascadeDirectionalMovesNeverJumpSideways() {
+        let ids = [7, 9]
+        let pills = TVLibraryPill.allCases
+        XCTAssertEqual(TVCascadeFocusPlanner.move(from: .library(7), direction: .right, libraryIDs: ids, pills: pills, singleLibrary: false), .select(.section(7, .recommended)))
+        XCTAssertEqual(TVCascadeFocusPlanner.move(from: .section(7, .recommended), direction: .down, libraryIDs: ids, pills: pills, singleLibrary: false), .select(.section(7, .collections)))
+        XCTAssertEqual(TVCascadeFocusPlanner.move(from: .section(7, .collections), direction: .left, libraryIDs: ids, pills: pills, singleLibrary: false), .select(.library(7)))
+        XCTAssertEqual(TVCascadeFocusPlanner.move(from: .library(7), direction: .down, libraryIDs: ids, pills: pills, singleLibrary: false), .select(.library(9)))
+    }
+
     private func program(_ channel: String, from start: TimeInterval, to end: TimeInterval) -> EPGProgram {
         EPGProgram(channelID: channel, start: now.addingTimeInterval(start), end: now.addingTimeInterval(end), title: "\(channel) \(start)")
     }
@@ -52,15 +80,6 @@ final class KyroTVFocusTests: XCTestCase {
     }
 
     // MARK: Guide: Up, filter changes, restoration
-
-    func testUpFromTheFirstRowReturnsToTheCategoryFilter() {
-        XCTAssertEqual(TVLiveTVGuideFocusPlanner.upTarget(from: .program(channelID: "news", programID: "p"), rowIDs: rows), .category)
-        XCTAssertEqual(TVLiveTVGuideFocusPlanner.upTarget(from: .channel("news"), rowIDs: rows), .category)
-        XCTAssertEqual(TVLiveTVGuideFocusPlanner.upTarget(from: .noGuide("news"), rowIDs: rows), .category)
-        // Lower rows move between rows normally.
-        XCTAssertNil(TVLiveTVGuideFocusPlanner.upTarget(from: .channel("sports"), rowIDs: rows))
-        XCTAssertNil(TVLiveTVGuideFocusPlanner.upTarget(from: .favorites, rowIDs: rows))
-    }
 
     func testChangingACategoryNeverMovesFocusOffTheFilters() {
         for header in [TVLiveTVGuideFocus.back, .category, .favorites, .refresh] {

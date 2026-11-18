@@ -14,6 +14,12 @@ func tvVisibleRootsFocusRearm(
     return selectedRootWasRemoved ? .content : .none
 }
 
+/// Dwell preview keeps the page available to the focus engine. An entered
+/// panel excludes it until an explicit close or content handoff.
+func tvPanelDisablesUnderlyingContent(isOpen: Bool, isEntered: Bool) -> Bool {
+    isOpen && isEntered
+}
+
 #if os(tvOS)
 import SwiftUI
 
@@ -91,7 +97,6 @@ struct TVMainTabView: View {
     @State private var panelEntersFocus = false
     @State private var panelFocusEntryGeneration = 0
     @State private var panelHasFocus = false
-    @State private var panelFocusExitTask: Task<Void, Never>?
     @State private var controlReceiver = TVControlReceiver.shared
     /// Bar element to re-focus after Menu-ing out of a panel — its own
     /// anchor, so focus returns to the dwelled tab/avatar (§7).
@@ -133,7 +138,6 @@ struct TVMainTabView: View {
     /// first-appear focus claim lands on nothing; it claims again at reveal.
     @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
 
-    private static let panelFocusExitCloseDelayNanoseconds: UInt64 = 80_000_000
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -401,6 +405,10 @@ struct TVMainTabView: View {
                 // here made every visible button/card redraw in its disabled
                 // state when a dwell preview opened, which read as a page flash.
                 .allowsHitTesting(openPanel == nil)
+                // Preview panels leave page focus intact. Once entered, the
+                // panel alone owns focus; hit testing does not enforce that.
+                .disabled(tvPanelDisablesUnderlyingContent(isOpen: openPanel != nil,
+                                                            isEntered: panelEntersFocus))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(edges: [.top, .horizontal])
@@ -813,8 +821,6 @@ struct TVMainTabView: View {
     private func openPanelPreview(_ panel: TVTopMenuPanel) {
         guard panel != openPanel else { return }
 
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
         panelEntersFocus = false
         panelHasFocus = false
         withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
@@ -836,8 +842,6 @@ struct TVMainTabView: View {
     /// the matching panel is already open.
     private func enterOpenPanel() {
         guard openPanel != nil else { return }
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
         panelEntersFocus = true
         panelHasFocus = true
         panelFocusEntryGeneration += 1
@@ -867,8 +871,6 @@ struct TVMainTabView: View {
     /// transition. This is reserved for explicit entry gestures, not dwell,
     /// so hover-open menus never trap horizontal tab navigation.
     private func openPanelAndEnter(_ panel: TVTopMenuPanel) {
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
         panelEntersFocus = true
         panelHasFocus = true
         panelFocusEntryGeneration += 1
@@ -885,9 +887,7 @@ struct TVMainTabView: View {
             action?()
             return
         }
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
-        let wasFocused = panelHasFocus
+        let wasFocused = panelEntersFocus
         withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
             openPanel = nil
         }
@@ -902,35 +902,15 @@ struct TVMainTabView: View {
         action?()
     }
 
-    /// If d-pad down escapes past the last row in an open dropdown, tvOS may
-    /// move focus into the page content behind it. That is a valid focus
-    /// destination, but the floating menu should leave with the panel focus.
+    /// Focus telemetry must not close an entered panel. SwiftUI can report a
+    /// transient nil while it updates its focus graph; ownership changes only
+    /// through the explicit menu boundary and selection actions.
     private func handlePanelFocusChanged(_ hasFocus: Bool) {
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
-
-        if hasFocus {
-            panelHasFocus = true
-            return
-        }
-
-        let hadPanelFocus = panelHasFocus
-        panelHasFocus = false
-
-        guard hadPanelFocus, openPanel != nil, panelEntersFocus else { return }
-
-        panelFocusExitTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: Self.panelFocusExitCloseDelayNanoseconds)
-            guard !Task.isCancelled else { return }
-            guard openPanel != nil, panelEntersFocus, !panelHasFocus, !isTopMenuFocused else { return }
-            closePanelForContentHandoff()
-        }
+        panelHasFocus = hasFocus
     }
 
     private func closePanelForContentHandoff() {
         guard openPanel != nil else { return }
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
         withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
             openPanel = nil
         }
@@ -991,8 +971,6 @@ struct TVMainTabView: View {
     /// down. The page swaps in place via the scope/pill change + the
     /// existing `.id(activeLibrary.id)` crossfade.
     private func commitScope(type: TVLibraryTabType, library: Library, pill: TVLibraryPill?) {
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
         scopeSelections[type] = library.id
         TVLibraryScopeStore.shared.setSelectedLibraryId(library.id, for: type)
         pillSelections[type] = pill ?? .recommended
@@ -1015,8 +993,6 @@ struct TVMainTabView: View {
     ) {
         guard case .libraryShortcut(let libraryId, _) = root,
               library.id == libraryId else { return }
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
         shortcutPillSelections[libraryId] = pill ?? .recommended
 
         withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {

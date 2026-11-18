@@ -30,7 +30,8 @@ enum TVLiveTVGuideFocus: Hashable {
 /// - Down from any header control enters the live column: the current program on the remembered
 ///   channel, or on the first channel. A channel without a current listing lands on its name tile,
 ///   which is always at the same place.
-/// - Up from the first row returns to the category filter.
+/// - Up from the first row is owned by the native focus engine; the guide
+///   must not force a sideways correction after it chooses a toolbar control.
 /// - Changing a filter never moves focus, unless focus was on a row the filter removed.
 enum TVLiveTVGuideFocusPlanner {
     static func entryChannel(rowIDs: [String], remembered: String?) -> String? {
@@ -43,12 +44,6 @@ enum TVLiveTVGuideFocusPlanner {
         guard let channel = entryChannel(rowIDs: rowIDs, remembered: remembered) else { return nil }
         if let program = currentProgramID(channel) { return .program(channelID: channel, programID: program) }
         return .channel(channel)
-    }
-
-    /// Where Up should go explicitly; nil lets the focus engine move normally between rows.
-    static func upTarget(from focus: TVLiveTVGuideFocus?, rowIDs: [String]) -> TVLiveTVGuideFocus? {
-        guard let channel = focus?.channelID, channel == rowIDs.first else { return nil }
-        return .category
     }
 
     /// True only when focus sits on a row that is no longer listed.

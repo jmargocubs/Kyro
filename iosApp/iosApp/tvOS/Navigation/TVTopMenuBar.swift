@@ -297,12 +297,12 @@ struct TVTopMenuBar: View {
             // leaves a frame with nothing focused, which tvOS repairs to the
             // Home tab — the flash / focus reset. Content hand-off still nulls
             // via the isFocusSuppressed handler above.
-            if !newValue && !panelHasFocus {
+            if !newValue && !panelEntersFocus {
                 focusedItem = nil
             }
         }
-        .onChange(of: panelHasFocus) { _, newValue in
-            isMenuFocused = focusedItem != nil && !newValue
+        .onChange(of: panelEntersFocus) { _, entered in
+            if entered { isMenuFocused = false }
         }
         .onChange(of: focusedItem) { _, newValue in
             let item = newValue.map { String(describing: $0) } ?? "nil"
@@ -310,7 +310,7 @@ struct TVTopMenuBar: View {
             if let newValue {
                 lastBarFocus = newValue
                 refocusAfterClose = false
-                isMenuFocused = !panelHasFocus
+                isMenuFocused = !panelEntersFocus
                 scheduleDwell(for: newValue)
                 return
             }
@@ -341,7 +341,7 @@ struct TVTopMenuBar: View {
             // one main-queue turn leaves a visible frame where tvOS repairs
             // focus back to Home. A legit leave (down into the page, Menu out)
             // has neither flag, so it falls through and focus is allowed to go.
-            let spuriousFromOpenPreview = openPanel != nil && !panelHasFocus
+            let spuriousFromOpenPreview = openPanel != nil && !panelEntersFocus
             if (spuriousFromOpenPreview || refocusAfterClose), let target = lastBarFocus {
                 refocusAfterClose = false
                 focusedItem = target
@@ -349,7 +349,7 @@ struct TVTopMenuBar: View {
             }
             isMenuFocused = false
             scheduleDwell(for: nil)
-            if !panelHasFocus {
+            if !panelEntersFocus {
                 onContentFocusHandoff()
             }
         }
@@ -437,8 +437,8 @@ struct TVTopMenuBar: View {
     private func rootButton(_ root: TVRootDestination, index: Int, count: Int) -> some View {
         // While its panel owns focus the tab reads as selected, not focused
         // (§5.1) — the inverted look transfers to the panel row.
-        let panelOwnsFocus = panelHasFocus && openPanel == .root(root)
-        let isFocused = focusedItem == .root(root) && !panelHasFocus
+        let panelOwnsFocus = panelEntersFocus && openPanel == .root(root)
+        let isFocused = focusedItem == .root(root) && !panelEntersFocus
         let isSelected = selectedRoot == root || panelOwnsFocus
 
         return Button {
@@ -571,7 +571,7 @@ struct TVTopMenuBar: View {
     // MARK: - Search
 
     private var searchButton: some View {
-        let isFocused = focusedItem == .search && !panelHasFocus
+        let isFocused = focusedItem == .search && !panelEntersFocus
 
         return Button(action: onSearch) {
             Image(systemName: "magnifyingglass")
@@ -603,7 +603,7 @@ struct TVTopMenuBar: View {
     }
 
     private var settingsButton: some View {
-        let isFocused = focusedItem == .settings && !panelHasFocus
+        let isFocused = focusedItem == .settings && !panelEntersFocus
 
         return Button(action: onSettings) {
             Image(systemName: "gearshape.fill")
@@ -629,7 +629,7 @@ struct TVTopMenuBar: View {
         // The avatar keeps its focus ring while the profile panel is open
         // and focus is still on the avatar; once focus descends into the
         // panel the ring drops (the panel rows carry focus then, §5.8).
-        let isFocused = focusedItem == .profile && !panelHasFocus
+        let isFocused = focusedItem == .profile && !panelEntersFocus
 
         return Button {
             // Press opens and enters immediately (§5.8); dwell only previews.
@@ -667,7 +667,7 @@ struct TVTopMenuBar: View {
     private var shouldCaptureExitPress: Bool {
         !isFocusSuppressed
             && focusedItem != nil
-            && !panelHasFocus
+            && !panelEntersFocus
             && (openPanel != nil || isFocusedAwayFromHome || onExit != nil)
     }
 
@@ -710,7 +710,7 @@ struct TVTopMenuBar: View {
         // the new element's dwell. Once the panel is expected to own focus,
         // ignore top-bar repairs: tvOS may briefly re-home to Home while
         // the panel row focus claim is being applied.
-        if let openPanel, !panelHasFocus, let item, !item.matches(panel: openPanel) {
+        if let openPanel, !panelEntersFocus, let item, !item.matches(panel: openPanel) {
             onDwell(nil)
             // Closing the panel removes its overlay, which perturbs focus and
             // drops the tab we just moved to; flag it so the nil-drop re-pins.

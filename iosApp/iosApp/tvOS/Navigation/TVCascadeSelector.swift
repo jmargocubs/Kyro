@@ -1,6 +1,44 @@
 #if os(tvOS)
 import SwiftUI
 
+enum TVCascadeSelection: Hashable {
+    case library(Int)
+    case section(Int, TVLibraryPill)
+}
+
+enum TVCascadeMove: Equatable {
+    case select(TVCascadeSelection)
+    case close
+    case content
+    case stay
+}
+
+/// One remote direction produces at most one selection or ownership change.
+enum TVCascadeFocusPlanner {
+    static func move(from focus: TVCascadeSelection, direction: MoveCommandDirection,
+                     libraryIDs: [Int], pills: [TVLibraryPill], singleLibrary: Bool) -> TVCascadeMove {
+        switch (focus, direction) {
+        case (.library(let id), .up), (.library(let id), .down):
+            guard let index = libraryIDs.firstIndex(of: id) else { return .stay }
+            let next = index + (direction == .up ? -1 : 1)
+            guard libraryIDs.indices.contains(next) else { return direction == .up ? .close : .content }
+            return .select(.library(libraryIDs[next]))
+        case (.library(let id), .right):
+            guard let first = pills.first else { return .stay }
+            return .select(.section(id, first))
+        case (.section(let id, let pill), .up), (.section(let id, let pill), .down):
+            guard let index = pills.firstIndex(of: pill) else { return .stay }
+            let next = index + (direction == .up ? -1 : 1)
+            guard pills.indices.contains(next) else { return direction == .up ? .close : .content }
+            return .select(.section(id, pills[next]))
+        case (.section(let id, _), .left) where !singleLibrary:
+            return .select(.library(id))
+        default:
+            return .stay
+        }
+    }
+}
+
 /// The Skyline cascading library selector (§5.3, mockups `a3`/`a6`).
 ///
 /// An anchored overlay below the tab (never a pushed route or full-screen
@@ -62,7 +100,7 @@ struct TVCascadeSelector: View {
     /// Highlighted row inside the panel. The cascade is one composite tvOS
     /// focus item; rows are passive labels so the native engine cannot race
     /// this internal selection.
-    @State private var focus: Focus?
+    @State private var focus: TVCascadeSelection?
     /// The single real focus target for the entered cascade.
     @FocusState private var panelFocused: Bool
 
@@ -84,10 +122,7 @@ struct TVCascadeSelector: View {
     /// Focus target inside the panel: a level-1 library row, or a level-2
     /// section row, scoped to its library so the same pill in two libraries
     /// stays distinct.
-    private enum Focus: Hashable {
-        case library(Int)
-        case section(Int, TVLibraryPill)
-    }
+    private typealias Focus = TVCascadeSelection
 
     /// Every library type offers Recommended (the landing default),
     /// Collections, and Browse (§3).
@@ -436,63 +471,19 @@ struct TVCascadeSelector: View {
 
     private func handleMoveCommand(_ direction: MoveCommandDirection) {
         guard entersPanel, panelFocused, let focus else { return }
-
-        switch (focus, direction) {
-        case (.library(let libraryId), .up):
-            moveLibrary(from: libraryId, by: -1)
-        case (.library(let libraryId), .down):
-            moveLibrary(from: libraryId, by: 1)
-        case (.library(let libraryId), .right):
-            moveToSection(libraryId: libraryId, pill: pills.first ?? .recommended)
-        case (.section(let libraryId, let pill), .up):
-            moveSection(libraryId: libraryId, from: pill, by: -1)
-        case (.section(let libraryId, let pill), .down):
-            moveSection(libraryId: libraryId, from: pill, by: 1)
-        case (.section(let libraryId, _), .left) where !isSingleLibrary:
-            moveToLibrary(libraryId)
-        default:
-            break
-        }
-    }
-
-    private func moveLibrary(from libraryId: Int, by delta: Int) {
-        guard let index = libraries.firstIndex(where: { $0.id == libraryId }) else { return }
-        let nextIndex = index + delta
-        guard libraries.indices.contains(nextIndex) else {
-            if delta < 0 {
-                onClose()
-            } else {
-                onExitToContent()
+        switch TVCascadeFocusPlanner.move(from: focus, direction: direction,
+                                          libraryIDs: libraries.map(\.id), pills: pills,
+                                          singleLibrary: isSingleLibrary) {
+        case .select(let selection):
+            if case .section(let id, _) = selection {
+                flyoutFollowTask?.cancel()
+                flyoutAnchorId = id
             }
-            return
+            focus = selection
+        case .close: onClose()
+        case .content: onExitToContent()
+        case .stay: break
         }
-        moveToLibrary(libraries[nextIndex].id)
-    }
-
-    private func moveSection(libraryId: Int, from pill: TVLibraryPill, by delta: Int) {
-        guard let index = pills.firstIndex(of: pill) else { return }
-        let nextIndex = index + delta
-        guard pills.indices.contains(nextIndex) else {
-            if delta < 0 {
-                onClose()
-            } else {
-                onExitToContent()
-            }
-            return
-        }
-        moveToSection(libraryId: libraryId, pill: pills[nextIndex])
-    }
-
-    private func moveToLibrary(_ libraryId: Int) {
-        // Highlight immediately; handleFocusChange moves the flyout only
-        // after the user rests on this row.
-        focus = .library(libraryId)
-    }
-
-    private func moveToSection(libraryId: Int, pill: TVLibraryPill) {
-        flyoutFollowTask?.cancel()
-        flyoutAnchorId = libraryId
-        focus = .section(libraryId, pill)
     }
 
     private func commitFocusedSelection() {
@@ -512,11 +503,6 @@ struct TVCascadeSelector: View {
     private func claimPanelFocus() {
         onPanelFocusChanged(true)
         panelFocused = true
-        Task { @MainActor in
-            await Task.yield()
-            guard entersPanel, focus != nil else { return }
-            panelFocused = true
-        }
     }
 }
 
