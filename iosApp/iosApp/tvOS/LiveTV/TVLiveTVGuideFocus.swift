@@ -80,6 +80,12 @@ struct TVLiveTVGuideFocusHistory: Equatable {
         isInGrid ? grid : entry
     }
 
+    func allowsGridEntry(_ entry: TVLiveTVGuideFocus?, laidOutRows: Set<String>) -> Bool {
+        if isInGrid { return true }
+        guard let channelID = entry?.channelID else { return false }
+        return laidOutRows.contains(channelID)
+    }
+
     mutating func reconcile(rowIDs: [String]) {
         guard TVLiveTVGuideFocusPlanner.mustRelocate(grid, rowIDs: rowIDs) else { return }
         grid = nil

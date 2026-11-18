@@ -45,6 +45,10 @@ No private APIs, local Simulator, archive, IPA or Build 88 version bump.
   within-region movement remains native.
 - Entry preferences update only while the toolbar owns focus. Async EPG results
   cannot change the active grid's default to a different/current program.
+  Short-guide and SQLite residency revisions update the preference too.
+- Grid entry is ineligible until geometry confirms the intended lazy row is
+  laid out. An early Down stays on the toolbar instead of selecting a wrong
+  cell; it is not replayed later. This gate never disables an active grid.
 - The active row retains its listing snapshot until focus leaves that row or
   returns to the toolbar. This deliberately defers updated listings for that
   one row; all other rows continue refreshing. Nil focus during playback or a

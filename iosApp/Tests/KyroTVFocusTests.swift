@@ -95,6 +95,17 @@ final class KyroTVFocusTests: XCTestCase {
         }
     }
 
+    func testGuideCannotEnterAnotherRowWhileItsLazyTargetIsNotLaidOut() {
+        var history = TVLiveTVGuideFocusHistory()
+        let target = TVLiveTVGuideFocus.program(channelID: "sports", programID: "now")
+        XCTAssertFalse(history.allowsGridEntry(target, laidOutRows: ["news"]))
+        XCTAssertFalse(history.allowsGridEntry(nil, laidOutRows: ["news"]))
+        XCTAssertTrue(history.allowsGridEntry(target, laidOutRows: ["sports"]))
+        history.observe(target)
+        XCTAssertTrue(history.allowsGridEntry(nil, laidOutRows: []),
+                      "Virtualization must not disable the active grid during scrolling")
+    }
+
     func testRapidGuideTransitionsHaveNoQueuedCorrection() {
         var history = TVLiveTVGuideFocusHistory()
         for index in 0..<1_000 {

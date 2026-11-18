@@ -688,6 +688,7 @@ struct TVLiveTVGuideView: View {
     @State private var focusHistory = TVLiveTVGuideFocusHistory()
     @State private var activeListing: TVLiveTVGuideListingSnapshot?
     @State private var entryTarget: TVLiveTVGuideFocus?
+    @State private var laidOutRows: Set<String> = []
     @Namespace private var headerScope
     @Namespace private var gridScope
     @FocusState private var focus: TVLiveTVGuideFocus?
@@ -825,6 +826,11 @@ struct TVLiveTVGuideView: View {
                 ForEach(rows) { channel in
                     guideRow(channel)
                         .id(channel.id)
+                        .onGeometryChange(for: Bool.self) { $0.size.height > 0 } action: { laidOut in
+                            if laidOut { laidOutRows.insert(channel.id) }
+                            else { laidOutRows.remove(channel.id) }
+                        }
+                        .onDisappear { laidOutRows.remove(channel.id) }
                         .task {
                             await service.refreshShortEPG(for: channel)
                             prepareEntryTarget()
@@ -832,6 +838,9 @@ struct TVLiveTVGuideView: View {
                 }
             }
         }
+        // Never let geometry choose an arbitrary future cell while the lazy
+        // entry row is still being laid out. No input or correction is queued.
+        .disabled(!focusHistory.allowsGridEntry(entryTarget, laidOutRows: laidOutRows))
         .defaultFocus($focus, focusHistory.gridDefault(entry: entryTarget), priority: .userInitiated)
         .focusScope(gridScope)
         .focusSection()
