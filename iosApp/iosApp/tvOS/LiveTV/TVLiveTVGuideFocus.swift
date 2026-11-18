@@ -30,8 +30,8 @@ enum TVLiveTVGuideFocus: Hashable {
 /// - Down from any header control enters the live column: the current program on the remembered
 ///   channel, or on the first channel. A channel without a current listing lands on its name tile,
 ///   which is always at the same place.
-/// - Up from the first row is owned by the native focus engine; the guide
-///   must not force a sideways correction after it chooses a toolbar control.
+/// - Up into the toolbar uses its remembered native region default, not a
+///   correction after the engine has already highlighted another control.
 /// - Changing a filter never moves focus, unless focus was on a row the filter removed.
 enum TVLiveTVGuideFocusPlanner {
     static func entryChannel(rowIDs: [String], remembered: String?) -> String? {
@@ -55,6 +55,46 @@ enum TVLiveTVGuideFocusPlanner {
     /// The program airing at `now`, if the listings cover it.
     static func currentProgram(in programs: [EPGProgram], at now: Date) -> EPGProgram? {
         programs.first { $0.start <= now && now < $0.end }
+    }
+}
+
+/// Native region preferences, not a directional-command dispatcher. Nil focus
+/// during a sheet or playback leaves the last owner and restoration target intact.
+struct TVLiveTVGuideFocusHistory: Equatable {
+    private(set) var header: TVLiveTVGuideFocus = .category
+    private(set) var grid: TVLiveTVGuideFocus?
+    private(set) var isInGrid = false
+
+    mutating func observe(_ target: TVLiveTVGuideFocus?) {
+        guard let target else { return }
+        if target.isHeader {
+            header = target
+            isInGrid = false
+        } else {
+            grid = target
+            isInGrid = true
+        }
+    }
+
+    func gridDefault(entry: TVLiveTVGuideFocus?) -> TVLiveTVGuideFocus? {
+        isInGrid ? grid : entry
+    }
+
+    mutating func reconcile(rowIDs: [String]) {
+        guard TVLiveTVGuideFocusPlanner.mustRelocate(grid, rowIDs: rowIDs) else { return }
+        grid = nil
+        isInGrid = false
+    }
+}
+
+/// Freeze only the active row, not the catalog. Keeping the whole row avoids
+/// moving a focused cell's geometry when a refreshed listing changes boundaries.
+struct TVLiveTVGuideListingSnapshot {
+    let channelID: String
+    let programs: [EPGProgram]
+
+    func programs(for channelID: String, latest: () -> [EPGProgram]) -> [EPGProgram] {
+        self.channelID == channelID ? programs : latest()
     }
 }
 
