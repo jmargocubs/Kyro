@@ -184,6 +184,17 @@ jobs:
           PLIST_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")
           PLIST_VER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")
           ARCH=$(lipo -archs "$APP_PATH/$APP")
+          SUPPORTED_PLATFORM=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$PLIST")
+          if [ "$PLATFORM" = ios ]; then
+            EXPECTED_BUNDLE_ID=com.cubbiestream.kyro
+            EXPECTED_PLATFORM=iPhoneOS
+          else
+            EXPECTED_BUNDLE_ID=com.cubbiestream.kyro.tvos
+            EXPECTED_PLATFORM=AppleTVOS
+            test -d "$APP_PATH/PlugIns/SiloTVTopShelf.appex"
+          fi
+          [ "$BUNDLE_ID" = "$EXPECTED_BUNDLE_ID" ] || { echo "CFBundleIdentifier $BUNDLE_ID != $EXPECTED_BUNDLE_ID"; exit 1; }
+          [ "$SUPPORTED_PLATFORM" = "$EXPECTED_PLATFORM" ] || { echo "supported platform $SUPPORTED_PLATFORM != $EXPECTED_PLATFORM"; exit 1; }
           [ "$PLIST_BUILD" = "$BUILD" ] || { echo "CFBundleVersion $PLIST_BUILD != $BUILD"; exit 1; }
           [ "$PLIST_VER" = "$VERSION" ] || { echo "CFBundleShortVersionString $PLIST_VER != $VERSION"; exit 1; }
           SHA=$(shasum -a 256 "$OUT/$IPA" | awk '{print $1}')
