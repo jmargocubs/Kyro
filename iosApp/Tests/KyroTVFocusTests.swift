@@ -69,6 +69,17 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertNil(TVLiveTVGuideFocusPlanner.entryTarget(rowIDs: [], remembered: "news") { _ in "x" })
     }
 
+    func testIdleToolbarEntryPreferenceExpiresAtTheNextListingBoundary() {
+        let programs = [program("news", from: -60, to: 60), program("news", from: 120, to: 600)]
+        XCTAssertEqual(TVLiveTVGuideFocusPlanner.nextListingBoundary(in: programs, after: now), now.addingTimeInterval(60))
+        XCTAssertEqual(TVLiveTVGuideFocusPlanner.nextListingBoundary(in: programs, after: now.addingTimeInterval(60)), now.addingTimeInterval(120))
+        XCTAssertNil(TVLiveTVGuideFocusPlanner.nextListingBoundary(in: [], after: now))
+        var history = TVLiveTVGuideFocusHistory()
+        history.observe(.program(channelID: "news", programID: "old"))
+        XCTAssertEqual(history.gridDefault(entry: .program(channelID: "news", programID: "new")), history.grid,
+                       "A schedule boundary is not permission to move active focus")
+    }
+
     func testCurrentProgramIsTheOneAiringNowNotTheNextOne() {
         let programs = [program("news", from: -3_600, to: -60), program("news", from: -60, to: 1_740),
                         program("news", from: 1_740, to: 3_600)]
@@ -80,6 +91,79 @@ final class KyroTVFocusTests: XCTestCase {
     }
 
     // MARK: Guide: Up, filter changes, restoration
+
+    func testGuideReturnsToTheFilterThatLaunchedIt() {
+        for header in [TVLiveTVGuideFocus.back, .category, .favorites, .refresh] {
+            var history = TVLiveTVGuideFocusHistory()
+            history.observe(header)
+            history.observe(.program(channelID: "news", programID: "now"))
+            XCTAssertEqual(history.header, header)
+            // The toolbar's native region default is available before Up,
+            // not a second focus assignment after Back has been highlighted.
+            history.observe(history.header)
+            XCTAssertFalse(history.isInGrid)
+            XCTAssertEqual(history.grid?.channelID, "news")
+        }
+    }
+
+    func testGuideCannotEnterAnotherRowWhileItsLazyTargetIsNotLaidOut() {
+        var history = TVLiveTVGuideFocusHistory()
+        let target = TVLiveTVGuideFocus.program(channelID: "sports", programID: "now")
+        XCTAssertFalse(history.allowsGridEntry(target, laidOutRows: ["news"]))
+        XCTAssertFalse(history.allowsGridEntry(nil, laidOutRows: ["news"]))
+        XCTAssertTrue(history.allowsGridEntry(target, laidOutRows: ["sports"]))
+        history.observe(target)
+        XCTAssertTrue(history.allowsGridEntry(nil, laidOutRows: []),
+                      "Virtualization must not disable the active grid during scrolling")
+    }
+
+    func testRapidGuideTransitionsHaveNoQueuedCorrection() {
+        var history = TVLiveTVGuideFocusHistory()
+        for index in 0..<1_000 {
+            let target = TVLiveTVGuideFocus.program(channelID: "news", programID: "\(index)")
+            history.observe(.favorites)
+            XCTAssertEqual(history.gridDefault(entry: target), target)
+            history.observe(target)
+            history.observe(nil)
+            XCTAssertEqual(history.gridDefault(entry: .channel("other")), target)
+            history.observe(.category)
+            XCTAssertEqual(history.gridDefault(entry: .channel("other")), .channel("other"))
+        }
+    }
+
+    func testPlaybackAndDetailsRestoreTheExactProgramDespiteNewEntryData() {
+        var history = TVLiveTVGuideFocusHistory()
+        let target = TVLiveTVGuideFocus.program(channelID: "sports", programID: "past-program")
+        history.observe(target)
+        history.observe(nil) // cover/sheet owns the window
+        XCTAssertEqual(history.gridDefault(entry: .program(channelID: "sports", programID: "live")), target)
+        XCTAssertTrue(history.isInGrid)
+    }
+
+    func testEPGRefreshKeepsActiveRowIdentityAndGeometry() {
+        let old = [program("news", from: -60, to: 600)]
+        let refreshed = [program("news", from: -30, to: 900)]
+        let snapshot = TVLiveTVGuideListingSnapshot(channelID: "news", programs: old)
+        XCTAssertEqual(snapshot.programs(for: "news") { refreshed }, old)
+        XCTAssertEqual(snapshot.programs(for: "sports") { refreshed }, refreshed)
+        let empty = TVLiveTVGuideListingSnapshot(channelID: "news", programs: [])
+        XCTAssertTrue(empty.programs(for: "news") { refreshed }.isEmpty,
+                      "Loading EPG must not replace a focused no-guide cell")
+    }
+
+    func testCategorySwitchDropsRemovedRestorationTargetButKeepsToolbarOrigin() {
+        var history = TVLiveTVGuideFocusHistory()
+        history.observe(.favorites)
+        history.observe(.channel("news"))
+        history.reconcile(rowIDs: ["news", "sports"])
+        XCTAssertEqual(history.grid, .channel("news"))
+        XCTAssertTrue(history.isInGrid)
+        history.reconcile(rowIDs: ["sports"])
+        XCTAssertNil(history.grid)
+        XCTAssertFalse(history.isInGrid)
+        XCTAssertEqual(history.header, .favorites)
+        XCTAssertEqual(history.gridDefault(entry: .channel("sports")), .channel("sports"))
+    }
 
     func testChangingACategoryNeverMovesFocusOffTheFilters() {
         for header in [TVLiveTVGuideFocus.back, .category, .favorites, .refresh] {

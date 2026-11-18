@@ -681,10 +681,17 @@ struct TVLiveTVGuideView: View {
     @State private var category: String?
     @State private var favoritesOnly = false
     @State private var rows: [LiveTVChannel] = []
+    @State private var rowIDs: [String] = []
+    @State private var rowIndices: [String: Int] = [:]
     @State private var detail: TVLiveTVGuideDetail?
-    @State private var detailReturnFocus: TVLiveTVGuideFocus?
     @State private var navigationState = TVLiveTVGuideNavigationState()
-    @State private var didSeedInitialFocus = false
+    @State private var focusHistory = TVLiveTVGuideFocusHistory()
+    @State private var activeListing: TVLiveTVGuideListingSnapshot?
+    @State private var entryTarget: TVLiveTVGuideFocus?
+    @State private var entryRefreshDate: Date?
+    @State private var laidOutRows: Set<String> = []
+    @Namespace private var headerScope
+    @Namespace private var gridScope
     @FocusState private var focus: TVLiveTVGuideFocus?
 
     private let channelWidth: CGFloat = 310
@@ -695,39 +702,71 @@ struct TVLiveTVGuideView: View {
             TVKyroAmbientBackdrop()
             ScrollViewReader { proxy in
                 VStack(alignment: .leading, spacing: 18) {
-                    guideHeader(proxy)
+                    guideHeader
                     timelineHeader
                     guideGrid
+                }
+                .onChange(of: rowIDs) { _, _ in
+                    // Initial/filter layout only. Never scroll on a focus move:
+                    // Up must preserve the timeline's horizontal position.
+                    guard !focusHistory.isInGrid, let channelID = entryTarget?.channelID else { return }
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        proxy.scrollTo(channelID, anchor: .topLeading)
+                    }
                 }
             }
             .padding(.horizontal, 58)
             .padding(.vertical, 42)
         }
+        .defaultFocus($focus, focusHistory.isInGrid ? focusHistory.grid : focusHistory.header)
         .modifier(LiveTVChannelCover(service: service, presenter: .guide, isEnabled: true))
         .onAppear {
             service.presentation.surfaceAppeared(.guide)
             if let last = TVLiveTVGuideMemory.lastChannelID { navigationState.focus(channelID: last) }
             rebuildRows()
-            // Opening the guide lands on the filters, so the first Down is the predictable one.
-            if !didSeedInitialFocus {
-                didSeedInitialFocus = true
-                focus = .category
-            }
         }
         .onDisappear { service.presentation.surfaceDisappeared(.guide) }
         .onChange(of: category) { rebuildRows() }
         .onChange(of: favoritesOnly) { rebuildRows() }
         .onChange(of: service.favoriteChannelIDs) { if favoritesOnly { rebuildRows() } }
         .onChange(of: service.channelCatalogRevision) { rebuildRows() }
-        .onChange(of: service.guideRevision) { reconcileFocusedProgram() }
+        .onChange(of: service.guideRevision) { prepareEntryTarget() }
+        .task(id: entryRefreshDate) {
+            // A listing boundary invalidates the inactive region's preference,
+            // not focus. This is not a delayed directional correction. It is
+            // cancelled with the view and never writes while the grid owns focus.
+            guard let date = entryRefreshDate else { return }
+            do { try await Task.sleep(for: .seconds(max(0, date.timeIntervalSinceNow))) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            prepareEntryTarget()
+        }
+        .onChange(of: service.guideChannelRevisions[entryTarget?.channelID ?? ""] ?? 0) {
+            // SQLite residency and short EPG publish per-channel revisions,
+            // without changing guideRevision. Refresh the inactive region's
+            // preference too, but never redirect a user already in the grid.
+            prepareEntryTarget()
+        }
         .onChange(of: focus) { _, newFocus in
+            focusHistory.observe(newFocus)
             if let id = newFocus?.channelID {
+                if activeListing?.channelID != id,
+                   let index = rowIndices[id] {
+                    activeListing = TVLiveTVGuideListingSnapshot(
+                        channelID: id,
+                        programs: service.guidePrograms(for: rows[index], overlapping: timeline.interval))
+                }
                 navigationState.focus(channelID: id)
                 TVLiveTVGuideMemory.lastChannelID = id
+            } else if newFocus != nil {
+                activeListing = nil
+                prepareEntryTarget()
             }
         }
         .onExitCommand { dismiss() }
-        .sheet(item: $detail, onDismiss: restoreAfterDetail) { detail in
+        .sheet(item: $detail) { detail in
             TVLiveTVProgramDetail(detail: detail) {
                 service.choose(detail.channel, from: .guide)
                 self.detail = nil
@@ -737,12 +776,11 @@ struct TVLiveTVGuideView: View {
 
     // MARK: Header
 
-    private func guideHeader(_ proxy: ScrollViewProxy) -> some View {
+    private var guideHeader: some View {
         HStack(spacing: 16) {
             Button { dismiss() } label: { Label("Back", systemImage: "chevron.left") }
                 .buttonStyle(TVKyroChipStyle())
                 .focused($focus, equals: .back)
-                .onMoveCommand { if $0 == .down { enterGrid(proxy) } }
             Text("TV Guide").font(.system(size: 46, weight: .bold))
             Spacer()
             Menu {
@@ -755,7 +793,6 @@ struct TVLiveTVGuideView: View {
             }
             .buttonStyle(TVKyroChipStyle(isSelected: category != nil))
             .focused($focus, equals: .category)
-            .onMoveCommand { if $0 == .down { enterGrid(proxy) } }
             Button {
                 favoritesOnly.toggle()
             } label: {
@@ -763,15 +800,15 @@ struct TVLiveTVGuideView: View {
             }
             .buttonStyle(TVKyroChipStyle(isSelected: favoritesOnly))
             .focused($focus, equals: .favorites)
-            .onMoveCommand { if $0 == .down { enterGrid(proxy) } }
             Button {
+                guard !service.isLoading, !service.isGuideLoading else { return }
                 Task { await service.refreshSelectedProvider() }
             } label: { Label("Refresh", systemImage: "arrow.clockwise") }
             .buttonStyle(TVKyroChipStyle())
-            .disabled(service.isLoading || service.isGuideLoading)
             .focused($focus, equals: .refresh)
-            .onMoveCommand { if $0 == .down { enterGrid(proxy) } }
         }
+        .defaultFocus($focus, focusHistory.header, priority: .userInitiated)
+        .focusScope(headerScope)
         .focusSection()
     }
 
@@ -800,13 +837,23 @@ struct TVLiveTVGuideView: View {
                 ForEach(rows) { channel in
                     guideRow(channel)
                         .id(channel.id)
+                        .onGeometryChange(for: Bool.self) { $0.size.height > 0 } action: { laidOut in
+                            if laidOut { laidOutRows.insert(channel.id) }
+                            else { laidOutRows.remove(channel.id) }
+                        }
+                        .onDisappear { laidOutRows.remove(channel.id) }
                         .task {
                             await service.refreshShortEPG(for: channel)
-                            if focus?.channelID == channel.id { reconcileFocusedProgram() }
+                            prepareEntryTarget()
                         }
                 }
             }
         }
+        // Never let geometry choose an arbitrary future cell while the lazy
+        // entry row is still being laid out. No input or correction is queued.
+        .disabled(!focusHistory.allowsGridEntry(entryTarget, laidOutRows: laidOutRows))
+        .defaultFocus($focus, focusHistory.gridDefault(entry: entryTarget), priority: .userInitiated)
+        .focusScope(gridScope)
         .focusSection()
         .overlay {
             if rows.isEmpty {
@@ -849,7 +896,9 @@ struct TVLiveTVGuideView: View {
 
     @ViewBuilder
     private func programTimeline(for channel: LiveTVChannel) -> some View {
-        let programs = service.guidePrograms(for: channel, overlapping: timeline.interval)
+        let programs = activeListing?.programs(for: channel.id) {
+            service.guidePrograms(for: channel, overlapping: timeline.interval)
+        } ?? service.guidePrograms(for: channel, overlapping: timeline.interval)
         let cells = LiveTVGuideCell.cells(for: programs, in: timeline)
         ZStack(alignment: .leading) {
             RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.22))
@@ -872,7 +921,6 @@ struct TVLiveTVGuideView: View {
                         if LiveTVGuideAction(cell.program, at: .now) == .tune {
                             service.choose(channel, from: .guide)
                         } else {
-                            detailReturnFocus = .program(channelID: channel.id, programID: cell.program.id)
                             detail = TVLiveTVGuideDetail(channel: channel, program: cell.program)
                         }
                     } label: {
@@ -923,48 +971,23 @@ struct TVLiveTVGuideView: View {
 
     // MARK: Focus
 
-    /// Down from the filters: the live column of the remembered (or first) channel, scrolled into
-    /// view with the timeline back at its start, where "now" is.
-    private func enterGrid(_ proxy: ScrollViewProxy) {
-        let rowIDs = rows.map(\.id)
-        guard let target = TVLiveTVGuideFocusPlanner.entryTarget(
+    /// Prepare the native grid region's preference while the toolbar owns focus.
+    /// No direction handlers or focus writes: the engine chooses it on entry.
+    private func prepareEntryTarget() {
+        guard !focusHistory.isInGrid else { return }
+        guard let channelID = TVLiveTVGuideFocusPlanner.entryChannel(
+            rowIDs: rowIDs, remembered: navigationState.focusedChannelID),
+              let index = rowIndices[channelID] else {
+            entryTarget = nil
+            entryRefreshDate = nil
+            return
+        }
+        let programs = service.guidePrograms(for: rows[index], overlapping: timeline.interval)
+        let now = Date.now
+        entryTarget = TVLiveTVGuideFocusPlanner.entryTarget(
             rowIDs: rowIDs, remembered: navigationState.focusedChannelID,
-            currentProgramID: { currentProgramID(for: $0) }) else { return }
-        // Claim the intended target in the same input transaction. The old
-        // Task.yield allowed the focus engine to highlight a future cell for
-        // one frame before the correction arrived.
-        if let channelID = target.channelID {
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                proxy.scrollTo(channelID, anchor: UnitPoint(x: 0, y: 0.2))
-                focus = target
-            }
-        }
-    }
-
-    private func currentProgramID(for channelID: String) -> String? {
-        guard let channel = rows.first(where: { $0.id == channelID }) else { return nil }
-        let programs = service.guidePrograms(for: channel, overlapping: timeline.interval)
-        return TVLiveTVGuideFocusPlanner.currentProgram(in: programs, at: .now)?.id
-    }
-
-    /// Back from a program's details returns to that program.
-    private func restoreAfterDetail() {
-        guard let target = detailReturnFocus else { return }
-        detailReturnFocus = nil
-        focus = target
-        reconcileFocusedProgram()
-    }
-
-    private func reconcileFocusedProgram() {
-        guard case .program(let channelID, let programID) = focus,
-              let channel = rows.first(where: { $0.id == channelID }) else { return }
-        let programs = service.guidePrograms(for: channel, overlapping: timeline.interval)
-        if !programs.contains(where: { $0.id == programID }) {
-            // Keep the same row when an EPG refresh replaces the focused cell.
-            focus = .channel(channelID)
-        }
+            currentProgramID: { _ in TVLiveTVGuideFocusPlanner.currentProgram(in: programs, at: now)?.id })
+        entryRefreshDate = TVLiveTVGuideFocusPlanner.nextListingBoundary(in: programs, after: now)
     }
 
     /// Filters and catalog updates rebuild the rows without moving focus. Focus moves only when it
@@ -977,8 +1000,18 @@ struct TVLiveTVGuideView: View {
             favoritesOnly: favoritesOnly,
             favoriteIDs: service.favoriteChannelIDs
         )
-        navigationState.reconcile(visibleChannelIDs: rows.map(\.id))
-        if TVLiveTVGuideFocusPlanner.mustRelocate(focus, rowIDs: rows.map(\.id)) { focus = .category }
+        rowIDs = rows.map(\.id)
+        rowIndices = Dictionary(rowIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        navigationState.reconcile(visibleChannelIDs: rowIDs)
+        let removedActiveRow = TVLiveTVGuideFocusPlanner.mustRelocate(focusHistory.grid, rowIDs: rowIDs)
+        focusHistory.reconcile(rowIDs: rowIDs)
+        if removedActiveRow {
+            activeListing = nil
+            // The sole exceptional write: the focused row was removed, not
+            // merely refreshed. Return to the user's originating filter.
+            if focus?.channelID != nil { focus = focusHistory.header }
+        }
+        prepareEntryTarget()
     }
 }
 

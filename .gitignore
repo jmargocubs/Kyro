@@ -64,6 +64,7 @@ output/
 Thumbs.db
 .swiftpm/
 docs/*
+!docs/tvos-build88-guide.md
 !docs/tvos-focus.md
 !docs/tvos-build87-phase1.md
 !docs/tvos-keyboard-entry.md
