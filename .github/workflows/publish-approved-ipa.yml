@@ -46,50 +46,56 @@ jobs:
           set -euo pipefail
           ipa=$(find "$RUNNER_TEMP/build" -type f -name '*.ipa' -print -quit)
           test -n "$ipa" && test "$(find "$RUNNER_TEMP/build" -type f -name '*.ipa' | wc -l | tr -d ' ')" = 1
-          test -z "$(unzip -Z1 "$ipa" | grep -Ei 'embedded\.mobileprovision|\.p8$|\.p12$|\.cer$|\.mobileprovision$' || true)"
-          app_plist=$(unzip -Z1 "$ipa" | grep -E '^Payload/[^/]+\.app/Info\.plist$' | head -1)
-          test -n "$app_plist"
-          unzip -p "$ipa" "$app_plist" > "$RUNNER_TEMP/app.plist"
-          bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$RUNNER_TEMP/app.plist")
-          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RUNNER_TEMP/app.plist")
-          build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$RUNNER_TEMP/app.plist")
-          min_os=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$RUNNER_TEMP/app.plist")
-          arch=$(unzip -p "$ipa" "Payload/$(basename "${app_plist%/Info.plist}")/$(basename "${app_plist%/Info.plist}" .app)" > "$RUNNER_TEMP/app-bin" 2>/dev/null || true; file "$RUNNER_TEMP/app-bin" | grep -o 'arm64' | head -1)
-          info="$RUNNER_TEMP/build/BUILD-INFO-$(basename "$ipa" | grep -q tvos && echo tvos || echo ios).txt"
-          test -f "$info"
-          source_sha=$(awk -F': ' '$1 == "source_commit" {print $2}' "$info")
-          source_ref=$(awk -F': ' '$1 == "source_ref" {print $2}' "$info")
-          platform=$(awk -F': ' '$1 == "target" {print $2}' "$info" | grep -q SiloTV && echo tvos || echo ios)
-          test "$arch" = arm64
-          if [ "$platform" = tvos ]; then
-            test "$source_ref" = kyro/tvos
-            expected_bundle=com.cubbiestream.kyro.tvos
-            test "$bundle" = "$expected_bundle"
-            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$RUNNER_TEMP/app.plist")" = AppleTVOS
-            catalog=source.json
-            name='Kyro Apple TV'
-          else
-            test "$source_ref" = kyro/m1-rebrand
-            expected_bundle=com.cubbiestream.kyro
-            test "$bundle" = "$expected_bundle"
-            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$RUNNER_TEMP/app.plist")" = iPhoneOS
-            catalog=source.json
-            name=Kyro
-          fi
-          sha=$(shasum -a 256 "$ipa" | awk '{print $1}')
-          ipa_size=$(wc -c < "$ipa" | tr -d ' ')
-          printf '%s  %s\n' "$sha" "$(basename "$ipa")" > "$RUNNER_TEMP/$(basename "$ipa").sha256"
-          echo "ipa=$ipa" >> "$GITHUB_OUTPUT"
-          echo "platform=$platform" >> "$GITHUB_OUTPUT"
-          echo "catalog=$catalog" >> "$GITHUB_OUTPUT"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "build=$build" >> "$GITHUB_OUTPUT"
-          echo "min_os=$min_os" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "ipa_size=$ipa_size" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
-          echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
+          python3 - "$ipa" "$RUNNER_TEMP/build" "$GITHUB_OUTPUT" "$RUNNER_TEMP" <<'PY'
+          import hashlib, pathlib, plistlib, sys, zipfile
+          ipa, build_dir, output, temp_dir = map(pathlib.Path, sys.argv[1:])
+          with zipfile.ZipFile(ipa) as archive:
+              names = archive.namelist()
+              forbidden = [n for n in names if n.endswith(("embedded.mobileprovision", ".p8", ".p12", ".cer", ".mobileprovision"))]
+              if forbidden:
+                  raise SystemExit(f"forbidden signing/credential files: {forbidden}")
+              plist_names = [n for n in names if n.startswith("Payload/") and n.endswith(".app/Info.plist")]
+              if len(plist_names) != 1:
+                  raise SystemExit("IPA must contain exactly one host app Info.plist")
+              plist_name = plist_names[0]
+              plist = plistlib.loads(archive.read(plist_name))
+              app_root = plist_name.rsplit("/Info.plist", 1)[0]
+              executable = plist.get("CFBundleExecutable")
+              binary = archive.read(f"{app_root}/{executable}")
+              (temp_dir / "app-bin").write_bytes(binary)
+          bundle = plist["CFBundleIdentifier"]
+          version = plist["CFBundleShortVersionString"]
+          build = str(plist["CFBundleVersion"])
+          min_os = plist["MinimumOSVersion"]
+          supported = plist.get("CFBundleSupportedPlatforms", [])
+          info = build_dir / ("BUILD-INFO-tvos.txt" if "AppleTVOS" in supported else "BUILD-INFO-ios.txt")
+          metadata = dict(line.split(": ", 1) for line in info.read_text().splitlines() if ": " in line)
+          platform = "tvos" if "AppleTVOS" in supported else "ios"
+          if platform == "tvos":
+              if bundle != "com.cubbiestream.kyro.tvos" or metadata.get("source_ref") != "kyro/tvos":
+                  raise SystemExit("tvOS bundle/source identity mismatch")
+              if f"{app_root}/PlugIns/SiloTVTopShelf.appex/Info.plist" not in names:
+                  raise SystemExit("tvOS IPA is missing the Top Shelf extension")
+              catalog, name = "source.json", "Kyro Apple TV"
+          else:
+              if bundle != "com.cubbiestream.kyro" or metadata.get("source_ref") != "kyro/m1-rebrand":
+                  raise SystemExit("iOS bundle/source identity mismatch")
+              if "iPhoneOS" not in supported:
+                  raise SystemExit("iOS IPA does not declare iPhoneOS")
+              catalog, name = "source.json", "Kyro"
+          if "arm64" not in __import__("subprocess").check_output(["file", str(temp_dir / "app-bin")], text=True):
+              raise SystemExit("IPA is not arm64")
+          sha = hashlib.sha256(ipa.read_bytes()).hexdigest()
+          size = ipa.stat().st_size
+          (temp_dir / f"{ipa.name}.sha256").write_text(f"{sha}  {ipa.name}\n")
+          values = {"ipa": str(ipa), "platform": platform, "catalog": catalog, "name": name,
+                    "version": version, "build": build, "min_os": min_os, "sha": sha,
+                    "ipa_size": str(size), "source_sha": metadata["source_commit"],
+                    "source_ref": metadata["source_ref"]}
+          with output.open("a") as handle:
+              for key, value in values.items():
+                  handle.write(f"{key}={value}\n")
+          PY
 
       - name: Create or verify Kyro pre-release
         shell: bash
