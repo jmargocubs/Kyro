@@ -143,6 +143,17 @@ category so cancelling Sign Out restores Sign Out, while Left from the details
 still restores the category. Back returns to the category, then exits Settings
 to Home.
 
+## Back at Navigation Boundaries
+
+Back returns to the previous meaningful level. A page's focused region owns the
+first Back handoff; its enclosing presentation dismisses only when focus is
+already at that page's top level. In the TV Guide, Back from any channel or
+program returns to the remembered filter control, and Back from the filters
+returns to Live TV Home. Keep the active filter, remembered channel, and grid
+scroll offset during the first handoff. Down re-enters on that channel's name
+tile. Fullscreen playback and sheets own Back while they are presented; do not
+install a competing handler in the guide's rows or window.
+
 ## Top Menu Ownership
 
 The top menu has three conceptual states:
