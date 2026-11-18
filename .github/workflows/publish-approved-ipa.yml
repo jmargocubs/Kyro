@@ -60,16 +60,18 @@ jobs:
           source_sha=$(awk -F': ' '$1 == "source_commit" {print $2}' "$info")
           source_ref=$(awk -F': ' '$1 == "source_ref" {print $2}' "$info")
           platform=$(awk -F': ' '$1 == "target" {print $2}' "$info" | grep -q SiloTV && echo tvos || echo ios)
-          expected_bundle=com.cubbiestream.kyro
-          test "$bundle" = "$expected_bundle"
           test "$arch" = arm64
           if [ "$platform" = tvos ]; then
             test "$source_ref" = kyro/tvos
+            expected_bundle=com.cubbiestream.kyro.tvos
+            test "$bundle" = "$expected_bundle"
             test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$RUNNER_TEMP/app.plist")" = AppleTVOS
-            catalog=tvos-source.json
+            catalog=source.json
             name='Kyro Apple TV'
           else
             test "$source_ref" = kyro/m1-rebrand
+            expected_bundle=com.cubbiestream.kyro
+            test "$bundle" = "$expected_bundle"
             test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$RUNNER_TEMP/app.plist")" = iPhoneOS
             catalog=source.json
             name=Kyro
