@@ -15,23 +15,19 @@ import UniformTypeIdentifiers
 
 /// The file types Backup & Restore uses.
 ///
-/// Export uses the custom type declared in Info.plist (UTExportedTypeDeclarations), so a saved file
-/// gets the `.kyrosettings` extension. Import deliberately does NOT name that type. The Files picker
-/// runs in a separate process and decides which files are selectable by resolving every type in the
-/// list; a custom identifier that process cannot resolve (an app installed outside the App Store,
-/// a file made before the declaration was registered, a file provider that reports its own type)
-/// leaves the saved backup greyed out. System types always resolve, and every file passes the same
-/// size, schema, integrity and content checks before anything is previewed, whatever its name or type.
+/// Files reports Kyro's own exported file as `com.cubbiestream.kyro.settings-backup`. Name that
+/// exact type in the importer: accepting only its system supertypes left the exported file disabled
+/// in the iPhone document picker. System fallbacks accommodate providers that report generic types;
+/// the decoder still validates every selected file.
 enum SettingsBackupFileType {
     static let exportIdentifier = "com.cubbiestream.kyro.settings-backup"
     static let fileExtension = "kyrosettings"
 
-    /// Used only to name and type an exported file.
+    /// The type used to export and identify Kyro backup documents.
     static let exportType = UTType(exportedAs: exportIdentifier, conformingTo: .json)
 
-    /// What the importer offers: JSON, any data file, and any item as the last resort for a file whose
-    /// provider reports an unexpected type. Never the custom identifier.
-    static let importerTypes: [UTType] = [.json, .data, .item]
+    /// Include the registered document type explicitly, with system fallbacks for file providers.
+    static let importerTypes: [UTType] = [exportType, .json, .data, .item]
 }
 
 // MARK: - Notification

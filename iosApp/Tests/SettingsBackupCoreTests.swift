@@ -431,26 +431,26 @@ final class SettingsBackupCoreTests: XCTestCase {
         XCTAssertNil(model.preview)
     }
 
-    // MARK: Build 88.2: the file picker
+    // MARK: File picker registration
 
-    func testTheImporterNeverNamesTheCustomTypeAndAcceptsAnyDataFile() {
+    func testTheImporterNamesTheRegisteredBackupTypeAndAcceptsProviderFallbacks() {
         let identifiers = SettingsBackupFileType.importerTypes.map(\.identifier)
-        XCTAssertFalse(identifiers.contains(SettingsBackupFileType.exportIdentifier))
+        XCTAssertEqual(identifiers.first, SettingsBackupFileType.exportIdentifier)
         XCTAssertTrue(identifiers.contains(UTType.json.identifier))
         XCTAssertTrue(identifiers.contains(UTType.data.identifier))
+        XCTAssertTrue(identifiers.contains(UTType.item.identifier))
     }
 
     func testBackupFilesAreNamedKyrosettings() {
         XCTAssertEqual(SettingsBackupFileType.fileExtension, "kyrosettings")
         XCTAssertEqual(SettingsBackupCodec.fileExtension, "kyrosettings")
+        XCTAssertEqual(SettingsBackupFileType.exportType.preferredFilenameExtension, "kyrosettings")
     }
 
-    func testAFileWithTheBackupExtensionIsSelectableWhateverTypeTheProviderReports() throws {
-        // Whether the system knows the custom type or reports a dynamic one, a .kyrosettings file is
-        // data, so the importer's system types match it.
+    func testTheBackupExtensionResolvesToAnAllowedImporterType() throws {
         let reported = try XCTUnwrap(UTType(filenameExtension: "kyrosettings"))
-        XCTAssertTrue(SettingsBackupFileType.importerTypes.contains { reported.conforms(to: $0) },
-                      "reported as \(reported.identifier)")
+        XCTAssertEqual(reported.identifier, SettingsBackupFileType.exportIdentifier)
+        XCTAssertTrue(SettingsBackupFileType.importerTypes.contains { $0.identifier == reported.identifier })
     }
 
     func testInfoPlistDeclaresTheExportedTypeAsJsonAndData() throws {
@@ -466,8 +466,8 @@ final class SettingsBackupCoreTests: XCTestCase {
         XCTAssertTrue(conforms.contains("public.data"))
         let tags = try XCTUnwrap(declaration["UTTypeTagSpecification"] as? [String: Any])
         XCTAssertEqual(tags["public.filename-extension"] as? [String], ["kyrosettings"])
-        // Kyro does not claim to open these files from outside the app, so no document type or
-        // in-place access is requested, and no permission string is needed for the picker.
+        // The Files app already identifies the exported file as Kyro Settings Backup. Declaring
+        // an external document handler is unnecessary for import through an in-app picker.
         XCTAssertNil(info["CFBundleDocumentTypes"])
         XCTAssertNil(info["LSSupportsOpeningDocumentsInPlace"])
     }
