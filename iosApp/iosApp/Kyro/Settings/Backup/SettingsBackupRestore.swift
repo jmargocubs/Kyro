@@ -216,7 +216,7 @@ final class SettingsBackupApplier {
 
     /// Applies the willChange items of the selected groups. Settings of other groups, and settings
     /// that are not in the backup, are never read for writing.
-    func apply(preview: RestorePreview, selectedGroups: Set<SettingsBackupGroup>) -> RestoreOutcome {
+    func apply(preview: RestorePreview, selectedGroups: Set<SettingsBackupGroup>, selectedIDs: Set<String>? = nil) -> RestoreOutcome {
         // An unresolved restore point must be rolled back first: a new restore would overwrite it.
         if needsRecovery {
             return .failed(failedID: nil, reason: "An earlier restore didn't finish. Roll it back before restoring again, so nothing was changed.", rollback: RollbackReport())
@@ -225,7 +225,7 @@ final class SettingsBackupApplier {
         // 1. Re-validate against what is current now, and snapshot.
         var changes: [AppliedChange] = []
         for group in preview.groups where selectedGroups.contains(group.group) && group.groupUnsupportedReason == nil {
-            for item in group.items where item.status == .willChange {
+            for item in group.items where item.status == .willChange && (selectedIDs?.contains(item.id) ?? true) {
                 guard let setting = registry.setting(id: item.id), setting.unsupportedReason() == nil,
                       setting.validate(item.incomingValue) else { continue }
                 guard let previous = setting.read() else {

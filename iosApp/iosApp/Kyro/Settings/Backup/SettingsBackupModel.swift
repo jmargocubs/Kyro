@@ -15,6 +15,8 @@ final class SettingsBackupModel {
     var exportSelection: Set<SettingsBackupGroup> = SettingsBackupGroup.defaultSelection
     private(set) var preview: RestorePreview?
     var importSelection: Set<SettingsBackupGroup> = []
+    private(set) var selectedSettingIDs: Set<String> = []
+    private(set) var lastRestoredCount: Int?
     private(set) var banner: Banner?
     private(set) var undoAvailable = false
     private(set) var needsRecovery = false
@@ -137,6 +139,7 @@ final class SettingsBackupModel {
         } catch {
             preview = nil
             importSelection = []
+            selectedSettingIDs = []
             return Self.pastedTextMessage(error as? SettingsBackupError ?? .malformed)
         }
     }
@@ -146,6 +149,9 @@ final class SettingsBackupModel {
         let result = SettingsBackupPlanner.preview(incoming, registry: registry)
         preview = result
         importSelection = Set(result.groups.filter { $0.canRestore && !$0.group.isDeviceSpecific }.map(\.group))
+        selectedSettingIDs = Set(result.groups.filter { importSelection.contains($0.group) }
+            .flatMap { $0.items.filter { $0.status == .willChange }.map(\.id) })
+        lastRestoredCount = nil
         banner = nil
     }
 
@@ -166,6 +172,7 @@ final class SettingsBackupModel {
     private func reject(_ error: SettingsBackupError) {
         preview = nil
         importSelection = []
+        selectedSettingIDs = []
         banner = Banner(kind: .failure, text: error.localizedDescription)
     }
 
@@ -173,31 +180,49 @@ final class SettingsBackupModel {
     func cancelImport() {
         preview = nil
         importSelection = []
+        selectedSettingIDs = []
     }
 
     func setImport(_ group: SettingsBackupGroup, enabled: Bool) {
         guard preview?.groups.first(where: { $0.group == group })?.canRestore == true else { return }
         if enabled { importSelection.insert(group) } else { importSelection.remove(group) }
+        let ids = preview?.groups.first(where: { $0.group == group })?.items
+            .filter { $0.status == .willChange }.map(\.id) ?? []
+        for id in ids {
+            if enabled { selectedSettingIDs.insert(id) } else { selectedSettingIDs.remove(id) }
+        }
+    }
+
+    func setImport(_ id: String, enabled: Bool) {
+        guard let group = preview?.groups.first(where: { $0.items.contains(where: { $0.id == id && $0.status == .willChange }) }),
+              group.groupUnsupportedReason == nil else { return }
+        if enabled { selectedSettingIDs.insert(id) } else { selectedSettingIDs.remove(id) }
+        if group.items.contains(where: { selectedSettingIDs.contains($0.id) }) {
+            importSelection.insert(group.group)
+        } else {
+            importSelection.remove(group.group)
+        }
     }
 
     var selectedChangeCount: Int {
-        preview?.groups.filter { importSelection.contains($0.group) && $0.canRestore }
-            .reduce(0) { $0 + $1.changeCount } ?? 0
+        selectedSettingIDs.count
     }
 
     // MARK: Apply, undo, recovery
 
     func applySelected() {
         guard let preview, selectedChangeCount > 0 else { return }
-        switch applier.apply(preview: preview, selectedGroups: importSelection) {
+        switch applier.apply(preview: preview, selectedGroups: importSelection, selectedIDs: selectedSettingIDs) {
         case .nothingToApply:
             banner = Banner(kind: .warning, text: "Nothing needed to change.")
         case .applied(let changes, let undoable):
+            lastRestoredCount = changes.count
             banner = Banner(kind: .success, text: undoable
                 ? "Restored \(changes.count) setting\(changes.count == 1 ? "" : "s"). You can undo this."
                 : "Restored \(changes.count) setting\(changes.count == 1 ? "" : "s"). Undo isn't available because Kyro couldn't keep a restore point.")
             self.preview = nil
             importSelection = []
+            selectedSettingIDs = []
         case .failed(_, let reason, let rollback):
             if rollback.isComplete {
                 banner = Banner(kind: .failure, text: "\(reason) Your earlier settings were put back.")
@@ -206,6 +231,7 @@ final class SettingsBackupModel {
             }
             self.preview = nil
             importSelection = []
+            selectedSettingIDs = []
         }
         // Any outcome may have written values, even a rolled-back one, so screens reload either way.
         notifications.post(name: .kyroSettingsDidRestore, object: nil)

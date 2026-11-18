@@ -398,6 +398,54 @@ final class SettingsBackupCoreTests: XCTestCase {
         XCTAssertEqual(model.importSelection, Set(["navigation", "liveTVCategories", "downloads", "sports"].compactMap(SettingsBackupGroup.init(rawValue:))))
     }
 
+    func testReviewSelectsOnlyDifferencesAndCanRestoreOneSetting() throws {
+        let store = BackupFakeStore(baseValues())
+        let journal = BackupMemoryJournal()
+        let model = SettingsBackupModel(registry: store.registry(), journal: journal, app: app)
+        model.loadImport(data: try sourceBackup(groups: [.navigation, .downloads]))
+        XCTAssertEqual(model.selectedChangeCount, 3)
+        XCTAssertEqual(model.selectedSettingIDs, Set(["navigation.fourthTab", "downloads.wifiOnly", "downloads.simultaneous"]))
+
+        model.setImport("downloads.wifiOnly", enabled: false)
+        model.setImport("downloads.simultaneous", enabled: false)
+        XCTAssertEqual(model.selectedChangeCount, 1)
+        model.applySelected()
+
+        XCTAssertEqual(store.writes, ["navigation.fourthTab"])
+        XCTAssertEqual(store.values["navigation.fourthTab"], .string("favorites"))
+        XCTAssertEqual(store.values["downloads.wifiOnly"], .bool(true))
+        XCTAssertEqual(store.values["downloads.simultaneous"], .int(2))
+        XCTAssertEqual(model.lastRestoredCount, 1)
+        XCTAssertTrue(model.undoAvailable)
+
+        model.undo()
+        XCTAssertEqual(store.values, baseValues())
+        XCTAssertFalse(model.undoAvailable)
+    }
+
+    func testUnchangedBackupHasNoSelectedDifferencesAndWritesNothing() throws {
+        let store = BackupFakeStore(baseValues())
+        let model = SettingsBackupModel(registry: store.registry(), journal: BackupMemoryJournal(), app: app)
+        let data = try SettingsBackupExporter.export(
+            registry: store.registry(), groups: SettingsBackupGroup.defaultSelection, app: app, now: now)
+        model.loadImport(data: data)
+        XCTAssertEqual(model.preview?.totalChanges, 0)
+        XCTAssertTrue(model.selectedSettingIDs.isEmpty)
+        model.applySelected()
+        XCTAssertTrue(store.writes.isEmpty)
+        XCTAssertNil(model.lastRestoredCount)
+    }
+
+    func testReviewPreservesExcludedDeviceSpecificValues() throws {
+        let store = BackupFakeStore(baseValues())
+        let model = SettingsBackupModel(registry: store.registry(), journal: BackupMemoryJournal(), app: app)
+        model.loadImport(data: try sourceBackup(groups: [.navigation, .navigationLayout]))
+        XCTAssertEqual(model.selectedSettingIDs, ["navigation.fourthTab"])
+        model.applySelected()
+        XCTAssertEqual(store.values["nav.style"], .string("classic"))
+        XCTAssertEqual(store.writes, ["navigation.fourthTab"])
+    }
+
     func testRejectedImportShowsErrorAndLoadsNothing() {
         let store = BackupFakeStore(baseValues())
         let model = SettingsBackupModel(registry: store.registry(), journal: BackupMemoryJournal(), app: app)

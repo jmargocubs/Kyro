@@ -18,6 +18,8 @@ final class KyroSettingsBackupUITests: XCTestCase {
         let app = launch()
         openBackup(app)
         snap("01 Backup & Restore")
+        XCTAssertTrue(app.buttons["settingsBackup.options"].exists)
+        XCTAssertFalse(app.buttons["settingsBackup.copyText"].exists, "advanced export starts collapsed")
 
         tapScrolling(app.buttons["settingsBackup.export"], in: app)
         let save = app.buttons["Save"].firstMatch
@@ -35,10 +37,10 @@ final class KyroSettingsBackupUITests: XCTestCase {
         backupFile.tap()
 
         // A pick that never reaches Kyro (Builds 88–91 on iPhone) would leave no preview.
-        XCTAssertTrue(app.buttons["settingsBackup.cancel"].waitForExistence(timeout: 20), "Kyro received the file and shows the preview")
-        XCTAssertTrue(text(containing: "matches your current settings", in: app).exists, "the same device's backup has no changes")
+        XCTAssertTrue(app.buttons["settingsBackup.done"].waitForExistence(timeout: 20), "Kyro received the file and shows the review")
+        XCTAssertTrue(text(containing: "Your settings already match this backup", in: app).exists, "the same device's backup has no changes")
         snap("05 Preview after picking the file")
-        app.buttons["settingsBackup.cancel"].tap()
+        app.buttons["settingsBackup.done"].tap()
         XCTAssertTrue(app.buttons["settingsBackup.import"].waitForExistence(timeout: 5))
     }
 
@@ -49,6 +51,7 @@ final class KyroSettingsBackupUITests: XCTestCase {
         chooseFourthTab("favorites", app)
 
         openBackup(app)
+        tapScrolling(app.buttons["settingsBackup.options"], in: app)
         tapScrolling(app.buttons["settingsBackup.copyText"], in: app)
         XCTAssertTrue(text(containing: "Settings copied as text", in: app).waitForExistence(timeout: 5))
         snap("10 Copied settings as text")
@@ -66,31 +69,33 @@ final class KyroSettingsBackupUITests: XCTestCase {
         // Preview: exactly the fourth tab differs.
         let apply = app.buttons["settingsBackup.apply"]
         XCTAssertTrue(apply.waitForExistence(timeout: 10), "a valid backup closes the paste screen and shows the preview")
-        XCTAssertTrue(text(containing: "1 setting would change", in: app).exists)
+        XCTAssertTrue(text(containing: "1 setting will change", in: app).exists)
         XCTAssertTrue(text(containing: "Fourth tab", in: app).exists)
         snap("13 Preview of differences")
 
-        // Selective restore: turning the group off leaves nothing to apply.
-        let navigationGroup = app.switches.matching(
-            NSPredicate(format: "label BEGINSWITH 'Navigation' AND NOT (label CONTAINS 'layout')")).firstMatch
-        XCTAssertTrue(navigationGroup.waitForExistence(timeout: 5))
-        toggle(navigationGroup)
-        XCTAssertTrue(waitFor(apply, label: "Apply 0 Changes…"), apply.label)
+        // Selective restore: turning the one setting off leaves nothing to apply.
+        let fourthTab = app.switches["settingsBackup.change.navigation.fourthTab"]
+        XCTAssertTrue(fourthTab.waitForExistence(timeout: 5))
+        toggle(fourthTab)
+        XCTAssertTrue(waitFor(apply, label: "Restore 0 Settings"), apply.label)
         XCTAssertFalse(apply.isEnabled)
         snap("14 Navigation group deselected")
-        toggle(navigationGroup)
-        XCTAssertTrue(waitFor(apply, label: "Apply 1 Change…"), apply.label)
+        toggle(fourthTab)
+        XCTAssertTrue(waitFor(apply, label: "Restore 1 Setting"), apply.label)
 
         apply.tap()
-        let confirm = app.buttons["Apply Changes"].firstMatch
+        let confirm = app.buttons["Restore Settings"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.tap()
-        XCTAssertTrue(text(containing: "Restored 1 setting", in: app).waitForExistence(timeout: 10))
+        XCTAssertTrue(text(containing: "1 setting updated", in: app).waitForExistence(timeout: 10))
         snap("15 Restored")
+        app.buttons["settingsBackup.done"].tap()
         XCTAssertTrue(fourthTabIsSelected("favorites", app), "the restore wrote the backed-up value")
 
         openBackup(app)
         tapScrolling(app.buttons["settingsBackup.undo"], in: app)
+        XCTAssertTrue(app.buttons["Undo Last Restore"].waitForExistence(timeout: 5))
+        app.buttons["Undo Last Restore"].tap()
         XCTAssertTrue(text(containing: "Undid 1 setting", in: app).waitForExistence(timeout: 10))
         snap("16 Undone")
         XCTAssertTrue(fourthTabIsSelected("forYou", app), "Undo put back the earlier value")
