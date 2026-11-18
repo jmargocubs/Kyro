@@ -50,6 +50,14 @@ version and build number in the server's Activity page.
 Both run locally with no credentials.
 
 ## Caveats to communicate to users
+- **Kyro tvOS app identity.** New Kyro Apple TV builds use
+  `com.cubbiestream.kyro.tvos` and the embedded Top Shelf extension uses
+  `com.cubbiestream.kyro.tvos.topshelf`. This is a new application identity,
+  not an in-place update of older `com.cubbiestream.kyro` tvOS installs.
+  Users must install the new app and manually restore Live TV providers and
+  other settings. The shared App Group and explicit shared keychain group are
+  retained where the user's signing profile authorizes them, but migration is
+  not guaranteed by the bundle identifier change.
 - **Re-signing changes entitlements.** When re-signed with a personal/free
   account, the app's keychain-sharing group and any App Groups are remapped to
   the user's team prefix. The app runs, but features that depend on a fixed
