@@ -167,10 +167,29 @@ jobs:
           app["versions"].insert(0, expected)
           app["size"] = expected["size"]
           pathlib.Path(path).write_text(json.dumps(data, indent=2) + "\n")
+
+          if platform == "tvos":
+              tvos_path = pathlib.Path(path).parent / "tvos-source.json"
+              if tvos_path.exists():
+                  tvos_data = json.loads(tvos_path.read_text())
+                  tvos_app = next((a for a in tvos_data.get("apps", []) if a["name"] == name), None)
+                  if tvos_app:
+                      already_in_tvos = False
+                      for old in tvos_app.get("versions", []):
+                          if old.get("version") == version and old.get("buildVersion") == build:
+                              already_in_tvos = True
+                              break
+                      if not already_in_tvos:
+                          tvos_app["versions"].insert(0, expected)
+                          tvos_app["size"] = expected["size"]
+                          tvos_path.write_text(json.dumps(tvos_data, indent=2) + "\n")
           PY
           cd "$RUNNER_TEMP/catalog"
           git config user.name kyro-release-bot
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add "$CATALOG"
+          if [ "$PLATFORM" = tvos ] && [ -f tvos-source.json ]; then
+            git add tvos-source.json
+          fi
           git diff --cached --quiet || git commit -m "Update Kyro $PLATFORM to Build $BUILD"
           git push origin HEAD:main
