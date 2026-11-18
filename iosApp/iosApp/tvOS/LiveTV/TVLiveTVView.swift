@@ -731,6 +731,12 @@ struct TVLiveTVGuideView: View {
         .onChange(of: service.favoriteChannelIDs) { if favoritesOnly { rebuildRows() } }
         .onChange(of: service.channelCatalogRevision) { rebuildRows() }
         .onChange(of: service.guideRevision) { prepareEntryTarget() }
+        .onChange(of: service.guideChannelRevisions[entryTarget?.channelID ?? ""] ?? 0) {
+            // SQLite residency and short EPG publish per-channel revisions,
+            // without changing guideRevision. Refresh the inactive region's
+            // preference too, but never redirect a user already in the grid.
+            prepareEntryTarget()
+        }
         .onChange(of: focus) { _, newFocus in
             focusHistory.observe(newFocus)
             if let id = newFocus?.channelID {
