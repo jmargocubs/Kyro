@@ -22,7 +22,7 @@ jobs:
        github.event.workflow_run.head_branch == 'kyro/tvos') }}
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.KYRO_CATALOG_TOKEN }}
+      GH_TOKEN: ${{ secrets.KYRO }}
       RUN_ID: ${{ github.event.workflow_run.id }}
       KYRO_REPO: jmargocubs/Kyro
       CATALOG_REPO: jmargocubs/feather-apps
