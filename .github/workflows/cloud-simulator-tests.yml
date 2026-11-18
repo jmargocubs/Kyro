@@ -1,18 +1,29 @@
 name: Cloud Simulator tests (free runner)
 
-# Runs the iPhone (SiloTests) or Apple TV (SiloTVTests) unit-test bundle in the
-# Simulator on a standard GitHub-hosted runner. Free for public repositories.
+# Focused, cloud-compatible Simulator tests on a standard GitHub-hosted runner.
+# Free for public repositories. Manual trigger only.
 #
-# Manual trigger only, read-only token, no secrets, standard runner label only.
-# Source is selected per run (ref + expected_sha). Inputs reach shell only
-# through env:. Tests run unsigned, so keychain-dependent tests may fail on a
-# runner; that is reported as-is. The .xcresult is a short-lived artifact.
+# Reliability policy (2026-11-18 audit):
+#   - iOS unit tests require an explicit only_testing selector. The full SiloTests
+#     suite is disabled here: on unsigned runners it hits mass keychain failures
+#     (-34018) and unrelated suites, then burns 60–90 minutes before cancel.
+#   - iOS UI Simulator tests (ios-ui) are suspended by default. Recent runs either
+#     fail to launch the app, miss UI selectors after a partial launch, or kill the
+#     hosted runner (see 44396026717). Keep UITest sources; re-enable only with
+#     allow_suspended=true for experimental reliability work.
+#   - Generic tvOS in this workflow is suspended by default. Destination-by-name
+#     fails when the runner has no usable tvOS Simulator runtime for xcodebuild
+#     (44358219443, 44378276081). Use the dedicated Kyro tvOS focus workflow on
+#     kyro/tvos for Apple TV Simulator coverage.
+#   - A green job means the intended tests executed and passed. Missing execution
+#     is a failure, not success.
+#   - No automatic reruns. No paid runners. No secrets. Unsigned tests only.
 
 on:
   workflow_dispatch:
     inputs:
       platform:
-        description: 'Platform to test'
+        description: 'Platform to test (ios-ui and tvos are suspended unless allow_suspended=true)'
         required: true
         type: choice
         default: ios
@@ -29,10 +40,15 @@ on:
         required: true
         type: string
       only_testing:
-        description: 'Optional -only-testing value, e.g. SiloTests/LiveTVEPGTests (empty = whole bundle)'
+        description: 'Required for ios. Example: SiloTests/SettingsBackupCoreTests. Empty full-suite runs are rejected.'
         required: false
         type: string
         default: ''
+      allow_suspended:
+        description: 'Allow suspended ios-ui or generic tvos runs (experimental only)'
+        required: true
+        type: boolean
+        default: false
       use_cache:
         description: 'Restore/save the SwiftPM cache'
         required: true
@@ -50,20 +66,48 @@ jobs:
   test:
     name: ${{ inputs.platform }} Simulator tests
     runs-on: xcode-27 # standard free arm64 runner; Xcode 27.1 default
-    timeout-minutes: 90
+    timeout-minutes: 45
     env:
       PLATFORM: ${{ inputs.platform }}
       REF: ${{ inputs.ref }}
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       ONLY: ${{ inputs.only_testing }}
+      ALLOW_SUSPENDED: ${{ inputs.allow_suspended }}
     steps:
-      - name: Validate inputs
+      - name: Validate inputs and reliability policy
         run: |
           set -euo pipefail
           [[ "$PLATFORM" =~ ^(ios|ios-ui|tvos)$ ]] || { echo "bad platform"; exit 1; }
           [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "ref has invalid characters"; exit 1; }
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{7,40}$ ]] || { echo "expected_sha must be 7-40 lowercase hex"; exit 1; }
           [ -z "$ONLY" ] || [[ "$ONLY" =~ ^[A-Za-z0-9_/]{1,200}$ ]] || { echo "only_testing has invalid characters"; exit 1; }
+
+          if [ "$PLATFORM" = ios ]; then
+            if [ -z "$ONLY" ]; then
+              echo "::error::Full SiloTests suite is disabled on cloud runners (keychain -34018 noise, long hangs, unrelated failures). Pass only_testing, e.g. SiloTests/SettingsBackupCoreTests."
+              exit 1
+            fi
+          fi
+
+          if [ "$PLATFORM" = ios-ui ] && [ "$ALLOW_SUSPENDED" != "true" ]; then
+            echo "::error::iOS UI Simulator tests are suspended until cloud reliability is demonstrated (app launch timeouts, selector misses, runner disconnects such as run 44396026717). Keep UITest sources for local/device work. To force an experimental run, set allow_suspended=true and pass only_testing=KyroIntroUITests/<Class>."
+            exit 1
+          fi
+
+          if [ "$PLATFORM" = tvos ] && [ "$ALLOW_SUSPENDED" != "true" ]; then
+            echo "::error::Generic tvOS in this workflow is suspended. xcodebuild cannot match Apple TV destinations on this runner image without the dedicated focus workflow setup (runs 44358219443, 44378276081). Use the Kyro tvOS focus simulator workflow on kyro/tvos, or set allow_suspended=true for an experimental attempt."
+            exit 1
+          fi
+
+          if [ "$PLATFORM" = ios-ui ] && [ -z "$ONLY" ]; then
+            echo "::error::Suspended ios-ui runs still require only_testing (e.g. KyroIntroUITests/KyroSettingsBackupUITests). Refusing an unbounded UI suite."
+            exit 1
+          fi
+
+          if [ "$PLATFORM" = tvos ] && [ -z "$ONLY" ]; then
+            echo "::error::Suspended tvos runs still require only_testing (e.g. SiloTVTests/KyroTVFocusTests). Refusing an unbounded tvOS suite."
+            exit 1
+          fi
 
       - uses: actions/checkout@v4
         with:
@@ -122,7 +166,9 @@ jobs:
           echo 'KyroSettingsBackupUITests.swift is included by the KyroIntroUITests target source root'
 
       - name: Run tests
+        id: run_tests
         working-directory: iosApp
+        shell: bash
         run: |
           set -euo pipefail
           ARGS=()
@@ -133,31 +179,115 @@ jobs:
           if [ "$PLATFORM" = ios-ui ] && [ -n "$ONLY" ] && [[ "$ONLY" != */* ]]; then
             ONLY="KyroIntroUITests/$ONLY"
           fi
-          [ -z "$ONLY" ] || ARGS+=("-only-testing:$ONLY")
-          echo "Running scheme=$SCHEME only_testing=${ONLY:-<all>}"
+          ARGS+=("-only-testing:$ONLY")
+          echo "Running scheme=$SCHEME only_testing=$ONLY"
+          set +e
+          # -jobs 2 matches the free runner budget and reduces OOM/disconnect risk.
           xcodebuild test \
             -project Silo.xcodeproj -scheme "$SCHEME" \
             -destination "platform=$SIMPLAT Simulator,name=$DEVICE" \
             -clonedSourcePackagesDirPath .spm-packages \
-            -parallel-testing-enabled NO -jobs 3 \
+            -parallel-testing-enabled NO -jobs 2 \
             -resultBundlePath "$RUNNER_TEMP/$PLATFORM.xcresult" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            ${ARGS[@]+"${ARGS[@]}"} \
+            "${ARGS[@]}" \
             2>&1 | tee "$RUNNER_TEMP/test.log" | awk '/Test Case|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED)|error:/{print; fflush()}'
+          xc_status=${PIPESTATUS[0]}
+          set -e
+          echo "XCODEBUILD_EXIT=$xc_status" >> "$GITHUB_ENV"
+          echo "xcodebuild_exit=$xc_status" >> "$GITHUB_OUTPUT"
+          exit "$xc_status"
 
-      - name: Summarize
-        if: always()
+      - name: Classify results
+        # Skip when Run tests never started (policy block or setup failure).
+        if: always() && steps.run_tests.outcome != 'skipped'
+        shell: bash
         run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/test.log"
+          ELAPSED=$(( $(date +%s) - STARTED ))
+          PASSED_LINE=""
+          FAILED_LINE=""
+          EXECUTED_LINE=""
+          INFRA_LINE=""
+          RESULT="not_executed"
+
+          if [ -f "$LOG" ]; then
+            EXECUTED_LINE=$(grep -E 'Executed [0-9]+ tests' "$LOG" | tail -1 || true)
+            if grep -q 'TEST SUCCEEDED' "$LOG"; then
+              PASSED_LINE=$(grep 'TEST SUCCEEDED' "$LOG" | tail -1)
+              RESULT="passed"
+            elif grep -q 'TEST FAILED' "$LOG"; then
+              FAILED_LINE=$(grep 'TEST FAILED' "$LOG" | tail -1)
+              RESULT="failed"
+            elif grep -q 'Unable to find a device matching the provided destination specifier' "$LOG"; then
+              INFRA_LINE="destination_unavailable"
+              RESULT="infrastructure"
+            elif grep -q "isn't a member of the specified test plan or scheme" "$LOG"; then
+              INFRA_LINE="invalid_only_testing_selector"
+              RESULT="infrastructure"
+            elif grep -q 'Timed out while launching application via Xcode' "$LOG"; then
+              INFRA_LINE="app_launch_timeout"
+              RESULT="infrastructure"
+            elif [ "${XCODEBUILD_EXIT:-1}" != "0" ]; then
+              INFRA_LINE="xcodebuild_exit_${XCODEBUILD_EXIT:-unknown}"
+              RESULT="infrastructure"
+            fi
+          else
+            INFRA_LINE="missing_test_log"
+            RESULT="not_executed"
+          fi
+
+          if [ "$RESULT" = "passed" ] && [ -z "$EXECUTED_LINE" ]; then
+            RESULT="not_executed"
+            INFRA_LINE="success_marker_without_execution_count"
+          fi
+
           {
             echo "### $PLATFORM Simulator tests"
-            echo "commit: $SOURCE_SHA  ref: $REF"
-            echo "elapsed_seconds: $(( $(date +%s) - STARTED ))"
-            echo '```'; grep -E "Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED)" "$RUNNER_TEMP/test.log" | tail -4 || true; echo '```'
+            echo "- commit: \`$SOURCE_SHA\`"
+            echo "- ref: \`$REF\`"
+            echo "- only_testing: \`$ONLY\`"
+            echo "- elapsed_seconds: $ELAPSED"
+            echo "- classification: **$RESULT**"
+            echo "- tests passed marker: ${PASSED_LINE:-none}"
+            echo "- tests failed marker: ${FAILED_LINE:-none}"
+            echo "- executed summary: ${EXECUTED_LINE:-none}"
+            echo "- not executed / infra detail: ${INFRA_LINE:-none}"
+            echo "- xcodebuild_exit: ${XCODEBUILD_EXIT:-unknown}"
+            echo
+            echo "A green workflow requires classification=passed with an Executed summary."
           } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "CLASSIFICATION=$RESULT" >> "$GITHUB_ENV"
+          printf '%s\n' "$RESULT" > "$RUNNER_TEMP/classification.txt"
+
+          case "$RESULT" in
+            passed)
+              echo "Intended tests executed and passed."
+              ;;
+            failed)
+              echo "::error::Tests executed and failed. See Executed summary above."
+              exit 1
+              ;;
+            infrastructure)
+              echo "::error::Infrastructure failure ($INFRA_LINE). Tests did not produce a reliable pass."
+              exit 1
+              ;;
+            *)
+              echo "::error::Tests were not executed (or execution could not be proven). Refusing to report success."
+              exit 1
+              ;;
+          esac
+
+      - name: Package logs and xcresult
+        if: always()
+        run: |
+          set -euo pipefail
           cp "$RUNNER_TEMP/test.log" "$GITHUB_WORKSPACE/${PLATFORM}-test.log" 2>/dev/null || true
+          cp "$RUNNER_TEMP/classification.txt" "$GITHUB_WORKSPACE/${PLATFORM}-classification.txt" 2>/dev/null || true
           if [ -d "$RUNNER_TEMP/$PLATFORM.xcresult" ]; then
             (cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/$PLATFORM.xcresult.zip" "$PLATFORM.xcresult")
-            # Screenshots the tests attached, as plain image files for review without Xcode.
             mkdir -p "$GITHUB_WORKSPACE/attachments"
             xcrun xcresulttool export attachments --path "$RUNNER_TEMP/$PLATFORM.xcresult" \
               --output-path "$GITHUB_WORKSPACE/attachments" || echo "attachment export failed"
@@ -183,6 +313,8 @@ jobs:
         if: always()
         with:
           name: ${{ inputs.platform }}-test-log
-          path: ${{ inputs.platform }}-test.log
+          path: |
+            ${{ inputs.platform }}-test.log
+            ${{ inputs.platform }}-classification.txt
           retention-days: 7
           if-no-files-found: ignore
