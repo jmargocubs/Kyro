@@ -109,12 +109,32 @@ jobs:
         working-directory: iosApp
         run: xcodegen generate --spec project.yml
 
+      - name: Validate generated UI test registration
+        if: inputs.platform == 'ios-ui'
+        working-directory: iosApp
+        run: |
+          set -euo pipefail
+          TARGETS=$(xcodebuild -list -project Silo.xcodeproj)
+          printf '%s\n' "$TARGETS"
+          grep -q 'KyroIntroUITests' <<<"$TARGETS"
+          grep -q '^  KyroIntroUITests:' project.yml
+          test -f UITests/KyroSettingsBackupUITests.swift
+          echo 'KyroSettingsBackupUITests.swift is included by the KyroIntroUITests target source root'
+
       - name: Run tests
         working-directory: iosApp
         run: |
-          set -o pipefail
+          set -euo pipefail
           ARGS=()
+          # All iOS UI cases intentionally share the KyroIntroUITests bundle.
+          # xcodebuild's selector is target[/class[/method]], so a bare class
+          # name is not a target and produces the misleading "isn't a member"
+          # error seen in Build 92 run 44327511809.
+          if [ "$PLATFORM" = ios-ui ] && [ -n "$ONLY" ] && [[ "$ONLY" != */* ]]; then
+            ONLY="KyroIntroUITests/$ONLY"
+          fi
           [ -z "$ONLY" ] || ARGS+=("-only-testing:$ONLY")
+          echo "Running scheme=$SCHEME only_testing=${ONLY:-<all>}"
           xcodebuild test \
             -project Silo.xcodeproj -scheme "$SCHEME" \
             -destination "platform=$SIMPLAT Simulator,name=$DEVICE" \
@@ -123,7 +143,7 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/$PLATFORM.xcresult" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             ${ARGS[@]+"${ARGS[@]}"} \
-            2>&1 | tee "$RUNNER_TEMP/test.log" | tail -n 80
+            2>&1 | tee "$RUNNER_TEMP/test.log" | awk '/Test Case|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED)|error:/{print; fflush()}'
 
       - name: Summarize
         if: always()
@@ -134,6 +154,7 @@ jobs:
             echo "elapsed_seconds: $(( $(date +%s) - STARTED ))"
             echo '```'; grep -E "Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED)" "$RUNNER_TEMP/test.log" | tail -4 || true; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          cp "$RUNNER_TEMP/test.log" "$GITHUB_WORKSPACE/${PLATFORM}-test.log" 2>/dev/null || true
           if [ -d "$RUNNER_TEMP/$PLATFORM.xcresult" ]; then
             (cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/$PLATFORM.xcresult.zip" "$PLATFORM.xcresult")
             # Screenshots the tests attached, as plain image files for review without Xcode.
@@ -155,5 +176,13 @@ jobs:
         with:
           name: ${{ inputs.platform }}-screenshots
           path: attachments
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ inputs.platform }}-test-log
+          path: ${{ inputs.platform }}-test.log
           retention-days: 7
           if-no-files-found: ignore
