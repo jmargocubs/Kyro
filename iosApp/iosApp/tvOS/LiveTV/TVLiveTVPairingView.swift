@@ -31,6 +31,11 @@ struct TVLiveTVPairingView: View {
         }
         .task { receiver.start() }
         .onDisappear { receiver.stop() }
+        .onChange(of: service.importProgress?.stage) {
+            if service.importProgress?.stage == .ready {
+                Task { try? await Task.sleep(for: .seconds(1)); dismiss() }
+            }
+        }
     }
 
     @ViewBuilder
@@ -41,8 +46,13 @@ struct TVLiveTVPairingView: View {
         case .saving:
             message(title: "Saving provider…", detail: nil, symbol: "lock.shield", showsDone: false)
         case .completed(let name):
-            message(title: "Added \(name)", detail: "Kyro is loading your channels and guide.",
-                    symbol: "checkmark.circle.fill", showsDone: true)
+            if let progress = service.importProgress, progress.providerName == name {
+                TVLiveTVImportView(progress: progress, onCancel: { service.cancelImport() },
+                    onRetry: { Task { await service.refresh(providerID: progress.providerID) } })
+            } else {
+                message(title: "Added \(name)", detail: "Preparing provider import…",
+                        symbol: "checkmark.circle.fill", showsDone: true)
+            }
         case .failed(let failure):
             failureView(failure)
         case .unavailable:

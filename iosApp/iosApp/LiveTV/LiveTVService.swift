@@ -9,6 +9,19 @@ struct LiveTVChannelKeyMemo {
     let key: String?
 }
 
+enum LiveTVImportStage: Equatable {
+    case connecting, downloading, importing, categories, guide, saving, ready, failed, cancelled
+}
+
+struct LiveTVImportProgress: Equatable {
+    let providerID: UUID
+    let providerName: String
+    var stage: LiveTVImportStage = .connecting
+    var count = LiveTVImportCount(processed: 0, total: nil, accepted: 0)
+    var message: String?
+    var isTerminal: Bool { stage == .ready || stage == .failed || stage == .cancelled }
+}
+
 @MainActor
 @Observable
 final class LiveTVService {
@@ -17,6 +30,7 @@ final class LiveTVService {
     private(set) var providers: [LiveTVProvider] = []
     private(set) var selectedProviderID: UUID?
     private(set) var isLoading = false
+    private(set) var importProgress: LiveTVImportProgress?
     private(set) var errorMessage: String?
     /// Soft notice for a successful import that hit the channel cap. Distinct from hard `errorMessage`
     /// failures such as an oversized playlist download.
@@ -352,6 +366,7 @@ final class LiveTVService {
             playlistRefresh = nil
             isLoading = false
         }
+        if importProgress?.providerID == id { importProgress = nil }
         cacheRestores.removeValue(forKey: id)?.cancel()
         liveCatalogs.remove(id)
         automaticRefreshAttempts[id] = nil
@@ -399,8 +414,23 @@ final class LiveTVService {
         await refresh(providerID: selectedProviderID)
     }
 
+    func cancelImport() {
+        guard let active = playlistRefresh else { return }
+        active.task.cancel()
+        playlistRefresh = nil
+        isLoading = false
+        if importProgress?.providerID == active.providerID {
+            importProgress?.stage = .cancelled
+            importProgress?.message = "Setup was cancelled. Your previous channels are unchanged."
+        }
+    }
+
+    func clearFinishedImport() {
+        if importProgress?.isTerminal == true { importProgress = nil }
+    }
+
     func refresh(providerID: UUID) async {
-        guard playlistRefresh == nil else { return }
+        guard playlistRefresh == nil, importProgress?.isTerminal != false else { return }
         guard providers.contains(where: { $0.id == providerID }),
               let serialized = secretStore.read(account: Self.secretAccount(providerID)),
               let data = serialized.data(using: .utf8),
@@ -413,9 +443,11 @@ final class LiveTVService {
         }
 
         let token = UUID()
+        importProgress = LiveTVImportProgress(providerID: providerID,
+            providerName: providers.first(where: { $0.id == providerID })?.name ?? "Provider")
         let work = Task { [weak self] () throws -> LiveTVCachedCatalog in
             guard let self else { throw CancellationError() }
-            return try await self.downloadCatalog(source, providerID: providerID)
+            return try await self.downloadCatalog(source, providerID: providerID, token: token)
         }
         playlistRefresh = (providerID, token, work)
         isLoading = true
@@ -438,13 +470,19 @@ final class LiveTVService {
             loaded = catalog
         case .failure(let error as LiveTVError):
             if selectedProviderID == providerID { errorMessage = error.localizedDescription }
+            importProgress?.stage = .failed
+            importProgress?.message = error.localizedDescription
             return
         case .failure:
             if selectedProviderID == providerID {
                 errorMessage = "The playlist could not be loaded. Check the provider settings and try again."
             }
+            importProgress?.stage = .failed
+            importProgress?.message = "The provider could not be loaded. Check the connection and try again."
             return
         }
+        importProgress?.count = loaded.importCount ?? LiveTVImportCount(processed: loaded.channels.count,
+                                                                         total: nil, accepted: loaded.channels.count)
         let previousChannels = channelCatalogs[providerID] ?? []
         let previousFilter = EPGChannelFilter(guideIDs: previousChannels.map(\.guideID), names: previousChannels.map(\.name))
         let updatedFilter = EPGChannelFilter(guideIDs: loaded.channels.map(\.guideID), names: loaded.channels.map(\.name))
@@ -455,12 +493,6 @@ final class LiveTVService {
         channelCatalogRevision &+= 1
         if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
         liveCatalogs.insert(providerID)
-        if let providerIndex = providers.firstIndex(where: { $0.id == providerID }) {
-            providers[providerIndex].channelCount = loaded.channels.count
-            providers[providerIndex].lastRefreshed = .now
-            providers[providerIndex].catalogWasTruncated = loaded.hitChannelLimit
-            persistProviders()
-        }
         if selectedProviderID == providerID {
             catalogNotice = loaded.hitChannelLimit
                 ? LiveTVCatalogNotice.channelLimitReached(limit: Self.maximumChannels)
@@ -475,30 +507,77 @@ final class LiveTVService {
             return
         }
         // Channels are usable now; the guide fills in behind them.
+        if Self.epgFeedSource(source) != nil { importProgress?.stage = .guide }
         await refreshGuide(providerID: providerID, source: source, force: guideFilterChanged)
+        guard providers.contains(where: { $0.id == providerID }), importProgress?.providerID == providerID else { return }
+        importProgress?.stage = .saving
+        if let providerIndex = providers.firstIndex(where: { $0.id == providerID }) {
+            providers[providerIndex].channelCount = loaded.channels.count
+            providers[providerIndex].lastRefreshed = .now
+            providers[providerIndex].catalogWasTruncated = loaded.hitChannelLimit
+            persistProviders()
+        }
+        importProgress?.stage = .ready
+        let channelMessage = loaded.hitChannelLimit
+            ? "\(loaded.channels.count.formatted()) channels imported. The channel limit was reached."
+            : "\(loaded.channels.count.formatted()) channels imported successfully."
+        importProgress?.message = selectedProviderID == providerID && guideMessage == "Guide data could not be refreshed."
+            ? "\(channelMessage) TV Guide could not be refreshed."
+            : channelMessage
     }
 
-    private func downloadCatalog(_ source: LiveTVSourceConfiguration, providerID: UUID) async throws -> LiveTVCachedCatalog {
+    private func downloadCatalog(_ source: LiveTVSourceConfiguration, providerID: UUID, token: UUID) async throws -> LiveTVCachedCatalog {
         let loadedChannels: [LiveTVChannel]
         let hitChannelLimit: Bool
+        let importCount: LiveTVImportCount
         if source.kind == .m3u, let playlistURL = source.playlistURL {
+            updateImportStage(.downloading, token: token)
             let playlistData = try await fetch(playlistURL, maximumBytes: Self.maximumPlaylistBytes)
+            try Task.checkCancellation()
+            updateImportStage(.importing, token: token)
             let channelLimit = Self.maximumChannels
-            let parsed = try await Task.detached(priority: .utility) {
-                try LiveTVM3UParser.parseResult(data: playlistData, providerID: providerID, limit: channelLimit)
-            }.value
+            let parseTask = Task.detached(priority: .utility) { [self] in
+                try LiveTVM3UParser.parseResult(data: playlistData, providerID: providerID, limit: channelLimit) { count in
+                    Task { @MainActor in self.publishImportCount(count, token: token) }
+                }
+            }
+            let parsed = try await withTaskCancellationHandler {
+                try await parseTask.value
+            } onCancel: {
+                parseTask.cancel()
+            }
             loadedChannels = parsed.channels
             hitChannelLimit = parsed.hitChannelLimit
+            importCount = parsed.count
         } else {
-            let xtream = try await loadXtream(source, providerID: providerID)
+            let xtream = try await loadXtream(source, providerID: providerID, token: token)
             loadedChannels = xtream.channels
             hitChannelLimit = xtream.hitChannelLimit
+            importCount = xtream.count
         }
         guard !loadedChannels.isEmpty else { throw LiveTVError.noChannels }
-        let categories = await Task.detached(priority: .utility) {
+        updateImportStage(.categories, token: token)
+        let categoryTask = Task.detached(priority: .utility) {
             LiveTVChannel.orderedCategories(of: loadedChannels)
-        }.value
-        return LiveTVCachedCatalog(channels: loadedChannels, categories: categories, hitChannelLimit: hitChannelLimit)
+        }
+        let categories = await withTaskCancellationHandler {
+            await categoryTask.value
+        } onCancel: {
+            categoryTask.cancel()
+        }
+        try Task.checkCancellation()
+        return LiveTVCachedCatalog(channels: loadedChannels, categories: categories,
+                                   hitChannelLimit: hitChannelLimit, importCount: importCount)
+    }
+
+    private func updateImportStage(_ stage: LiveTVImportStage, token: UUID) {
+        guard playlistRefresh?.token == token else { return }
+        importProgress?.stage = stage
+    }
+
+    private func publishImportCount(_ count: LiveTVImportCount, token: UUID) {
+        guard playlistRefresh?.token == token, importProgress?.stage == .importing else { return }
+        importProgress?.count = count
     }
 
     /// Shows the cached guide immediately, then refreshes it when the policy says it is due.
@@ -571,18 +650,16 @@ final class LiveTVService {
         return categoryCatalogs[selectedProviderID] ?? []
     }
 
-    private func loadXtream(_ source: LiveTVSourceConfiguration, providerID: UUID) async throws -> (channels: [LiveTVChannel], hitChannelLimit: Bool) {
+    private func loadXtream(_ source: LiveTVSourceConfiguration, providerID: UUID, token: UUID) async throws -> (channels: [LiveTVChannel], hitChannelLimit: Bool, count: LiveTVImportCount) {
         guard let server = source.serverURL, let username = source.username, let password = source.password else {
             throw LiveTVError.invalidConfiguration
         }
         let authURL = try XtreamURLBuilder.apiURL(server: server, username: username, password: password)
         let authData = try await fetch(authURL, maximumBytes: 1024 * 1024)
+        try Task.checkCancellation()
         let outputFormats = try XtreamResponseParser.account(from: authData)
-        if let providerIndex = providers.firstIndex(where: { $0.id == providerID }) {
-            providers[providerIndex].allowedOutputFormats = outputFormats
-            persistProviders()
-        }
 
+        updateImportStage(.downloading, token: token)
         var categoryNames: [String: String] = [:]
         if let categoryURL = try? XtreamURLBuilder.apiURL(server: server, username: username, password: password,
                                                            action: "get_live_categories"),
@@ -598,22 +675,50 @@ final class LiveTVService {
 
         let streamsURL = try XtreamURLBuilder.apiURL(server: server, username: username, password: password, action: "get_live_streams")
         let streamsData = try await fetch(streamsURL, maximumBytes: Self.maximumPlaylistBytes)
+        try Task.checkCancellation()
+        updateImportStage(.importing, token: token)
         let maxChannels = Self.maximumChannels
-        let parsed = try await Task.detached(priority: .utility) {
+        let parseTask = Task.detached(priority: .utility) { [self] in
             let records = try XtreamResponseParser.streams(from: streamsData)
+            let total = records.count
+            Task { @MainActor in
+                self.publishImportCount(LiveTVImportCount(processed: 0, total: total, accepted: 0), token: token)
+            }
             var channels: [LiveTVChannel] = []
             channels.reserveCapacity(min(records.count, maxChannels))
             var seen = Set<Int>()
             var accepted = 0
+            var processed = 0
+            var malformed = 0
+            var duplicate = 0
+            var limited = 0
             var hitChannelLimit = false
-            for record in records {
+            for (index, record) in records.enumerated() {
+                if index % 256 == 0 { try Task.checkCancellation() }
                 if accepted >= maxChannels {
                     // More stream records remain after the cap; do not invent a total count.
                     hitChannelLimit = true
+                    processed += 1
+                    limited += 1
                     break
                 }
-                guard let streamID = record.streamID, streamID > 0, seen.insert(streamID).inserted,
-                      let name = record.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { continue }
+                var outcome = 0 // 0 accepted, 1 malformed, 2 duplicate
+                defer {
+                    processed += 1
+                    if outcome == 1 { malformed += 1 }
+                    if outcome == 2 { duplicate += 1 }
+                    if processed % 256 == 0 || processed == total {
+                        let count = LiveTVImportCount(processed: processed, total: total, accepted: accepted,
+                                                      malformed: malformed, duplicate: duplicate, limited: limited)
+                        Task { @MainActor in self.publishImportCount(count, token: token) }
+                    }
+                }
+                guard let streamID = record.streamID, streamID > 0,
+                      let name = record.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+                    outcome = 1
+                    continue
+                }
+                guard seen.insert(streamID).inserted else { outcome = 2; continue }
                 let streamURL = try XtreamURLBuilder.streamURL(server: server, username: username, password: password,
                     streamID: streamID, extension: record.containerExtension, allowedOutputFormats: outputFormats)
                 let digest = LiveTVM3UParser.hex(SHA256.hash(data: Data("\(providerID.uuidString)|xtream|\(streamID)".utf8)))
@@ -623,10 +728,22 @@ final class LiveTVService {
                     category: record.categoryID.flatMap { categoryNames[$0] } ?? "Other", streamID: streamID))
                 accepted += 1
             }
-            return (channels: channels, hitChannelLimit: hitChannelLimit)
-        }.value
+            let final = LiveTVImportCount(processed: processed, total: total, accepted: accepted,
+                                          malformed: malformed, duplicate: duplicate, limited: limited)
+            Task { @MainActor in self.publishImportCount(final, token: token) }
+            return (channels: channels, hitChannelLimit: hitChannelLimit, count: final)
+        }
+        let parsed = try await withTaskCancellationHandler {
+            try await parseTask.value
+        } onCancel: {
+            parseTask.cancel()
+        }
         guard !parsed.channels.isEmpty else { throw LiveTVError.noChannels }
-        return (channels: parsed.channels, hitChannelLimit: parsed.hitChannelLimit)
+        if let providerIndex = providers.firstIndex(where: { $0.id == providerID }) {
+            providers[providerIndex].allowedOutputFormats = outputFormats
+            persistProviders()
+        }
+        return parsed
     }
 
     func refreshShortEPG(for channel: LiveTVChannel) async {

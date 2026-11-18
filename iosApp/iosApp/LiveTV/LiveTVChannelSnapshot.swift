@@ -69,11 +69,14 @@ struct LiveTVCachedCatalog: Sendable {
     /// True when import stopped at the channel cap with more playlist/stream entries remaining.
     /// Offline snapshot restores leave this false; they never invent a remote total.
     let hitChannelLimit: Bool
+    let importCount: LiveTVImportCount?
 
-    init(channels: [LiveTVChannel], categories: [String], hitChannelLimit: Bool = false) {
+    init(channels: [LiveTVChannel], categories: [String], hitChannelLimit: Bool = false,
+         importCount: LiveTVImportCount? = nil) {
         self.channels = channels
         self.categories = categories
         self.hitChannelLimit = hitChannelLimit
+        self.importCount = importCount
     }
 }
 

@@ -74,6 +74,14 @@ jobs:
             -jobs 2 -parallel-testing-enabled NO -collect-test-diagnostics never \
             -only-testing:SiloTVTests/KyroTVFocusTests \
             -only-testing:SiloTVTests/KyroTVLiveTVTests \
+            -only-testing:SiloTVTests/LiveTVImportProgressTests \
+            -only-testing:SiloTVTests/KyroTVPairingTransferTests/testPairedProviderUsesTheSameMeasuredImportProgress \
+            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testImportProgressCompletesOnlyAfterGuideAndCountsAcceptedChannels \
+            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testNetworkFailureAndRetryPreservePreviousChannels \
+            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testXtreamImportCountsDecodedStreamRecords \
+            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testCancellationStopsHeldDownloadAndAllowsRetry \
+            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testOversizedDownloadFailsWithoutReplacingWorkingProvider \
+            -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test40kImportKeepsEveryChannelAndStopsAtTheCap \
             -only-testing:SiloTVTests/TVMenuEntryFocusStateTests \
             -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test40kSearchAndEventMatching \
             -resultBundlePath "$RUNNER_TEMP/tvos-focus.xcresult" \

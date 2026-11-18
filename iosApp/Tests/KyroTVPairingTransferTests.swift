@@ -1,4 +1,5 @@
 #if os(tvOS)
+import Foundation
 import XCTest
 @testable import Silo
 
@@ -59,6 +60,26 @@ final class KyroTVPairingTransferTests: XCTestCase {
         XCTAssertEqual(service.providers.first?.kind, .m3u)
     }
 
+    func testPairedProviderUsesTheSameMeasuredImportProgress() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PairingImportPlaylistProtocol.self]
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PairingImport-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = LiveTVService(defaults: defaults, secretStore: secrets,
+                                    session: URLSession(configuration: configuration),
+                                    channelSnapshotStore: LiveTVChannelSnapshotStore(directory: directory))
+        let id = try service.savePairedProvider(LiveTVPairingPayload(
+            name: "Phone Provider", kind: .m3u,
+            playlistURL: "https://pairing-progress.test/list.m3u", xmltvURL: nil,
+            serverURL: nil, username: nil, password: nil))
+        await service.refresh(providerID: id)
+        XCTAssertEqual(service.importProgress?.stage, .ready)
+        XCTAssertEqual(service.importProgress?.count.total, 2)
+        XCTAssertEqual(service.importProgress?.count.processed, 2)
+        XCTAssertEqual(service.importProgress?.count.accepted, 2)
+        XCTAssertEqual(service.channels.count, 2)
+    }
+
     func testInvalidProviderThrowsAndSavesNothing() {
         let service = makeService()
         let bad = LiveTVPairingPayload(name: "Bad", kind: .m3u, playlistURL: "ftp://example.com/list.m3u", xmltvURL: nil,
@@ -88,5 +109,24 @@ final class KyroTVPairingTransferTests: XCTestCase {
         XCTAssertEqual(TVLiveTVPairingView.clock(0), "0:00")
         XCTAssertNotNil(TVLiveTVPairingView.qrImage(for: "kyro://livetv-pair?v=1"))
     }
+}
+
+private final class PairingImportPlaylistProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "pairing-progress.test" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil) else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("""
+        #EXTM3U
+        #EXTINF:-1,News
+        https://media.example.test/news.ts
+        #EXTINF:-1,Sports
+        https://media.example.test/sports.ts
+        """.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 #endif

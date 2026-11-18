@@ -334,6 +334,87 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
 
     // MARK: - Service
 
+    func testImportProgressCompletesOnlyAfterGuideAndCountsAcceptedChannels() async throws {
+        let gate = GuideLoadGate()
+        let service = makeService(loader: ControlledGuideLoader(gate: gate))
+        let providerID = try addProvider(to: service, guide: true)
+        let refresh = Task { await service.refresh(providerID: providerID) }
+        await gate.waitUntilStarted()
+        XCTAssertEqual(service.importProgress?.stage, .guide)
+        XCTAssertEqual(service.importProgress?.count.accepted, 2)
+        XCTAssertEqual(service.importProgress?.count.processed, 2)
+        XCTAssertEqual(service.importProgress?.count.total, 2)
+        XCTAssertFalse(service.importProgress?.isTerminal ?? true)
+        await gate.release(guideXML(title: "Ready Guide"))
+        await refresh.value
+        XCTAssertEqual(service.importProgress?.stage, .ready)
+        XCTAssertEqual(service.providers.first?.channelCount, 2)
+    }
+
+    func testNetworkFailureAndRetryPreservePreviousChannels() async throws {
+        let service = makeService()
+        let providerID = try addProvider(to: service)
+        await service.refresh(providerID: providerID)
+        XCTAssertEqual(service.channels.count, 2)
+        PlaylistURLProtocol.reset(body: playlist, status: 503)
+        await service.refresh(providerID: providerID)
+        XCTAssertEqual(service.importProgress?.stage, .failed)
+        XCTAssertEqual(service.channels.count, 2)
+        PlaylistURLProtocol.reset(body: playlist)
+        await service.refresh(providerID: providerID)
+        XCTAssertEqual(service.importProgress?.stage, .ready)
+        XCTAssertEqual(service.channels.count, 2)
+    }
+
+    func testXtreamImportCountsDecodedStreamRecords() async throws {
+        let service = makeService()
+        let providerID = try service.saveXtreamConfiguration(name: "Panel", serverURL: "http://panel.test:8080",
+                                                             username: "alice", password: "secret")
+        PanelURLProtocol.reset()
+        await service.refresh(providerID: providerID)
+        XCTAssertEqual(service.importProgress?.stage, .ready)
+        XCTAssertEqual(service.importProgress?.count.processed, 2)
+        XCTAssertEqual(service.importProgress?.count.total, 2)
+        XCTAssertEqual(service.importProgress?.count.accepted, 2)
+        XCTAssertEqual(service.channels.count, 2)
+    }
+
+    func testCancellationStopsHeldDownloadAndAllowsRetry() async throws {
+        let service = makeService()
+        let providerID = try addProvider(to: service)
+        await service.refresh(providerID: providerID)
+        let previousChannels = service.channels.map(\.id)
+        let previousRefresh = service.providers.first?.lastRefreshed
+        PlaylistURLProtocol.reset(body: playlist, held: true)
+        let refresh = Task { await service.refresh(providerID: providerID) }
+        try await waitUntil { PlaylistURLProtocol.requests == 1 }
+        XCTAssertEqual(service.importProgress?.stage, .downloading)
+        service.cancelImport()
+        PlaylistURLProtocol.release()
+        await refresh.value
+        XCTAssertEqual(service.importProgress?.stage, .cancelled)
+        XCTAssertEqual(service.channels.map(\.id), previousChannels)
+        XCTAssertEqual(service.providers.first?.lastRefreshed, previousRefresh)
+        PlaylistURLProtocol.reset(body: playlist)
+        await service.refresh(providerID: providerID)
+        XCTAssertEqual(service.importProgress?.stage, .ready)
+        XCTAssertEqual(service.channels.count, 2)
+    }
+
+    func testOversizedDownloadFailsWithoutReplacingWorkingProvider() async throws {
+        let service = makeService()
+        let providerID = try addProvider(to: service)
+        await service.refresh(providerID: providerID)
+        let previousChannels = service.channels.map(\.id)
+        let previousRefresh = service.providers.first?.lastRefreshed
+        PlaylistURLProtocol.reset(data: Data(repeating: 65, count: LiveTVCatalogLimits.maximumPlaylistBytes + 1))
+        await service.refresh(providerID: providerID)
+        XCTAssertEqual(service.importProgress?.stage, .failed)
+        XCTAssertEqual(service.importProgress?.message, LiveTVError.responseTooLarge.localizedDescription)
+        XCTAssertEqual(service.channels.map(\.id), previousChannels)
+        XCTAssertEqual(service.providers.first?.lastRefreshed, previousRefresh)
+    }
+
     func testOfflineStartupShowsCachedChannelsAndGuideAndKeepsThemWhenRefreshFails() async throws {
         let providerID = try addProvider(to: makeService(), guide: true)
         try await seedCache(providerID: providerID)
@@ -1077,8 +1158,12 @@ private final class PlaylistURLProtocol: URLProtocol {
     static var requests: Int { lock.withLock { requestCount } }
 
     static func reset(body: String, status: Int = 200, held: Bool = false) {
+        reset(data: Data(body.utf8), status: status, held: held)
+    }
+
+    static func reset(data: Data, status: Int = 200, held: Bool = false) {
         lock.withLock {
-            self.body = Data(body.utf8)
+            self.body = data
             self.status = status
             isHeld = held
             requestCount = 0

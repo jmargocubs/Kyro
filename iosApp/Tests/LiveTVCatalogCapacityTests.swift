@@ -63,6 +63,11 @@ final class LiveTVCatalogCapacityTests: XCTestCase {
         let over = try LiveTVM3UParser.parseResult(data: KyroSyntheticCatalog.playlist(count: 40_001), providerID: providerID)
         XCTAssertEqual(over.channels.count, LiveTVCatalogLimits.maximumChannels)
         XCTAssertTrue(over.hitChannelLimit)
+        XCTAssertEqual(over.count.accepted, 40_000)
+        XCTAssertEqual(over.count.processed, 40_001)
+        XCTAssertEqual(over.count.total, 40_001)
+        XCTAssertEqual(over.count.limited, 1)
+        XCTAssertEqual(over.count.rejected, 1)
     }
 
     func test40kCategoryMembership() throws {

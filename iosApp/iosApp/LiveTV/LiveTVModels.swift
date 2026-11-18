@@ -395,7 +395,7 @@ enum LiveTVError: LocalizedError, Equatable {
         switch self {
         case .invalidConfiguration: "Enter a valid HTTP or HTTPS playlist URL."
         case .keychainUnavailable: "The provider configuration could not be saved securely."
-        case .responseTooLarge: "The playlist or guide is larger than the supported import limit."
+        case .responseTooLarge: "The download exceeds its size limit. Live TV playlists are limited to 40 MiB."
         case .providerRejected: "The provider could not be reached. Check the playlist address and try again."
         case .noChannels: "No valid channels were found in this playlist."
         case .invalidPlaylist: "The playlist format could not be read."
@@ -1289,6 +1289,34 @@ struct LiveTVM3UParseResult: Sendable, Equatable {
     let channels: [LiveTVChannel]
     /// True when the parser reached `limit` and at least one later EXTINF+URL pair was still present.
     let hitChannelLimit: Bool
+    let count: LiveTVImportCount
+}
+
+/// Counts source records inspected, not just accepted channels. Records not imported may be
+/// malformed, duplicates, unsupported, or over the channel limit; accepted matches the array.
+struct LiveTVImportCount: Sendable, Equatable {
+    let processed: Int
+    let total: Int?
+    let accepted: Int
+    let malformed: Int
+    let duplicate: Int
+    let unsupported: Int
+    let limited: Int
+    init(processed: Int, total: Int?, accepted: Int, malformed: Int = 0,
+         duplicate: Int = 0, unsupported: Int = 0, limited: Int = 0) {
+        self.processed = processed
+        self.total = total
+        self.accepted = accepted
+        self.malformed = malformed
+        self.duplicate = duplicate
+        self.unsupported = unsupported
+        self.limited = limited
+    }
+    var rejected: Int { max(0, processed - accepted) }
+    var fraction: Double? {
+        guard let total, total > 0 else { return nil }
+        return Double(min(processed, total)) / Double(total)
+    }
 }
 
 /// Live TV catalog capacity, shared by import, the channel snapshot and Sports Hub matching.
@@ -1301,11 +1329,13 @@ enum LiveTVCatalogLimits {
 }
 
 enum LiveTVM3UParser {
+    private enum RecordOutcome { case accepted, malformed, duplicate, unsupported, limited }
     static func parse(data: Data, providerID: UUID, limit: Int = LiveTVCatalogLimits.maximumChannels) throws -> [LiveTVChannel] {
         try parseResult(data: data, providerID: providerID, limit: limit).channels
     }
 
-    static func parseResult(data: Data, providerID: UUID, limit: Int = LiveTVCatalogLimits.maximumChannels) throws -> LiveTVM3UParseResult {
+    static func parseResult(data: Data, providerID: UUID, limit: Int = LiveTVCatalogLimits.maximumChannels,
+                            progress: (@Sendable (LiveTVImportCount) -> Void)? = nil) throws -> LiveTVM3UParseResult {
         guard limit > 0, let text = String(data: data, encoding: .utf8)
                 ?? String(data: data, encoding: .isoLatin1) else {
             throw LiveTVError.invalidPlaylist
@@ -1317,11 +1347,46 @@ enum LiveTVM3UParser {
         var pending: (name: String, attributes: [String: String])?
         var hitChannelLimit = false
         let lines = text.split(whereSeparator: \.isNewline)
+        // The response is already buffered for parsing. This local pass does not re-download it.
+        // EXTINF is the source-record unit, including malformed and duplicate entries.
+        let total = lines.reduce(into: 0) { count, line in
+            if line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTINF:") { count += 1 }
+        }
+        var processed = 0
+        var hasPendingRecord = false
+        var outcome: RecordOutcome = .malformed
+        var malformed = 0
+        var duplicate = 0
+        var unsupported = 0
+        var limited = 0
+        func publish() {
+            if processed % 256 == 0 || processed == total {
+                progress?(LiveTVImportCount(processed: processed, total: total, accepted: channels.count,
+                                            malformed: malformed, duplicate: duplicate,
+                                            unsupported: unsupported, limited: limited))
+            }
+        }
+        func finishRecord() {
+            processed += 1
+            switch outcome {
+            case .accepted: break
+            case .malformed: malformed += 1
+            case .duplicate: duplicate += 1
+            case .unsupported: unsupported += 1
+            case .limited: limited += 1
+            }
+            publish()
+        }
+        progress?(LiveTVImportCount(processed: 0, total: total, accepted: 0))
         var index = lines.startIndex
         while index < lines.endIndex {
+            if processed % 256 == 0 { try Task.checkCancellation() }
             let line = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
             index = lines.index(after: index)
             if line.hasPrefix("#EXTINF:") {
+                if hasPendingRecord { finishRecord() }
+                hasPendingRecord = true
+                outcome = .malformed
                 let attributes = parseAttributes(line)
                 let name = displayName(in: line)?.trimmingCharacters(in: .whitespacesAndNewlines)
                 pending = name.flatMap { $0.isEmpty ? nil : ($0, attributes) }
@@ -1329,11 +1394,12 @@ enum LiveTVM3UParser {
             }
             guard !line.isEmpty, !line.hasPrefix("#"), let item = pending else { continue }
             pending = nil
-            guard let url = webURL(line) else { continue }
+            guard let url = webURL(line) else { outcome = .unsupported; continue }
 
             if channels.count >= limit {
                 // A later valid EXTINF+URL pair proves the playlist continues past the cap.
                 hitChannelLimit = true
+                outcome = .limited
                 break
             }
 
@@ -1343,7 +1409,10 @@ enum LiveTVM3UParser {
             ).lowercased()
             let stableSource = guideID?.lowercased() ?? foldedName
             // The same guide ID and name twice is one channel listed twice.
-            guard seenEntries.insert("\(stableSource)\u{1F}\(foldedName)").inserted else { continue }
+            guard seenEntries.insert("\(stableSource)\u{1F}\(foldedName)").inserted else {
+                outcome = .duplicate
+                continue
+            }
             var stableID = Self.channelID(providerID: providerID, key: stableSource)
             if !seenIDs.insert(stableID).inserted {
                 // Event feeds often borrow one guide ID ("DAZN1.uk") for many differently named
@@ -1351,7 +1420,7 @@ enum LiveTVM3UParser {
                 // its identity; each later one gets an ID keyed by guide ID and name, which stays
                 // stable across refreshes.
                 stableID = Self.channelID(providerID: providerID, key: "\(stableSource)|name:\(foldedName)")
-                guard seenIDs.insert(stableID).inserted else { continue }
+                guard seenIDs.insert(stableID).inserted else { outcome = .duplicate; continue }
             }
 
             let logo = item.attributes["tvg-logo"].flatMap(webURL)
@@ -1364,8 +1433,13 @@ enum LiveTVM3UParser {
                 logoURL: logo,
                 category: category
             ))
+            outcome = .accepted
         }
-        return LiveTVM3UParseResult(channels: channels, hitChannelLimit: hitChannelLimit)
+        if hasPendingRecord { finishRecord() }
+        return LiveTVM3UParseResult(channels: channels, hitChannelLimit: hitChannelLimit,
+                                    count: LiveTVImportCount(processed: processed, total: total, accepted: channels.count,
+                                                             malformed: malformed, duplicate: duplicate,
+                                                             unsupported: unsupported, limited: limited))
     }
 
     private static func channelID(providerID: UUID, key: String) -> String {

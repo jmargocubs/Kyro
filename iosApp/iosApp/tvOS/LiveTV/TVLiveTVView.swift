@@ -84,6 +84,12 @@ struct TVLiveTVRootView: View {
             .padding(.horizontal, 72)
             .padding(.top, TVTopMenuLayout.contentTopInset)
             .padding(.bottom, 38)
+            .disabled(service.importProgress.map { !$0.isTerminal } ?? false)
+            if let progress = service.importProgress, !progress.isTerminal,
+               progress.providerID == service.selectedProviderID {
+                TVLiveTVImportView(progress: progress,
+                    onCancel: { service.cancelImport() }, onRetry: nil)
+            }
         }
         .modifier(LiveTVChannelCover(
             service: service,
@@ -126,6 +132,14 @@ struct TVLiveTVRootView: View {
             selectedCategory = nil
             updateSearch()
             updateCategoryCounts()
+        }
+        .onChange(of: service.importProgress?.stage) {
+            if service.importProgress?.stage == .ready, !showsProviders {
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    if !showsProviders { service.clearFinishedImport() }
+                }
+            }
         }
     }
 
@@ -449,12 +463,32 @@ struct TVLiveTVProviderManagementView: View {
             .padding(.horizontal, 120)
             .padding(.vertical, 68)
         }
+        .disabled(service.importProgress.map { !$0.isTerminal } ?? false)
         .background(TVKyroAmbientBackdrop())
+        .overlay {
+            if let progress = service.importProgress,
+               progress.providerID == service.selectedProviderID {
+                TVLiveTVImportView(progress: progress,
+                    onCancel: { service.cancelImport() },
+                    onRetry: { Task { await service.refresh(providerID: progress.providerID) } })
+            }
+        }
         // Back/Menu always leaves the screen. While a text field is editing, the system keyboard
         // takes Menu first, so typing (and the nearby-iPhone keyboard) is unaffected.
         .onExitCommand { dismiss() }
         .onAppear {
             if focus == nil { focus = TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: service.providers.map(\.id)) }
+        }
+        .onDisappear {
+            if !showsPhoneSetup { service.clearFinishedImport() }
+        }
+        .onChange(of: service.importProgress?.stage) {
+            if service.importProgress?.stage == .ready, !showsPhoneSetup {
+                Task { try? await Task.sleep(for: .seconds(1)); dismiss() }
+            }
+        }
+        .onChange(of: showsPhoneSetup) {
+            if !showsPhoneSetup, service.importProgress?.stage == .ready { dismiss() }
         }
         .fullScreenCover(isPresented: $showsPhoneSetup, onDismiss: { restoreFocus(.phoneSetup) }) {
             TVLiveTVPairingView(service: service)
@@ -672,6 +706,98 @@ private struct TVLiveTVProviderFieldStyle: ViewModifier {
             .padding(.horizontal, 24)
             .frame(minHeight: 72)
             .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+/// Stage-specific progress: the bar is determinate only while the catalog's source records
+/// have an exact denominator. The accepted-channel count never includes rejected records.
+struct TVLiveTVImportView: View {
+    let progress: LiveTVImportProgress
+    let onCancel: () -> Void
+    let onRetry: (() -> Void)?
+
+    private var title: String {
+        switch progress.stage {
+        case .ready: "Live TV is ready"
+        case .failed: "Couldn’t set up Live TV"
+        case .cancelled: "Setup cancelled"
+        default: "Setting Up Live TV"
+        }
+    }
+
+    private var stageTitle: String {
+        switch progress.stage {
+        case .connecting: "Connecting to provider"
+        case .downloading: "Downloading channel catalog"
+        case .importing: "Importing live channels"
+        case .categories: "Preparing channel categories"
+        case .guide: "Preparing TV Guide"
+        case .saving: "Saving provider setup"
+        case .ready: "Ready"
+        case .failed: "Import failed"
+        case .cancelled: "Import cancelled"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            Text(title).font(.system(size: 58, weight: .heavy))
+            Text(progress.providerName).font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(Color.siloSecondaryText)
+            HStack(spacing: 16) {
+                Text(stageTitle).font(.system(size: 32, weight: .bold))
+                if progress.stage == .importing, let fraction = progress.count.fraction {
+                    Text("\(Int((fraction * 100).rounded(.down)))%")
+                        .font(.system(size: 32, weight: .bold).monospacedDigit())
+                }
+            }
+            if progress.stage == .importing, let fraction = progress.count.fraction {
+                ProgressView(value: fraction).tint(KyroTheme.accentInk)
+            } else if !progress.isTerminal {
+                ProgressView().tint(KyroTheme.accentInk)
+            }
+            Text("\(progress.count.accepted.formatted()) channels \(progress.stage == .ready ? "imported" : "accepted")")
+                .font(.system(size: 29, weight: .semibold).monospacedDigit())
+            if progress.count.processed > 0 || progress.count.total != nil {
+                Text(recordLine).font(.system(size: 24).monospacedDigit())
+                    .foregroundStyle(Color.siloSecondaryText)
+            }
+            if progress.count.rejected > 0 {
+                Text(skippedLine)
+                    .font(.system(size: 23)).foregroundStyle(Color.siloSecondaryText)
+            }
+            if let message = progress.message {
+                Text(message).font(.system(size: 27)).fixedSize(horizontal: false, vertical: true)
+            }
+            if progress.stage == .failed || progress.stage == .cancelled {
+                if let onRetry {
+                    Button("Retry Import", action: onRetry).buttonStyle(TVKyroChipStyle(isSelected: true))
+                }
+            } else if [.connecting, .downloading, .importing, .categories].contains(progress.stage) {
+                Button("Cancel Import", action: onCancel).buttonStyle(TVKyroChipStyle())
+            }
+        }
+        .padding(76)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .background(TVKyroAmbientBackdrop())
+        .focusable(progress.stage == .guide || progress.stage == .saving || progress.stage == .ready)
+        .accessibilityIdentifier("liveTV.importProgress")
+    }
+
+    private var recordLine: String {
+        if let total = progress.count.total {
+            return "\(progress.count.processed.formatted()) / \(total.formatted()) source records processed"
+        }
+        return "\(progress.count.processed.formatted()) source records processed"
+    }
+
+    private var skippedLine: String {
+        var parts: [String] = []
+        if progress.count.malformed > 0 { parts.append("\(progress.count.malformed.formatted()) malformed") }
+        if progress.count.duplicate > 0 { parts.append("\(progress.count.duplicate.formatted()) duplicate") }
+        if progress.count.unsupported > 0 { parts.append("\(progress.count.unsupported.formatted()) unsupported") }
+        if progress.count.limited > 0 { parts.append("\(progress.count.limited.formatted()) over limit") }
+        return parts.isEmpty ? "\(progress.count.rejected.formatted()) records not imported" : parts.joined(separator: " · ") + " records not imported"
     }
 }
 
