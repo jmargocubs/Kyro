@@ -139,7 +139,7 @@ final class KyroSettingsBackupUITests: XCTestCase {
         app.launchArguments += ["-kyro.c3.introduction.completed", "YES", "-kyroDebugSettingsRoute",
                                 "-kyroDebugGlobalNavigationReset"]
         app.launch()
-        XCTAssertTrue(app.buttons["kyroSettingsNavigation"].waitForExistence(timeout: 40), "Settings opened")
+        XCTAssertTrue(app.buttons["kyroDebugSettingsClose"].waitForExistence(timeout: 40), "Settings opened")
         return app
     }
 
@@ -161,9 +161,15 @@ final class KyroSettingsBackupUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Backup & Restore"].waitForExistence(timeout: 10), "Backup & Restore opened")
     }
 
+    /// Navigation settings live under Settings > Appearance & Navigation.
+    private func openNavigationSettings(_ app: XCUIApplication) {
+        tapScrolling(app.staticTexts["Appearance & Navigation"].firstMatch, in: app)
+        tapScrolling(app.buttons["kyroSettingsNavigation"], in: app)
+    }
+
     private func chooseFourthTab(_ choice: String, _ app: XCUIApplication) {
         popToSettingsRoot(app)
-        tapScrolling(app.buttons["kyroSettingsNavigation"], in: app)
+        openNavigationSettings(app)
         let row = app.buttons["kyroFourthTab-\(choice)"]
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         row.tap()
@@ -172,7 +178,7 @@ final class KyroSettingsBackupUITests: XCTestCase {
 
     private func fourthTabIsSelected(_ choice: String, _ app: XCUIApplication) -> Bool {
         popToSettingsRoot(app)
-        tapScrolling(app.buttons["kyroSettingsNavigation"], in: app)
+        openNavigationSettings(app)
         let row = app.buttons["kyroFourthTab-\(choice)"]
         guard row.waitForExistence(timeout: 5) else { return false }
         snap("Navigation shows \(choice)")
