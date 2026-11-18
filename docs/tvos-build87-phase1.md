@@ -53,6 +53,13 @@ large synthetic catalog processing, **not** the exact visual D-pad route.
 UI automation of Select/Back and physical remote navigation remains an
 acceptance case; no production provider credentials should enter CI.
 
+The first hosted attempt (run `44238614728`) caught a Swift variable-shadowing
+compile error; that was corrected in `ba3ef06a`. Run `44240172258` built and
+passed 29 focused tests, including a 40,000-channel synthetic search (5.462 s
+on the hosted runner). Its screenshot step timed out because XCTest shut down
+the simulator before capture. The workflow now boots and launches the built
+app before capturing, and treats a missing screenshot as a failed step.
+
 Pending physical cases: Down from each of the five Live TV chips to Set Up
 Provider; Movies and Series dropdown Up/Down/Left/Right, Select and Back;
 no TV Guide flash behind entered menus; channel-card scrolling through a

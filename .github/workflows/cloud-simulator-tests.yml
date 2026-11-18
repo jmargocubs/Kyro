@@ -60,6 +60,7 @@ jobs:
           set -euo pipefail
           xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme SiloTV \
             -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/kyro-derived" \
             -jobs 2 -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/tvos-build.log"
@@ -69,6 +70,7 @@ jobs:
           set -euo pipefail
           xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme SiloTV \
             -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/kyro-derived" \
             -jobs 2 -parallel-testing-enabled NO -collect-test-diagnostics never \
             -only-testing:SiloTVTests/KyroTVFocusTests \
             -only-testing:SiloTVTests/KyroTVLiveTVTests \
@@ -81,10 +83,19 @@ jobs:
         if: always() && env.TVOS_SIMULATOR_ID != ''
         shell: bash
         run: |
-          xcrun simctl io "$TVOS_SIMULATOR_ID" screenshot "$RUNNER_TEMP/tvos-screen.png" || true
-          xcrun simctl spawn "$TVOS_SIMULATOR_ID" log show --last 15m \
-            --predicate 'process == "SiloTV"' --style compact \
-            > "$RUNNER_TEMP/tvos-app.log" 2>&1 || true
+          set -euo pipefail
+          # XCTest can shut down its device. Reboot it and launch the built
+          # app so screenshot capture has a live TVOut surface.
+          xcrun simctl boot "$TVOS_SIMULATOR_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$TVOS_SIMULATOR_ID" -b
+          xcrun simctl install "$TVOS_SIMULATOR_ID" \
+            "$RUNNER_TEMP/kyro-derived/Build/Products/Debug-appletvsimulator/SiloTV.app"
+          xcrun simctl launch "$TVOS_SIMULATOR_ID" com.cubbiestream.kyro.tvos \
+            > "$RUNNER_TEMP/tvos-launch.log" 2>&1
+          xcrun simctl io "$TVOS_SIMULATOR_ID" screenshot "$RUNNER_TEMP/tvos-screen.png"
+          xcrun simctl spawn "$TVOS_SIMULATOR_ID" log show --last 2m \
+            --predicate 'process == "SiloTV"' --style compact 2>&1 \
+            | tail -n 2000 > "$RUNNER_TEMP/tvos-app.log"
           xcrun simctl list devices > "$RUNNER_TEMP/simulators.txt"
       - name: Upload tvOS results
         if: always()
@@ -95,6 +106,7 @@ jobs:
             ${{ runner.temp }}/tvos-focus.xcresult
             ${{ runner.temp }}/tvos-screen.png
             ${{ runner.temp }}/tvos-app.log
+            ${{ runner.temp }}/tvos-launch.log
             ${{ runner.temp }}/tvos-build.log
             ${{ runner.temp }}/tvos-packages.log
             ${{ runner.temp }}/tvos-tests.log
