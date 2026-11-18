@@ -1,0 +1,102 @@
+name: Kyro tvOS focus simulator
+
+on:
+  push:
+    branches: [kyro/tvos]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tvos-focus:
+    runs-on: xcode-27
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '27.1'
+      - uses: ./.github/actions/install-xcodegen
+        with:
+          cache: 'true'
+          save-cache: 'false'
+      - name: Generate tvOS project
+        run: xcodegen generate --spec iosApp/project.yml
+      - name: Resolve locked packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            2>&1 | tee "$RUNNER_TEMP/tvos-packages.log"
+      - name: Prepare Apple TV 4K simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun simctl list runtimes --json > "$RUNNER_TEMP/runtimes.json"
+          simulator=$(python3 scripts/ci/apple-build-metadata.py --test-simulator SiloTV --runtimes "$RUNNER_TEMP/runtimes.json")
+          runtime=$(jq -r .runtime <<< "$simulator")
+          device=$(jq -r .device_type <<< "$simulator")
+          if [ -z "$runtime" ]; then
+            sdk_version=$(xcrun --sdk appletvsimulator --show-sdk-version)
+            xcodebuild -downloadPlatform tvOS -buildVersion "$sdk_version"
+            xcrun simctl list runtimes --json > "$RUNNER_TEMP/runtimes.json"
+            simulator=$(python3 scripts/ci/apple-build-metadata.py --test-simulator SiloTV --runtimes "$RUNNER_TEMP/runtimes.json")
+            runtime=$(jq -r .runtime <<< "$simulator")
+            device=$(jq -r .device_type <<< "$simulator")
+          fi
+          test -n "$runtime"
+          id=$(xcrun simctl create Kyro-Focus-Apple-TV-4K "$device" "$runtime")
+          echo "TVOS_SIMULATOR_ID=$id" >> "$GITHUB_ENV"
+          xcrun simctl boot "$id"
+          xcrun simctl bootstatus "$id" -b
+          echo "Simulator: $device / $runtime / $id"
+      - name: Build tvOS app and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
+            -jobs 2 -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/tvos-build.log"
+      - name: Run focus and large-catalog regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
+            -jobs 2 -parallel-testing-enabled NO -collect-test-diagnostics never \
+            -only-testing:SiloTVTests/KyroTVFocusTests \
+            -only-testing:SiloTVTests/KyroTVLiveTVTests \
+            -only-testing:SiloTVTests/TVMenuEntryFocusStateTests \
+            -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test40kSearchAndEventMatching \
+            -resultBundlePath "$RUNNER_TEMP/tvos-focus.xcresult" \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/tvos-tests.log"
+      - name: Capture simulator screen and focused logs
+        if: always() && env.TVOS_SIMULATOR_ID != ''
+        shell: bash
+        run: |
+          xcrun simctl io "$TVOS_SIMULATOR_ID" screenshot "$RUNNER_TEMP/tvos-screen.png" || true
+          xcrun simctl spawn "$TVOS_SIMULATOR_ID" log show --last 15m \
+            --predicate 'process == "SiloTV"' --style compact \
+            > "$RUNNER_TEMP/tvos-app.log" 2>&1 || true
+          xcrun simctl list devices > "$RUNNER_TEMP/simulators.txt"
+      - name: Upload tvOS results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kyro-tvos-focus-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/tvos-focus.xcresult
+            ${{ runner.temp }}/tvos-screen.png
+            ${{ runner.temp }}/tvos-app.log
+            ${{ runner.temp }}/tvos-build.log
+            ${{ runner.temp }}/tvos-packages.log
+            ${{ runner.temp }}/tvos-tests.log
+            ${{ runner.temp }}/simulators.txt
+          retention-days: 7

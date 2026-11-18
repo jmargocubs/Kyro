@@ -153,6 +153,13 @@ The top menu has three conceptual states:
 - `entered`: the user pressed Down or otherwise entered the panel; the panel
   owns focus and the bar is inert until the panel closes.
 
+An entered panel must also make the underlying page **ineligible for focus**.
+`allowsHitTesting(false)` alone is insufficient on tvOS: it blocks activation
+without removing the page's focus candidates. Disable the page only in entered
+mode, not during a passive dwell preview. Treat child focus telemetry as a
+diagnostic signal; a transient `nil` must not close the menu or start a timed
+repair. Close through an explicit Back, selection or boundary handoff instead.
+
 Implementation details may use booleans, but the state machine above is the
 contract. In entered mode, it should be impossible for the bar to accept focus
 on another tab behind the panel. Treat `panelHasFocus` as telemetry from the

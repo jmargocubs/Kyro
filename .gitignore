@@ -65,6 +65,7 @@ Thumbs.db
 .swiftpm/
 docs/*
 !docs/tvos-focus.md
+!docs/tvos-build87-phase1.md
 !docs/tvos-keyboard-entry.md
 !docs/livetv-phone-pairing.md
 !docs/mac-builder.md
