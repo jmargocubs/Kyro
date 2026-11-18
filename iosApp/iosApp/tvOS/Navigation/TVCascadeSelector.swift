@@ -470,8 +470,8 @@ struct TVCascadeSelector: View {
     }
 
     private func handleMoveCommand(_ direction: MoveCommandDirection) {
-        guard entersPanel, panelFocused, let focus else { return }
-        switch TVCascadeFocusPlanner.move(from: focus, direction: direction,
+        guard entersPanel, panelFocused, let currentFocus = focus else { return }
+        switch TVCascadeFocusPlanner.move(from: currentFocus, direction: direction,
                                           libraryIDs: libraries.map(\.id), pills: pills,
                                           singleLibrary: isSingleLibrary) {
         case .select(let selection):
