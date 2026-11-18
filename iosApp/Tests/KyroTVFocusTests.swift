@@ -274,6 +274,21 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertEqual(TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: [next]), .provider(next))
     }
 
+    func testRemovingTopProviderKeepsNextRowAsEntryAndBackEscape() {
+        let first = UUID(), next = UUID()
+        XCTAssertEqual(TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: [first, next]), .provider(first))
+        let target = TVLiveTVProviderFocusPlanner.afterRemoval(remainingProviderIDs: [next])
+        XCTAssertEqual(target, .provider(next))
+        XCTAssertTrue(TVLiveTVProviderFocusPlanner.escapesToBack(target, providerIDs: [next]))
+    }
+
+    func testApprovalCountdownUsesReadableMinuteSecondBoundaries() {
+        XCTAssertEqual(TVLiveTVPairingView.clock(300), "5:00")
+        XCTAssertEqual(TVLiveTVPairingView.clock(59.1), "1:00")
+        XCTAssertEqual(TVLiveTVPairingView.clock(0), "0:00")
+        XCTAssertEqual(TVLiveTVPairingView.clock(-1), "0:00")
+    }
+
     // MARK: Focus treatment
 
     func testFocusLiftIsSmallAndRespectsReduceMotion() {
