@@ -1,6 +1,6 @@
 # Kyro Release & Artifact History
 
-**Last Updated:** 2026-11-17  
+**Last Updated:** 2026-11-18  
 **Tracking System Version:** 1.2.0
 
 ---
@@ -41,8 +41,9 @@ release_record:
 
 | Release Candidate | Platform | Target | Build No. | Source Branch & Commit | Included Features | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **iPhone Build 90**<br>`Kyro-v1.0.0-Build90-Unsigned.ipa` | iOS | Silo | 90 | `kyro/m1-rebrand`<br>[`6eb3befc`](<repo>) | `FEAT-CAT-84`<br>`FEAT-SET-86`<br>`FEAT-BAK-88` (with 88.2 fix)<br>`FEAT-PAIR-CORE`<br>`FEAT-PAIR-IOS` | Ready for packaging under build lock |
-| **Apple TV Build 85**<br>`Kyro-tvOS-v1.0.0-Build85-Unsigned.ipa` | tvOS | SiloTV | 85 | `kyro/tvos`<br>[`5bc4cd6e`](<worktrees>/kyro-tvos) | `FEAT-TV-NATIVE`<br>`FEAT-TV-LIVETV`<br>`FEAT-TV-SPORTS`<br>`FEAT-PAIR-CORE`<br>`FEAT-PAIR-TV`<br>`FEAT-TV-FOCUS` (Phase 3A) | Ready for packaging under build lock |
+| **iPhone Build 91**<br>`Kyro-v1.0.0-Build91-Unsigned.ipa` | iOS | Silo | 91 | `kyro/m1-rebrand`<br>[`732af722`](<repo>) | `FEAT-CAT-84`<br>`FEAT-SET-86`<br>`FEAT-BAK-88` (importer accepts `com.cubbiestream.kyro.settings-backup` + fallbacks)<br>`FEAT-PAIR-CORE`<br>`FEAT-PAIR-IOS` | **Packaged 2026-11-18 via GitHub Actions cloud unsigned IPA (free `xcode-27`).** Source verified at `732af722`; archive 829 s; total job ~945 s. Bundle `com.cubbiestream.kyro` 1.0.0 (91); extensions `.DownloadsActivity` and `.NotificationService` both v91; unsigned arm64; min iOS 18.0. 29,250,960 bytes, SHA-256 `e0b838d20c7d864b5f257870cb3e38f8cf654231c65fa8c3af303e56a669b429`. Cloud run [44254500081](https://github.com/jmargocubs/Kyro/actions/runs/44254500081). Pre-release published manually after auto-publish 403: [kyro-ios-v1.0.0-build91-rc1](https://github.com/jmargocubs/Kyro/releases/tag/kyro-ios-v1.0.0-build91-rc1). NullSign catalog updated to Build 91. **Physical acceptance 2026-11-18: backup import FAIL. The file is selectable, but tapping it never returns to Kyro (no preview, no error). Superseded by the Build 92 candidate (`f8c23a96`). Not stable.** See [BUILD91-ACCEPTANCE.md](BUILD91-ACCEPTANCE.md). |
+| **iPhone Build 90**<br>`Kyro-v1.0.0-Build90-Unsigned.ipa` | iOS | Silo | 90 | `kyro/m1-rebrand`<br>[`6eb3befc`](<repo>) | `FEAT-CAT-84`<br>`FEAT-SET-86`<br>`FEAT-BAK-88` (with 88.2 fix)<br>`FEAT-PAIR-CORE`<br>`FEAT-PAIR-IOS` | **Packaged 2026-11-17 (unsigned, arm64, iOS min 18.0).** Archive built from `22ee127f` (`6eb3befc` plus docs-only commits; `iosApp/` identical to `881bc147`), `-jobs 1`, under build lock, 829 s, exit 0. Bundle `com.cubbiestream.kyro` 1.0.0 (90); extensions `.DownloadsActivity` and `.NotificationService` both v90. 29,251,317 bytes, SHA-256 `e0446f0bb4414cad50beb4b4d31043216507d679fbdf52d582592a95ff49b547`. [GitHub pre-release](https://github.com/jmargocubs/Kyro/releases/tag/kyro-ios-v1.0.0-build90-rc1). **Physical acceptance (iPhone 16 Plus): Settings/pairing/nav PASS; backup import FAIL (`.kyrosettings` greyed out in Files picker). Superseded by Build 91 for importer fix. Not stable.** See [BUILD90-ACCEPTANCE.md](BUILD90-ACCEPTANCE.md). |
+| **Apple TV Build 85**<br>`Kyro-tvOS-v1.0.0-Build85-Unsigned.ipa` | tvOS | SiloTV | 85 | `kyro/tvos`<br>[`5bc4cd6e`](<worktrees>/kyro-tvos) | `FEAT-TV-NATIVE`<br>`FEAT-TV-LIVETV`<br>`FEAT-TV-SPORTS`<br>`FEAT-PAIR-CORE`<br>`FEAT-PAIR-TV`<br>`FEAT-TV-FOCUS` (Phase 3A) | **Packaged 2026-11-17 via GitHub Actions (unsigned, arm64, tvOS min 26.0).** Standard `xcode-27` runner, Xcode 27.1, cache disabled; source verified at `5bc4cd6e`. Archive 695 s; total job 824 s. Bundle `com.cubbiestream.kyro` 1.0.0 (85); Top Shelf extension included. 31,035,936 bytes, SHA-256 `20d521cd19ef5058fad65db3fc2b635ce4b35e2300677500e9a9dde2945a7715`. [GitHub pre-release](https://github.com/jmargocubs/Kyro/releases/tag/kyro-tvos-v1.0.0-build85-rc1). [Workflow artifact](https://github.com/jmargocubs/Kyro/actions/runs/44199476843). **Apple TV acceptance: unverified.** |
 
 ---
 
