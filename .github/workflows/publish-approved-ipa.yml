@@ -118,7 +118,15 @@ jobs:
           set -euo pipefail
           tag="kyro-${PLATFORM}-v${VERSION}-build${BUILD}-rc1"
           title="Kyro ${PLATFORM} ${VERSION} Build ${BUILD}"
+          # Cloud unsigned IPA names include platform ("…-ios-unsigned-arm64.ipa").
+          # Feather / NullSign catalog URLs for iOS expect Kyro-vX-BuildN-Unsigned.ipa.
+          if [ "$PLATFORM" = ios ]; then
+            published="$RUNNER_TEMP/Kyro-v${VERSION}-Build${BUILD}-Unsigned.ipa"
+            cp "$IPA" "$published"
+            IPA="$published"
+          fi
           checksum="$RUNNER_TEMP/$(basename "$IPA").sha256"
+          printf '%s  %s\n' "$SHA" "$(basename "$IPA")" > "$checksum"
           if gh release view "$tag" --repo "$KYRO_REPO" >/dev/null 2>&1; then
             test "$(gh release view "$tag" --repo "$KYRO_REPO" --json isPrerelease --jq .isPrerelease)" = true
           else
