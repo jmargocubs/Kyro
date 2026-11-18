@@ -4,6 +4,12 @@ on:
   workflow_run:
     workflows: ["Cloud unsigned IPA (free runner)"]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Existing successful Cloud unsigned IPA run ID to recover"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -17,13 +23,14 @@ jobs:
     # Only the two trusted Kyro branches can publish. Pull requests, forks, and
     # every other branch are deliberately excluded.
     if: >-
-      ${{ github.event.workflow_run.conclusion == 'success' &&
-      (github.event.workflow_run.head_branch == 'kyro/m1-rebrand' ||
-       github.event.workflow_run.head_branch == 'kyro/tvos') }}
+      ${{ github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       (github.event.workflow_run.head_branch == 'kyro/m1-rebrand' ||
+        github.event.workflow_run.head_branch == 'kyro/tvos')) }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.KYRO }}
-      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || github.event.workflow_run.id }}
       KYRO_REPO: jmargocubs/Kyro
       CATALOG_REPO: jmargocubs/feather-apps
     steps:
