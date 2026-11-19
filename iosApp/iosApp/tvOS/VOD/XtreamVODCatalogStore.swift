@@ -15,8 +15,9 @@ actor XtreamVODCatalogStore {
         guard sqlite3_open_v2(path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             throw XtreamVODError.unavailable
         }
+        let openedDatabase = database
         func initialize(_ sql: String) throws {
-            guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else { throw XtreamVODError.unavailable }
+            guard sqlite3_exec(openedDatabase, sql, nil, nil, nil) == SQLITE_OK else { throw XtreamVODError.unavailable }
         }
         try initialize("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
         try initialize("""
