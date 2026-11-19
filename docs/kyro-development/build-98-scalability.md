@@ -78,7 +78,7 @@ Guide rows, a category/ordinal index pages categories, FTS5 indexes name/categor
 provider-scoped favorites survive a generation replacement. Individual channel lookup retains
 guide ID, stream URL, and stream ID for future EPG/playback integration. A host correctness run
 checks interrupted promotion, cancellation, provider ID collision, category replacement,
-favorite persistence, guide ID persistence, and recovery on reopen. Each scale fixture also
+favorite persistence, guide ID association, and recovery on reopen. Each scale fixture also
 checks final-channel URL/guide lookup and favorite retrieval.
 
 FTS initially took 8.8 seconds for a 100K search because SQLite chose the ordinal index and
@@ -100,18 +100,20 @@ BENCH_DIR=$(mktemp -d)
 /tmp/kyro-channel-benchmark "$BENCH_DIR"
 ```
 
-| Channels | Generate + import + index | Indexed search | Category page | Final Guide page | Keyset page | DB file | Process peak RSS |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 40,000 | 1.453 s | 6 ms | <1 ms | <1 ms | <1 ms | 30.3 MB | 19 MB |
-| 60,000 | 2.172 s | 8 ms | <1 ms | <1 ms | <1 ms | 45.5 MB | 19 MB |
-| 80,000 | 2.993 s | 11 ms | <1 ms | <1 ms | <1 ms | 60.7 MB | 19 MB |
-| 100,000 | 3.758 s | 14 ms | <1 ms | <1 ms | <1 ms | 75.9 MB | 19 MB |
+| Channels | Generate + import + index | Selective search | Broad search | Category/deep page | Final Guide/keyset page | EPG ID lookup | DB file | Peak RSS |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 40,000 | 1.530 s | 5 ms | 7 ms | <1 ms | <1 ms | <1 ms | 30.4 MB | 19 MB |
+| 60,000 | 2.281 s | 8 ms | 11 ms | <1 ms | <1 ms | <1 ms | 45.7 MB | 20 MB |
+| 80,000 | 3.053 s | 11 ms | 14 ms | <1 ms | <1 ms | <1 ms | 61.0 MB | 21 MB |
+| 100,000 | 3.855 s | 14 ms | 18 ms | <1 ms | <1 ms | <1 ms | 76.3 MB | 21 MB |
 
 Provisional channel-store budgets: 100K synthetic generate/import/index <10 s, selective
-search <50 ms, category and Guide page <50 ms, main DB <100 MB, host process peak RSS <100 MB.
+search <50 ms, category and Guide page and EPG ID lookup <50 ms, main DB <100 MB,
+host process peak RSS <100 MB.
 These fixtures meet them. They do not exercise provider download/parsing, mixed-content EPG,
-long-running UI work, image loading, low storage, or real-device memory. The search fixture is
-selective; broad-query and deep category-query p95 still require profiling.
+long-running UI work, image loading, low storage, or real-device memory. The broad search uses
+the common word “Channel” and returns the first 100 rows; representative query/category p95
+still requires profiling.
 
 ## Live TV integration still required
 
