@@ -14,6 +14,7 @@ private final class FakeLocalPlayback: LocalPlaybackPreferences {
     var deinterlaceMode: DeinterlacePreference = .automatic
     var deinterlaceFieldRate: DeinterlaceFieldRatePreference = .fullMotion
     var trueHDAtmosEnabled = true
+    var subtitleMatchesSystemAppearance = false
 }
 
 @MainActor
@@ -78,11 +79,26 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
             "downloads.defaultMaxStorageGB", "downloads.sortOption", "downloads.keepWatched", "downloads.simultaneous",
             "playback.bufferAhead", "playback.losslessAudio", "pip.backgroundPlayback",
             "advancedAV.deinterlaceMode", "advancedAV.deinterlaceFieldRate", "advancedAV.trueHDAtmos",
+            "subtitleDisplay.matchesSystem",
             "liveTVNav.style", "liveTVNav.startingEdge", "liveTVNav.idleBehavior", "liveTVNav.autoCollapse",
             "liveTVNav.haptics", "liveTVNav.thumbScrubbing", "liveTVNav.allowsDragging",
             "liveTVNav.destinationOrder", "liveTVNav.hiddenDestinations",
         ])
         for id in ids { XCTAssertFalse(SettingsBackupSafety.isSensitiveName(id), id) }
+    }
+
+    func testPersistedLiveTVNavigationFieldsCannotOutgrowTheBackupRegistrySilently() {
+        let mapping = [
+            "style": "liveTVNav.style", "order": "liveTVNav.destinationOrder",
+            "hidden": "liveTVNav.hiddenDestinations", "autoCollapse": "liveTVNav.autoCollapse",
+            "idleBehavior": "liveTVNav.idleBehavior", "hapticsEnabled": "liveTVNav.haptics",
+            "thumbScrubbing": "liveTVNav.thumbScrubbing", "allowsDragging": "liveTVNav.allowsDragging",
+            "startingEdge": "liveTVNav.startingEdge",
+        ]
+        let ownerFields = KyroLiveTVNavigationPreferences.backupEligibleStoredFields
+        XCTAssertEqual(ownerFields, Set(mapping.keys), "Classify each new persisted navigation field")
+        let ids = Set(makeRig().registry.settings.map(\.id).filter { $0.hasPrefix("liveTVNav.") })
+        XCTAssertEqual(ids, Set(mapping.values))
     }
 
     func testRoundTripThroughRealStores() throws {
@@ -315,6 +331,28 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
             storageKey: { "ios.nav.showAudiobooks.test" }).showAudiobooks)
         XCTAssertEqual(applier.undo().reverted, ["navigation.showAudiobooks"])
         XCTAssertFalse(rig.appNavigation.showAudiobooks)
+    }
+
+    func testSystemCaptionChoiceUsesRealPlayerSettingsWithoutServerWrite() throws {
+        let settings = PlayerSettings(defaults: defaults, scopeIdentifier: { "backup-test" })
+        let adapter = PlayerSettingsLocalPlayback(settings: settings)
+        let rig = makeRig()
+        let registry = SettingsBackupLiveRegistry.make(.init(
+            navigation: rig.navigation, appNavigation: rig.appNavigation,
+            liveTVNavigation: rig.liveTVNavigation, launch: rig.launch,
+            downloads: rig.downloads, playback: adapter,
+            defaults: defaults, idiom: "phone", supportsPictureInPicture: true))
+        settings.setSubtitleMatchesSystemAppearance(true)
+        let data = try SettingsBackupExporter.export(registry: registry, groups: [.subtitleDisplay], app: app)
+        XCTAssertEqual(try SettingsBackupCodec.decode(data).groups["subtitleDisplay"]?["subtitleDisplay.matchesSystem"], .bool(true))
+        settings.setSubtitleMatchesSystemAppearance(false)
+        let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(data), registry: registry)
+        let applier = SettingsBackupApplier(registry: registry, journal: BackupMemoryJournal())
+        guard case .applied = applier.apply(preview: preview, selectedGroups: [.subtitleDisplay]) else { return XCTFail("not applied") }
+        XCTAssertTrue(settings.subtitleMatchesSystemAppearance)
+        XCTAssertTrue(PlayerSettings(defaults: defaults, scopeIdentifier: { "backup-test" }).subtitleMatchesSystemAppearance)
+        XCTAssertEqual(applier.undo().reverted, ["subtitleDisplay.matchesSystem"])
+        XCTAssertFalse(settings.subtitleMatchesSystemAppearance)
     }
 
     func testUnknownDownloadQualityIsNotExportedAsOriginalAndCanBeUndone() throws {

@@ -94,6 +94,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
     case playbackOptions
     case pictureInPicture
     case advancedAudioVideo
+    case subtitleDisplay
     case navigationLayout
 
     var id: String { rawValue }
@@ -101,7 +102,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
     var isDeviceSpecific: Bool {
         switch self {
         case .general, .navigation, .liveTVCategories, .guideLayout, .sports, .downloads: false
-        case .playbackOptions, .pictureInPicture, .advancedAudioVideo, .navigationLayout: true
+        case .playbackOptions, .pictureInPicture, .advancedAudioVideo, .subtitleDisplay, .navigationLayout: true
         }
     }
 
@@ -116,6 +117,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .playbackOptions: "Playback options"
         case .pictureInPicture: "Picture in Picture"
         case .advancedAudioVideo: "Advanced audio & video"
+        case .subtitleDisplay: "Subtitle display"
         case .navigationLayout: "Navigation layout & appearance"
         }
     }
@@ -131,6 +133,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .playbackOptions: "Buffering and lossless audio."
         case .pictureInPicture: "Keep playing when you leave the app."
         case .advancedAudioVideo: "Deinterlacing and TrueHD Atmos."
+        case .subtitleDisplay: "Use this device's caption appearance."
         case .navigationLayout: "Floating navigation style and behavior."
         }
     }

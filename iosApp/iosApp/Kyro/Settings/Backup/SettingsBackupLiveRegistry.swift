@@ -23,6 +23,7 @@ protocol LocalPlaybackPreferences: AnyObject {
     var deinterlaceMode: DeinterlacePreference { get set }
     var deinterlaceFieldRate: DeinterlaceFieldRatePreference { get set }
     var trueHDAtmosEnabled: Bool { get set }
+    var subtitleMatchesSystemAppearance: Bool { get set }
 }
 
 @MainActor
@@ -53,6 +54,10 @@ final class PlayerSettingsLocalPlayback: LocalPlaybackPreferences {
     var trueHDAtmosEnabled: Bool {
         get { settings.trueHDAtmosEnabled }
         set { settings.setTrueHDAtmosEnabled(newValue) }
+    }
+    var subtitleMatchesSystemAppearance: Bool {
+        get { settings.subtitleMatchesSystemAppearance }
+        set { settings.setSubtitleMatchesSystemAppearance(newValue) }
     }
 }
 
@@ -203,6 +208,13 @@ enum SettingsBackupLiveRegistry {
         settings.append(boolSetting(
             "advancedAV.trueHDAtmos", .advancedAudioVideo, "TrueHD Atmos and DTS:X heights",
             read: { d.playback.trueHDAtmosEnabled }, write: { d.playback.trueHDAtmosEnabled = $0 }))
+
+        // This toggle is genuinely device-local. The subtitle language, appearance record and
+        // device-override scope are server-authoritative and deliberately not writable here.
+        settings.append(boolSetting(
+            "subtitleDisplay.matchesSystem", .subtitleDisplay, "Use device caption settings",
+            read: { d.playback.subtitleMatchesSystemAppearance },
+            write: { d.playback.subtitleMatchesSystemAppearance = $0 }))
 
         // MARK: Floating Live TV navigation (device-specific). Build 93's nav.* entries read a
         // dormant global record, not the editor's store. Their old IDs are deliberately omitted:

@@ -182,9 +182,15 @@ struct KyroLiveTVNavigationPreferences: Codable, Equatable, Sendable {
 
     // MARK: Coding
 
-    private enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case style, order, hidden, autoCollapse, idleBehavior, hapticsEnabled, thumbScrubbing,
              allowsDragging, startingEdge, dockAnchor, fanAnchor
+    }
+
+    /// Persisted user choices. The two saved handle positions are excluded because they describe
+    /// one screen's geometry. Backup tests compare this list with the production registry.
+    static var backupEligibleStoredFields: Set<String> {
+        Set(CodingKeys.allCases.map(\.rawValue)).subtracting(["dockAnchor", "fanAnchor"])
     }
 
     init(from decoder: Decoder) throws {
