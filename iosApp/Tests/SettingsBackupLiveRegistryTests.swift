@@ -44,7 +44,7 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let playback: FakeLocalPlayback
     }
 
-    private func makeRig(idiom: String = "phone", pip: Bool = true) -> Rig {
+    private func makeRig(idiom: String = "phone", pip: Bool = true, watchPartyInitial: Bool = true) -> Rig {
         let navigation = KyroGlobalNavigationStore(defaults: defaults)
         let appNavigation = AppNavPreferences(
             defaults: SharedDefaults(suite: defaults, standard: defaults),
@@ -53,11 +53,14 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let launch = ProfileLaunchPreferences(defaults: SharedDefaults(suite: defaults, standard: defaults))
         let downloads = DownloadSettings(defaults: defaults)
         let playback = FakeLocalPlayback()
+        var watchPartyEnabled = watchPartyInitial
         let registry = SettingsBackupLiveRegistry.make(.init(
             navigation: navigation, appNavigation: appNavigation,
             liveTVNavigation: liveTVNavigation, launch: launch,
             downloads: downloads, playback: playback,
-            defaults: defaults, idiom: idiom, supportsPictureInPicture: pip))
+            defaults: defaults, idiom: idiom, supportsPictureInPicture: pip,
+            readWatchPartyEnabled: { watchPartyEnabled },
+            writeWatchPartyEnabled: { watchPartyEnabled = $0 }))
         return Rig(registry: registry, navigation: navigation, appNavigation: appNavigation,
                    liveTVNavigation: liveTVNavigation,
                    launch: launch, downloads: downloads, playback: playback)
@@ -73,6 +76,7 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let ids = Set(makeRig().registry.settings.map(\.id))
         XCTAssertEqual(ids, [
             "general.launchBehavior",
+            "features.watchParty",
             "calendar.filter",
             "navigation.fourthTab", "navigation.showAudiobooks",
             "liveTV.categoryAppearance", "liveTV.categoryGrouping", "liveTV.guideStyle",
@@ -86,6 +90,36 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
             "liveTVNav.destinationOrder", "liveTVNav.hiddenDestinations",
         ])
         for id in ids { XCTAssertFalse(SettingsBackupSafety.isSensitiveName(id), id) }
+    }
+
+    func testWatchPartyOptInRestoresExplicitOffAndOnAndCanUndo() throws {
+        let rig = makeRig()
+        let off = try SettingsBackupCodec.makeDocument(
+            groups: ["features": ["features.watchParty": .bool(false)]],
+            schemaVersion: 2, minReaderVersion: 1, app: app, now: Date())
+        let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(off), registry: rig.registry)
+        XCTAssertEqual(preview.groups.flatMap(\.items).map(\.id), ["features.watchParty"])
+        let journal = BackupMemoryJournal()
+        let applier = SettingsBackupApplier(registry: rig.registry, journal: journal)
+        guard case .applied = applier.apply(preview: preview, selectedGroups: [.features]) else {
+            return XCTFail("explicit off value was not applied")
+        }
+        let exportedOff = try SettingsBackupCodec.decode(SettingsBackupExporter.export(
+            registry: rig.registry, groups: [.features], app: app))
+        XCTAssertEqual(exportedOff.groups["features"]?["features.watchParty"], .bool(false))
+        let undo = applier.undo()
+        XCTAssertEqual(undo.reverted, ["features.watchParty"])
+
+        let on = try SettingsBackupCodec.makeDocument(
+            groups: ["features": ["features.watchParty": .bool(true)]],
+            schemaVersion: 2, minReaderVersion: 1, app: app, now: Date())
+        let offRig = makeRig(watchPartyInitial: false)
+        guard case .applied = try applyAll(on, to: offRig, groups: [.features]) else {
+            return XCTFail("on value was not applied")
+        }
+        let exportedOn = try SettingsBackupCodec.decode(SettingsBackupExporter.export(
+            registry: offRig.registry, groups: [.features], app: app))
+        XCTAssertEqual(exportedOn.groups["features"]?["features.watchParty"], .bool(true))
     }
 
     func testPersistedLiveTVNavigationFieldsCannotOutgrowTheBackupRegistrySilently() {

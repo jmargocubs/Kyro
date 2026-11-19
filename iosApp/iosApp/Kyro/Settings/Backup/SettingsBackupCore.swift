@@ -99,12 +99,13 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
     case navigationLayout
     case streaming
     case subtitles
+    case features
 
     var id: String { rawValue }
 
     var isDeviceSpecific: Bool {
         switch self {
-        case .general, .calendar, .navigation, .liveTVCategories, .guideLayout, .sports, .downloads, .streaming, .subtitles: false
+        case .general, .calendar, .navigation, .liveTVCategories, .guideLayout, .sports, .downloads, .streaming, .subtitles, .features: false
         case .playbackOptions, .pictureInPicture, .advancedAudioVideo, .subtitleDisplay, .navigationLayout: true
         }
     }
@@ -125,6 +126,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .navigationLayout: "Navigation layout & appearance"
         case .streaming: "Streaming"
         case .subtitles: "Subtitles"
+        case .features: "Features"
         }
     }
 
@@ -144,6 +146,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .navigationLayout: "Floating navigation style and behavior."
         case .streaming: "Server-synced playback quality."
         case .subtitles: "Profile subtitle preferences."
+        case .features: "Opt-in feature preferences."
         }
     }
 

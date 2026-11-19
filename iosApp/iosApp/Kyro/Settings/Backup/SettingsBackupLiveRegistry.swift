@@ -72,6 +72,8 @@ enum SettingsBackupLiveRegistry {
         var defaults: UserDefaults
         var idiom: String
         var supportsPictureInPicture: Bool
+        var readWatchPartyEnabled: @MainActor () -> Bool = { ExperimentalFeatures.shared.isEnabled(.watchParty) }
+        var writeWatchPartyEnabled: @MainActor (Bool) -> Void = { ExperimentalFeature.watchParty.setEnabled($0) }
     }
 
     private struct InvalidValue: Error {}
@@ -112,6 +114,12 @@ enum SettingsBackupLiveRegistry {
             write: { CalendarFilterPreference.save($0, to: d.defaults) }))
 
         // MARK: Navigation (portable)
+        // Watch Party's opt-in is an explicit device-local user preference. Route writes through
+        // the feature owner so disabling it also leaves any active session safely.
+        settings.append(boolSetting(
+            "features.watchParty", .features, "Watch Party",
+            read: { d.readWatchPartyEnabled() }, write: { d.writeWatchPartyEnabled($0) }))
+
         settings.append(enumSetting(
             "navigation.fourthTab", .navigation, "Fourth tab",
             label: { (tab: KyroFourthTab) in tab.title },
