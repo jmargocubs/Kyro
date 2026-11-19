@@ -2,13 +2,23 @@
 import Foundation
 import CoreGraphics
 
-/// TV Guide geometry in a 1080p tvOS canvas. Keep the channel tile wide enough
-/// for a larger logo/name while leaving most of the viewport for programs.
+/// TV Guide geometry follows the safe viewport; focus never changes these metrics.
 enum TVLiveTVGuideLayout {
-    static let horizontalInset: CGFloat = 36
-    static let verticalInset: CGFloat = 28
-    static let channelWidth: CGFloat = 380
-    static let rowHeight: CGFloat = 124
+    static func horizontalInset(viewportWidth: CGFloat) -> CGFloat {
+        min(28, max(16, viewportWidth * 0.012))
+    }
+
+    static func verticalInset(viewportHeight: CGFloat) -> CGFloat {
+        min(20, max(10, viewportHeight * 0.012))
+    }
+
+    static func channelWidth(viewportWidth: CGFloat) -> CGFloat {
+        min(430, max(330, viewportWidth * 0.205))
+    }
+
+    static func rowHeight(viewportHeight: CGFloat) -> CGFloat {
+        min(138, max(116, viewportHeight * 0.116))
+    }
     static let cellGap: CGFloat = 6
 
     static func programCellWidth(_ timelineWidth: CGFloat) -> CGFloat {
@@ -16,7 +26,8 @@ enum TVLiveTVGuideLayout {
     }
 
     static func visibleProgramWidth(viewportWidth: CGFloat) -> CGFloat {
-        max(0, viewportWidth - 2 * horizontalInset - channelWidth)
+        max(0, viewportWidth - 2 * horizontalInset(viewportWidth: viewportWidth)
+            - channelWidth(viewportWidth: viewportWidth))
     }
 }
 

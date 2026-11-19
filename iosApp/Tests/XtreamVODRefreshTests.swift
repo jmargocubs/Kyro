@@ -296,7 +296,7 @@ final class XtreamVODRefreshTests: XCTestCase {
         let id = UUID()
         XCTAssertEqual(TVLiveTVProviderFocusPlanner.afterAddProvider(savedProviderID: id), .provider(id))
         XCTAssertEqual(TVLiveTVProviderFocusPlanner.afterAddProvider(savedProviderID: nil), .addProvider)
-        XCTAssertFalse(TVLiveTVProviderFocusPlanner.escapesToBack(.addProvider, providerIDs: [id]))
+        XCTAssertNil(TVLiveTVProviderFocusPlanner.relocationIfRemoved(.addProvider, providerIDs: [id]))
     }
 
     func testProviderSummaryShowsAvailableContent() throws {

@@ -9,6 +9,7 @@ enum TVLiveTVProviderFocus: Hashable {
     case remove(UUID)
     case phoneSetup
     case addProvider
+    case hiddenManagement
     case save
 }
 
@@ -25,15 +26,6 @@ enum TVLiveTVProviderFocusPlanner {
         initialFocus(providerIDs: remainingProviderIDs)
     }
 
-    /// Up from these controls must reach Back, whatever column they sit in.
-    static func escapesToBack(_ focus: TVLiveTVProviderFocus, providerIDs: [UUID]) -> Bool {
-        switch focus {
-        case .provider(let id), .refresh(let id), .remove(let id): id == providerIDs.first
-        case .phoneSetup: providerIDs.isEmpty
-        case .back, .save, .addProvider: false
-        }
-    }
-
     /// Closing the Add Provider sheet lands on the saved provider, or back on Add Provider after Cancel.
     static func afterAddProvider(savedProviderID: UUID?) -> TVLiveTVProviderFocus {
         savedProviderID.map(TVLiveTVProviderFocus.provider) ?? .addProvider
@@ -47,7 +39,7 @@ enum TVLiveTVProviderFocusPlanner {
         switch focus {
         case .provider(let id), .refresh(let id), .remove(let id):
             return providerIDs.contains(id) ? nil : afterRemoval(remainingProviderIDs: providerIDs)
-        case .back, .phoneSetup, .addProvider, .save:
+        case .back, .phoneSetup, .addProvider, .hiddenManagement, .save:
             return nil
         }
     }

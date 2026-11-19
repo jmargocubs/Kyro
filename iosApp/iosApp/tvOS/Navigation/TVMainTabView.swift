@@ -447,6 +447,7 @@ struct TVMainTabView: View {
         case .liveTV:
             TVLiveTVRootView(
                 service: .shared,
+                profileID: currentProfile?.id ?? AuthService.shared.profileId,
                 focusRequest: contentFocusRequest,
                 isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }

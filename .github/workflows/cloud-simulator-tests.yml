@@ -73,6 +73,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/kyro-derived" \
             -jobs 2 -parallel-testing-enabled NO -collect-test-diagnostics never \
             -only-testing:SiloTVTests/KyroTVFocusTests \
+            -only-testing:SiloTVTests/KyroTVVisibilityTests \
             -only-testing:SiloTVTests/KyroTVLiveTVTests \
             -only-testing:SiloTVTests/LiveTVImportProgressTests \
             -only-testing:SiloTVTests/XtreamVODTests \

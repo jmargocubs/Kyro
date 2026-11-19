@@ -248,23 +248,21 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertEqual(state.focusedChannelID, "movies")
     }
 
-    // MARK: Providers screen escape paths
+    // MARK: Providers screen stability
 
-    func testEveryControlInTheTopProviderRowEscapesUpToBack() {
+    func testTopProviderRowDoesNotRequestBackWhenMovingUp() {
         let first = UUID(), second = UUID()
         let ids = [first, second]
-        for focus in [TVLiveTVProviderFocus.provider(first), .refresh(first), .remove(first)] {
-            XCTAssertTrue(TVLiveTVProviderFocusPlanner.escapesToBack(focus, providerIDs: ids), "\(focus)")
+        for target in [TVLiveTVProviderFocus.provider(first), .refresh(first), .remove(first),
+                       .phoneSetup, .addProvider, .hiddenManagement] {
+            XCTAssertNil(TVLiveTVProviderFocusPlanner.relocationIfRemoved(target, providerIDs: ids),
+                         "Navigation must be native until a row is actually removed")
         }
-        for focus in [TVLiveTVProviderFocus.provider(second), .refresh(second), .remove(second), .save, .back] {
-            XCTAssertFalse(TVLiveTVProviderFocusPlanner.escapesToBack(focus, providerIDs: ids), "\(focus)")
-        }
-        XCTAssertFalse(TVLiveTVProviderFocusPlanner.escapesToBack(.phoneSetup, providerIDs: ids))
     }
 
     func testWithNoProvidersSetUpWithPhoneIsTheTopControlAndTheEntryPoint() {
-        XCTAssertTrue(TVLiveTVProviderFocusPlanner.escapesToBack(.phoneSetup, providerIDs: []))
         XCTAssertEqual(TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: []), .phoneSetup)
+        XCTAssertNil(TVLiveTVProviderFocusPlanner.relocationIfRemoved(.phoneSetup, providerIDs: []))
     }
 
     func testFocusAfterRemovingAProviderLandsOnTheNextOneOrPhoneSetup() {
@@ -278,7 +276,7 @@ final class KyroTVFocusTests: XCTestCase {
         let first = UUID(), second = UUID()
         let ids = [first, second]
         for target in [TVLiveTVProviderFocus.back, .provider(first), .refresh(first),
-                       .remove(second), .phoneSetup, .addProvider] {
+                       .remove(second), .phoneSetup, .addProvider, .hiddenManagement] {
             for _ in 0..<100 {
                 XCTAssertNil(TVLiveTVProviderFocusPlanner.relocationIfRemoved(target, providerIDs: ids))
             }
@@ -301,10 +299,16 @@ final class KyroTVFocusTests: XCTestCase {
     }
 
     func testGuideLayoutUsesViewportAndNeverOverlapsAdjacentProgramCells() {
-        XCTAssertLessThan(TVLiveTVGuideLayout.horizontalInset, 58)
-        XCTAssertGreaterThan(TVLiveTVGuideLayout.channelWidth, 310)
-        XCTAssertGreaterThan(TVLiveTVGuideLayout.rowHeight, 112)
+        XCTAssertLessThan(TVLiveTVGuideLayout.horizontalInset(viewportWidth: 1920), 30)
+        XCTAssertGreaterThan(TVLiveTVGuideLayout.channelWidth(viewportWidth: 1920), 310)
+        XCTAssertGreaterThan(TVLiveTVGuideLayout.rowHeight(viewportHeight: 1080), 112)
         XCTAssertGreaterThan(TVLiveTVGuideLayout.visibleProgramWidth(viewportWidth: 1920), 1400)
+        for viewport in [CGFloat(1280), 1920, 3840] {
+            let channel = TVLiveTVGuideLayout.channelWidth(viewportWidth: viewport)
+            let insets = 2 * TVLiveTVGuideLayout.horizontalInset(viewportWidth: viewport)
+            XCTAssertLessThanOrEqual(channel + insets, viewport * 0.38)
+            XCTAssertGreaterThan(TVLiveTVGuideLayout.visibleProgramWidth(viewportWidth: viewport), viewport * 0.6)
+        }
         for width in [CGFloat(1), 6, 20, 90, 180] {
             let rendered = TVLiveTVGuideLayout.programCellWidth(width)
             XCTAssertGreaterThan(rendered, 0)
@@ -312,12 +316,68 @@ final class KyroTVFocusTests: XCTestCase {
         }
     }
 
-    func testRemovingTopProviderKeepsNextRowAsEntryAndBackEscape() {
+    func testRemovingTopProviderKeepsNextRowAsEntryWithoutBackRedirect() {
         let first = UUID(), next = UUID()
         XCTAssertEqual(TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: [first, next]), .provider(first))
         let target = TVLiveTVProviderFocusPlanner.afterRemoval(remainingProviderIDs: [next])
         XCTAssertEqual(target, .provider(next))
-        XCTAssertTrue(TVLiveTVProviderFocusPlanner.escapesToBack(target, providerIDs: [next]))
+        XCTAssertNil(TVLiveTVProviderFocusPlanner.relocationIfRemoved(target, providerIDs: [next]))
+    }
+
+    func testCategoryBrowsingIsNestedUnderCategoriesAndBackRestoresOrigin() {
+        var state = TVLiveTVBrowseNavigation()
+        state.select(.categories)
+        state.openCategory("News")
+        XCTAssertEqual(state.section, .categories)
+        XCTAssertEqual(state.selectedCategory, "News")
+        XCTAssertTrue(state.back())
+        XCTAssertEqual(state.section, .categories)
+        XCTAssertNil(state.selectedCategory)
+        XCTAssertEqual(state.focusedCategory, "News")
+        state.scrollAnchor = "Earlier Category"
+        XCTAssertEqual(state.scrollAnchor, "Earlier Category")
+        XCTAssertFalse(state.back(), "Back must not loop into the category grid")
+        state.select(.favorites)
+        XCTAssertNil(state.selectedCategory)
+    }
+
+    func testCategoryNavigationSurvivesTabSwitchSnapshot() {
+        var state = TVLiveTVBrowseNavigation()
+        state.openCategory("Sports")
+        let snapshot = state
+        state.select(.channels)
+        XCTAssertEqual(snapshot.section, .categories)
+        XCTAssertEqual(snapshot.selectedCategory, "Sports")
+        XCTAssertEqual(snapshot.focusedCategory, "Sports")
+    }
+
+    func testHidingCategoryPreservesNearbyFocusAndScrollAnchor() {
+        var state = TVLiveTVBrowseNavigation()
+        state.openCategory("Sports")
+        state.scrollAnchor = "Sports"
+        XCTAssertEqual(state.hideCategory("Sports", visibleCategories: ["News", "Sports", "Movies"]), "Movies")
+        XCTAssertNil(state.selectedCategory)
+        XCTAssertEqual(state.section, .categories)
+        XCTAssertEqual(state.focusedCategory, "Movies")
+        XCTAssertEqual(state.scrollAnchor, "Movies")
+    }
+
+    func testNativeLongPressMenusExposeExpectedActionsWithoutChangingShortPress() {
+        XCTAssertEqual(TVLiveTVChannelMenuAction.allCases.map { $0.title(isFavorite: false) },
+                       ["Watch Channel", "Add to Favorites", "Hide Channel", "Channel Information"])
+        XCTAssertEqual(TVLiveTVChannelMenuAction.favorite.title(isFavorite: true), "Remove from Favorites")
+        XCTAssertEqual(TVLiveTVCategoryMenuAction.allCases, [.browse, .guide, .hide])
+    }
+
+    func testContextMenuAndGuideDismissalRetainOriginatingFocus() {
+        let channel = TVLiveTVRootView.FocusTarget.channel("news")
+        let category = TVLiveTVRootView.FocusTarget.category("Sports")
+        XCTAssertEqual(TVLiveTVRootView.restorationTarget(channel, channelIDs: ["news"],
+                                                          categories: ["Sports"], section: .channels), channel)
+        XCTAssertEqual(TVLiveTVRootView.restorationTarget(category, channelIDs: [],
+                                                          categories: ["Sports"], section: .categories), category)
+        XCTAssertEqual(TVLiveTVRootView.restorationTarget(category, channelIDs: [],
+                                                          categories: [], section: .categories), .section(.categories))
     }
 
     func testApprovalCountdownUsesReadableMinuteSecondBoundaries() {
