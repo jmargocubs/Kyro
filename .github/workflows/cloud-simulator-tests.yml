@@ -78,6 +78,7 @@ jobs:
             -only-testing:SiloTVTests/KyroTVVisibilityTests \
             -only-testing:SiloTVTests/KyroTVLiveTVBrowseFocusTests \
             -only-testing:SiloTVTests/KyroTVGuideLayoutTests \
+            -only-testing:SiloTVTests/KyroTVEdgeToEdgeLayoutTests \
             -only-testing:SiloTVTests/KyroTVLiveTVTests \
             -only-testing:SiloTVTests/LiveTVImportProgressTests \
             -only-testing:SiloTVTests/XtreamVODTests \

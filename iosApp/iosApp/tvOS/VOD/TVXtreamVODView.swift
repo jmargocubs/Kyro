@@ -57,6 +57,9 @@ struct TVXtreamVODView: View {
     /// Space above the header. The tab page sits under the top menu; the Live TV full-screen
     /// cover has no menu above it.
     var topInset: CGFloat = TVTopMenuLayout.contentTopInset
+    /// Side inset of the page. The tab page sits under a shell that ignores the side safe area;
+    /// the Live TV cover is already inside it and passes 0.
+    var horizontalInset: CGFloat = TVScreenLayout.pageHorizontalInset
 
     private enum Field: Hashable {
         case search, mode(XtreamVODBrowseMode), refresh, card(String)
@@ -77,10 +80,12 @@ struct TVXtreamVODView: View {
     @State private var pendingEntryClaim = false
     @FocusState private var focused: Field?
 
-    private let columns = Array(repeating: GridItem(.fixed(SiloTheme.Skyline.densePosterCardWidth + 24), spacing: 34), count: 7)
+    /// Adaptive: Build 98 fixed seven 200 pt columns, leaving about 156 pt unused at the right of
+    /// a 1080p screen. Cells now share the full width; the poster keeps its size.
+    private let columns = TVXtreamVODLayout.columns
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: TVScreenLayout.sectionSpacing) {
             header
             controls
             if let progress = vod.progress, Self.showsImportStatus(progress, providerID: provider.id, kind: kind) {
@@ -88,7 +93,7 @@ struct TVXtreamVODView: View {
             }
             grid
         }
-        .padding(.horizontal, 80)
+        .padding(.horizontal, horizontalInset)
         .padding(.top, topInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(TVKyroAmbientBackdrop().ignoresSafeArea())
@@ -172,7 +177,7 @@ struct TVXtreamVODView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 30)
             } else {
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 38) {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: TVXtreamVODLayout.rowSpacing) {
                     ForEach(items) { item in
                         Button { selected = item } label: {
                             TVXtreamVODPosterCard(item: item, providerName: provider.name,
@@ -182,12 +187,11 @@ struct TVXtreamVODView: View {
                         .focused($focused, equals: .card(item.id))
                     }
                 }
-                // Room for the focused card's lift inside the clipped scroll view.
-                .padding(.vertical, 24)
-                .padding(.horizontal, 24)
             }
         }
-        .padding(.horizontal, -24)
+        // Runs to the screen's side and bottom edges; margins keep resting cards in the safe area
+        // and leave room for the focused card's lift (Build 98 clipped 24 pt inside the page).
+        .tvEdgeToEdgeScroll(horizontalBleed: max(horizontalInset, TVScreenLayout.focusRoom))
         .onChange(of: focused) { _, field in
             guard case .card(let id)? = field, let index = items.firstIndex(where: { $0.id == id }) else { return }
             if TVXtreamVODFocusPlanner.shouldLoadMore(focusedIndex: index, loadedCount: items.count,
@@ -338,7 +342,19 @@ struct TVXtreamVODView: View {
 }
 
 /// Poster card sized like the Silo dense poster rows: 2:3 artwork, title, and a resume bar.
-private struct TVXtreamVODPosterCard: View {
+private /// IPTV VOD poster grid geometry (Build 99).
+enum TVXtreamVODLayout {
+    static var cellWidth: CGFloat { SiloTheme.Skyline.densePosterCardWidth + 24 }
+    static let columnSpacing: CGFloat = 34
+    static let rowSpacing: CGFloat = 38
+    static let columns = [GridItem(.adaptive(minimum: cellWidth), spacing: columnSpacing)]
+
+    static func columnCount(width: CGFloat) -> Int {
+        TVScreenLayout.adaptiveColumnCount(width: width, minimum: cellWidth, spacing: columnSpacing)
+    }
+}
+
+struct TVXtreamVODPosterCard: View {
     let item: XtreamVODItem
     let providerName: String
     let progress: Double?

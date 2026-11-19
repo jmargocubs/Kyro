@@ -231,8 +231,11 @@ struct TVLibraryGridView: View {
                     .padding(.horizontal, SiloTheme.safePadding)
                 }
             }
-            .padding(.bottom, 48)
         }
+        // Build 99: the page scroll view runs through the bottom safe-area band; its margin rests
+        // the last poster row inside the safe area (Build 98 stopped 60 pt above the edge and
+        // added 48 pt of padding).
+        .tvEdgeToEdgeScroll(topRoom: 0)
         .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: noteShellFocusRequest))
     }
 

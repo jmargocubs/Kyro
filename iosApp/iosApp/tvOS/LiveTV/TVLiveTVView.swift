@@ -161,10 +161,9 @@ struct TVLiveTVRootView: View {
     @Namespace private var contentScope
     @FocusState private var focusedControl: FocusTarget?
 
-    private let columns = Array(
-        repeating: GridItem(.flexible(minimum: 250, maximum: 340), spacing: 34),
-        count: 5
-    )
+    /// Adaptive, so the column count follows the width instead of assuming 1080p.
+    private let categoryColumns = TVLiveTVPageLayout.categoryColumns
+    private let channelColumns = TVLiveTVPageLayout.channelColumns
 
     private var scope: TVLiveTVVisibilityScope? {
         guard let providerID = service.selectedProviderID else { return nil }
@@ -180,7 +179,7 @@ struct TVLiveTVRootView: View {
         ZStack {
             TVKyroAmbientBackdrop()
 
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: TVScreenLayout.sectionSpacing) {
                 header
                 if let progress = service.importProgress, !progress.isOnboarding, !progress.isTerminal {
                     TVCompactLiveRefreshLine(progress: progress)
@@ -188,9 +187,10 @@ struct TVLiveTVRootView: View {
                 controls
                 contentRegion
             }
-            .padding(.horizontal, 72)
+            // Text and controls sit inside the safe area; the grids' scroll views reach the
+            // screen's side and bottom edges (`tvEdgeToEdgeScroll`).
+            .padding(.horizontal, TVScreenLayout.pageHorizontalInset)
             .padding(.top, TVTopMenuLayout.contentTopInset)
-            .padding(.bottom, 38)
             .disabled(service.importProgress.map { $0.isOnboarding && !$0.isTerminal } ?? false)
             // Manual and automatic refreshes stay in place; only first-time setup is full screen.
             if let progress = service.importProgress, progress.isOnboarding,
@@ -290,15 +290,15 @@ struct TVLiveTVRootView: View {
         }
     }
 
+    /// Title and provider summary share one baseline (Build 98 stacked them, about 40 pt taller).
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Live TV")
-                    .font(.system(size: 52, weight: .bold))
-                Text(providerSummary)
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(Color.siloSecondaryText)
-            }
+        HStack(alignment: .firstTextBaseline, spacing: 22) {
+            Text("Live TV")
+                .font(.system(size: 46, weight: .bold))
+            Text(providerSummary)
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(Color.siloSecondaryText)
+                .lineLimit(1)
             Spacer()
             if service.isLoading || service.isGuideLoading {
                 ProgressView(service.isLoading ? "Loading channels…" : "Updating guide…")
@@ -419,15 +419,17 @@ struct TVLiveTVRootView: View {
     private var categoryGrid: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 28) {
+                LazyVGrid(columns: categoryColumns, alignment: .leading, spacing: TVLiveTVPageLayout.rowSpacing) {
                     categoryButton("All Channels", count: allChannelsCount, category: nil)
                     ForEach(visibleCategories, id: \.self) { category in
                         categoryButton(category, count: categoryCounts[category, default: 0], category: category)
                     }
                 }
-                .padding(.vertical, 18)
                 .scrollTargetLayout()
             }
+            // Build 98 clipped this scroll view 98 pt above the screen edge with the last row cut
+            // off. It now runs to the edges and its margins rest the last row inside the safe area.
+            .tvEdgeToEdgeScroll(horizontalBleed: TVScreenLayout.pageHorizontalInset)
             .scrollPosition(id: Binding(
                 get: { navigation.scrollAnchor },
                 set: { navigation.scrollAnchor = $0 }
@@ -453,18 +455,7 @@ struct TVLiveTVRootView: View {
         Button {
             openCategory(category)
         } label: {
-            VStack(alignment: .leading, spacing: 12) {
-                Image(systemName: category == nil ? "rectangle.stack" : "square.grid.2x2")
-                    .font(.system(size: 38, weight: .semibold))
-                    .foregroundStyle(KyroTheme.accentInk)
-                Text(title).font(.system(size: 27, weight: .semibold)).lineLimit(2)
-                Text("\(count) channels")
-                    .font(.system(size: 20))
-                    .foregroundStyle(Color.siloSecondaryText)
-            }
-            .frame(maxWidth: .infinity, minHeight: 140, alignment: .leading)
-            .padding(24)
-            .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            TVLiveTVCategoryCardLabel(title: title, count: count, isAllChannels: category == nil)
         }
         .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 20))
         .focused($focusedControl, equals: .category(category ?? TVLiveTVBrowseFocusPlanner.allChannelsCardID))
@@ -516,7 +507,7 @@ struct TVLiveTVRootView: View {
                                : "Try a different search or category.")
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 34) {
+                    LazyVGrid(columns: channelColumns, alignment: .leading, spacing: TVLiveTVPageLayout.channelRowSpacing) {
                         ForEach(matches) { channel in
                             TVLiveTVChannelCard(
                                 channel: channel,
@@ -531,8 +522,8 @@ struct TVLiveTVRootView: View {
                             )
                         }
                     }
-                    .padding(.vertical, 18)
                 }
+                .tvEdgeToEdgeScroll(horizontalBleed: TVScreenLayout.pageHorizontalInset)
             }
         }
     }
@@ -814,9 +805,11 @@ struct TVLiveTVProviderManagementView: View {
                 // height/content must not move their frames during a refresh.
                 TVProviderRefreshPanel(coordinator: refresher, service: service, vod: vod)
             }
-            .padding(.horizontal, 120)
-            .padding(.vertical, 68)
+            // The cover already sits inside the 80 pt side safe area; Build 98 added 120 pt more
+            // (200 pt per side). Keep only the focus room for the rows' lift.
+            .padding(.horizontal, TVScreenLayout.focusRoom)
         }
+        .tvEdgeToEdgeScroll(topRoom: TVScreenLayout.sectionSpacing)
         .disabled(onboardingProgress != nil)
         .background(TVKyroAmbientBackdrop())
         .overlay {
@@ -1067,9 +1060,9 @@ struct TVAddProviderSheet: View {
                         .foregroundStyle(KyroTheme.live).font(.system(size: 22, weight: .medium))
                 }
             }
-            .padding(.horizontal, 120)
-            .padding(.vertical, 68)
+            .padding(.horizontal, TVScreenLayout.focusRoom)
         }
+        .tvEdgeToEdgeScroll(topRoom: TVScreenLayout.sectionSpacing)
         .background(TVKyroAmbientBackdrop())
         .onAppear { focus = .type }
         .onExitCommand { if formStep == 2 { formStep = 1 } else { onCancel() } }
@@ -1469,7 +1462,8 @@ struct TVLiveTVImportView: View {
         .fullScreenCover(isPresented: Binding(get: { browseKind != nil }, set: { if !$0 { browseKind = nil } })) {
             if let kind = browseKind, let provider {
                 TVXtreamVODView(provider: provider, kind: kind, focusRequest: 0,
-                                isTopMenuFocused: false, onMoveUp: nil, topInset: 70)
+                                isTopMenuFocused: false, onMoveUp: nil, topInset: TVScreenLayout.sectionSpacing,
+                                horizontalInset: 0)
             }
         }
         .animation(.easeInOut(duration: 0.25), value: progress.stage)
@@ -1668,8 +1662,15 @@ struct TVLiveTVGuideView: View {
     var body: some View {
         // The reader takes the cover's safe-area size and is never resized by its content, so the
         // metrics cannot feed back on themselves (the Build 97 regression).
+        //
+        // Build 99: the reader also extends through the bottom safe area, so the grid's scroll view
+        // runs to the screen edge. `bottomOverscan` gives that band back as the grid's bottom
+        // content margin, so the last row rests inside the safe area instead of being clipped
+        // 72 pt above the edge. Width and the timeline scale are unchanged.
         GeometryReader { proxy in
-            let metrics = TVLiveTVGuideLayout.Metrics(viewport: proxy.size)
+            let metrics = TVLiveTVGuideLayout.Metrics(
+                viewport: proxy.size,
+                bottomOverscan: max(proxy.safeAreaInsets.bottom, TVScreenLayout.overscan.bottom))
             ScrollViewReader { scrollProxy in
                 VStack(alignment: .leading, spacing: TVLiveTVGuideLayout.rowSpacing) {
                     guideHeader
@@ -1687,9 +1688,10 @@ struct TVLiveTVGuideView: View {
                 }
             }
             .padding(.horizontal, metrics.horizontalInset)
-            .padding(.vertical, metrics.verticalInset)
+            .padding(.top, metrics.verticalInset)
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
+        .ignoresSafeArea(.container, edges: .bottom)
         .background(TVKyroAmbientBackdrop().ignoresSafeArea())
         .defaultFocus($focus, focusHistory.isInGrid ? focusHistory.grid : focusHistory.header)
         .modifier(LiveTVChannelCover(service: service, presenter: .guide, isEnabled: true,
@@ -1913,6 +1915,9 @@ struct TVLiveTVGuideGrid<Row: View>: View {
                     ForEach(rows) { channel in row(channel) }
                 }
             }
+            // Only the vertical axis gets a margin: the horizontal origin stays at 0 so the header
+            // offset and the program cells keep one coordinate system.
+            .contentMargins(.bottom, metrics.gridBottomMargin, for: .scrollContent)
             .frame(width: metrics.contentWidth, alignment: .topLeading)
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 geometry.contentOffset.x + geometry.contentInsets.leading

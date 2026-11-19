@@ -20,9 +20,13 @@ enum TVLiveTVGuideLayout {
     static let cellGap: CGFloat = 6
     static let rowSpacing: CGFloat = 8
     static let timelineHeaderHeight: CGFloat = 34
+    /// Room below the last row for a focused cell's lift and shadow.
+    static let focusRoom: CGFloat = 16
 
+    /// Inside the cover's 80 pt side safe area. Build 98 used 1.2 % (21 pt at 1760 pt); Build 99
+    /// uses 0.8 % (14 pt), which still clears a focused channel tile's ring and lift.
     static func horizontalInset(viewportWidth: CGFloat) -> CGFloat {
-        min(24, max(12, viewportWidth * 0.012))
+        min(24, max(12, viewportWidth * 0.008))
     }
 
     static func verticalInset(viewportHeight: CGFloat) -> CGFloat {
@@ -62,15 +66,25 @@ enum TVLiveTVGuideLayout {
         let channelWidth: CGFloat
         let rowHeight: CGFloat
         let pointsPerMinute: CGFloat
+        /// The part of `viewport` that lies in the bottom safe-area band (Build 99). The grid
+        /// scrolls through it; resting rows stay above it.
+        let bottomOverscan: CGFloat
 
-        init(viewport: CGSize) {
+        init(viewport: CGSize, bottomOverscan: CGFloat = 0) {
             self.viewport = viewport
+            self.bottomOverscan = max(0, bottomOverscan)
             horizontalInset = TVLiveTVGuideLayout.horizontalInset(viewportWidth: viewport.width)
             verticalInset = TVLiveTVGuideLayout.verticalInset(viewportHeight: viewport.height)
             channelWidth = TVLiveTVGuideLayout.channelWidth(viewportWidth: viewport.width)
-            rowHeight = TVLiveTVGuideLayout.rowHeight(viewportHeight: viewport.height)
+            // Rows size from the safe height, so reaching into the overscan band adds rows on
+            // screen rather than making each row taller.
+            rowHeight = TVLiveTVGuideLayout.rowHeight(viewportHeight: viewport.height - self.bottomOverscan)
             pointsPerMinute = TVLiveTVGuideLayout.pointsPerMinute(viewportWidth: viewport.width)
         }
+
+        /// Bottom content margin of the grid: the overscan band, the bottom inset, and room for a
+        /// focused row's lift, so the last row is fully visible when scrolled to the end.
+        var gridBottomMargin: CGFloat { bottomOverscan + verticalInset + TVLiveTVGuideLayout.focusRoom }
 
         /// The guide's usable width inside its insets: header, timeline and grid all clip to it.
         var contentWidth: CGFloat { max(0, viewport.width - 2 * horizontalInset) }

@@ -5,8 +5,9 @@ import os
 
 enum TVTopMenuLayout {
     /// Vertical clearance needed when a root tvOS page does not render a
-    /// full-bleed hero behind the custom top menu.
-    static let contentTopInset: CGFloat = 188
+    /// full-bleed hero behind the custom top menu. Build 99: 148 pt, 28 pt
+    /// under the bar (was 188 pt, 68 pt under it). See `TVScreenLayout`.
+    static let contentTopInset: CGFloat = TVScreenLayout.contentTopInset
 }
 
 /// Publishes the on-screen bounds of each panel-bearing bar element so the

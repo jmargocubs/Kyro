@@ -35,7 +35,10 @@ struct TVSportsHubView: View {
         case bannerAction
     }
 
-    private let columns = Array(repeating: GridItem(.flexible(minimum: 360, maximum: 520), spacing: 34), count: 3)
+    /// Adaptive (Build 99): three cards across 1080p using the full width (Build 98 capped them at
+    /// 520 pt, leaving about 130 pt unused), two on a narrower viewport.
+    private let columns = [GridItem(.adaptive(minimum: TVSportsLayout.minimumCardWidth),
+                                    spacing: TVSportsLayout.columnSpacing)]
 
     private var games: [KyroSportsGame] {
         TVSportsFeed.games(mode: mode, live: store.liveGames, schedule: store.scheduleGames)
@@ -79,7 +82,7 @@ struct TVSportsHubView: View {
     // MARK: Feed
 
     private var feed: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: TVScreenLayout.sectionSpacing) {
             header
             categoryRow
             modeRow
@@ -87,9 +90,8 @@ struct TVSportsHubView: View {
             if let banner { bannerView(banner) }
             content
         }
-        .padding(.horizontal, 72)
+        .padding(.horizontal, TVScreenLayout.pageHorizontalInset)
         .padding(.top, TVTopMenuLayout.contentTopInset)
-        .padding(.bottom, 38)
     }
 
     private var header: some View {
@@ -219,8 +221,8 @@ struct TVSportsHubView: View {
                         .focused($focus, equals: .game(game.id))
                     }
                 }
-                .padding(.vertical, 24)
             }
+            .tvEdgeToEdgeScroll(horizontalBleed: TVScreenLayout.pageHorizontalInset)
             .focusSection()
             .onChange(of: focus) { _, newFocus in
                 if case .game(let id) = newFocus { focusMemory.remember(id) }
@@ -317,6 +319,16 @@ struct TVSportsHubView: View {
     static func dayLabel(_ day: Date, calendar: Calendar, now: Date) -> String {
         if calendar.isDate(day, inSameDayAs: now) { return "Today" }
         return day.formatted(.dateTime.weekday(.abbreviated).day())
+    }
+}
+
+/// Sports feed grid geometry (Build 99).
+enum TVSportsLayout {
+    static let minimumCardWidth: CGFloat = 440
+    static let columnSpacing: CGFloat = 34
+
+    static func columnCount(width: CGFloat) -> Int {
+        TVScreenLayout.adaptiveColumnCount(width: width, minimum: minimumCardWidth, spacing: columnSpacing)
     }
 }
 #endif

@@ -162,7 +162,7 @@ struct TVSportsEventDetailView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: TVScreenLayout.sectionSpacing) {
             matchupHeader
             tabRow
             ScrollView {
@@ -175,13 +175,13 @@ struct TVSportsEventDetailView: View {
                     case .streams: streams
                     }
                 }
-                .padding(.vertical, 12)
             }
+            .tvEdgeToEdgeScroll(horizontalBleed: TVScreenLayout.pageHorizontalInset,
+                                topRoom: TVScreenLayout.sectionSpacing)
             .focusSection()
         }
-        .padding(.horizontal, 72)
+        .padding(.horizontal, TVScreenLayout.pageHorizontalInset)
         .padding(.top, TVTopMenuLayout.contentTopInset)
-        .padding(.bottom, 38)
         .onExitCommand(perform: close)
         // Reloads only when the event changes; a live event refreshes itself on the shared cadence
         // and stops when this screen leaves.

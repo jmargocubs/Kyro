@@ -172,15 +172,18 @@ final class KyroTVGuideLayoutTests: XCTestCase {
 
 /// Fixture listings that cover the whole timeline, so an empty region can only be a layout fault.
 @MainActor
-private struct GuideLayoutFixture {
+struct GuideLayoutFixture {
     let anchor: Date
     let channels: [LiveTVChannel]
     let programs: [String: [EPGProgram]]
 
-    static func make() -> GuideLayoutFixture {
+    static func make(channelCount: Int = 8) -> GuideLayoutFixture {
         let anchor = Date()
-        let names = ["NFHS Network Championship Coverage East", "City News", "Arena Sports 1",
-                     "Weather Now", "Classic Movies", "Kids Channel", "World Music", "Science Today"]
+        let base = ["NFHS Network Championship Coverage East", "City News", "Arena Sports 1",
+                    "Weather Now", "Classic Movies", "Kids Channel", "World Music", "Science Today"]
+        let names = (0..<channelCount).map { index in
+            index < base.count ? base[index] : "\(base[index % base.count]) \(index / base.count + 1)"
+        }
         let timeline = TVLiveTVGuideView.timeline(anchor: anchor, pointsPerMinute: 1)
         var channels: [LiveTVChannel] = []
         var programs: [String: [EPGProgram]] = [:]
@@ -207,13 +210,17 @@ private struct GuideLayoutFixture {
 
 /// The same composition as `TVLiveTVGuideView.body`: toolbar, then the shared grid, inside the
 /// metrics' insets. A plain black background keeps the pixel checks unambiguous.
-private struct GuideLayoutHarness: View {
+struct GuideLayoutHarness: View {
     let viewport: CGSize
     let fixture: GuideLayoutFixture
+    /// Build 99: the bottom safe-area band the guide's viewport reaches into.
+    var bottomOverscan: CGFloat = 0
+    /// Reproduces Build 98's equal top and bottom inset, for before/after renders.
+    var build98Padding = false
     @FocusState private var focus: TVLiveTVGuideFocus?
 
     var body: some View {
-        let metrics = TVLiveTVGuideLayout.Metrics(viewport: viewport)
+        let metrics = TVLiveTVGuideLayout.Metrics(viewport: viewport, bottomOverscan: bottomOverscan)
         let timeline = TVLiveTVGuideView.timeline(anchor: fixture.anchor, pointsPerMinute: metrics.pointsPerMinute)
         VStack(alignment: .leading, spacing: TVLiveTVGuideLayout.rowSpacing) {
             TVLiveTVGuideToolbar(categoryTitle: nil, categories: ["News", "Sports"], favoritesOnly: false,
@@ -226,7 +233,8 @@ private struct GuideLayoutHarness: View {
             }
         }
         .padding(.horizontal, metrics.horizontalInset)
-        .padding(.vertical, metrics.verticalInset)
+        .padding(.top, metrics.verticalInset)
+        .padding(.bottom, build98Padding ? metrics.verticalInset : 0)
         .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
         .background(Color.black)
         .environment(\.colorScheme, .dark)
