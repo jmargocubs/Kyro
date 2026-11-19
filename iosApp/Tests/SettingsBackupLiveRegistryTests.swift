@@ -251,10 +251,11 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
     }
 
     func testRestoreWritesNoServerSyncedPlayerKeys() throws {
-        // Only the six device-local player accessors are reachable from the registry. The synced
-        // ones (quality, speed, subtitles, orientation...) have no entry to restore.
+        // Server-synced player choices stay out. The one allowed subtitle id is the device
+        // caption-matching toggle, which writes local player state and does not enqueue a server write.
         let ids = makeRig().registry.settings.map(\.id)
-        for forbidden in ["quality", "speed", "subtitle", "orientation", "gravity", "hdr", "audioLanguage", "introSkip"] {
+        XCTAssertEqual(ids.filter { $0.lowercased().contains("subtitle") }, ["subtitleDisplay.matchesSystem"])
+        for forbidden in ["quality", "speed", "orientation", "gravity", "hdr", "audioLanguage", "introSkip", "subtitleLanguage", "subtitleMode", "subtitleAppearance"] {
             XCTAssertFalse(ids.contains { $0.lowercased().contains(forbidden.lowercased()) }, forbidden)
         }
     }
