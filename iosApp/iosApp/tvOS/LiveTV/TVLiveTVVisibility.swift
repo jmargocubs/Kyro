@@ -21,14 +21,73 @@ struct TVLiveTVVisibilitySnapshot: Codable, Equatable {
     var categories: Set<String> = []
 
     var hiddenChannelIDs: Set<String> { Set(channels.keys) }
+    var isEmpty: Bool { channels.isEmpty && categories.isEmpty }
 
+    /// Channel and category rules for `source` alone. Prefer `TVLiveTVVisibilityPolicy`, which also
+    /// hides a stream listed again under a visible category.
     func visibleChannels(_ source: [LiveTVChannel]) -> [LiveTVChannel] {
-        if channels.isEmpty { return source }
-        return source.filter { channels[$0.id] == nil }
+        TVLiveTVVisibilityPolicy(snapshot: self, catalog: source).visibleChannels(source)
     }
 
     func visibleCategories(_ source: [String]) -> [String] {
         source.filter { !categories.contains($0) }
+    }
+}
+
+/// The one rule every normal Live TV surface uses: All Channels, Categories and their counts,
+/// Favorites, channel search and the TV Guide. A channel is hidden when it was hidden itself, when
+/// its category is hidden, or when the same stream is also listed under a hidden category.
+/// Individual channel rules and category rules stay independent: restoring a category never
+/// restores a channel hidden on its own. The catalog, provider data, guide data and Favorites are
+/// never changed. Category rules match by name, so newly imported channels in a hidden category
+/// stay hidden.
+struct TVLiveTVVisibilityPolicy {
+    let snapshot: TVLiveTVVisibilitySnapshot
+    private let hiddenStreamKeys: Set<String>
+
+    init(snapshot: TVLiveTVVisibilitySnapshot, catalog: [LiveTVChannel]) {
+        self.snapshot = snapshot
+        guard !snapshot.categories.isEmpty else {
+            hiddenStreamKeys = []
+            return
+        }
+        var keys = Set<String>()
+        for channel in catalog where snapshot.categories.contains(channel.category) {
+            keys.insert(Self.streamKey(channel))
+        }
+        hiddenStreamKeys = keys
+    }
+
+    /// Xtream lists one stream under several categories with the same stream ID; an M3U repeats
+    /// its URL. Either identifies the same channel across categories.
+    static func streamKey(_ channel: LiveTVChannel) -> String {
+        if let streamID = channel.streamID { return "id:\(streamID)" }
+        return "url:\(channel.streamURL.absoluteString)"
+    }
+
+    func isVisible(_ channel: LiveTVChannel) -> Bool {
+        if snapshot.channels[channel.id] != nil { return false }
+        if snapshot.categories.isEmpty { return true }
+        if snapshot.categories.contains(channel.category) { return false }
+        return !hiddenStreamKeys.contains(Self.streamKey(channel))
+    }
+
+    func visibleChannels(_ source: [LiveTVChannel]) -> [LiveTVChannel] {
+        if snapshot.isEmpty { return source }
+        return source.filter(isVisible)
+    }
+
+    func visibleCategories(_ source: [String]) -> [String] {
+        snapshot.visibleCategories(source)
+    }
+
+    /// Visible channels per visible category, for the category grid.
+    func categoryCounts(_ catalog: [LiveTVChannel]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for channel in catalog where isVisible(channel) {
+            counts[channel.category, default: 0] += 1
+        }
+        return counts
     }
 }
 

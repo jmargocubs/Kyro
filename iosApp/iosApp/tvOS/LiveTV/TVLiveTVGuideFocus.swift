@@ -2,32 +2,81 @@
 import Foundation
 import CoreGraphics
 
-/// TV Guide geometry follows the safe viewport; focus never changes these metrics.
+/// TV Guide geometry, derived only from the safe-area viewport the guide is offered. Content never
+/// feeds back into these numbers, and focus never changes them.
+///
+/// Build 97 regression: the timeline header sat outside the grid's scroll view at a fixed
+/// 4.2 pt/min, so channel column + 6.5 h of ticks (≈2,030 pt) was wider than the screen. The
+/// over-wide header widened the guide's stack, the full-screen cover centered it, and the channel
+/// column was pushed past the left edge while the header ran past the program blocks. The viewport
+/// was also measured from that inflated stack. Now the scale is chosen so the visible window fits
+/// the program viewport, the header shares the grid's horizontal scroll offset inside a clipped
+/// frame, and the viewport is read from a GeometryReader that content cannot resize.
 enum TVLiveTVGuideLayout {
+    /// The span of the timeline that fits beside the channel column without scrolling.
+    static let visibleWindowMinutes: CGFloat = 180
+    static let minimumPointsPerMinute: CGFloat = 4.2
+    static let maximumPointsPerMinute: CGFloat = 9
+    static let cellGap: CGFloat = 6
+    static let rowSpacing: CGFloat = 8
+    static let timelineHeaderHeight: CGFloat = 34
+
     static func horizontalInset(viewportWidth: CGFloat) -> CGFloat {
-        min(28, max(16, viewportWidth * 0.012))
+        min(24, max(12, viewportWidth * 0.012))
     }
 
     static func verticalInset(viewportHeight: CGFloat) -> CGFloat {
-        min(20, max(10, viewportHeight * 0.012))
+        min(18, max(8, viewportHeight * 0.012))
     }
 
     static func channelWidth(viewportWidth: CGFloat) -> CGFloat {
-        min(430, max(330, viewportWidth * 0.205))
+        min(400, max(320, viewportWidth * 0.2))
     }
 
     static func rowHeight(viewportHeight: CGFloat) -> CGFloat {
-        min(138, max(116, viewportHeight * 0.116))
+        min(132, max(108, viewportHeight * 0.12))
     }
-    static let cellGap: CGFloat = 6
 
     static func programCellWidth(_ timelineWidth: CGFloat) -> CGFloat {
         max(timelineWidth - cellGap, min(timelineWidth, 1))
     }
 
+    /// Width left for program cells beside the channel column.
     static func visibleProgramWidth(viewportWidth: CGFloat) -> CGFloat {
         max(0, viewportWidth - 2 * horizontalInset(viewportWidth: viewportWidth)
             - channelWidth(viewportWidth: viewportWidth))
+    }
+
+    /// Scale so `visibleWindowMinutes` fills the program viewport. Later listings scroll in.
+    static func pointsPerMinute(viewportWidth: CGFloat) -> CGFloat {
+        min(maximumPointsPerMinute,
+            max(minimumPointsPerMinute, visibleProgramWidth(viewportWidth: viewportWidth) / visibleWindowMinutes))
+    }
+
+    /// All guide geometry for one viewport. Channel column, timeline header and program cells use
+    /// the same `channelWidth` and `pointsPerMinute`, so they share one coordinate system.
+    struct Metrics: Equatable {
+        let viewport: CGSize
+        let horizontalInset: CGFloat
+        let verticalInset: CGFloat
+        let channelWidth: CGFloat
+        let rowHeight: CGFloat
+        let pointsPerMinute: CGFloat
+
+        init(viewport: CGSize) {
+            self.viewport = viewport
+            horizontalInset = TVLiveTVGuideLayout.horizontalInset(viewportWidth: viewport.width)
+            verticalInset = TVLiveTVGuideLayout.verticalInset(viewportHeight: viewport.height)
+            channelWidth = TVLiveTVGuideLayout.channelWidth(viewportWidth: viewport.width)
+            rowHeight = TVLiveTVGuideLayout.rowHeight(viewportHeight: viewport.height)
+            pointsPerMinute = TVLiveTVGuideLayout.pointsPerMinute(viewportWidth: viewport.width)
+        }
+
+        /// The guide's usable width inside its insets: header, timeline and grid all clip to it.
+        var contentWidth: CGFloat { max(0, viewport.width - 2 * horizontalInset) }
+        var programViewportWidth: CGFloat { max(0, contentWidth - channelWidth) }
+        var visibleMinutes: CGFloat { programViewportWidth / pointsPerMinute }
+        var slotWidth: CGFloat { CGFloat(30) * pointsPerMinute }
     }
 }
 

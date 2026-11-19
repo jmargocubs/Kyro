@@ -154,6 +154,30 @@ scroll offset during the first handoff. Down re-enters on that channel's name
 tile. Fullscreen playback and sheets own Back while they are presented; do not
 install a competing handler in the guide's rows or window.
 
+## Live TV Page
+
+The Live TV page has two native focus sections: the control row (All Channels,
+Categories, Favorites, TV Guide, Providers, Search) and the content region below
+it. `TVLiveTVBrowseFocusPlanner` holds the rules; the view applies them.
+
+- Each section declares where focus enters it with `defaultFocus` at
+  `.userInitiated` priority. Down from any chip enters the content region's
+  target (the last channel, the first channel, the remembered category, or the
+  status page's button). Up from content returns to the selected section's chip.
+  No chip depends on what happens to sit directly below it.
+- The content region always fills the width below the row and always contains a
+  focus target. Status and loading pages without a button are focusable
+  placeholders, so empty Favorites still accepts Down, Up and Back.
+- The only directional handler is the row's Up boundary to the top menu. Do not
+  add per-chip `onMoveCommand` handlers or a Down interceptor.
+- Back goes up one level: a category's channels → the category grid (restoring
+  that card and the scroll anchor) → the control row, on the selected section →
+  the top menu. One `onExitCommand` on the page decides by the focused target.
+- Opening a category removes the focused card, so focus moves to that category's
+  loading placeholder in the same update and then to its first channel when its
+  own results land, unless the user has already moved. Showing the grid by
+  selecting the Categories chip never pulls focus out of the row.
+
 ## Top Menu Ownership
 
 The top menu has three conceptual states:

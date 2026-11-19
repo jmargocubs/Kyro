@@ -9,6 +9,9 @@ struct LiveTVChannelCover: ViewModifier {
     @Bindable var service: LiveTVService
     let presenter: LiveTVPresenter
     let isEnabled: Bool
+    /// The Apple TV Live TV pages pass their visibility rule so the player's channel picker
+    /// never lists hidden channels. Nil lists the whole catalog.
+    var channelFilter: ((LiveTVChannel) -> Bool)? = nil
 
     /// `isEnabled` gates the cover's binding, never the view tree. Build 79.1: an `if !isEnabled
     /// { content }` branch gave `content` a new identity whenever Home's browser was pushed or
@@ -31,7 +34,8 @@ struct LiveTVChannelCover: ViewModifier {
                 get: { isEnabled ? service.presentation.coverItem(for: presenter) : nil },
                 set: { if $0 == nil && isEnabled { service.presentation.coverDismissed(from: presenter) } }
             )) { cover in
-                LiveTVPlayerView(channel: cover.channel, channels: service.channels,
+                LiveTVPlayerView(channel: cover.channel,
+                                 channels: channelFilter.map { service.channels.filter($0) } ?? service.channels,
                                  session: service.playerSession, service: service)
             }
         }

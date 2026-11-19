@@ -41,6 +41,9 @@ struct TVLiveTVHiddenManagementView: View {
                     .foregroundStyle(Color.siloSecondaryText)
 
                 Text("Hidden Categories").font(.system(size: 32, weight: .bold))
+                Text("A hidden category’s channels stay out of All Channels, Favorites, search and the TV Guide until you restore it.")
+                    .font(.system(size: 21))
+                    .foregroundStyle(Color.siloSecondaryText)
                 if hidden.categories.isEmpty {
                     Text("No hidden categories").foregroundStyle(Color.siloSecondaryText)
                 }
