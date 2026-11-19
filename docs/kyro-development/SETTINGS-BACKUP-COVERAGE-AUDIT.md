@@ -232,3 +232,57 @@ Build 96 adds `streaming.audioLanguage` to schema 2 without changing the schema 
 ## Follow-up inventory finding (2026-11-19)
 
 The Settings → Features → Watch Party switch was an additional persisted user preference not represented in the original 64-candidate denominator. Its owner is `ExperimentalFeatures`, stored under the explicit `experimental.watchParty` UserDefaults key. It is device-local and contains no server or account identity. It is now included as `features.watchParty`; restore routes through `ExperimentalFeature.watchParty.setEnabled`, so disabling also leaves an active party session. Both `false` and `true` are serialized as explicit booleans. Registry coverage increases by one (34 registered settings including the existing three remote definitions). This does **not** complete the remaining API-backed or identity-bound inventory: coverage remains partial and physical-device testing is still required.
+
+## API batch 1: profile-device scalar settings (2026-11-19)
+
+**Outcome:** 14 more API-backed settings now export, preview, restore selectively, confirm with a fresh server read, and Undo through the existing schema-2 `.kyrosettings` file. Coverage of the 64-candidate denominator rises from **33/64 to 47/64**. Registered settings rise from 34 to 48: 31 device-local (the 30 approved local settings plus Watch Party) and 17 API-backed.
+
+The "31 unsupported API candidates" table above counted Audio Language, which Build 96 had already implemented. The true remainder before this batch was **31 without Audio Language**: 10 profile-scope, 15 profile-device and 6 composite/scope-sensitive entries.
+
+### What was added
+
+All 14 are written at `profile_device`, the same scope the owning screens write (`PlayerSettings.playerDeviceSettings`, `playerBufferingQualitySettings`, `ThemeMusicPreferences.keys`; a test pins this). A row from any other scope means this device has no value, which the backup records as `~inherit`; restoring `~inherit` deletes only the destination device row.
+
+| Backup ID | Group | Contract key | Backup value | Notes |
+|---|---|---|---|---|
+| `streaming.maxBitrate` | Streaming | `playback.max_bitrate_kbps` | int 100…200000, `~null` (explicit "No limit"), `~inherit` | Null and inherited stay distinct |
+| `streaming.bufferingQuality` | Streaming | `playback.buffering_quality_mode` | `never`/`ask`/`always` | Revision 23; capability-gated |
+| `streaming.hdr` | Streaming | `player.hdr_enabled` | bool | |
+| `streaming.dolbyVision` | Streaming | `player.dolby_vision_enabled` | bool | |
+| `player.introSkip` | Player | `playback.intro_skip_mode` | `never`/`ask`/`always` | |
+| `player.skipCredits` | Player | `playback.auto_skip_credits` | bool | |
+| `player.autoPlayNext` | Player | `playback.auto_play_next` | bool | Not the local `player.autoPlayNextEpisode` cache |
+| `player.nextUpSeconds` | Player | `playback.next_up_prompt_seconds` | int 0…120 | |
+| `player.speedHundredths` | Player | `player.playback_speed` | int 25…300, step 5 (125 = 1.25×) | A backup holds no floats; off-grid server values are refused, not rounded |
+| `player.videoSizing` | Player | `player.video_gravity` | `fit`/`fill`/`stretch` | Applies from the next playback |
+| `player.orientation` | Player | `player.orientation_mode` | `landscapeLocked`/`rotateFreely` | |
+| `player.fastSeeking` | Player | `player.seek_cache_enabled` | bool | ID avoids the word "cache", which the safety filter rejects |
+| `interface.themeMusic` | Interface | `ui.theme_music_enabled` | bool | Revision 11; capability-gated |
+| `interface.themeMusicLoop` | Interface | `ui.theme_music_loop` | bool | Revision 11; capability-gated |
+
+### Adapter changes
+
+* `RemoteBackupDefinition` is now one typed table (`RemoteBackupValueKind`: bool, contract choice, bounded/nullable integer, speed hundredths, plus the three original kinds). Validation, snapshot, wire conversion and labels come from the kind, so a new scalar needs one table row rather than new adapter code. Choice lists and labels are pinned to the production enums by tests.
+* The production transport asks for only the keys the server's contract serves. A batch read fails as a whole on an unknown key, so before this change one newer key would have broken every synced backup on an older server. Keys newer than `SettingKey.minimumServerRevision` (buffering mode, both theme-music flags) are omitted from that server's export. On restore they appear as "This server doesn't support this setting." Any other missing row still aborts export rather than writing an incomplete file.
+* Preview distinguishes an unreadable value, an unsupported key and a server value that can't be transferred safely, so every backed-up setting gets a reason.
+* After restore or Undo, `PlayerSettings` and `ThemeMusicPreferences` both refresh from the server.
+* The model no longer hardcodes the three remote IDs or two groups. `SettingsBackupGroup.isServerSynced` routes `streaming`, `subtitles`, `player` and `interface` to the adapter. The decoder refuses any of them in a schema-1 or unscoped file. Unknown IDs in a synced group are counted as skipped.
+
+**Compatibility:** schema stays 2 with `minReaderVersion` 1. Build 93 schema-1 files and Build 96 schema-2 files (three synced IDs) still import unchanged. A Build 96 reader opening a new file treats `player`/`interface` as unknown groups and the four new streaming IDs as unknown settings, and counts all of them as skipped.
+
+### Validation
+
+* **macOS host checks** (production codec, adapter and model with a controlled fake API; `swiftc -D KYRO_STANDALONE_TESTS`): **42 unified checks passed** (10 existing + 32 new) and **6 codec checks passed**. The new checks are a 23-row table (every setting; both directions for every boolean; explicit-null and inherited bitrate) running export → change → preview → restore at `profile_device` → confirmed read → Undo. They also cover an older server without the gated keys, profile mismatch with zero writes, a write failure mid-restore with recovery, cross-group selective restore, Undo skipping a value changed since restore, out-of-contract values refused in preview and never written, a Build 96 file, an unknown future synced ID, no URL/server/profile identifiers in the document, and schema-1 refusal of the new groups.
+* **iOS XCTest:** `SettingsBackupRemoteBatchOneTests` (9 tests, real wire models) and the updated `SettingsBackupUnifiedTests` **compiled** with `xcodebuild build-for-testing` for `generic/platform=iOS`. **They were not executed**; no Simulator was launched and no cloud run was started.
+* No IPA was built. tvOS was not modified.
+
+### Remaining API-backed work: 17 of the 64
+
+| Batch | Settings | Why it is separate |
+|---|---|---|
+| 2 — profile-scope scalars (10) | Show advisory age; blur unwatched episode images; hide unwatched episode descriptions; video skip back/forward; audiobook skip back/forward; subtitle behavior; show forced subtitles; metadata language | Same adapter and table, scope `profile`. Each needs its revision gate (9, 10, 17) and a check that series overrides cannot mask the profile row (subtitle behavior, forced subtitles) |
+| 3 — subtitle appearance scope (3) | Subtitle appearance record; "appearance only on this device"; subtitle sync offset | One setting moves between `profile` and `profile_device`, and sync follows it (profile scope from revision 19). The appearance record is an object, which the scalar-only envelope cannot carry without a versioned structured value |
+| 4 — paired/scope-choice (2) | Cellular quality pair; title art | Cellular is two keys written atomically (revision 20, iPhone/iPad only). Title art has an apply-to-all choice between profile and device scope |
+| 5 — catalog-bound composites (2) | Card presentation; primary menu + shortcuts | Atomic composite objects; menu entries contain library IDs that must resolve against the destination catalog |
+
+Provider/catalog-bound items outside the 64 (Live TV Favorites, pinned/hidden categories, server Favorites, browse state, library order) remain excluded until a stable non-secret identity exists, as described above. Physical-iPhone validation of any API-backed setting is still outstanding.

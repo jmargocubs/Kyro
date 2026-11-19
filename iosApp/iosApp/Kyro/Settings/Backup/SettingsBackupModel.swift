@@ -33,7 +33,7 @@ final class SettingsBackupModel {
 
     var availablePortableGroups: [SettingsBackupGroup] {
         SettingsBackupGroup.portable.filter {
-            !registry.settings(in: $0).isEmpty || (remote != nil && ($0 == .streaming || $0 == .subtitles))
+            !registry.settings(in: $0).isEmpty || (remote != nil && $0.isServerSynced)
         }
     }
 
@@ -56,7 +56,7 @@ final class SettingsBackupModel {
         self.app = app
         self.now = now
         self.remote = remote
-        if remote != nil { self.exportSelection.formUnion([.streaming, .subtitles]) }
+        if remote != nil { self.exportSelection.formUnion(SettingsBackupRemoteAdapter.groups) }
         refreshRestorePointState()
     }
 
@@ -89,7 +89,7 @@ final class SettingsBackupModel {
                 groups = try SettingsBackupCodec.decode(local).groups
             }
             var scope: SettingsBackupScope?
-            if exportSelection.contains(.streaming) || exportSelection.contains(.subtitles) {
+            if exportSelection.contains(where: \.isServerSynced) {
                 let synced = try await remote.export()
                 scope = synced.scope
                 for (group, values) in synced.groups {
@@ -187,22 +187,22 @@ final class SettingsBackupModel {
         do {
             let incoming = try SettingsBackupCodec.decode(data)
             let localGroups = incoming.groups.filter {
-                $0.key != SettingsBackupGroup.streaming.rawValue
-                    && $0.key != SettingsBackupGroup.subtitles.rawValue
+                SettingsBackupGroup(rawValue: $0.key)?.isServerSynced != true
             }
             let local = IncomingBackup(schemaVersion: incoming.schemaVersion, createdAt: incoming.createdAt,
                                        app: incoming.app, groups: localGroups, scope: incoming.scope)
             let localPreview = SettingsBackupPlanner.preview(local, registry: registry)
             let remoteGroups = await remote.preview(incoming)
-            let unknownStreaming = incoming.groups[SettingsBackupGroup.streaming.rawValue]?.keys
-                .filter { !["streaming.resolution", "streaming.audioLanguage"].contains($0) }.count ?? 0
-            let unknownSubtitles = incoming.groups[SettingsBackupGroup.subtitles.rawValue]?.keys
-                .filter { $0 != "subtitles.language" }.count ?? 0
+            // A newer Kyro may add synced settings this build does not know; they are counted as
+            // skipped, never dropped silently.
+            let unknownRemote = incoming.groups
+                .filter { SettingsBackupGroup(rawValue: $0.key)?.isServerSynced == true }
+                .reduce(0) { $0 + $1.value.keys.filter { !SettingsBackupRemoteAdapter.settingIDs.contains($0) }.count }
             let result = RestorePreview(
                 createdAt: incoming.createdAt, app: incoming.app,
                 groups: localPreview.groups + remoteGroups,
                 unrecognizedGroups: localPreview.unrecognizedGroups,
-                unrecognizedSettings: localPreview.unrecognizedSettings + unknownStreaming + unknownSubtitles,
+                unrecognizedSettings: localPreview.unrecognizedSettings + unknownRemote,
                 isNewerThanSupported: localPreview.isNewerThanSupported)
             incomingBackup = incoming
             acceptPreview(result)
@@ -343,9 +343,7 @@ final class SettingsBackupModel {
         }
         isBusy = true
         defer { isBusy = false; refreshRestorePointState() }
-        let remoteIDs = selectedSettingIDs.intersection([
-            "streaming.resolution", "streaming.audioLanguage", "subtitles.language"
-        ])
+        let remoteIDs = selectedSettingIDs.intersection(SettingsBackupRemoteAdapter.settingIDs)
         let remoteReport = await remote.apply(incomingBackup, selectedIDs: remoteIDs)
         let skippedText = remoteReport.skipped.isEmpty ? "" : " \(remoteReport.skipped.count) synced settings were skipped."
         if !remoteReport.failed.isEmpty {
@@ -358,7 +356,7 @@ final class SettingsBackupModel {
             return
         }
         let localIDs = selectedSettingIDs.subtracting(remoteIDs)
-        let localGroups = importSelection.subtracting([.streaming, .subtitles])
+        let localGroups = importSelection.filter { !$0.isServerSynced }
         let localOutcome = localIDs.isEmpty ? RestoreOutcome.nothingToApply
             : applier.apply(preview: preview, selectedGroups: localGroups, selectedIDs: localIDs)
         switch localOutcome {

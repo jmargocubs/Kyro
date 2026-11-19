@@ -15,18 +15,26 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
         .playbackAudioLanguage: .string("en"),
         .playbackSubtitleLanguage: .string("en"),
     ]
+    private var profileRows: [SettingKey: SettingJSONValue] = [:]
+    private var unserved: Set<SettingKey> = []
     private var failedKey: SettingKey?
     private var offline = false
     private var delay: Duration?
     private(set) var writes: [SettingKey] = []
+    private(set) var writeScopes: [SettingScopeIdentity] = []
 
     func owner() async throws -> SettingsBackupRemoteOwner { destination }
 
     func read(_ keys: [SettingKey], owner: SettingsBackupRemoteOwner) async throws -> EffectiveSettingValuesResponse {
         if let delay { try await Task.sleep(for: delay) }
         if offline { throw Failure.offline }
-        let rows = keys.map { key -> EffectiveSettingValue in
-            let scope: SettingScope = key == .playbackSubtitleLanguage ? .profile : .profileDevice
+        let rows = keys.filter { !unserved.contains($0) }.map { key -> EffectiveSettingValue in
+            let ownScope: SettingScope = key == .playbackSubtitleLanguage ? .profile : .profileDevice
+            if stored[key] == nil, let inherited = profileRows[key] {
+                return EffectiveSettingValue(key: key.rawValue, value: inherited, source: .scope(.profile),
+                                             scope: .profile, profileId: destination.request.profileId)
+            }
+            let scope = ownScope
             let value = stored[key]
             return EffectiveSettingValue(
                 key: key.rawValue,
@@ -40,20 +48,25 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
 
     func put(_ key: SettingKey, scope: SettingScopeIdentity, value: SettingJSONValue,
              owner: SettingsBackupRemoteOwner) async throws {
-        if offline || key == failedKey { throw Failure.offline }
+        if offline || key == failedKey || unserved.contains(key) { throw Failure.offline }
         guard owner.request == destination.request else { throw SettingsBackupRemoteError.changedOwner }
         stored[key] = value
         writes.append(key)
+        writeScopes.append(scope)
     }
 
     func delete(_ key: SettingKey, scope: SettingScopeIdentity,
                 owner: SettingsBackupRemoteOwner) async throws {
-        if offline || key == failedKey { throw Failure.offline }
+        if offline || key == failedKey || unserved.contains(key) { throw Failure.offline }
         stored[key] = nil
         writes.append(key)
+        writeScopes.append(scope)
     }
 
     func set(_ key: SettingKey, to value: SettingJSONValue?) { stored[key] = value }
+    func setProfileRow(_ key: SettingKey, to value: SettingJSONValue?) { profileRows[key] = value }
+    func setUnserved(_ keys: Set<SettingKey>) { unserved = keys }
+    func clearWrites() { writes = []; writeScopes = [] }
     func value(_ key: SettingKey) -> SettingJSONValue? { stored[key] }
     func fail(_ key: SettingKey?) { failedKey = key }
     func setOffline(_ flag: Bool) { offline = flag }
@@ -134,7 +147,9 @@ final class SettingsBackupUnifiedTests: XCTestCase {
         await transport.moveProfile()
         await model.loadUnifiedImport(data: data)
         let remote = model.preview?.groups.filter { [.streaming, .subtitles].contains($0.group) }
-        XCTAssertEqual(remote?.flatMap(\.items).count, 3)
+        // Six streaming settings (including batch 1's bitrate, buffering, HDR, Dolby Vision) and one
+        // subtitle setting are all refused for a different profile.
+        XCTAssertEqual(remote?.flatMap(\.items).count, 7)
         XCTAssertTrue(remote?.flatMap(\.items).allSatisfy {
             if case .unsupported = $0.status { return true }; return false
         } ?? false)
@@ -212,6 +227,220 @@ final class SettingsBackupUnifiedTests: XCTestCase {
             _ = try await adapter.export()
             XCTFail("A timed-out authoritative read must not produce a backup")
         } catch { XCTAssertTrue(error is SettingsBackupRemoteError) }
+    }
+}
+
+/// Batch 1: the fourteen profile-device scalar settings, against the production adapter and the
+/// real wire models. One table row per value transition, so both boolean directions, explicit null,
+/// and inherited rows are each exercised.
+@MainActor
+final class SettingsBackupRemoteBatchOneTests: XCTestCase {
+    private struct Row {
+        let id: String
+        let key: SettingKey
+        let saved: SettingJSONValue?
+        let backup: BackupValue
+        let current: SettingJSONValue
+    }
+
+    private static let inherit = BackupValue.string("~inherit")
+    private let app = SettingsBackupAppInfo(version: "1", build: "97", platform: "iOS", idiom: "phone")
+
+    private let rows: [Row] = [
+        Row(id: "streaming.maxBitrate", key: .playbackMaxBitrateKbps, saved: .int(6000), backup: .int(6000), current: .null),
+        Row(id: "streaming.maxBitrate", key: .playbackMaxBitrateKbps, saved: .null, backup: .string("~null"), current: .int(2000)),
+        Row(id: "streaming.maxBitrate", key: .playbackMaxBitrateKbps, saved: nil, backup: inherit, current: .int(2000)),
+        Row(id: "streaming.bufferingQuality", key: .playbackBufferingQualityMode, saved: .string("never"), backup: .string("never"), current: .string("always")),
+        Row(id: "streaming.hdr", key: .playerHdrEnabled, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "streaming.hdr", key: .playerHdrEnabled, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "streaming.hdr", key: .playerHdrEnabled, saved: nil, backup: inherit, current: .bool(false)),
+        Row(id: "streaming.dolbyVision", key: .playerDolbyVisionEnabled, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "streaming.dolbyVision", key: .playerDolbyVisionEnabled, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "player.introSkip", key: .playbackIntroSkipMode, saved: .string("always"), backup: .string("always"), current: .string("never")),
+        Row(id: "player.skipCredits", key: .playbackAutoSkipCredits, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "player.skipCredits", key: .playbackAutoSkipCredits, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "player.autoPlayNext", key: .playbackAutoPlayNext, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "player.autoPlayNext", key: .playbackAutoPlayNext, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "player.nextUpSeconds", key: .playbackNextUpPromptSeconds, saved: .int(0), backup: .int(0), current: .int(30)),
+        Row(id: "player.speedHundredths", key: .playerPlaybackSpeed, saved: .double(1.25), backup: .int(125), current: .double(2)),
+        Row(id: "player.videoSizing", key: .playerVideoGravity, saved: .string("fill"), backup: .string("fill"), current: .string("fit")),
+        Row(id: "player.orientation", key: .playerOrientationMode, saved: .string("rotateFreely"), backup: .string("rotateFreely"), current: .string("landscapeLocked")),
+        Row(id: "player.fastSeeking", key: .playerSeekCacheEnabled, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "player.fastSeeking", key: .playerSeekCacheEnabled, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "interface.themeMusic", key: .uiThemeMusicEnabled, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "interface.themeMusic", key: .uiThemeMusicEnabled, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "interface.themeMusicLoop", key: .uiThemeMusicLoop, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "interface.themeMusicLoop", key: .uiThemeMusicLoop, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+    ]
+
+    private func document(_ adapter: SettingsBackupRemoteAdapter) async throws -> IncomingBackup {
+        let exported = try await adapter.export()
+        return try SettingsBackupCodec.decode(SettingsBackupCodec.makeUnifiedDocument(
+            groups: exported.groups, scope: exported.scope, app: app, now: Date()))
+    }
+
+    func testEveryBatchOneSettingIsCoveredByTheTable() {
+        let batch: Set<RemoteBackupDefinition> = [
+            .maxBitrate, .bufferingQuality, .hdr, .dolbyVision, .introSkip, .skipCredits, .autoPlayNext,
+            .nextUpPrompt, .playbackSpeed, .videoSizing, .orientation, .seekCache, .themeMusic, .themeMusicLoop,
+        ]
+        XCTAssertEqual(Set(rows.map(\.id)), Set(batch.map(\.id)))
+        XCTAssertEqual(Set(RemoteBackupDefinition.allCases).subtracting(batch),
+                       [.resolution, .audioLanguage, .subtitleLanguage])
+        for definition in batch {
+            XCTAssertEqual(definition.scope, .profileDevice, definition.id)
+            XCTAssertFalse(SettingsBackupSafety.isSensitiveName(definition.id), definition.id)
+        }
+    }
+
+    /// The adapter writes the same scope the owning screens write, so restore cannot move a value
+    /// to the profile or another device.
+    func testBatchOneKeysAreTheOwnersProfileDeviceKeys() {
+        let playerKeys = Set(SettingKey.playerDeviceSettings + SettingKey.playerBufferingQualitySettings)
+        for definition in RemoteBackupDefinition.allCases where definition.scope == .profileDevice {
+            let owned = playerKeys.contains(definition.key) || ThemeMusicPreferences.keys.contains(definition.key)
+            XCTAssertTrue(owned, "\(definition.id) is not a profile-device key its owner writes")
+        }
+        // Subtitle timing follows the appearance scope switch and is deliberately not in this batch.
+        XCTAssertFalse(RemoteBackupDefinition.allCases.contains { $0.key == .playerSubtitleSyncMs })
+    }
+
+    func testCapabilityGatingMatchesTheRevisionTable() {
+        for definition in RemoteBackupDefinition.allCases {
+            XCTAssertEqual(definition.requiresCapability, definition.key.isNewerThanMinimumServer, definition.id)
+        }
+    }
+
+    func testChoicesAndLabelsMatchProductionEnums() {
+        func choices(_ definition: RemoteBackupDefinition) -> [String] {
+            guard case .choice(let options) = definition.kind else { return [] }
+            return options.map(\.value)
+        }
+        XCTAssertEqual(choices(.bufferingQuality), BufferingQualityMode.allCases.map(\.wireValue))
+        XCTAssertEqual(choices(.introSkip), IntroSkipMode.allCases.map(\.wireValue))
+        XCTAssertEqual(choices(.videoSizing), VideoGravity.allCases.map(\.rawValue))
+        XCTAssertEqual(choices(.orientation), [PlayerOrientationMode.landscapeLocked.rawValue,
+                                               PlayerOrientationMode.rotateFreely.rawValue])
+        for mode in BufferingQualityMode.allCases {
+            XCTAssertEqual(RemoteBackupDefinition.bufferingQuality.label(.string(mode.wireValue)), mode.label)
+        }
+        for mode in IntroSkipMode.allCases {
+            XCTAssertEqual(RemoteBackupDefinition.introSkip.label(.string(mode.wireValue)), mode.label)
+        }
+        for gravity in VideoGravity.allCases {
+            XCTAssertEqual(RemoteBackupDefinition.videoSizing.label(.string(gravity.rawValue)), gravity.label)
+        }
+        XCTAssertEqual(RemoteBackupDefinition.maxBitrate.label(.string("~null")), SiloQualityPresets.noBitrateLimitLabel)
+    }
+
+    func testEachSettingRoundTripsThroughTheAuthoritativeScopeAndUndoes() async throws {
+        for row in rows {
+            let transport = FakeBackupRemoteTransport()
+            await transport.set(row.key, to: row.saved)
+            if row.saved == nil { await transport.setProfileRow(row.key, to: row.current) }
+            let adapter = SettingsBackupRemoteAdapter(transport: transport, journal: MemoryRemoteBackupJournal())
+            let incoming = try await document(adapter)
+            let group = String(row.id.split(separator: ".")[0])
+            XCTAssertEqual(incoming.groups[group]?[row.id], row.backup, "export \(row.id)")
+
+            await transport.set(row.key, to: row.current)
+            let preview = await adapter.preview(incoming)
+            let item = try XCTUnwrap(preview.flatMap(\.items).first { $0.id == row.id }, row.id)
+            XCTAssertEqual(item.status, .willChange, row.id)
+            XCTAssertNotEqual(item.current, item.incoming, row.id)
+
+            await transport.clearWrites()
+            let report = await adapter.apply(incoming, selectedIDs: [row.id])
+            XCTAssertEqual(report.applied, [row.id])
+            XCTAssertTrue(report.failed.isEmpty, row.id)
+            let restored = await transport.value(row.key)
+            XCTAssertEqual(restored, row.saved, "restore \(row.id)")
+            let writes = await transport.writes
+            let scopes = await transport.writeScopes
+            XCTAssertEqual(writes, [row.key], row.id)
+            XCTAssertEqual(scopes, [.profileDevice], row.id)
+
+            let undo = await adapter.undo()
+            XCTAssertEqual(undo.applied, [row.id], row.id)
+            let undone = await transport.value(row.key)
+            XCTAssertEqual(undone, row.current, "undo \(row.id)")
+        }
+    }
+
+    func testOlderServerOmitsNewerKeysAndReportsThemOnRestore() async throws {
+        let full = FakeBackupRemoteTransport()
+        await full.set(.playbackBufferingQualityMode, to: .string("ask"))
+        await full.set(.uiThemeMusicEnabled, to: .bool(true))
+        let fullFile = try await document(SettingsBackupRemoteAdapter(transport: full, journal: MemoryRemoteBackupJournal()))
+
+        let old = FakeBackupRemoteTransport()
+        await old.setUnserved([.playbackBufferingQualityMode, .uiThemeMusicEnabled, .uiThemeMusicLoop])
+        let oldAdapter = SettingsBackupRemoteAdapter(transport: old, journal: MemoryRemoteBackupJournal())
+        let oldFile = try await document(oldAdapter)
+        XCTAssertNil(oldFile.groups["streaming"]?["streaming.bufferingQuality"])
+        XCTAssertNil(oldFile.groups["interface"])
+        let preview = await oldAdapter.preview(fullFile)
+        for id in ["streaming.bufferingQuality", "interface.themeMusic", "interface.themeMusicLoop"] {
+            XCTAssertEqual(preview.flatMap(\.items).first { $0.id == id }?.status,
+                           .unsupported("This server doesn't support this setting."), id)
+        }
+        let report = await oldAdapter.apply(fullFile, selectedIDs: ["streaming.bufferingQuality", "interface.themeMusic"])
+        XCTAssertEqual(report.skipped.count, 2)
+        let writes = await old.writes
+        XCTAssertTrue(writes.isEmpty)
+    }
+
+    func testProfileMismatchWritesNothing() async throws {
+        let transport = FakeBackupRemoteTransport()
+        await transport.set(.playerHdrEnabled, to: .bool(false))
+        let adapter = SettingsBackupRemoteAdapter(transport: transport, journal: MemoryRemoteBackupJournal())
+        let file = try await document(adapter)
+        await transport.set(.playerHdrEnabled, to: .bool(true))
+        await transport.moveProfile()
+        let preview = await adapter.preview(file)
+        XCTAssertTrue(preview.flatMap(\.items).allSatisfy {
+            $0.status == .unsupported(SettingsBackupRemoteError.destinationMismatch.localizedDescription)
+        })
+        _ = await adapter.apply(file, selectedIDs: RemoteBackupDefinition.ids)
+        let writes = await transport.writes
+        XCTAssertTrue(writes.isEmpty)
+    }
+
+    func testFailedWriteKeepsRecoveryAndRollsBackConfirmedValues() async throws {
+        let transport = FakeBackupRemoteTransport()
+        let journal = MemoryRemoteBackupJournal()
+        await transport.set(.playbackMaxBitrateKbps, to: .int(10_000))
+        await transport.set(.playerHdrEnabled, to: .bool(false))
+        let adapter = SettingsBackupRemoteAdapter(transport: transport, journal: journal)
+        let file = try await document(adapter)
+        await transport.set(.playbackMaxBitrateKbps, to: .null)
+        await transport.set(.playerHdrEnabled, to: .bool(true))
+        await transport.fail(.playerHdrEnabled)
+        let report = await adapter.apply(file, selectedIDs: ["streaming.maxBitrate", "streaming.hdr"])
+        XCTAssertEqual(report.applied, ["streaming.maxBitrate"])
+        XCTAssertEqual(report.failed, ["streaming.hdr"])
+        XCTAssertEqual(journal.record?.state, .applying)
+        await transport.fail(nil)
+        let recovered = await adapter.undo()
+        XCTAssertTrue(recovered.failed.isEmpty)
+        let bitrate = await transport.value(.playbackMaxBitrateKbps)
+        XCTAssertEqual(bitrate, .null)
+        XCTAssertNil(journal.record)
+    }
+
+    func testOutOfContractValuesAreRefused() {
+        XCTAssertFalse(RemoteBackupDefinition.playbackSpeed.validate(.int(127)))
+        XCTAssertFalse(RemoteBackupDefinition.playbackSpeed.validate(.int(305)))
+        XCTAssertTrue(RemoteBackupDefinition.playbackSpeed.validate(.int(25)))
+        XCTAssertFalse(RemoteBackupDefinition.nextUpPrompt.validate(.int(121)))
+        XCTAssertFalse(RemoteBackupDefinition.nextUpPrompt.validate(.string("~null")))
+        XCTAssertFalse(RemoteBackupDefinition.maxBitrate.validate(.int(99)))
+        XCTAssertTrue(RemoteBackupDefinition.maxBitrate.validate(.string("~null")))
+        XCTAssertFalse(RemoteBackupDefinition.hdr.validate(.int(1)))
+        XCTAssertFalse(RemoteBackupDefinition.hdr.validate(.string("~null")))
+        XCTAssertFalse(RemoteBackupDefinition.orientation.validate(.string("sideways")))
+        XCTAssertEqual(try RemoteBackupDefinition.playbackSpeed.wireValue(.int(125)), .double(1.25))
+        XCTAssertNil(try RemoteBackupDefinition.hdr.wireValue(Self.inherit))
     }
 }
 #endif

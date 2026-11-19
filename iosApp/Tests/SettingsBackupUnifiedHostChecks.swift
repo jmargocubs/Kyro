@@ -9,17 +9,47 @@ struct HTTPRequestIdentity: Equatable, Sendable {
     let profileId: String
     let clientFamily: String
 }
-enum SettingKey: String, Hashable, Sendable {
+enum SettingKey: String, Hashable, Sendable, CaseIterable {
     case playbackPreferredQuality = "playback.preferred_quality"
     case playbackAudioLanguage = "playback.audio_language"
     case playbackSubtitleLanguage = "playback.subtitle_language"
+    case playbackMaxBitrateKbps = "playback.max_bitrate_kbps"
+    case playbackBufferingQualityMode = "playback.buffering_quality_mode"
+    case playerHdrEnabled = "player.hdr_enabled"
+    case playerDolbyVisionEnabled = "player.dolby_vision_enabled"
+    case playbackIntroSkipMode = "playback.intro_skip_mode"
+    case playbackAutoSkipCredits = "playback.auto_skip_credits"
+    case playbackAutoPlayNext = "playback.auto_play_next"
+    case playbackNextUpPromptSeconds = "playback.next_up_prompt_seconds"
+    case playerPlaybackSpeed = "player.playback_speed"
+    case playerVideoGravity = "player.video_gravity"
+    case playerOrientationMode = "player.orientation_mode"
+    case playerSeekCacheEnabled = "player.seek_cache_enabled"
+    case uiThemeMusicEnabled = "ui.theme_music_enabled"
+    case uiThemeMusicLoop = "ui.theme_music_loop"
 }
-enum SettingScope: Equatable, Sendable { case profile, profileDevice }
+enum SettingScope: Equatable, Sendable { case account, profile, profileDevice }
 enum SettingScopeIdentity: Equatable, Sendable {
     case profile, profileDevice
     var scope: SettingScope { self == .profile ? .profile : .profileDevice }
 }
-enum SettingJSONValue: Equatable, Sendable { case null, string(String) }
+enum SettingJSONValue: Equatable, Sendable {
+    case null, bool(Bool), int(Int), double(Double), string(String)
+    var intValue: Int? {
+        switch self {
+        case .int(let value): value
+        case .double(let value) where value == value.rounded(): Int(exactly: value)
+        default: nil
+        }
+    }
+    var doubleValue: Double? {
+        switch self {
+        case .double(let value): value
+        case .int(let value): Double(value)
+        default: nil
+        }
+    }
+}
 struct EffectiveSettingValue: Sendable {
     let key: String
     let value: SettingJSONValue
@@ -42,10 +72,15 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
     var values: [SettingKey: SettingJSONValue] = [
         .playbackPreferredQuality: .string("1080p"), .playbackAudioLanguage: .string("en"),
         .playbackSubtitleLanguage: .string("en")]
+    /// Rows authored at profile scope, which a profile-device setting inherits.
+    var profileValues: [SettingKey: SettingJSONValue] = [:]
+    /// Keys this fake server does not serve, like a server older than their manifest revision.
+    var unserved: Set<SettingKey> = []
     var failedKey: SettingKey?
     var offline = false
     var delay: Duration?
     var writes: [SettingKey] = []
+    var scopes: [SettingScopeIdentity] = []
 
     func owner() async throws -> SettingsBackupRemoteOwner {
         SettingsBackupRemoteOwner(
@@ -56,30 +91,42 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
         if let delay { try await Task.sleep(for: delay) }
         if offline { throw Failure.offline }
         var rows: [SettingKey: EffectiveSettingValue] = [:]
-        for key in keys {
-            let value = values[key]
-            rows[key] = EffectiveSettingValue(
-                key: key.rawValue,
-                value: value ?? (key == .playbackPreferredQuality ? .string("auto") : .null),
-                storedValue: nil,
-                scope: value == nil ? nil : key == .playbackSubtitleLanguage ? .profile : .profileDevice,
-                profileId: value == nil ? nil : "profile")
+        for key in keys where !unserved.contains(key) {
+            let own: SettingScope = key == .playbackSubtitleLanguage ? .profile : .profileDevice
+            if let value = values[key] {
+                rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
+                                                  scope: own, profileId: "profile")
+            } else if let value = profileValues[key] {
+                rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
+                                                  scope: .profile, profileId: "profile")
+            } else {
+                rows[key] = EffectiveSettingValue(
+                    key: key.rawValue, value: key == .playbackPreferredQuality ? .string("auto") : .null,
+                    storedValue: nil, scope: nil, profileId: nil)
+            }
         }
         return EffectiveSettingValuesResponse(byKey: rows)
     }
     func put(_ key: SettingKey, scope: SettingScopeIdentity, value: SettingJSONValue,
              owner: SettingsBackupRemoteOwner) async throws {
-        if offline || key == failedKey { throw Failure.offline }
+        if offline || key == failedKey || unserved.contains(key) { throw Failure.offline }
         values[key] = value
         writes.append(key)
+        scopes.append(scope)
     }
     func delete(_ key: SettingKey, scope: SettingScopeIdentity,
                 owner: SettingsBackupRemoteOwner) async throws {
-        if offline || key == failedKey { throw Failure.offline }
+        if offline || key == failedKey || unserved.contains(key) { throw Failure.offline }
         values[key] = nil
         writes.append(key)
+        scopes.append(scope)
     }
-    func change(_ key: SettingKey, _ value: SettingJSONValue) { values[key] = value }
+    func change(_ key: SettingKey, _ value: SettingJSONValue?) { values[key] = value }
+    func setProfileValue(_ key: SettingKey, _ value: SettingJSONValue?) { profileValues[key] = value }
+    func setUnserved(_ keys: Set<SettingKey>) { unserved = keys }
+    func clearWrites() { writes = [] }
+    func writtenKeys() -> [SettingKey] { writes }
+    func writtenScopes() -> [SettingScopeIdentity] { scopes }
     func fail(_ key: SettingKey?) { failedKey = key }
     func moveProfile() {
         scope = SettingsBackupScope(serverFingerprint: scope.serverFingerprint,
@@ -142,7 +189,8 @@ enum SettingsBackupUnifiedHostChecks {
 
         await transport.moveProfile()
         await model.loadUnifiedImport(data: file)
-        precondition(model.preview?.skippedCount == 3)
+        // Six streaming rows and one subtitle row are all refused for a different profile.
+        precondition(model.preview?.skippedCount == 7)
         let before = await transport.writeCount()
         await model.applyUnifiedSelected()
         let after = await transport.writeCount()
@@ -219,7 +267,267 @@ enum SettingsBackupUnifiedHostChecks {
             fatalError("cancelled export returned a file")
         } catch is CancellationError {}
 
-        print("SettingsBackupUnifiedHostChecks: 10 passed")
+        let batchCount = try await RemoteBatchOneChecks.run()
+        print("SettingsBackupUnifiedHostChecks: \(10 + batchCount) passed")
+    }
+}
+
+/// Batch 1: the fourteen profile-device scalar settings, one table row per value transition.
+@MainActor
+private enum RemoteBatchOneChecks {
+    struct Row {
+        let id: String
+        let key: SettingKey
+        /// The backed-up server value; nil means this device has no row (it inherits).
+        let saved: SettingJSONValue?
+        let backup: BackupValue
+        /// The value the destination holds before restore.
+        let current: SettingJSONValue?
+    }
+
+    static let inherit = BackupValue.string("~inherit")
+
+    static let rows: [Row] = [
+        Row(id: "streaming.maxBitrate", key: .playbackMaxBitrateKbps, saved: .int(6000), backup: .int(6000), current: .null),
+        Row(id: "streaming.maxBitrate", key: .playbackMaxBitrateKbps, saved: .null, backup: .string("~null"), current: .int(2000)),
+        Row(id: "streaming.maxBitrate", key: .playbackMaxBitrateKbps, saved: nil, backup: inherit, current: .int(2000)),
+        Row(id: "streaming.bufferingQuality", key: .playbackBufferingQualityMode, saved: .string("never"), backup: .string("never"), current: .string("always")),
+        Row(id: "streaming.hdr", key: .playerHdrEnabled, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "streaming.hdr", key: .playerHdrEnabled, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "streaming.dolbyVision", key: .playerDolbyVisionEnabled, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "streaming.dolbyVision", key: .playerDolbyVisionEnabled, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "player.introSkip", key: .playbackIntroSkipMode, saved: .string("always"), backup: .string("always"), current: .string("never")),
+        Row(id: "player.skipCredits", key: .playbackAutoSkipCredits, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "player.skipCredits", key: .playbackAutoSkipCredits, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "player.autoPlayNext", key: .playbackAutoPlayNext, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "player.autoPlayNext", key: .playbackAutoPlayNext, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "player.nextUpSeconds", key: .playbackNextUpPromptSeconds, saved: .int(0), backup: .int(0), current: .int(30)),
+        Row(id: "player.speedHundredths", key: .playerPlaybackSpeed, saved: .double(1.25), backup: .int(125), current: .double(2)),
+        Row(id: "player.videoSizing", key: .playerVideoGravity, saved: .string("fill"), backup: .string("fill"), current: .string("fit")),
+        Row(id: "player.orientation", key: .playerOrientationMode, saved: .string("rotateFreely"), backup: .string("rotateFreely"), current: .string("landscapeLocked")),
+        Row(id: "player.fastSeeking", key: .playerSeekCacheEnabled, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "player.fastSeeking", key: .playerSeekCacheEnabled, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "interface.themeMusic", key: .uiThemeMusicEnabled, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "interface.themeMusic", key: .uiThemeMusicEnabled, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+        Row(id: "interface.themeMusicLoop", key: .uiThemeMusicLoop, saved: .bool(true), backup: .bool(true), current: .bool(false)),
+        Row(id: "interface.themeMusicLoop", key: .uiThemeMusicLoop, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+    ]
+
+    static let app = SettingsBackupAppInfo(version: "1", build: "97", platform: "iOS", idiom: "phone")
+
+    static func document(_ adapter: SettingsBackupRemoteAdapter) async throws -> IncomingBackup {
+        let exported = try await adapter.export()
+        return try SettingsBackupCodec.decode(SettingsBackupCodec.makeUnifiedDocument(
+            groups: exported.groups, scope: exported.scope, app: app, now: Date()))
+    }
+
+    static func item(_ groups: [RestorePreviewGroup], _ id: String) -> RestorePreviewItem? {
+        groups.flatMap(\.items).first { $0.id == id }
+    }
+
+    static func run() async throws -> Int {
+        var checks = 0
+
+        // Every new ID passes the document's sensitive-name filter and is owned by the adapter.
+        let newIDs = Set(rows.map(\.id))
+        precondition(newIDs.count == 14 && newIDs.isSubset(of: SettingsBackupRemoteAdapter.settingIDs))
+        precondition(SettingsBackupRemoteAdapter.settingIDs.allSatisfy { !SettingsBackupSafety.isSensitiveName($0) })
+        checks += 1
+
+        // Round trip per row: export → change → preview → restore → confirm → Undo.
+        for row in rows {
+            let transport = FakeTransport()
+            await transport.change(row.key, row.saved)
+            if row.saved == nil { await transport.setProfileValue(row.key, row.current) }
+            let adapter = SettingsBackupRemoteAdapter(transport: transport, journal: RemoteMemoryJournal(),
+                                                      timeout: .seconds(1))
+            let incoming = try await document(adapter)
+            let group = row.id.split(separator: ".").first.map(String.init)!
+            precondition(incoming.groups[group]?[row.id] == row.backup, "export \(row.id) \(row.backup)")
+
+            await transport.change(row.key, row.current)
+            let preview = await adapter.preview(incoming)
+            guard let entry = item(preview, row.id) else { fatalError("preview missing \(row.id)") }
+            precondition(entry.status == .willChange, "preview \(row.id) \(entry.status)")
+            precondition(entry.current != nil && entry.current != entry.incoming)
+
+            await transport.clearWrites()
+            let report = await adapter.apply(incoming, selectedIDs: [row.id])
+            precondition(report.applied == [row.id] && report.failed.isEmpty, "apply \(row.id)")
+            let restored = await transport.current(row.key)
+            precondition(restored == row.saved, "restored \(row.id) \(String(describing: restored))")
+            let written = await transport.writtenKeys()
+            let scopes = await transport.writtenScopes()
+            precondition(written == [row.key] && scopes == [.profileDevice], "scope \(row.id)")
+
+            let undo = await adapter.undo()
+            precondition(undo.applied == [row.id] && undo.failed.isEmpty, "undo \(row.id)")
+            let undone = await transport.current(row.key)
+            precondition(undone == row.current, "undo value \(row.id)")
+            precondition(!adapter.undoAvailable)
+            checks += 1
+        }
+
+        // A server older than revision 23/11 omits those keys from export and reports them as
+        // unsupported on restore; the rest of the backup still works.
+        let full = FakeTransport()
+        await full.change(.playbackBufferingQualityMode, .string("ask"))
+        await full.change(.uiThemeMusicEnabled, .bool(true))
+        let fullFile = try await document(SettingsBackupRemoteAdapter(transport: full, journal: RemoteMemoryJournal()))
+        let old = FakeTransport()
+        let gated: Set<SettingKey> = [.playbackBufferingQualityMode, .uiThemeMusicEnabled, .uiThemeMusicLoop]
+        await old.setUnserved(gated)
+        let oldAdapter = SettingsBackupRemoteAdapter(transport: old, journal: RemoteMemoryJournal())
+        let oldFile = try await document(oldAdapter)
+        precondition(oldFile.groups["streaming"]?["streaming.bufferingQuality"] == nil)
+        precondition(oldFile.groups["interface"] == nil)
+        precondition(oldFile.groups["streaming"]?["streaming.hdr"] == inherit)
+        let oldPreview = await oldAdapter.preview(fullFile)
+        for id in ["streaming.bufferingQuality", "interface.themeMusic", "interface.themeMusicLoop"] {
+            precondition(item(oldPreview, id)?.status == .unsupported("This server doesn't support this setting."))
+        }
+        let oldReport = await oldAdapter.apply(fullFile, selectedIDs: ["streaming.bufferingQuality", "interface.themeMusic"])
+        let oldWrites = await old.writeCount()
+        precondition(oldReport.skipped.count == 2 && oldReport.failed.isEmpty && oldWrites == 0)
+        checks += 1
+
+        // Profile mismatch: nothing in batch 1 is written, and every item says why.
+        let source = FakeTransport()
+        await source.change(.playerHdrEnabled, .bool(false))
+        await source.change(.playbackAutoPlayNext, .bool(false))
+        let sourceAdapter = SettingsBackupRemoteAdapter(transport: source, journal: RemoteMemoryJournal())
+        let sourceFile = try await document(sourceAdapter)
+        await source.change(.playerHdrEnabled, .bool(true))
+        await source.moveProfile()
+        let mismatch = await sourceAdapter.preview(sourceFile)
+        precondition(mismatch.flatMap(\.items).allSatisfy {
+            $0.status == .unsupported(SettingsBackupRemoteError.destinationMismatch.localizedDescription)
+        })
+        precondition(mismatch.flatMap(\.items).count == SettingsBackupRemoteAdapter.settingIDs.count)
+        let mismatchReport = await sourceAdapter.apply(sourceFile, selectedIDs: newIDs)
+        let mismatchWrites = await source.writeCount()
+        precondition(mismatchWrites == 0 && mismatchReport.applied.isEmpty)
+        checks += 1
+
+        // API failure mid-restore: earlier writes are confirmed, the failed one is reported, the
+        // journal stays in recovery, and recovery puts the confirmed writes back.
+        let failing = FakeTransport()
+        await failing.change(.playbackMaxBitrateKbps, .int(10_000))
+        await failing.change(.playerHdrEnabled, .bool(false))
+        await failing.change(.playbackAutoPlayNext, .bool(false))
+        let failingJournal = RemoteMemoryJournal()
+        let failingAdapter = SettingsBackupRemoteAdapter(transport: failing, journal: failingJournal)
+        let failingFile = try await document(failingAdapter)
+        await failing.change(.playbackMaxBitrateKbps, .null)
+        await failing.change(.playerHdrEnabled, .bool(true))
+        await failing.change(.playbackAutoPlayNext, .bool(true))
+        await failing.fail(.playerHdrEnabled)
+        let failedReport = await failingAdapter.apply(
+            failingFile, selectedIDs: ["streaming.maxBitrate", "streaming.hdr", "player.autoPlayNext"])
+        precondition(failedReport.applied == ["streaming.maxBitrate"] && failedReport.failed == ["streaming.hdr"])
+        precondition(failingAdapter.needsRecovery)
+        await failing.fail(nil)
+        let recovered = await failingAdapter.undo()
+        precondition(recovered.failed.isEmpty)
+        let recoveredBitrate = await failing.current(.playbackMaxBitrateKbps)
+        let untouchedNext = await failing.current(.playbackAutoPlayNext)
+        precondition(recoveredBitrate == .null && untouchedNext == .bool(true) && !failingAdapter.undoAvailable)
+        checks += 1
+
+        // Selective restore across groups writes only the chosen setting.
+        let selective = FakeTransport()
+        await selective.change(.playerVideoGravity, .string("stretch"))
+        await selective.change(.uiThemeMusicLoop, .bool(true))
+        let selectiveAdapter = SettingsBackupRemoteAdapter(transport: selective, journal: RemoteMemoryJournal())
+        let selectiveFile = try await document(selectiveAdapter)
+        await selective.change(.playerVideoGravity, .string("fit"))
+        await selective.change(.uiThemeMusicLoop, .bool(false))
+        await selective.clearWrites()
+        _ = await selectiveAdapter.apply(selectiveFile, selectedIDs: ["interface.themeMusicLoop"])
+        let selectiveWrites = await selective.writtenKeys()
+        let gravity = await selective.current(.playerVideoGravity)
+        precondition(selectiveWrites == [.uiThemeMusicLoop] && gravity == .string("fit"))
+        checks += 1
+
+        // Undo leaves a value alone when it changed again after the restore.
+        let changed = FakeTransport()
+        await changed.change(.playbackIntroSkipMode, .string("always"))
+        let changedAdapter = SettingsBackupRemoteAdapter(transport: changed, journal: RemoteMemoryJournal())
+        let changedFile = try await document(changedAdapter)
+        await changed.change(.playbackIntroSkipMode, .string("never"))
+        _ = await changedAdapter.apply(changedFile, selectedIDs: ["player.introSkip"])
+        await changed.change(.playbackIntroSkipMode, .string("ask"))
+        let changedUndo = await changedAdapter.undo()
+        let afterUndo = await changed.current(.playbackIntroSkipMode)
+        precondition(changedUndo.skipped == ["player.introSkip"] && afterUndo == .string("ask"))
+        checks += 1
+
+        // Values outside the contract are refused in preview and never written.
+        let strict = FakeTransport()
+        let strictAdapter = SettingsBackupRemoteAdapter(transport: strict, journal: RemoteMemoryJournal())
+        let strictBase = try await document(strictAdapter)
+        var invalidGroups = strictBase.groups
+        invalidGroups["player"]?["player.speedHundredths"] = .int(127)
+        invalidGroups["player"]?["player.nextUpSeconds"] = .int(500)
+        invalidGroups["player"]?["player.orientation"] = .string("sideways")
+        invalidGroups["streaming"]?["streaming.hdr"] = .int(1)
+        invalidGroups["streaming"]?["streaming.dolbyVision"] = .string("~null")
+        let invalid = try SettingsBackupCodec.decode(SettingsBackupCodec.makeUnifiedDocument(
+            groups: invalidGroups, scope: strictBase.scope, app: app, now: Date()))
+        let invalidPreview = await strictAdapter.preview(invalid)
+        for id in ["player.speedHundredths", "player.nextUpSeconds", "player.orientation", "streaming.hdr", "streaming.dolbyVision"] {
+            precondition(item(invalidPreview, id)?.status == .invalid("This value is not supported."), id)
+        }
+        await strict.clearWrites()
+        let invalidReport = await strictAdapter.apply(invalid, selectedIDs: ["player.speedHundredths", "streaming.hdr"])
+        let invalidWrites = await strict.writeCount()
+        precondition(invalidWrites == 0 && invalidReport.skipped.count == 2)
+        checks += 1
+
+        // Model level: a Build 96 schema-2 file (three synced settings only) still previews and
+        // restores; an unknown future synced ID is counted as skipped; the document has no secrets.
+        let model96Transport = FakeTransport()
+        let model = SettingsBackupModel(
+            registry: LocalStore().registry(), journal: LocalMemoryJournal(), app: app,
+            remote: SettingsBackupRemoteAdapter(transport: model96Transport, journal: RemoteMemoryJournal()))
+        let scope = SettingsBackupScope(serverFingerprint: String(repeating: "a", count: 64),
+                                        profileFingerprint: String(repeating: "b", count: 64))
+        let build96 = try SettingsBackupCodec.makeUnifiedDocument(
+            groups: ["streaming": ["streaming.resolution": .string("480p"), "streaming.audioLanguage": .string("en")],
+                     "subtitles": ["subtitles.language": .string("zh")]],
+            scope: scope, app: app, now: Date())
+        await model.loadUnifiedImport(data: build96)
+        precondition(model.preview?.unrecognizedSettings == 0 && model.selectedChangeCount == 2)
+        await model.applyUnifiedSelected()
+        let build96Quality = await model96Transport.current(.playbackPreferredQuality)
+        precondition(build96Quality == .string("480p"))
+        let future = try SettingsBackupCodec.makeUnifiedDocument(
+            groups: ["player": ["player.futureSetting": .bool(true), "player.autoPlayNext": .bool(false)]],
+            scope: scope, app: app, now: Date())
+        await model.loadUnifiedImport(data: future)
+        precondition(model.preview?.unrecognizedSettings == 1 && model.selectedChangeCount == 1)
+        model.exportSelection = Set(SettingsBackupRemoteAdapter.groups)
+        guard let exported = await model.exportUnifiedDocument() else { fatalError("model export failed") }
+        let text = String(decoding: exported, as: UTF8.self)
+        for secret in ["example.invalid", "https", "\"local\"", "\"profile\""] {
+            precondition(!text.contains(secret), "document leaked \(secret)")
+        }
+        let decoded = try SettingsBackupCodec.decode(exported)
+        precondition(decoded.groups["player"]?.count == 8 && decoded.groups["interface"]?.count == 2)
+        precondition(decoded.groups["streaming"]?.count == 6)
+        checks += 1
+
+        // A schema-1 file may not carry the new synced groups.
+        let unsafe = try SettingsBackupCodec.makeDocument(
+            groups: ["player": ["player.autoPlayNext": .bool(true)]],
+            schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+        do {
+            _ = try SettingsBackupCodec.decode(unsafe)
+            fatalError("schema-1 file carried a synced player setting")
+        } catch SettingsBackupError.unsafeContent {}
+        checks += 1
+
+        return checks
     }
 }
 

@@ -100,12 +100,15 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
     case streaming
     case subtitles
     case features
+    case player
+    case interface
 
     var id: String { rawValue }
 
     var isDeviceSpecific: Bool {
         switch self {
-        case .general, .calendar, .navigation, .liveTVCategories, .guideLayout, .sports, .downloads, .streaming, .subtitles, .features: false
+        case .general, .calendar, .navigation, .liveTVCategories, .guideLayout, .sports, .downloads, .streaming,
+             .subtitles, .features, .player, .interface: false
         case .playbackOptions, .pictureInPicture, .advancedAudioVideo, .subtitleDisplay, .navigationLayout: true
         }
     }
@@ -127,6 +130,8 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .streaming: "Streaming"
         case .subtitles: "Subtitles"
         case .features: "Features"
+        case .player: "Player"
+        case .interface: "Interface"
         }
     }
 
@@ -144,9 +149,20 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .advancedAudioVideo: "Deinterlacing and TrueHD Atmos."
         case .subtitleDisplay: "Use this device's caption appearance."
         case .navigationLayout: "Floating navigation style and behavior."
-        case .streaming: "Server-synced playback quality."
+        case .streaming: "Server-synced quality, bitrate, audio language, HDR and Dolby Vision."
         case .subtitles: "Profile subtitle preferences."
         case .features: "Opt-in feature preferences."
+        case .player: "Server-synced skipping, Next Up, speed, sizing, orientation and seeking."
+        case .interface: "Server-synced theme music."
+        }
+    }
+
+    /// Groups whose values belong to the authenticated server's profile or profile-device settings.
+    /// They exist only in scoped schema-2 files and restore only to the same server and profile.
+    var isServerSynced: Bool {
+        switch self {
+        case .streaming, .subtitles, .player, .interface: true
+        default: false
         }
     }
 
@@ -443,8 +459,7 @@ enum SettingsBackupCodec {
         try validateContent(envelope.payload.groups)
         guard envelope.payload.scope?.isValid ?? true else { throw SettingsBackupError.unsafeContent }
         if header.schemaVersion == 1, envelope.payload.scope != nil { throw SettingsBackupError.unsafeContent }
-        if envelope.payload.groups.keys.contains(SettingsBackupGroup.streaming.rawValue)
-            || envelope.payload.groups.keys.contains(SettingsBackupGroup.subtitles.rawValue) {
+        if envelope.payload.groups.keys.contains(where: { SettingsBackupGroup(rawValue: $0)?.isServerSynced == true }) {
             guard header.schemaVersion >= 2, envelope.payload.scope != nil else {
                 throw SettingsBackupError.unsafeContent
             }
