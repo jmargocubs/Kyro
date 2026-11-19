@@ -40,16 +40,24 @@ extension Notification.Name {
 
 // MARK: - Values
 
-/// A backup value: a scalar, or (schema 3) one flat record of scalars. A file can never carry a
-/// number that is not an integer, a null, or a record nested inside a record.
+/// Schema 4 adds bounded ordered arrays and nested records for navigation destinations. Older
+/// documents retain their original scalar/flat-record representation and canonical hash.
 enum BackupValue: Equatable, Sendable, Codable {
     case bool(Bool)
     case int(Int)
     case string(String)
     /// A flat set of named scalars, such as the subtitle appearance. Schema 3 only.
     case record([String: BackupValue])
+    case array([BackupValue])
 
     var isRecord: Bool { if case .record = self { true } else { false } }
+    var requiresSchema4: Bool {
+        switch self {
+        case .array: true
+        case .record(let fields): fields.values.contains { $0.isRecord || $0.requiresSchema4 }
+        default: false
+        }
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
@@ -61,6 +69,8 @@ enum BackupValue: Equatable, Sendable, Codable {
             self = .string(value)
         } else if let value = try? container.decode([String: BackupValue].self) {
             self = .record(value)
+        } else if let value = try? container.decode([BackupValue].self) {
+            self = .array(value)
         } else {
             throw DecodingError.dataCorruptedError(
                 in: container, debugDescription: "Only booleans, integers, strings and flat records are allowed.")
@@ -74,6 +84,7 @@ enum BackupValue: Equatable, Sendable, Codable {
         case .int(let value): try container.encode(value)
         case .string(let value): try container.encode(value)
         case .record(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
         }
     }
 
@@ -84,6 +95,7 @@ enum BackupValue: Equatable, Sendable, Codable {
         case .int(let value): String(value)
         case .string(let value): value
         case .record: "Custom"
+        case .array(let values): "\(values.count) items"
         }
     }
 }
@@ -235,6 +247,8 @@ enum SettingsBackupSafety {
     static let maxNameLength = 80
     static let maxStringValueLength = 64
     static let maxRecordMembers = 16
+    static let maxArrayMembers = 64
+    static let maxStructuredEntries = 1_024
 
     /// Name fragments that must never appear in a backup, in a group name or a key. A file that has
     /// one is rejected rather than skipped: Kyro never writes it, so it was edited or made elsewhere.
@@ -252,11 +266,16 @@ enum SettingsBackupSafety {
 
     /// A value that looks like a link, a credential or a path.
     static func isSuspiciousValue(_ value: BackupValue) -> Bool {
-        guard case .string(let text) = value else { return false }
-        if text.count > maxStringValueLength { return true }
-        let lowered = text.lowercased()
-        return lowered.contains("://") || lowered.contains("bearer ") || lowered.hasPrefix("/")
-            || lowered.contains("..") || text.unicodeScalars.contains { $0.value < 0x20 }
+        switch value {
+        case .record(let fields): return fields.values.contains(where: isSuspiciousValue)
+        case .array(let values): return values.contains(where: isSuspiciousValue)
+        case .string(let text):
+            if text.count > 256 { return true }
+            let lowered = text.lowercased()
+            return lowered.contains("://") || lowered.contains("bearer ") || lowered.hasPrefix("/")
+                || lowered.contains("..") || text.unicodeScalars.contains { $0.value < 0x20 }
+        default: return false
+        }
     }
 }
 
@@ -333,8 +352,9 @@ enum SettingsBackupCodec {
     /// Schema 3 adds flat records (the subtitle appearance). A file is written as schema 3, with
     /// `minReaderVersion` 3, only when it contains one; every other file stays schema 2 or 1 so
     /// earlier builds keep reading it.
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
     static let recordSchemaVersion = 3
+    static let orderedSchemaVersion = 4
     /// The oldest reader that understands every file this build writes.
     static let minReaderVersion = 1
     static let fileExtension = SettingsBackupFileType.fileExtension
@@ -420,20 +440,23 @@ enum SettingsBackupCodec {
         app: SettingsBackupAppInfo, now: Date
     ) throws -> Data {
         guard !groups.isEmpty else { throw SettingsBackupError.nothingToExport }
-        try validateContent(groups)
+        let hasRecord = groups.values.contains { $0.values.contains(where: \.isRecord) }
+        let hasOrdered = groups.values.contains { $0.values.contains(where: \.requiresSchema4) }
+        try validateContent(groups, schemaVersion: hasOrdered ? orderedSchemaVersion : (hasRecord ? recordSchemaVersion : 2))
         guard scope?.isValid ?? true else { throw SettingsBackupError.unsafeContent }
         let payload = Payload(groups: groups, scope: scope)
-        let hasRecord = groups.values.contains { $0.values.contains(where: \.isRecord) }
         let envelope = Envelope(
-            format: format, schemaVersion: hasRecord ? recordSchemaVersion : 2,
-            minReaderVersion: hasRecord ? recordSchemaVersion : 1,
+            format: format, schemaVersion: hasOrdered ? orderedSchemaVersion : (hasRecord ? recordSchemaVersion : 2),
+            minReaderVersion: hasOrdered ? orderedSchemaVersion : (hasRecord ? recordSchemaVersion : 1),
             createdAt: ISO8601DateFormatter().string(from: now),
             app: AppInfoDTO(version: app.version, build: app.build, platform: app.platform, idiom: app.idiom),
             payloadSha256: try hash(of: payload), payload: payload
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        return try encoder.encode(envelope)
+        let data = try encoder.encode(envelope)
+        guard data.count <= SettingsBackupSafety.maxFileBytes else { throw SettingsBackupError.tooLarge }
+        return data
     }
 
     private static func canonicalBytes(of payload: Payload) throws -> Data {
@@ -471,9 +494,13 @@ enum SettingsBackupCodec {
         let envelope: Envelope
         do { envelope = try decoder.decode(Envelope.self, from: data) } catch { throw SettingsBackupError.malformed }
 
-        try validateContent(envelope.payload.groups)
+        try validateContent(envelope.payload.groups, schemaVersion: header.schemaVersion)
         if header.schemaVersion < recordSchemaVersion,
            envelope.payload.groups.values.contains(where: { $0.values.contains(where: \.isRecord) }) {
+            throw SettingsBackupError.unsafeContent
+        }
+        if header.schemaVersion < orderedSchemaVersion,
+           envelope.payload.groups.values.contains(where: { $0.values.contains(where: \.requiresSchema4) }) {
             throw SettingsBackupError.unsafeContent
         }
         guard envelope.payload.scope?.isValid ?? true else { throw SettingsBackupError.unsafeContent }
@@ -498,37 +525,43 @@ enum SettingsBackupCodec {
         )
     }
 
-    private static func validateContent(_ groups: [String: [String: BackupValue]]) throws {
+    private static func validateContent(_ groups: [String: [String: BackupValue]], schemaVersion: Int) throws {
         var entries = 0
+        func validate(_ value: BackupValue, depth: Int) throws {
+            entries += 1
+            guard entries <= (schemaVersion >= orderedSchemaVersion
+                        ? SettingsBackupSafety.maxStructuredEntries : SettingsBackupSafety.maxEntries), depth <= 4,
+                  !SettingsBackupSafety.isSuspiciousValue(value) else { throw SettingsBackupError.unsafeContent }
+            switch value {
+            case .string(let text):
+                guard text.count <= (schemaVersion >= orderedSchemaVersion ? 256 : SettingsBackupSafety.maxStringValueLength)
+                else { throw SettingsBackupError.unsafeContent }
+            case .record(let fields):
+                guard !fields.isEmpty, fields.count <= SettingsBackupSafety.maxRecordMembers else {
+                    throw SettingsBackupError.unsafeContent
+                }
+                for (name, member) in fields {
+                    guard name.count <= SettingsBackupSafety.maxNameLength,
+                          !SettingsBackupSafety.isSensitiveName(name) else { throw SettingsBackupError.unsafeContent }
+                    try validate(member, depth: depth + 1)
+                }
+            case .array(let values):
+                guard values.count <= SettingsBackupSafety.maxArrayMembers else { throw SettingsBackupError.unsafeContent }
+                for member in values { try validate(member, depth: depth + 1) }
+            default: break
+            }
+        }
         for (groupName, values) in groups {
             guard groupName.count <= SettingsBackupSafety.maxNameLength,
                   !SettingsBackupSafety.isSensitiveName(groupName) else {
                 throw SettingsBackupError.unsafeContent
             }
             for (key, value) in values {
-                entries += 1
-                guard entries <= SettingsBackupSafety.maxEntries,
-                      key.count <= SettingsBackupSafety.maxNameLength,
-                      !SettingsBackupSafety.isSensitiveName(key),
-                      !SettingsBackupSafety.isSuspiciousValue(value) else {
+                guard key.count <= SettingsBackupSafety.maxNameLength,
+                      !SettingsBackupSafety.isSensitiveName(key) else {
                     throw SettingsBackupError.unsafeContent
                 }
-                if case .record(let members) = value {
-                    // One flat level of safe scalars, bounded in size.
-                    guard !members.isEmpty, members.count <= SettingsBackupSafety.maxRecordMembers else {
-                        throw SettingsBackupError.unsafeContent
-                    }
-                    for (member, scalar) in members {
-                        entries += 1
-                        guard entries <= SettingsBackupSafety.maxEntries,
-                              member.count <= SettingsBackupSafety.maxNameLength,
-                              !SettingsBackupSafety.isSensitiveName(member),
-                              !scalar.isRecord,
-                              !SettingsBackupSafety.isSuspiciousValue(scalar) else {
-                            throw SettingsBackupError.unsafeContent
-                        }
-                    }
-                }
+                try validate(value, depth: 0)
             }
         }
     }

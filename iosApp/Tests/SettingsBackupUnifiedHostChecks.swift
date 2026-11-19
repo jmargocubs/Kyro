@@ -42,13 +42,17 @@ enum SettingKey: String, Hashable, Sendable, CaseIterable {
     case playbackCellularPreferredQuality = "playback.cellular_preferred_quality"
     case playbackCellularMaxBitrateKbps = "playback.cellular_max_bitrate_kbps"
     case uiTitleArt = "ui.title_art"
+    case uiCardPresentation = "ui.card_presentation"
+    case navPrimaryMenu = "nav.primary_menu"
+    case navShortcuts = "nav.shortcuts"
     static let cellularQualityRevision = 20
     var introducedIn: Int { self == .uiTitleArt ? 16 : 1 }
 
     /// Keys the real contract stores at profile scope; everything else here is per device.
     /// Stored at both `profile` and `profile_device`.
     static let dual: Set<SettingKey> = [.playbackSubtitleAppearance, .playerSubtitleSyncMs,
-        .playbackCellularPreferredQuality, .playbackCellularMaxBitrateKbps, .uiTitleArt]
+        .playbackCellularPreferredQuality, .playbackCellularMaxBitrateKbps, .uiTitleArt,
+        .uiCardPresentation, .navPrimaryMenu]
     static let profileScoped: Set<SettingKey> = [
         .playbackSubtitleLanguage, .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages,
         .catalogHideUnwatchedEpisodeOverviews, .playerVideoSkipBackSeconds, .playerVideoSkipForwardSeconds,
@@ -57,11 +61,12 @@ enum SettingKey: String, Hashable, Sendable, CaseIterable {
     ]
 }
 enum SettingScope: Equatable, Sendable {
-    case account, profile, profileDevice, profileLibrary, profileSeries
+    case account, profile, profileClient, profileDevice, profileLibrary, profileSeries
     var rawValue: String {
         switch self {
         case .account: "account"
         case .profile: "profile"
+        case .profileClient: "profile_client"
         case .profileDevice: "profile_device"
         case .profileLibrary: "profile_library"
         case .profileSeries: "profile_series"
@@ -69,11 +74,17 @@ enum SettingScope: Equatable, Sendable {
     }
 }
 enum SettingScopeIdentity: Equatable, Sendable {
-    case profile, profileDevice
-    var scope: SettingScope { self == .profile ? .profile : .profileDevice }
+    case profile, profileClient, profileDevice
+    var scope: SettingScope {
+        switch self {
+        case .profile: .profile
+        case .profileClient: .profileClient
+        case .profileDevice: .profileDevice
+        }
+    }
 }
 enum SettingJSONValue: Equatable, Sendable {
-    case null, bool(Bool), int(Int), double(Double), string(String), object([String: SettingJSONValue])
+    case null, bool(Bool), int(Int), double(Double), string(String), array([SettingJSONValue]), object([String: SettingJSONValue])
     var intValue: Int? {
         switch self {
         case .int(let value): value
@@ -118,6 +129,11 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
     /// Rows of the two keys that live at both scopes: subtitle appearance and subtitle sync.
     var deviceRows: [SettingKey: SettingJSONValue] = [:]
     var profileScopeRows: [SettingKey: SettingJSONValue] = [:]
+    var clientRows: [SettingKey: SettingJSONValue] = [:]
+    var catalog: [BackupLibraryIdentity] = [
+        .init(id: 1, name: "Movies", type: "movie"), .init(id: 2, name: "Shows", type: "series")]
+    var sectionsByLibrary: [Int: [BackupSectionIdentity]] = [:]
+    var collectionsByLibrary: [Int: [BackupCollectionIdentity]] = [:]
     var revision = 99
     /// Fails one (key, scope) write; every other write still succeeds.
     var failWrite: (key: SettingKey, scope: SettingScopeIdentity)?
@@ -141,7 +157,8 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
         for key in keys where !unserved.contains(key)
             && !(revision < SettingKey.cellularQualityRevision
                  && (key == .playbackCellularPreferredQuality || key == .playbackCellularMaxBitrateKbps)) {
-            let own: SettingScope = SettingKey.profileScoped.contains(key) ? .profile : .profileDevice
+            let own: SettingScope = key == .navShortcuts || SettingKey.profileScoped.contains(key)
+                ? .profile : .profileDevice
             if SettingKey.dual.contains(key) {
                 if let hidden = overrides[key] {
                     rows[key] = EffectiveSettingValue(key: key.rawValue, value: hidden.value, storedValue: nil,
@@ -152,6 +169,9 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
                 } else if let value = deviceRows[key] {
                     rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
                                                       scope: .profileDevice, profileId: "profile")
+                } else if let value = clientRows[key] {
+                    rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
+                                                      scope: .profileClient, profileId: "profile")
                 } else if let value = profileScopeRows[key] {
                     rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
                                                       scope: .profile, profileId: "profile")
@@ -181,7 +201,7 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
                                                   scope: .profile, profileId: "profile")
             } else {
                 rows[key] = EffectiveSettingValue(
-                    key: key.rawValue, value: key == .playbackPreferredQuality ? .string("auto") : .null,
+                    key: key.rawValue, value: defaultValue(key),
                     storedValue: nil, scope: nil, profileId: nil)
             }
         }
@@ -192,7 +212,9 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
         if offline || key == failedKey || unserved.contains(key) { throw Failure.offline }
         if let failWrite, failWrite.key == key, failWrite.scope == scope { throw Failure.offline }
         if SettingKey.dual.contains(key) {
-            if scope == .profileDevice { deviceRows[key] = value } else { profileScopeRows[key] = value }
+            if scope == .profileDevice { deviceRows[key] = value }
+            else if scope == .profileClient { clientRows[key] = value }
+            else { profileScopeRows[key] = value }
         } else { values[key] = value }
         writes.append(key)
         scopes.append(scope)
@@ -202,7 +224,9 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
         if offline || key == failedKey || unserved.contains(key) { throw Failure.offline }
         if let failWrite, failWrite.key == key, failWrite.scope == scope { throw Failure.offline }
         if SettingKey.dual.contains(key) {
-            if scope == .profileDevice { deviceRows[key] = nil } else { profileScopeRows[key] = nil }
+            if scope == .profileDevice { deviceRows[key] = nil }
+            else if scope == .profileClient { clientRows[key] = nil }
+            else { profileScopeRows[key] = nil }
         } else { values[key] = nil }
         writes.append(key)
         scopes.append(scope)
@@ -213,10 +237,15 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
     func manifestRevision(owner: SettingsBackupRemoteOwner) async throws -> Int { revision }
     func setRevision(_ value: Int) { revision = value }
     func setRow(_ key: SettingKey, _ scope: SettingScopeIdentity, _ value: SettingJSONValue?) {
-        if scope == .profileDevice { deviceRows[key] = value } else { profileScopeRows[key] = value }
+        if key == .navShortcuts { values[key] = value; return }
+        if scope == .profileDevice { deviceRows[key] = value }
+        else if scope == .profileClient { clientRows[key] = value }
+        else { profileScopeRows[key] = value }
     }
     func row(_ key: SettingKey, _ scope: SettingScopeIdentity) -> SettingJSONValue? {
-        scope == .profileDevice ? deviceRows[key] : profileScopeRows[key]
+        if key == .navShortcuts { return values[key] }
+        return scope == .profileDevice ? deviceRows[key]
+            : scope == .profileClient ? clientRows[key] : profileScopeRows[key]
     }
     private func defaultValue(_ key: SettingKey) -> SettingJSONValue {
         switch key {
@@ -225,9 +254,44 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
         case .playbackCellularPreferredQuality: .string("720p")
         case .playbackCellularMaxBitrateKbps: .int(2000)
         case .uiTitleArt: .bool(true)
+        case .uiCardPresentation: .object(["poster_size": .string("standard"), "caption": .string("title_metadata")])
+        case .navPrimaryMenu: .null
+        case .navShortcuts: .object(["items": .array([])])
+        case .playbackPreferredQuality: .string("auto")
         default: .null
         }
     }
+    func libraries(owner: SettingsBackupRemoteOwner) async throws -> [BackupLibraryIdentity] {
+        if offline { throw Failure.offline }
+        return catalog
+    }
+    func sections(libraryID: Int, owner: SettingsBackupRemoteOwner) async throws -> [BackupSectionIdentity] {
+        if offline { throw Failure.offline }
+        return sectionsByLibrary[libraryID] ?? []
+    }
+    func collections(libraryID: Int, owner: SettingsBackupRemoteOwner) async throws -> [BackupCollectionIdentity] {
+        if offline { throw Failure.offline }
+        return collectionsByLibrary[libraryID] ?? []
+    }
+    func mutateShortcut(_ value: SettingJSONValue, present: Bool, owner: SettingsBackupRemoteOwner) async throws {
+        if offline || failedKey == .navShortcuts { throw Failure.offline }
+        guard case .object(let fields) = value,
+              case .object(let current) = values[.navShortcuts] ?? .object(["items": .array([])]),
+              case .array(let items)? = current["items"] else { throw Failure.offline }
+        let identity = fields["library_id"] ?? fields["collection_id"] ?? fields["section_id"]
+        var changed = items.filter { item in
+            guard case .object(let existing) = item else { return true }
+            return (existing["library_id"] ?? existing["collection_id"] ?? existing["section_id"]) != identity
+        }
+        if present { changed.append(value) }
+        values[.navShortcuts] = .object(["items": .array(changed)])
+        writes.append(.navShortcuts)
+        scopes.append(.profile)
+    }
+    func setCatalog(_ value: [BackupLibraryIdentity]) { catalog = value }
+    func setSections(_ libraryID: Int, _ value: [BackupSectionIdentity]) { sectionsByLibrary[libraryID] = value }
+    func setCollections(_ libraryID: Int, _ value: [BackupCollectionIdentity]) { collectionsByLibrary[libraryID] = value }
+    func setScope(_ value: SettingsBackupScope) { scope = value }
     func failWriting(_ key: SettingKey?, _ scope: SettingScopeIdentity = .profile) {
         failWrite = key.map { ($0, scope) }
     }
@@ -381,7 +445,8 @@ enum SettingsBackupUnifiedHostChecks {
         let batchCount = try await RemoteBatchOneChecks.run()
         let batchThree = try await RemoteBatchThreeChecks.run()
         let batchFour = try await RemoteBatchFourChecks.run()
-        print("SettingsBackupUnifiedHostChecks: \(10 + batchCount + batchThree + batchFour) passed")
+        let batchFive = try await RemoteBatchFiveChecks.run()
+        print("SettingsBackupUnifiedHostChecks: \(10 + batchCount + batchThree + batchFour + batchFive) passed")
     }
 }
 
@@ -488,7 +553,7 @@ private enum RemoteBatchOneChecks {
         // Every new ID passes the document's sensitive-name filter and is owned by the adapter.
         let newIDs = Set(rows.map(\.id))
         precondition(newIDs.count == 24 && newIDs.isSubset(of: SettingsBackupRemoteAdapter.settingIDs))
-        precondition(SettingsBackupRemoteAdapter.settingIDs.count == 32)
+        precondition(SettingsBackupRemoteAdapter.settingIDs.count == 35)
         precondition(SettingsBackupRemoteAdapter.settingIDs.allSatisfy { !SettingsBackupSafety.isSensitiveName($0) })
         checks += 1
 
@@ -676,7 +741,7 @@ private enum RemoteBatchOneChecks {
             precondition(!text.contains(secret), "document leaked \(secret)")
         }
         let decoded = try SettingsBackupCodec.decode(exported)
-        precondition(decoded.groups["player"]?.count == 12 && decoded.groups["interface"]?.count == 6)
+        precondition(decoded.groups["player"]?.count == 12 && decoded.groups["interface"]?.count == 9)
         precondition(decoded.groups["streaming"]?.count == 7 && decoded.groups["subtitles"]?.count == 7)
         checks += 1
 
@@ -1515,6 +1580,227 @@ private enum RemoteBatchFourChecks {
             precondition(schema1Decoded.schemaVersion == 1)
         }
         checks += 1
+        return checks
+    }
+}
+
+@MainActor
+private enum RemoteBatchFiveChecks {
+    static func check(_ condition: Bool, file: StaticString = #file, line: UInt = #line) {
+        precondition(condition, "Batch 5 check failed", file: file, line: line)
+    }
+    static let card = InterfaceRecordBackup.cardID
+    static let menu = InterfaceRecordBackup.menuID
+    static let shortcuts = InterfaceRecordBackup.shortcutsID
+    static let app = SettingsBackupAppInfo(version: "1", build: "98", platform: "iOS", idiom: "phone")
+    static let home: SettingJSONValue = .object(["type": .string("builtin"), "destination": .string("home")])
+    static let movies: SettingJSONValue = .object(["type": .string("builtin"), "destination": .string("movies")])
+    static let library: SettingJSONValue = .object(["type": .string("library"), "library_id": .int(1),
+                                                     "label": .string("Movies")])
+    static let scope = SettingsBackupScope(serverFingerprint: String(repeating: "a", count: 64),
+                                           profileFingerprint: String(repeating: "b", count: 64))
+
+    static func adapter(_ transport: FakeTransport, _ journal: RemoteMemoryJournal = .init()) -> SettingsBackupRemoteAdapter {
+        SettingsBackupRemoteAdapter(transport: transport, journal: journal, timeout: .seconds(1))
+    }
+    static func file(_ adapter: SettingsBackupRemoteAdapter) async throws -> IncomingBackup {
+        let result = try await adapter.export()
+        return try SettingsBackupCodec.decode(SettingsBackupCodec.makeUnifiedDocument(
+            groups: result.groups, scope: result.scope, app: app, now: Date()))
+    }
+    static func status(_ preview: [RestorePreviewGroup], _ id: String) -> RestoreItemStatus {
+        guard let item = preview.flatMap(\.items).first(where: { $0.id == id }) else { fatalError("missing \(id)") }
+        return item.status
+    }
+    static func menuWire(_ items: [SettingJSONValue]) -> SettingJSONValue { .object(["items": .array(items)]) }
+    static func cardWire(_ size: String, _ caption: String) -> SettingJSONValue {
+        .object(["poster_size": .string(size), "caption": .string(caption)])
+    }
+
+    static func run() async throws -> Int {
+        var checks = 0
+        // Card at all three scopes; explicit balanced differs from an inherited default.
+        for ownerScope: SettingScopeIdentity in [.profile, .profileClient, .profileDevice] {
+            let transport = FakeTransport()
+            let journal = RemoteMemoryJournal()
+            await transport.setRow(.uiCardPresentation, ownerScope, cardWire("large", "artwork"))
+            let handler = adapter(transport, journal)
+            let incoming = try await file(handler)
+            check(incoming.schemaVersion == 3)
+            await transport.setRow(.uiCardPresentation, ownerScope, cardWire("standard", "title_metadata"))
+            check(status(await handler.preview(incoming), card) == .willChange)
+            let result = await handler.apply(incoming, selectedIDs: [card])
+            if result.applied != [card] || !result.failed.isEmpty {
+                fatalError("card scope \(ownerScope): applied=\(result.applied) failed=\(result.failed) skipped=\(result.skipped)")
+            }
+            check(await transport.row(.uiCardPresentation, ownerScope) == cardWire("large", "artwork"))
+            let undone = await handler.undo()
+            check(undone.applied.contains(card))
+            check(await transport.row(.uiCardPresentation, ownerScope) == cardWire("standard", "title_metadata"))
+            checks += 1
+        }
+        do {
+            let transport = FakeTransport(); let handler = adapter(transport)
+            let inherited = try await file(handler)
+            check(inherited.groups["interface"]?[card] == .record([
+                "scope": .string("default"), "posterSize": .string("standard"), "caption": .string("title_metadata")]))
+            await transport.setRow(.uiCardPresentation, .profileClient, cardWire("standard", "title_metadata"))
+            let explicit = try await file(handler)
+            check(explicit.groups["interface"]?[card] != inherited.groups["interface"]?[card])
+            checks += 1
+        }
+        // A lower scope can be lifted to a more-specific one without touching the lower row.
+        do {
+            let transport = FakeTransport(); let handler = adapter(transport)
+            await transport.setRow(.uiCardPresentation, .profileDevice, cardWire("compact", "title"))
+            let target = try await file(handler)
+            await transport.setRow(.uiCardPresentation, .profileDevice, nil)
+            await transport.setRow(.uiCardPresentation, .profile, cardWire("large", "artwork"))
+            check(status(await handler.preview(target), card) == .willChange)
+            let applied = await handler.apply(target, selectedIDs: [card])
+            check(applied.applied == [card])
+            check(await transport.row(.uiCardPresentation, .profile) == cardWire("large", "artwork"))
+            _ = await handler.undo()
+            check(await transport.row(.uiCardPresentation, .profileDevice) == nil)
+            check(await transport.row(.uiCardPresentation, .profile) == cardWire("large", "artwork"))
+            let lower = try await file(handler)
+            await transport.setRow(.uiCardPresentation, .profileDevice, cardWire("compact", "title"))
+            if case .unsupported = status(await handler.preview(lower), card) {} else { fatalError("unsafe downward transition") }
+            let writes = await transport.writeCount()
+            check((await handler.apply(lower, selectedIDs: [card])).skipped == [card])
+            check(await transport.writeCount() == writes)
+            checks += 1
+        }
+        // Ordered primary menu with an authenticated, re-verified same-server library reference.
+        do {
+            let transport = FakeTransport(); let journal = RemoteMemoryJournal(); let handler = adapter(transport, journal)
+            await transport.setRow(.navPrimaryMenu, .profileClient, menuWire([home, library, movies]))
+            let saved = try await file(handler)
+            check(saved.schemaVersion == 4)
+            await transport.setRow(.navPrimaryMenu, .profileClient, menuWire([home, movies]))
+            check(status(await handler.preview(saved), menu) == .willChange)
+            check((await handler.apply(saved, selectedIDs: [menu])).applied == [menu])
+            check(await transport.row(.navPrimaryMenu, .profileClient) == menuWire([home, library, movies]))
+            check((await handler.undo()).applied.contains(menu))
+            check(await transport.row(.navPrimaryMenu, .profileClient) == menuWire([home, movies]))
+            checks += 1
+        }
+        // Restoring a menu must not erase a destination added after the backup was made.
+        do {
+            let transport = FakeTransport(); let handler = adapter(transport)
+            await transport.setRow(.navPrimaryMenu, .profileClient, menuWire([home, library]))
+            let saved = try await file(handler)
+            await transport.setRow(.navPrimaryMenu, .profileClient, menuWire([home, movies]))
+            if case .unsupported = status(await handler.preview(saved), menu) {} else {
+                fatalError("unrelated menu destination would be overwritten")
+            }
+            let writes = await transport.writeCount()
+            check((await handler.apply(saved, selectedIDs: [menu])).skipped == [menu])
+            check(await transport.writeCount() == writes)
+            checks += 1
+        }
+        // A same-server section is pinned by library ID plus section ID, title and type.
+        do {
+            let transport = FakeTransport(); let handler = adapter(transport)
+            await transport.setSections(1, [.init(id: "recent", title: "Recently Added", type: "dynamic")])
+            let section: SettingJSONValue = .object(["type": .string("section"), "library_id": .int(1),
+                "section_id": .string("recent"), "label": .string("Recent")])
+            await transport.setRow(.navPrimaryMenu, .profileClient, menuWire([home, section]))
+            let saved = try await file(handler)
+            await transport.setRow(.navPrimaryMenu, .profileClient, menuWire([home]))
+            check((await handler.apply(saved, selectedIDs: [menu])).applied == [menu])
+            await transport.setSections(1, [])
+            if case .unsupported = status(await handler.preview(saved), menu) {} else { fatalError("missing section") }
+            checks += 1
+        }
+        // Shortcuts use the atomic item endpoint; prefix additions preserve existing entries.
+        do {
+            let transport = FakeTransport(); let journal = RemoteMemoryJournal(); let handler = adapter(transport, journal)
+            await transport.setRow(.navShortcuts, .profile, menuWire([library]))
+            let saved = try await file(handler)
+            await transport.setRow(.navShortcuts, .profile, menuWire([]))
+            let shortcutResult = await handler.apply(saved, selectedIDs: [shortcuts])
+            if shortcutResult.applied != [shortcuts] {
+                fatalError("shortcut result: applied=\(shortcutResult.applied) failed=\(shortcutResult.failed) skipped=\(shortcutResult.skipped)")
+            }
+            check(await transport.row(.navShortcuts, .profile) == menuWire([library]))
+            check((await handler.undo()).applied.contains(shortcuts))
+            check(await transport.row(.navShortcuts, .profile) == menuWire([]))
+            checks += 1
+        }
+        // Cross-server built-ins can be remapped (no reference), but names/types never prove a library identity.
+        do {
+            let source = FakeTransport(); await source.setRow(.navPrimaryMenu, .profileClient, menuWire([home, movies]))
+            let builtins = try await file(adapter(source))
+            let destination = FakeTransport(); await destination.setScope(.init(
+                serverFingerprint: String(repeating: "c", count: 64), profileFingerprint: String(repeating: "d", count: 64)))
+            let handler = adapter(destination)
+            check(status(await handler.preview(builtins), menu) == .willChange)
+            check((await handler.apply(builtins, selectedIDs: [menu])).applied == [menu])
+            check(await destination.row(.navPrimaryMenu, .profileClient) == menuWire([home, movies]))
+            await source.setRow(.navPrimaryMenu, .profileClient, menuWire([home, library]))
+            let referenced = try await file(adapter(source))
+            if case .unsupported = status(await handler.preview(referenced), menu) {} else { fatalError("cross-server library matched by name") }
+            let count = await destination.writeCount()
+            check((await handler.apply(referenced, selectedIDs: [menu])).skipped == [menu])
+            check(await destination.writeCount() == count)
+            checks += 1
+        }
+        // Profile mismatch, missing library and duplicate identity all refuse writes.
+        do {
+            let source = FakeTransport(); await source.setRow(.navPrimaryMenu, .profileClient, menuWire([home, library]))
+            let saved = try await file(adapter(source))
+            await source.moveProfile()
+            let handler = adapter(source)
+            if case .unsupported = status(await handler.preview(saved), menu) {} else { fatalError("profile mismatch") }
+            let before = await source.writeCount()
+            check((await handler.apply(saved, selectedIDs: [menu])).skipped == [menu])
+            check(await source.writeCount() == before)
+            let destination = FakeTransport(); let other = adapter(destination)
+            await destination.setCatalog([])
+            if case .unsupported = status(await other.preview(saved), menu) {} else { fatalError("missing library") }
+            await destination.setCatalog([.init(id: 1, name: "Movies", type: "movie"),
+                                          .init(id: 1, name: "Movies", type: "movie")])
+            if case .unsupported = status(await other.preview(saved), menu) {} else { fatalError("ambiguous library") }
+            checks += 1
+        }
+        // Malformed records, offline reads and selective restore do not produce unsafe writes.
+        do {
+            let transport = FakeTransport(); let handler = adapter(transport)
+            await transport.setRow(.uiCardPresentation, .profileClient, cardWire("compact", "title"))
+            await transport.setRow(.navPrimaryMenu, .profileClient, menuWire([home, movies]))
+            let saved = try await file(handler)
+            await transport.setRow(.uiCardPresentation, .profileClient, cardWire("standard", "title_metadata"))
+            await transport.setRow(.navPrimaryMenu, .profileClient, menuWire([home]))
+            check((await handler.apply(saved, selectedIDs: [card])).applied == [card])
+            check(await transport.row(.navPrimaryMenu, .profileClient) == menuWire([home]))
+            var malformed = saved.groups
+            malformed["interface"]?[card] = .record(["scope": .string("profile_client")])
+            let bad = IncomingBackup(schemaVersion: 4, createdAt: saved.createdAt, app: saved.app,
+                                     groups: malformed, scope: saved.scope)
+            if case .invalid = status(await handler.preview(bad), card) {} else { fatalError("invalid card") }
+            await transport.setOffline(true)
+            if case .unsupported = status(await handler.preview(saved), menu) {} else { fatalError("offline menu") }
+            await transport.setOffline(false)
+            checks += 1
+        }
+        // Failure after a confirmed card write leaves a journal that can reverse that write.
+        do {
+            let transport = FakeTransport(); let journal = RemoteMemoryJournal(); let handler = adapter(transport, journal)
+            await transport.setRow(.uiCardPresentation, .profileClient, cardWire("compact", "title"))
+            await transport.setRow(.navPrimaryMenu, .profileClient, menuWire([home, movies]))
+            let saved = try await file(handler)
+            await transport.setRow(.uiCardPresentation, .profileClient, cardWire("standard", "title_metadata"))
+            await transport.setRow(.navPrimaryMenu, .profileClient, menuWire([home]))
+            await transport.failWriting(.navPrimaryMenu, .profileClient)
+            let result = await handler.apply(saved, selectedIDs: [card, menu])
+            check(result.applied == [card] && result.failed == [menu] && handler.needsRecovery)
+            await transport.failWriting(nil)
+            check((await handler.undo()).applied.contains(card))
+            check(await transport.row(.uiCardPresentation, .profileClient)
+                == cardWire("standard", "title_metadata"))
+            checks += 1
+        }
         return checks
     }
 }

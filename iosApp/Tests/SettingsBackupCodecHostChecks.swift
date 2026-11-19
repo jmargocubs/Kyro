@@ -73,7 +73,6 @@ enum SettingsBackupCodecHostChecks {
         }
         let unsafeRecords: [[String: BackupValue]] = [
             [:],                                                       // empty
-            ["a": .record(["b": .int(1)])],                            // nested
             ["authToken": .string("x")],                               // credential-like member
             ["fontSize": .string("https://example.com")],              // link-like value
             Dictionary(uniqueKeysWithValues: (0..<17).map { ("m\($0)", BackupValue.int($0)) }),   // too many
@@ -85,14 +84,36 @@ enum SettingsBackupCodecHostChecks {
                 fatalError("unsafe record accepted: \(members.keys)")
             } catch SettingsBackupError.unsafeContent {}
         }
-        // A newer file (schema 4) that this build can read in full still decodes.
+        let ordered = BackupValue.record(["scope": .string("profile_client"),
+            "items": .array((0..<64).map { index in .record(["kind": .string("library"), "libraryId": .int(index + 1)]) })])
+        let orderedFile = try SettingsBackupCodec.makeUnifiedDocument(
+            groups: ["interface": ["interface.primaryMenu": ordered]], scope: scope, app: app, now: Date())
+        let orderedDecoded = try SettingsBackupCodec.decode(orderedFile)
+        precondition(orderedDecoded.schemaVersion == 4 && orderedDecoded.groups["interface"]?["interface.primaryMenu"] == ordered)
+        let changedOrder = String(decoding: orderedFile, as: UTF8.self).replacingOccurrences(of: "libraryId\" : 1", with: "libraryId\" : 2")
+        do { _ = try SettingsBackupCodec.decode(Data(changedOrder.utf8)); fatalError("ordered tamper passed") }
+        catch SettingsBackupError.integrityMismatch {}
+        for bad in [BackupValue.array((0..<65).map { .int($0) }),
+                    .record(["items": .array([.record(["authToken": .string("x")])])])] {
+            do {
+                _ = try SettingsBackupCodec.makeUnifiedDocument(
+                    groups: ["interface": ["interface.primaryMenu": bad]], scope: scope, app: app, now: Date())
+                fatalError("unsafe schema-4 value accepted")
+            } catch SettingsBackupError.unsafeContent {}
+        }
+        let schemaThreeArray = try SettingsBackupCodec.makeDocument(
+            groups: ["interface": ["interface.primaryMenu": ordered]], schemaVersion: 3,
+            minReaderVersion: 3, app: app, now: Date())
+        do { _ = try SettingsBackupCodec.decode(schemaThreeArray); fatalError("array in schema 3") }
+        catch SettingsBackupError.unsafeContent {}
+        // A newer file that this build can read in full still decodes.
         let future = try SettingsBackupCodec.makeDocument(
             groups: ["navigation": ["navigation.fourthTab": .string("sports")]],
-            schemaVersion: 4, minReaderVersion: 1, app: app, now: Date())
+            schemaVersion: 5, minReaderVersion: 1, app: app, now: Date())
         let futureDecoded = try SettingsBackupCodec.decode(future)
         precondition(futureDecoded.isNewerThanSupported)
 
-        print("SettingsBackupCodecHostChecks: 13 passed")
+        print("SettingsBackupCodecHostChecks: 19 passed")
     }
 }
 #endif

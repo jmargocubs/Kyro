@@ -8,6 +8,24 @@ struct SettingsBackupRemoteOwner: Sendable {
     let scope: SettingsBackupScope
 }
 
+struct BackupLibraryIdentity: Equatable, Sendable {
+    let id: Int
+    let name: String
+    let type: String
+}
+
+struct BackupSectionIdentity: Equatable, Sendable {
+    let id: String
+    let title: String
+    let type: String
+}
+
+struct BackupCollectionIdentity: Equatable, Sendable {
+    let id: String
+    let title: String
+    let type: String
+}
+
 protocol SettingsBackupRemoteTransport: Sendable {
     func prepare() async throws
     func owner() async throws -> SettingsBackupRemoteOwner
@@ -20,15 +38,31 @@ protocol SettingsBackupRemoteTransport: Sendable {
     /// The server's settings-contract revision, which gates the text-opacity member of the subtitle
     /// appearance (14) and the profile-scoped subtitle offset (19).
     func manifestRevision(owner: SettingsBackupRemoteOwner) async throws -> Int
+    func libraries(owner: SettingsBackupRemoteOwner) async throws -> [BackupLibraryIdentity]
+    func sections(libraryID: Int, owner: SettingsBackupRemoteOwner) async throws -> [BackupSectionIdentity]
+    func collections(libraryID: Int, owner: SettingsBackupRemoteOwner) async throws -> [BackupCollectionIdentity]
+    func mutateShortcut(_ value: SettingJSONValue, present: Bool, owner: SettingsBackupRemoteOwner) async throws
 }
 
 extension SettingsBackupRemoteTransport {
     func manifestRevision(owner: SettingsBackupRemoteOwner) async throws -> Int { Int.max }
     func prepare() async throws {}
     func refreshUI() async {}
+    func libraries(owner: SettingsBackupRemoteOwner) async throws -> [BackupLibraryIdentity] {
+        throw SettingsBackupRemoteError.unsupportedValue
+    }
+    func sections(libraryID: Int, owner: SettingsBackupRemoteOwner) async throws -> [BackupSectionIdentity] {
+        throw SettingsBackupRemoteError.unsupportedValue
+    }
+    func collections(libraryID: Int, owner: SettingsBackupRemoteOwner) async throws -> [BackupCollectionIdentity] {
+        throw SettingsBackupRemoteError.unsupportedValue
+    }
+    func mutateShortcut(_ value: SettingJSONValue, present: Bool, owner: SettingsBackupRemoteOwner) async throws {
+        throw SettingsBackupRemoteError.unsupportedValue
+    }
 }
 
-enum SettingsBackupRemoteError: LocalizedError {
+enum SettingsBackupRemoteError: LocalizedError, Equatable {
     case noVerifiedServer
     case noProfile
     case destinationMismatch
@@ -39,6 +73,12 @@ enum SettingsBackupRemoteError: LocalizedError {
     /// A narrower scope (this device, a library or a series) holds a value that hides the
     /// profile row, so the profile value can't be read, compared or safely replaced.
     case overridden
+    case missingReference
+    case ambiguousReference
+    case unverifiedReference
+    case unsafeScopeTransition
+    case shortcutOrderConflict
+    case existingMenuConflict
 
     var errorDescription: String? {
         switch self {
@@ -50,6 +90,12 @@ enum SettingsBackupRemoteError: LocalizedError {
         case .changedOwner: "The active server or profile changed. Synced settings were not written."
         case .unconfirmedWrite: "The server did not confirm the restored value."
         case .overridden: "A device, library or series override hides this profile setting, so it was left alone."
+        case .missingReference: "A saved library, section or collection is missing from this catalog. No menu entries were changed."
+        case .ambiguousReference: "Multiple destination libraries match a saved reference. No menu entries were changed."
+        case .unverifiedReference: "This catalog reference cannot be verified safely on the destination. No menu entries were changed."
+        case .unsafeScopeTransition: "A hidden scoped value cannot be read safely; this scope change was skipped."
+        case .shortcutOrderConflict: "Existing shortcut order or extra shortcuts cannot be replaced safely by the atomic shortcut API."
+        case .existingMenuConflict: "The current menu has destinations absent from this backup. They were preserved; no menu entries were changed."
         }
     }
 }
@@ -64,6 +110,11 @@ struct SiloSettingsBackupTransport: SettingsBackupRemoteTransport {
         await PlayerSettings.shared.flushPendingDeviceSettings()
         let hasPending = await MainActor.run { PlayerSettings.shared.hasUnsettledSettingsWrites }
         if hasPending { throw SettingsBackupRemoteError.unconfirmedWrite }
+        await UICustomizationPreferences.shared.refresh(force: true)
+        let uiPending = await MainActor.run {
+            UICustomizationPreferences.shared.isSaving || UICustomizationPreferences.shared.hasHeldChanges
+        }
+        if uiPending { throw SettingsBackupRemoteError.unconfirmedWrite }
     }
 
     func refreshUI() async {
@@ -72,6 +123,7 @@ struct SiloSettingsBackupTransport: SettingsBackupRemoteTransport {
         await AdvisoryAgePreferenceStore.shared.refresh()
         await EpisodeSpoilerPreferences.shared.refresh()
         await SeekIntervalPreferences.shared.refresh()
+        await UICustomizationPreferences.shared.refresh(force: true)
     }
 
     func owner() async throws -> SettingsBackupRemoteOwner {
@@ -107,6 +159,37 @@ struct SiloSettingsBackupTransport: SettingsBackupRemoteTransport {
         let capabilities = await api.getContractCapabilities(requestIdentity: owner.request)
         guard case .available(let contract) = capabilities else { throw SettingsBackupRemoteError.unsupportedValue }
         return contract.manifestRevision
+    }
+
+    func libraries(owner: SettingsBackupRemoteOwner) async throws -> [BackupLibraryIdentity] {
+        let result = try await api.libraries().libraries.map {
+            BackupLibraryIdentity(id: $0.id, name: $0.name, type: $0.type)
+        }
+        guard (try await self.owner()).scope == owner.scope else { throw SettingsBackupRemoteError.changedOwner }
+        return result
+    }
+
+    func sections(libraryID: Int, owner: SettingsBackupRemoteOwner) async throws -> [BackupSectionIdentity] {
+        let result = try await api.librarySections(libraryId: libraryID).sections.map {
+            BackupSectionIdentity(id: $0.id, title: $0.title, type: $0.sectionType)
+        }
+        guard (try await self.owner()).scope == owner.scope else { throw SettingsBackupRemoteError.changedOwner }
+        return result
+    }
+
+    func collections(libraryID: Int, owner: SettingsBackupRemoteOwner) async throws -> [BackupCollectionIdentity] {
+        let result = try await api.libraryCollections(libraryId: libraryID).collections.map {
+            BackupCollectionIdentity(id: $0.id, title: $0.name, type: $0.collectionType ?? "")
+        }
+        guard (try await self.owner()).scope == owner.scope else { throw SettingsBackupRemoteError.changedOwner }
+        return result
+    }
+
+    func mutateShortcut(_ value: SettingJSONValue, present: Bool, owner: SettingsBackupRemoteOwner) async throws {
+        let data = try SettingsWireCoding.makeEncoder().encode(value)
+        let item = try SettingsWireCoding.makeDecoder().decode(PrimaryMenuItem.self, from: data)
+        try await api.putNavigationShortcutItem(item, present: present,
+                                                profileId: owner.request.profileId, requestIdentity: owner.request)
     }
 
     func put(_ key: SettingKey, scope: SettingScopeIdentity, value: SettingJSONValue,
@@ -445,7 +528,7 @@ enum RemoteBackupDefinition: CaseIterable {
         case .int(let number):
             if kind == .speedHundredths { return .double(Double(number) / 100) }
             return .int(number)
-        case .record: throw SettingsBackupRemoteError.unsupportedValue
+        case .record, .array: throw SettingsBackupRemoteError.unsupportedValue
         }
     }
 
@@ -571,6 +654,142 @@ enum ScopedCompositeBackup {
     }
 }
 
+/// The revision-5 interface records. Menu objects use schema 4; the card record remains schema 3.
+/// Catalog references are captured with their visible identity, never replayed as bare IDs.
+enum InterfaceRecordBackup {
+    static let cardID = "interface.cardPresentation"
+    static let menuID = "interface.primaryMenu"
+    static let shortcutsID = "interface.shortcuts"
+    static let orderedIDs = [cardID, menuID, shortcutsID]
+    static let ids = Set(orderedIDs)
+    static let keys: [SettingKey] = [.uiCardPresentation, .navPrimaryMenu, .navShortcuts]
+
+    static func key(_ id: String) -> SettingKey? {
+        switch id {
+        case cardID: .uiCardPresentation
+        case menuID: .navPrimaryMenu
+        case shortcutsID: .navShortcuts
+        default: nil
+        }
+    }
+
+    static func title(_ id: String) -> String {
+        switch id {
+        case cardID: "Card presentation"
+        case menuID: "Primary menu"
+        case shortcutsID: "Navigation shortcuts"
+        default: id
+        }
+    }
+
+    static func validScope(_ scope: String, id: String) -> Bool {
+        switch id {
+        case cardID: ["default", "profile", "profile_client", "profile_device"].contains(scope)
+        case menuID: ["default", "profile_client", "profile_device"].contains(scope)
+        case shortcutsID: ["default", "profile"].contains(scope)
+        default: false
+        }
+    }
+
+    static func scope(_ value: BackupValue, id: String) -> String? {
+        guard case .record(let fields) = value,
+              case .string(let scope)? = fields["scope"], validScope(scope, id: id) else { return nil }
+        return scope
+    }
+
+    static func card(_ row: EffectiveSettingValue) throws -> BackupValue {
+        let scope = row.scope?.rawValue ?? "default"
+        guard validScope(scope, id: cardID),
+              case .object(let fields) = row.storedValue ?? row.value,
+              Set(fields.keys) == Set(["poster_size", "caption"]),
+              case .string(let size)? = fields["poster_size"],
+              case .string(let caption)? = fields["caption"],
+              ["compact", "standard", "large"].contains(size),
+              ["title_metadata", "title", "artwork"].contains(caption) else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        return .record(["scope": .string(scope), "posterSize": .string(size), "caption": .string(caption)])
+    }
+
+    static func validCard(_ value: BackupValue) -> Bool {
+        guard case .record(let fields) = value, Set(fields.keys) == Set(["scope", "posterSize", "caption"]),
+              scope(value, id: cardID) != nil,
+              case .string(let size)? = fields["posterSize"],
+              case .string(let caption)? = fields["caption"] else { return false }
+        return ["compact", "standard", "large"].contains(size)
+            && ["title_metadata", "title", "artwork"].contains(caption)
+    }
+
+    static func validItems(_ value: BackupValue, id: String) -> Bool {
+        guard case .record(let fields) = value, Set(fields.keys) == Set(["scope", "items"]),
+              let scope = scope(value, id: id), let items = fields["items"] else { return false }
+        if case .string(let marker) = items {
+            return (id == menuID && marker == RemoteBackupDefinition.null && scope != "default")
+                || (marker == RemoteBackupDefinition.inherited && scope == "default")
+        }
+        guard case .array(let entries) = items, entries.count <= 64 else { return false }
+        if id == menuID && scope == "default" { return false }
+        if id == shortcutsID && scope == "default" && !entries.isEmpty { return false }
+        var identities = Set<String>()
+        for entry in entries {
+            guard case .record(let item) = entry, case .string(let kind)? = item["kind"] else { return false }
+            let identity: String
+            switch kind {
+            case "builtin":
+                guard id == menuID, Set(item.keys) == Set(["kind", "destination"]),
+                      case .string(let destination)? = item["destination"],
+                      ["home", "movies", "series", "music", "audiobooks", "for_you", "calendar"].contains(destination)
+                else { return false }
+                identity = "builtin:\(destination)"
+            case "library", "section", "collection":
+                guard case .int(let libraryID)? = item["libraryId"], libraryID > 0,
+                      case .string(let libraryName)? = item["libraryName"], !libraryName.isEmpty,
+                      case .string(let libraryType)? = item["libraryType"], !libraryType.isEmpty,
+                      case .string(let label)? = item["label"], !label.isEmpty else { return false }
+                var names = Set(["kind", "libraryId", "libraryName", "libraryType", "label"])
+                if kind == "section" { names.formUnion(["sectionId", "sectionName", "sectionType"]) }
+                if kind == "collection" { names.formUnion(["collectionId", "collectionName", "collectionType"]) }
+                guard Set(item.keys) == names else { return false }
+                if kind == "section" {
+                    guard case .string(let sectionID)? = item["sectionId"], !sectionID.isEmpty,
+                          case .string(let sectionName)? = item["sectionName"], !sectionName.isEmpty,
+                          case .string? = item["sectionType"] else { return false }
+                    identity = "section:\(libraryID):\(sectionID)"
+                } else if kind == "collection" {
+                    guard case .string(let collectionID)? = item["collectionId"], !collectionID.isEmpty,
+                          case .string(let collectionName)? = item["collectionName"], !collectionName.isEmpty,
+                          case .string? = item["collectionType"] else { return false }
+                    identity = "collection:\(libraryID):\(collectionID)"
+                } else { identity = "library:\(libraryID)" }
+            default: return false
+            }
+            guard identities.insert(identity).inserted else { return false }
+        }
+        if id == menuID { return identities.contains("builtin:home") || (scope == "default" && entries.isEmpty) }
+        return !entries.contains { if case .record(let fields) = $0 { return fields["kind"] == .string("builtin") }; return false }
+    }
+
+    static func label(_ value: BackupValue, id: String) -> String {
+        if id == cardID, case .record(let fields) = value {
+            return "\(fields["posterSize"]?.plainText ?? "?") posters, \(fields["caption"]?.plainText ?? "?") captions (\(fields["scope"]?.plainText ?? "?"))"
+        }
+        if case .record(let fields) = value {
+            let scope = fields["scope"]?.plainText ?? "?"
+            if case .array(let items)? = fields["items"] {
+                let ordered = items.map { entry -> String in
+                    guard case .record(let item) = entry else { return "Invalid destination" }
+                    if item["kind"] == .string("builtin") { return item["destination"]?.plainText ?? "Built-in" }
+                    return item["label"]?.plainText ?? "Catalog destination"
+                }
+                return ordered.isEmpty ? "No destinations (\(scope))"
+                    : ordered.joined(separator: " → ") + " (\(scope))"
+            }
+            return "Inherited menu (\(scope))"
+        }
+        return value.plainText
+    }
+}
+
 struct RemoteBackupChange: Codable, Equatable {
     let id: String
     let previous: BackupValue
@@ -637,6 +856,7 @@ struct RemoteBackupApplyReport {
     var applied: [String] = []
     var failed: [String] = []
     var skipped: [String] = []
+    var skipReasons: [String: String] = [:]
 }
 
 /// Only `RemoteBackupDefinition` settings are allowlisted. Other server settings remain unsupported
@@ -656,7 +876,9 @@ final class SettingsBackupRemoteAdapter {
 
     /// Backup IDs and groups this adapter owns; the model routes them here instead of to the local
     /// registry.
-    nonisolated static var settingIDs: Set<String> { RemoteBackupDefinition.ids.union(SubtitleDisplayBackup.ids).union(ScopedCompositeBackup.ids) }
+    nonisolated static var settingIDs: Set<String> {
+        RemoteBackupDefinition.ids.union(SubtitleDisplayBackup.ids).union(ScopedCompositeBackup.ids).union(InterfaceRecordBackup.ids)
+    }
     nonisolated static var groups: [SettingsBackupGroup] {
         var result = RemoteBackupDefinition.groups
         if !result.contains(.interface) { result.append(.interface) }
@@ -706,6 +928,13 @@ final class SettingsBackupRemoteAdapter {
         do {
             groups[SettingsBackupGroup.interface.rawValue, default: [:]][ScopedCompositeBackup.titleArtID] = try ScopedCompositeBackup.titleArt(rows)
         } catch { omitted.append("Title artwork preference (the authoritative value or scope could not be read safely)") }
+        for id in InterfaceRecordBackup.orderedIDs {
+            do {
+                groups[SettingsBackupGroup.interface.rawValue, default: [:]][id] = try await interfaceSnapshot(id: id, rows: rows, owner: owner)
+            } catch {
+                omitted.append("\(InterfaceRecordBackup.title(id)) (\(error.localizedDescription))")
+            }
+        }
         return (owner.scope, groups, omitted)
     }
 
@@ -719,14 +948,21 @@ final class SettingsBackupRemoteAdapter {
         }.sorted()
         let subtitleValues = incoming.groups[SettingsBackupGroup.subtitles.rawValue] ?? [:]
         let subtitlePresent = SubtitleDisplayBackup.orderedIDs.filter { subtitleValues[$0] != nil }
-        guard !present.isEmpty || !subtitlePresent.isEmpty || !composites.isEmpty else { return [] }
+        let interfacePresent = InterfaceRecordBackup.orderedIDs.filter {
+            incoming.groups[SettingsBackupGroup.interface.rawValue]?[$0] != nil
+        }
+        guard !present.isEmpty || !subtitlePresent.isEmpty || !composites.isEmpty || !interfacePresent.isEmpty else { return [] }
         var reason: String?
         var current: [SettingKey: EffectiveSettingValue] = [:]
         var revision = Int.max
+        var destination: SettingsBackupRemoteOwner?
         do {
             try await timed { try await self.transport.prepare() }
             let owner = try await timed { try await self.transport.owner() }
-            guard owner.scope == incoming.scope else { throw SettingsBackupRemoteError.destinationMismatch }
+            destination = owner
+            if owner.scope != incoming.scope && interfacePresent.isEmpty {
+                throw SettingsBackupRemoteError.destinationMismatch
+            }
             current = try await read(owner)
             if !subtitlePresent.isEmpty || !composites.isEmpty {
                 revision = try await timed { try await self.transport.manifestRevision(owner: owner) }
@@ -734,10 +970,20 @@ final class SettingsBackupRemoteAdapter {
         } catch { reason = error.localizedDescription }
         let subtitleItems = subtitlePresent.map { id in
             SubtitleDisplayBackup.previewItem(id: id, incoming: subtitleValues[id]!, siblings: subtitleValues,
-                                              rows: reason == nil ? current : nil, reason: reason, revision: revision)
+                                              rows: reason == nil && destination?.scope == incoming.scope ? current : nil,
+                                              reason: reason ?? (destination?.scope == incoming.scope ? nil
+                                                : SettingsBackupRemoteError.destinationMismatch.localizedDescription),
+                                              revision: revision)
         }
         let compositeItems = composites.map { compositePreviewItem(id: $0, incoming: incoming,
-            rows: reason == nil ? current : nil, reason: reason, revision: revision) }
+            rows: reason == nil && destination?.scope == incoming.scope ? current : nil,
+            reason: reason ?? (destination?.scope == incoming.scope ? nil : SettingsBackupRemoteError.destinationMismatch.localizedDescription),
+            revision: revision) }
+        var interfaceItems: [RestorePreviewItem] = []
+        for id in interfacePresent {
+            interfaceItems.append(await interfacePreview(id: id, incoming: incoming, rows: current,
+                                                         owner: destination, reason: reason))
+        }
         let allGroups = Self.groups
         return allGroups.compactMap { group in
             let items: [RestorePreviewItem] = present.filter { $0.group == group }.map { definition in
@@ -753,6 +999,9 @@ final class SettingsBackupRemoteAdapter {
                 let status: RestoreItemStatus
                 if !definition.validate(value) { status = .invalid("This value is not supported.") }
                 else if let reason { status = .unsupported(reason) }
+                else if destination?.scope != incoming.scope {
+                    status = .unsupported(SettingsBackupRemoteError.destinationMismatch.localizedDescription)
+                }
                 else if row == nil && definition.requiresCapability {
                     status = .unsupported("This server doesn't support this setting.")
                 }
@@ -771,6 +1020,7 @@ final class SettingsBackupRemoteAdapter {
             }
             let all = group == .subtitles ? items + subtitleItems
                 : items + compositeItems.filter { $0.group == group }
+                    + (group == .interface ? interfaceItems : [])
             return all.isEmpty ? nil : RestorePreviewGroup(group: group, items: all, groupUnsupportedReason: nil)
         }
     }
@@ -779,13 +1029,19 @@ final class SettingsBackupRemoteAdapter {
         let compositeIDs = selectedIDs.intersection(ScopedCompositeBackup.ids)
         let definitions = RemoteBackupDefinition.allCases.filter { selectedIDs.contains($0.id) }
         let subtitleIDs = selectedIDs.intersection(SubtitleDisplayBackup.ids)
-        guard !definitions.isEmpty || !subtitleIDs.isEmpty || !compositeIDs.isEmpty else { return RemoteBackupApplyReport() }
+        let interfaceIDs = selectedIDs.intersection(InterfaceRecordBackup.ids)
+        guard !definitions.isEmpty || !subtitleIDs.isEmpty || !compositeIDs.isEmpty || !interfaceIDs.isEmpty else {
+            return RemoteBackupApplyReport()
+        }
         var report = RemoteBackupApplyReport()
         do {
             guard !needsRecovery else { throw SettingsBackupRemoteError.unconfirmedWrite }
             try await timed { try await self.transport.prepare() }
             let owner = try await timed { try await self.transport.owner() }
-            guard owner.scope == incoming.scope else { throw SettingsBackupRemoteError.destinationMismatch }
+            guard owner.scope == incoming.scope || (!interfaceIDs.isEmpty && definitions.isEmpty
+                && subtitleIDs.isEmpty && compositeIDs.isEmpty) else {
+                throw SettingsBackupRemoteError.destinationMismatch
+            }
             let current = try await read(owner)
             var changes: [RemoteBackupChange] = []
             for definition in definitions {
@@ -803,7 +1059,9 @@ final class SettingsBackupRemoteAdapter {
                     changes.append(RemoteBackupChange(id: definition.id, previous: previous, applied: desired))
                 }
             }
-            guard !changes.isEmpty || !subtitleIDs.isEmpty || !compositeIDs.isEmpty else { return report }
+            guard !changes.isEmpty || !subtitleIDs.isEmpty || !compositeIDs.isEmpty || !interfaceIDs.isEmpty else {
+                return report
+            }
             var record = RemoteBackupJournal(scope: owner.scope, changes: changes, state: .applying)
             var journalSaved = false
             if !changes.isEmpty { try journal.save(record); journalSaved = true }
@@ -837,9 +1095,17 @@ final class SettingsBackupRemoteAdapter {
                                           journalSaved: &journalSaved, report: &report)
                 } else { report.skipped += compositeIDs.sorted() }
             }
+            if !interfaceIDs.isEmpty {
+                if report.failed.isEmpty {
+                    await applyInterfaceRecords(incoming, selected: interfaceIDs, owner: owner, record: &record,
+                                                journalSaved: &journalSaved, report: &report)
+                } else { report.skipped += interfaceIDs.sorted() }
+            }
             if report.failed.isEmpty, journalSaved { record.state = .applied; try journal.save(record) }
         } catch {
-            if report.failed.isEmpty { report.failed = definitions.map(\.id) + subtitleIDs.sorted() + compositeIDs.sorted() }
+            if report.failed.isEmpty {
+                report.failed = definitions.map(\.id) + subtitleIDs.sorted() + compositeIDs.sorted() + interfaceIDs.sorted()
+            }
         }
         return report
     }
@@ -879,6 +1145,7 @@ final class SettingsBackupRemoteAdapter {
             else { record.changes = remaining.reversed(); try journal.save(record) }
         } catch {
             report.failed = record.changes.map(\.id) + (record.subtitleSteps ?? []).map(\.item)
+                + (record.rowSteps ?? []).map(\.item)
         }
         return report
     }
@@ -887,7 +1154,8 @@ final class SettingsBackupRemoteAdapter {
         let response = try await timed {
             try await self.transport.read(
                 RemoteBackupDefinition.allCases.map(\.key) + SubtitleDisplayBackup.keys
-                    + ScopedCompositeBackup.cellularKeys + [ScopedCompositeBackup.titleArtKey], owner: owner)
+                    + ScopedCompositeBackup.cellularKeys + [ScopedCompositeBackup.titleArtKey]
+                    + InterfaceRecordBackup.keys, owner: owner)
         }
         return response.byKey
     }
@@ -918,6 +1186,422 @@ final class SettingsBackupRemoteAdapter {
             guard let result = try await group.next() else { throw SettingsBackupRemoteError.timeout }
             return result
         }
+    }
+}
+
+// MARK: - Interface records and catalog identity
+
+extension SettingsBackupRemoteAdapter {
+    private func interfaceSnapshot(id: String, rows: [SettingKey: EffectiveSettingValue],
+                                   owner: SettingsBackupRemoteOwner) async throws -> BackupValue {
+        guard let key = InterfaceRecordBackup.key(id), let row = rows[key], row.key == key.rawValue else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        let scope = row.scope?.rawValue ?? "default"
+        guard InterfaceRecordBackup.validScope(scope, id: id) else { throw SettingsBackupRemoteError.overridden }
+        return try await interfaceExpected(id: id, stored: row.storedValue ?? row.value,
+                                           scope: scope, owner: owner)
+    }
+
+    private func interfaceExpected(id: String, stored: SettingJSONValue, scope: String,
+                                   owner: SettingsBackupRemoteOwner) async throws -> BackupValue {
+        if id == InterfaceRecordBackup.cardID {
+            guard case .object(let fields) = stored, Set(fields.keys) == ["poster_size", "caption"],
+                  case .string(let size)? = fields["poster_size"],
+                  case .string(let caption)? = fields["caption"] else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            let result = BackupValue.record(["scope": .string(scope), "posterSize": .string(size),
+                                             "caption": .string(caption)])
+            guard InterfaceRecordBackup.validCard(result) else { throw SettingsBackupRemoteError.unsupportedValue }
+            return result
+        }
+        if id == InterfaceRecordBackup.menuID, case .null = stored {
+            return .record(["scope": .string(scope), "items": .string(scope == "default"
+                ? RemoteBackupDefinition.inherited : RemoteBackupDefinition.null)])
+        }
+        if id == InterfaceRecordBackup.shortcutsID, scope == "default" {
+            guard case .object(let fields) = stored, case .array(let items)? = fields["items"], items.isEmpty else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            return .record(["scope": .string("default"), "items": .string(RemoteBackupDefinition.inherited)])
+        }
+        guard case .object(let fields) = stored, Set(fields.keys) == ["items"],
+              case .array(let items)? = fields["items"], items.count <= 64 else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        let libraries = items.isEmpty ? [] : try await timed { try await self.transport.libraries(owner: owner) }
+        var saved: [BackupValue] = []
+        for item in items {
+            saved.append(try await captureMenuItem(item, libraries: libraries, owner: owner))
+        }
+        let value = BackupValue.record(["scope": .string(scope), "items": .array(saved)])
+        guard InterfaceRecordBackup.validItems(value, id: id) else { throw SettingsBackupRemoteError.unsupportedValue }
+        return value
+    }
+
+    private func captureMenuItem(_ value: SettingJSONValue, libraries: [BackupLibraryIdentity],
+                                 owner: SettingsBackupRemoteOwner) async throws -> BackupValue {
+        guard case .object(let fields) = value, case .string(let kind)? = fields["type"] else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        if kind == "builtin" {
+            guard Set(fields.keys) == ["type", "destination"],
+                  case .string(let destination)? = fields["destination"] else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            return .record(["kind": .string(kind), "destination": .string(destination)])
+        }
+        guard ["library", "section", "collection"].contains(kind),
+              let libraryID = fields["library_id"]?.intValue,
+              let library = libraries.first(where: { $0.id == libraryID }),
+              libraries.filter({ $0.id == libraryID }).count == 1,
+              case .string(let label)? = fields["label"] else {
+            throw SettingsBackupRemoteError.unverifiedReference
+        }
+        var item: [String: BackupValue] = ["kind": .string(kind), "libraryId": .int(libraryID),
+            "libraryName": .string(library.name), "libraryType": .string(library.type), "label": .string(label)]
+        switch kind {
+        case "library":
+            guard Set(fields.keys) == ["type", "library_id", "label"] else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+        case "section":
+            guard Set(fields.keys) == ["type", "library_id", "section_id", "label"],
+                  case .string(let sectionID)? = fields["section_id"] else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            let sections = try await timed { try await self.transport.sections(libraryID: libraryID, owner: owner) }
+            guard let section = sections.first(where: { $0.id == sectionID }),
+                  sections.filter({ $0.id == sectionID }).count == 1 else {
+                throw SettingsBackupRemoteError.unverifiedReference
+            }
+            item["sectionId"] = .string(sectionID)
+            item["sectionName"] = .string(section.title)
+            item["sectionType"] = .string(section.type)
+        case "collection":
+            guard Set(fields.keys) == ["type", "library_id", "collection_id", "label"],
+                  case .string(let collectionID)? = fields["collection_id"] else {
+                throw SettingsBackupRemoteError.unverifiedReference
+            }
+            let collections = try await timed { try await self.transport.collections(libraryID: libraryID, owner: owner) }
+            guard let collection = collections.first(where: { $0.id == collectionID }),
+                  collections.filter({ $0.id == collectionID }).count == 1 else {
+                throw SettingsBackupRemoteError.unverifiedReference
+            }
+            item["collectionId"] = .string(collectionID)
+            item["collectionName"] = .string(collection.title)
+            item["collectionType"] = .string(collection.type)
+        default: break
+        }
+        return .record(item)
+    }
+
+    private func resolveMenuItem(_ value: BackupValue, libraries: [BackupLibraryIdentity],
+                                 owner: SettingsBackupRemoteOwner, sameServer: Bool) async throws -> SettingJSONValue {
+        guard case .record(let fields) = value, case .string(let kind)? = fields["kind"] else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        if kind == "builtin" {
+            guard case .string(let destination)? = fields["destination"] else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            return .object(["type": .string(kind), "destination": .string(destination)])
+        }
+        guard case .int(let sourceID)? = fields["libraryId"],
+              case .string(let name)? = fields["libraryName"],
+              case .string(let type)? = fields["libraryType"],
+              case .string(let label)? = fields["label"] else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        // The catalog API exposes no cross-server stable library key or content fingerprint.
+        // A matching human-readable name and media type (often just "Movies") is not proof of
+        // identity. Cross-server built-ins are portable, but catalog references are not.
+        guard sameServer else { throw SettingsBackupRemoteError.unverifiedReference }
+        let matches = libraries.filter { $0.name == name && $0.type == type && $0.id == sourceID }
+        guard let library = matches.first else { throw SettingsBackupRemoteError.missingReference }
+        guard matches.count == 1 else { throw SettingsBackupRemoteError.ambiguousReference }
+        var item: [String: SettingJSONValue] = ["type": .string(kind), "library_id": .int(library.id),
+            "label": .string(label)]
+        if kind == "section" {
+            guard case .string(let sourceSection)? = fields["sectionId"],
+                  case .string(let title)? = fields["sectionName"],
+                  case .string(let sectionType)? = fields["sectionType"] else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            // Section IDs are server-local; unlike libraries they have no portable contract ID.
+            guard sameServer else { throw SettingsBackupRemoteError.unverifiedReference }
+            let sections = try await timed { try await self.transport.sections(libraryID: library.id, owner: owner) }
+            guard sections.filter({ $0.id == sourceSection && $0.title == title && $0.type == sectionType }).count == 1
+            else { throw SettingsBackupRemoteError.missingReference }
+            item["section_id"] = .string(sourceSection)
+        } else if kind == "collection" {
+            guard case .string(let sourceCollection)? = fields["collectionId"],
+                  case .string(let title)? = fields["collectionName"],
+                  case .string(let collectionType)? = fields["collectionType"] else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            guard sameServer else { throw SettingsBackupRemoteError.unverifiedReference }
+            let collections = try await timed { try await self.transport.collections(libraryID: library.id, owner: owner) }
+            guard collections.filter({ $0.id == sourceCollection && $0.title == title && $0.type == collectionType }).count == 1
+            else { throw SettingsBackupRemoteError.missingReference }
+            item["collection_id"] = .string(sourceCollection)
+        }
+        return .object(item)
+    }
+
+    private func resolvedInterfaceWire(id: String, value: BackupValue, owner: SettingsBackupRemoteOwner,
+                                       sameServer: Bool) async throws -> SettingJSONValue? {
+        guard case .record(let fields) = value, let scope = InterfaceRecordBackup.scope(value, id: id) else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        if scope == "default" { return nil }
+        if id == InterfaceRecordBackup.cardID {
+            guard InterfaceRecordBackup.validCard(value),
+                  case .string(let size)? = fields["posterSize"],
+                  case .string(let caption)? = fields["caption"] else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            return .object(["poster_size": .string(size), "caption": .string(caption)])
+        }
+        guard InterfaceRecordBackup.validItems(value, id: id), let items = fields["items"] else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        if items == .string(RemoteBackupDefinition.null) { return .null }
+        guard case .array(let entries) = items else { throw SettingsBackupRemoteError.unsupportedValue }
+        let libraries = entries.isEmpty ? [] : try await timed { try await self.transport.libraries(owner: owner) }
+        var resolved: [SettingJSONValue] = []
+        for entry in entries {
+            resolved.append(try await resolveMenuItem(entry, libraries: libraries, owner: owner, sameServer: sameServer))
+        }
+        return .object(["items": .array(resolved)])
+    }
+
+    private func interfaceScopeSafe(current: String, desired: String, id: String) -> Bool {
+        if current == desired { return true }
+        if desired == "default" { return false }
+        let order = id == InterfaceRecordBackup.cardID
+            ? ["default", "profile", "profile_client", "profile_device"]
+            : id == InterfaceRecordBackup.menuID ? ["default", "profile_client", "profile_device"]
+                : ["default", "profile"]
+        guard let before = order.firstIndex(of: current), let after = order.firstIndex(of: desired) else { return false }
+        return after > before // A higher-precedence row is provably absent while a lower row wins.
+    }
+
+    private func preservesExistingMenu(_ current: BackupValue, desired: BackupValue) -> Bool {
+        guard case .record(let currentFields) = current,
+              case .array(let existing)? = currentFields["items"] else { return true }
+        guard case .record(let desiredFields) = desired,
+              case .array(let incoming)? = desiredFields["items"] else { return false }
+        return existing.allSatisfy { incoming.contains($0) }
+    }
+
+    private func interfacePreview(id: String, incoming: IncomingBackup,
+                                  rows: [SettingKey: EffectiveSettingValue], owner: SettingsBackupRemoteOwner?,
+                                  reason: String?) async -> RestorePreviewItem {
+        let value = incoming.groups[SettingsBackupGroup.interface.rawValue]![id]!
+        var current: BackupValue?
+        var status: RestoreItemStatus = .unsupported(reason ?? "The authoritative value is unavailable.")
+        if let owner, let key = InterfaceRecordBackup.key(id), rows[key] != nil {
+            current = try? await interfaceSnapshot(id: id, rows: rows, owner: owner)
+            do {
+                guard (id == InterfaceRecordBackup.cardID ? InterfaceRecordBackup.validCard(value)
+                    : InterfaceRecordBackup.validItems(value, id: id)) else {
+                    status = .invalid("The structured value is malformed or unsupported.")
+                    throw SettingsBackupRemoteError.unsupportedValue
+                }
+                guard reason == nil else { throw SettingsBackupRemoteError.unsupportedValue }
+                let sameServer = owner.scope.serverFingerprint == incoming.scope?.serverFingerprint
+                if id == InterfaceRecordBackup.cardID && owner.scope != incoming.scope {
+                    throw SettingsBackupRemoteError.destinationMismatch
+                }
+                if sameServer && owner.scope.profileFingerprint != incoming.scope?.profileFingerprint {
+                    throw SettingsBackupRemoteError.destinationMismatch
+                }
+                guard let current else { throw SettingsBackupRemoteError.unsupportedValue }
+                let desiredScope = InterfaceRecordBackup.scope(value, id: id)!
+                let currentScope = InterfaceRecordBackup.scope(current, id: id)!
+                if id == InterfaceRecordBackup.menuID && !preservesExistingMenu(current, desired: value) {
+                    throw SettingsBackupRemoteError.existingMenuConflict
+                }
+                guard interfaceScopeSafe(current: currentScope, desired: desiredScope, id: id) else {
+                    throw SettingsBackupRemoteError.unsafeScopeTransition
+                }
+                let wire = try await resolvedInterfaceWire(id: id, value: value, owner: owner, sameServer: sameServer)
+                if id == InterfaceRecordBackup.shortcutsID, case .object(let fields)? = wire,
+                   case .array(let wanted)? = fields["items"], let row = rows[key],
+                   case .object(let existing) = row.storedValue ?? row.value,
+                   case .array(let have)? = existing["items"],
+                   !wanted.starts(with: have) {
+                    throw SettingsBackupRemoteError.shortcutOrderConflict
+                }
+                status = current == value ? .unchanged : .willChange
+            } catch {
+                if case .invalid = status {} else { status = .unsupported(error.localizedDescription) }
+            }
+        }
+        return RestorePreviewItem(id: id, group: .interface, title: InterfaceRecordBackup.title(id),
+                                  current: current.map { InterfaceRecordBackup.label($0, id: id) },
+                                  incoming: InterfaceRecordBackup.label(value, id: id), status: status,
+                                  incomingValue: value)
+    }
+
+    fileprivate func applyInterfaceRecords(_ incoming: IncomingBackup, selected: Set<String>,
+                                           owner: SettingsBackupRemoteOwner, record: inout RemoteBackupJournal,
+                                           journalSaved: inout Bool, report: inout RemoteBackupApplyReport) async {
+        for id in InterfaceRecordBackup.orderedIDs where selected.contains(id) {
+            var attemptedWrite = false
+            do {
+                try Task.checkCancellation()
+                let sameServer = owner.scope.serverFingerprint == incoming.scope?.serverFingerprint
+                guard !(sameServer && owner.scope.profileFingerprint != incoming.scope?.profileFingerprint),
+                      id != InterfaceRecordBackup.cardID || owner.scope == incoming.scope else {
+                    report.skipped.append(id)
+                    report.skipReasons[id] = SettingsBackupRemoteError.destinationMismatch.localizedDescription
+                    continue
+                }
+                guard let value = incoming.groups[SettingsBackupGroup.interface.rawValue]?[id],
+                      id == InterfaceRecordBackup.cardID ? InterfaceRecordBackup.validCard(value)
+                        : InterfaceRecordBackup.validItems(value, id: id),
+                      let key = InterfaceRecordBackup.key(id),
+                      let targetScope = InterfaceRecordBackup.scope(value, id: id) else {
+                    report.skipped.append(id)
+                    report.skipReasons[id] = "The saved structured value is invalid."
+                    continue
+                }
+                let rows = try await read(owner)
+                let before = try await interfaceSnapshot(id: id, rows: rows, owner: owner)
+                if id == InterfaceRecordBackup.menuID && !preservesExistingMenu(before, desired: value) {
+                    report.skipped.append(id)
+                    report.skipReasons[id] = SettingsBackupRemoteError.existingMenuConflict.localizedDescription
+                    continue
+                }
+                guard let currentScope = InterfaceRecordBackup.scope(before, id: id),
+                      interfaceScopeSafe(current: currentScope, desired: targetScope, id: id) else {
+                    report.skipped.append(id)
+                    report.skipReasons[id] = SettingsBackupRemoteError.unsafeScopeTransition.localizedDescription
+                    continue
+                }
+                let wire = try await resolvedInterfaceWire(id: id, value: value, owner: owner, sameServer: sameServer)
+                if targetScope == "default" { continue }
+                guard let wire else { throw SettingsBackupRemoteError.unsupportedValue }
+                let expected = try await interfaceExpected(id: id, stored: wire, scope: targetScope, owner: owner)
+                if before == expected { continue }
+                let scope: SettingScopeIdentity
+                switch targetScope {
+                case "profile": scope = .profile
+                case "profile_client": scope = .profileClient
+                case "profile_device": scope = .profileDevice
+                default: throw SettingsBackupRemoteError.unsupportedValue
+                }
+                if id == InterfaceRecordBackup.shortcutsID {
+                    guard case .object(let fields) = wire, case .array(let wanted)? = fields["items"],
+                          let row = rows[key], case .object(let currentFields) = row.storedValue ?? row.value,
+                          case .array(let have)? = currentFields["items"], wanted.starts(with: have) else {
+                        report.skipped.append(id)
+                        report.skipReasons[id] = SettingsBackupRemoteError.shortcutOrderConflict.localizedDescription
+                        continue
+                    }
+                    var prefix = have
+                    for item in wanted.dropFirst(have.count) {
+                        let next = prefix + [item]
+                        let after = try await interfaceExpected(id: id,
+                            stored: .object(["items": .array(next)]), scope: "profile", owner: owner)
+                        let prior = try await interfaceExpected(id: id,
+                            stored: .object(["items": .array(prefix)]), scope: "profile", owner: owner)
+                        let priorEffective = prefix.isEmpty && currentScope == "default" ? before : prior
+                        record.rowSteps = (record.rowSteps ?? []) + [ScopedBackupRowStep(
+                            item: id, key: key.rawValue, scope: "profile",
+                            previousRow: currentScope == "default" && prefix.isEmpty ? nil : prior,
+                            appliedRow: after, previousEffective: priorEffective,
+                            previousEffectiveScope: currentScope == "default" && prefix.isEmpty ? nil : "profile",
+                            appliedEffective: after)]
+                        try journal.save(record); journalSaved = true
+                        let currentOwner = try await timed { try await self.transport.owner() }
+                        guard currentOwner.scope == owner.scope, currentOwner.request == owner.request else {
+                            throw SettingsBackupRemoteError.changedOwner
+                        }
+                        attemptedWrite = true
+                        try await timed { try await self.transport.mutateShortcut(item, present: true, owner: owner) }
+                        let confirmed = try await interfaceSnapshot(id: id, rows: try await read(owner), owner: owner)
+                        guard confirmed == after else { throw SettingsBackupRemoteError.unconfirmedWrite }
+                        prefix = next
+                    }
+                    if prefix.count > have.count { report.applied.append(id) }
+                    continue
+                }
+                record.rowSteps = (record.rowSteps ?? []) + [ScopedBackupRowStep(
+                    item: id, key: key.rawValue, scope: targetScope,
+                    previousRow: currentScope == targetScope ? before : nil,
+                    appliedRow: expected, previousEffective: before,
+                    previousEffectiveScope: currentScope == "default" ? nil : currentScope,
+                    appliedEffective: expected)]
+                try journal.save(record); journalSaved = true
+                let currentOwner = try await timed { try await self.transport.owner() }
+                guard currentOwner.scope == owner.scope, currentOwner.request == owner.request else {
+                    throw SettingsBackupRemoteError.changedOwner
+                }
+                attemptedWrite = true
+                try await timed { try await self.transport.put(key, scope: scope, value: wire, owner: owner) }
+                let confirmed = try await interfaceSnapshot(id: id, rows: try await read(owner), owner: owner)
+                guard confirmed == expected else { throw SettingsBackupRemoteError.unconfirmedWrite }
+                report.applied.append(id)
+            } catch {
+                if !attemptedWrite, let remote = error as? SettingsBackupRemoteError,
+                   [.destinationMismatch, .unsupportedValue, .overridden, .missingReference,
+                    .ambiguousReference, .unverifiedReference, .unsafeScopeTransition,
+                    .shortcutOrderConflict, .existingMenuConflict].contains(remote) {
+                    report.skipped.append(id)
+                    report.skipReasons[id] = remote.localizedDescription
+                } else {
+                    report.failed.append(id)
+                    break
+                }
+            }
+        }
+    }
+
+    fileprivate func undoInterfaceStep(_ step: ScopedBackupRowStep, owner: SettingsBackupRemoteOwner) async throws -> Bool {
+        guard let key = SettingKey(rawValue: step.key), InterfaceRecordBackup.keys.contains(key),
+              let id = InterfaceRecordBackup.orderedIDs.first(where: { InterfaceRecordBackup.key($0) == key }) else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        let current = try await interfaceSnapshot(id: id, rows: try await read(owner), owner: owner)
+        if current == step.previousEffective { return true }
+        guard current == step.appliedEffective else { return false }
+        let currentOwner = try await timed { try await self.transport.owner() }
+        guard currentOwner.scope == owner.scope, currentOwner.request == owner.request else {
+            throw SettingsBackupRemoteError.changedOwner
+        }
+        if id == InterfaceRecordBackup.shortcutsID {
+            guard case .record(let fields) = step.appliedEffective,
+                  case .array(let items)? = fields["items"], let last = items.last,
+                  case .record = last else { throw SettingsBackupRemoteError.unsupportedValue }
+            let wire = try await resolvedInterfaceWire(id: id,
+                value: .record(["scope": .string("profile"), "items": .array([last])]),
+                owner: owner, sameServer: true)
+            guard case .object(let object)? = wire, case .array(let values)? = object["items"],
+                  let item = values.first else { throw SettingsBackupRemoteError.unsupportedValue }
+            try await timed { try await self.transport.mutateShortcut(item, present: false, owner: owner) }
+            if step.previousEffectiveScope == nil {
+                try await timed { try await self.transport.delete(key, scope: .profile, owner: owner) }
+            }
+        } else if let previous = step.previousRow {
+            guard let wire = try await resolvedInterfaceWire(id: id, value: previous, owner: owner,
+                                                             sameServer: true) else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            let scope: SettingScopeIdentity = step.scope == "profile" ? .profile
+                : step.scope == "profile_client" ? .profileClient : .profileDevice
+            try await timed { try await self.transport.put(key, scope: scope, value: wire, owner: owner) }
+        } else {
+            let scope: SettingScopeIdentity = step.scope == "profile" ? .profile
+                : step.scope == "profile_client" ? .profileClient : .profileDevice
+            try await timed { try await self.transport.delete(key, scope: scope, owner: owner) }
+        }
+        let restored = try await interfaceSnapshot(id: id, rows: try await read(owner), owner: owner)
+        guard restored == step.previousEffective else { throw SettingsBackupRemoteError.unconfirmedWrite }
+        return true
     }
 }
 
@@ -1075,7 +1759,7 @@ enum SubtitleDisplayBackup {
                 case .bool(let flag): fields[name] = .bool(flag)
                 case .int(let number): fields[name] = .int(number)
                 case .string(let text): fields[name] = .string(text)
-                case .record: return nil
+                case .record, .array: return nil
                 }
             }
             return .object(fields)
@@ -1352,7 +2036,7 @@ extension SettingsBackupRemoteAdapter {
         case .bool(let flag): return SettingJSONValue.bool(flag)
         case .int(let number): return SettingJSONValue.int(number)
         case .string(let text): return SettingJSONValue.string(text)
-        case .record: return nil
+        case .record, .array: return nil
         }
     }
 
@@ -1411,7 +2095,14 @@ extension SettingsBackupRemoteAdapter {
         for step in steps.reversed() {
             do {
                 guard let key = SettingKey(rawValue: step.key) else { report.skipped.append(step.item); continue }
-                let scope: SettingScopeIdentity = step.scope == "profile" ? .profile : .profileDevice
+                if InterfaceRecordBackup.keys.contains(key) {
+                    if try await undoInterfaceStep(step, owner: owner) {
+                        if !report.applied.contains(step.item) { report.applied.append(step.item) }
+                    } else { report.skipped.append(step.item); remaining.append(step) }
+                    continue
+                }
+                let scope: SettingScopeIdentity = step.scope == "profile" ? .profile
+                    : step.scope == "profile_client" ? .profileClient : .profileDevice
                 let rows = try await read(owner)
                 guard let current = rows[key], current.scope?.rawValue == step.scope,
                       compositeRowValue(current) == step.appliedEffective else {

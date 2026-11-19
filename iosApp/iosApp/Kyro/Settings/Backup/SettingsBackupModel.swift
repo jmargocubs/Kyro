@@ -354,10 +354,15 @@ final class SettingsBackupModel {
         defer { isBusy = false; refreshRestorePointState() }
         let remoteIDs = selectedSettingIDs.intersection(SettingsBackupRemoteAdapter.settingIDs)
         let remoteReport = await remote.apply(incomingBackup, selectedIDs: remoteIDs)
-        let skippedText = remoteReport.skipped.isEmpty ? "" : " \(remoteReport.skipped.count) synced settings were skipped."
+        let skippedText = remoteReport.skipped.isEmpty ? "" : " Skipped: "
+            + remoteReport.skipped.map { id in
+                let title = InterfaceRecordBackup.title(id)
+                return remoteReport.skipReasons[id].map { "\(title) (\($0))" } ?? title
+            }.joined(separator: "; ") + "."
         if !remoteReport.failed.isEmpty {
             banner = Banner(kind: .failure, text: "Restored \(remoteReport.applied.count) synced settings; "
-                + "\(remoteReport.failed.count) failed. Local settings were not changed.\(skippedText) Roll back confirmed changes before another import.")
+                + "failed: \(remoteReport.failed.map(InterfaceRecordBackup.title).joined(separator: ", ")). "
+                + "Local settings were not changed.\(skippedText) Roll back confirmed changes before another import.")
             lastRestoredCount = nil
             self.preview = nil
             self.incomingBackup = nil
