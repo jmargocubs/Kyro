@@ -3577,11 +3577,24 @@ struct MainTabView: View {
         case .app(let tab):
             tabContent(for: tab)
         case .libraryCategory(let category):
+            #if os(iOS)
+            if category == .movies || category == .series {
+                KyroMediaSourceRoot(category: category, libraryAuthority: currentLibraryAuthority,
+                                    onLibrariesLoaded: acceptLoadedLibraries)
+            } else {
+                LibrariesTabView(
+                    category: category,
+                    libraryAuthority: currentLibraryAuthority,
+                    onLibrariesLoaded: acceptLoadedLibraries
+                )
+            }
+            #else
             LibrariesTabView(
                 category: category,
                 libraryAuthority: currentLibraryAuthority,
                 onLibrariesLoaded: acceptLoadedLibraries
             )
+            #endif
         case .library(let libraryId):
             LibrariesTabView(
                 fixedLibraryId: libraryId,
