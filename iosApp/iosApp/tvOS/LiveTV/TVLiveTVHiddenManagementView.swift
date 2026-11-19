@@ -97,6 +97,7 @@ struct TVLiveTVHiddenManagementView: View {
 
 struct TVLiveTVChannelInformationView: View {
     let channel: LiveTVChannel
+    let providerName: String?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -104,6 +105,7 @@ struct TVLiveTVChannelInformationView: View {
             Text("Channel Information").font(.system(size: 40, weight: .bold))
             LiveTVChannelLogo(channel: channel, size: CGSize(width: 150, height: 90))
             information("Name", value: channel.name)
+            if let providerName { information("Provider", value: providerName) }
             information("Category", value: channel.category)
             if let guideID = channel.guideID, !guideID.isEmpty {
                 information("Guide ID", value: guideID)

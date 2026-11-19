@@ -91,8 +91,18 @@ struct TVLiveTVBrowseNavigation: Equatable {
     }
 }
 
-@MainActor private enum TVLiveTVBrowseMemory {
-    static var states: [String: TVLiveTVBrowseNavigation] = [:]
+@MainActor enum TVLiveTVBrowseMemory {
+    private static var states: [String: TVLiveTVBrowseNavigation] = [:]
+
+    static func save(_ navigation: TVLiveTVBrowseNavigation, for scope: TVLiveTVVisibilityScope?) {
+        guard let scope else { return }
+        states[scope.storageKey] = navigation
+    }
+
+    static func restore(for scope: TVLiveTVVisibilityScope?) -> TVLiveTVBrowseNavigation? {
+        guard let scope else { return nil }
+        return states[scope.storageKey]
+    }
 }
 
 /// Pure focus-restoration state used by the TV guide and its focused tests.
@@ -192,7 +202,7 @@ struct TVLiveTVRootView: View {
             TVLiveTVProviderManagementView(service: service, profileID: profileID)
         }
         .sheet(item: $infoChannel, onDismiss: restoreAfterCover) { channel in
-            TVLiveTVChannelInformationView(channel: channel)
+            TVLiveTVChannelInformationView(channel: channel, providerName: service.selectedProvider?.name)
         }
         .onExitCommand {
             if navigation.back() {
@@ -209,7 +219,7 @@ struct TVLiveTVRootView: View {
         .task(id: focusRequest) { claimEntryFocus() }
         .onAppear {
             service.presentation.surfaceAppeared(.list)
-            if let scope, let saved = TVLiveTVBrowseMemory.states[scope.storageKey] { navigation = saved }
+            if let saved = TVLiveTVBrowseMemory.restore(for: scope) { navigation = saved }
             if let category = navigation.selectedCategory, hidden.categories.contains(category) {
                 _ = navigation.back()
             }
@@ -217,13 +227,13 @@ struct TVLiveTVRootView: View {
             updateCategoryCounts()
         }
         .onDisappear {
-            if let scope { TVLiveTVBrowseMemory.states[scope.storageKey] = navigation }
+            TVLiveTVBrowseMemory.save(navigation, for: scope)
             search.cancel()
             if !showsGuide && !showsProviders { service.presentation.surfaceDisappeared(.list) }
         }
         .onChange(of: query) { updateSearch() }
         .onChange(of: navigation) { old, value in
-            if let scope { TVLiveTVBrowseMemory.states[scope.storageKey] = value }
+            TVLiveTVBrowseMemory.save(value, for: scope)
             if old.section != value.section || old.selectedCategory != value.selectedCategory {
                 updateSearch()
             }
@@ -242,12 +252,12 @@ struct TVLiveTVRootView: View {
         }
         .onChange(of: service.selectedProviderID) {
             query = ""
-            navigation = TVLiveTVBrowseMemory.states[scope?.storageKey ?? ""] ?? TVLiveTVBrowseNavigation()
+            navigation = TVLiveTVBrowseMemory.restore(for: scope) ?? TVLiveTVBrowseNavigation()
             updateSearch()
             updateCategoryCounts()
         }
         .onChange(of: profileID) {
-            navigation = TVLiveTVBrowseMemory.states[scope?.storageKey ?? ""] ?? TVLiveTVBrowseNavigation()
+            navigation = TVLiveTVBrowseMemory.restore(for: scope) ?? TVLiveTVBrowseNavigation()
             updateSearch()
             updateCategoryCounts()
         }

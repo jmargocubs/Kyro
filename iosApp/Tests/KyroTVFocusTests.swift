@@ -344,11 +344,16 @@ final class KyroTVFocusTests: XCTestCase {
     func testCategoryNavigationSurvivesTabSwitchSnapshot() {
         var state = TVLiveTVBrowseNavigation()
         state.openCategory("Sports")
-        let snapshot = state
+        state.scrollAnchor = "News"
+        let scope = TVLiveTVVisibilityScope(profileID: "focus-test-\(UUID())", providerID: UUID())
+        TVLiveTVBrowseMemory.save(state, for: scope)
         state.select(.channels)
-        XCTAssertEqual(snapshot.section, .categories)
-        XCTAssertEqual(snapshot.selectedCategory, "Sports")
-        XCTAssertEqual(snapshot.focusedCategory, "Sports")
+        let restored = TVLiveTVBrowseMemory.restore(for: scope)
+        XCTAssertEqual(restored?.section, .categories)
+        XCTAssertEqual(restored?.selectedCategory, "Sports")
+        XCTAssertEqual(restored?.focusedCategory, "Sports")
+        XCTAssertEqual(restored?.scrollAnchor, "News")
+        XCTAssertNil(TVLiveTVBrowseMemory.restore(for: .init(profileID: "other", providerID: scope.providerID)))
     }
 
     func testHidingCategoryPreservesNearbyFocusAndScrollAnchor() {
