@@ -35,7 +35,9 @@ final class KyroTVVisibilityTests: XCTestCase {
         let snapshot = reloaded.snapshot(for: scope)
         XCTAssertTrue(snapshot.hiddenChannelIDs.contains("one"))
         XCTAssertEqual(snapshot.visibleCategories(["News", "Sports"]), ["Sports"])
-        XCTAssertEqual(snapshot.visibleChannels([channel("one"), channel("two")]).map(\.id), ["two"])
+        // "one" is hidden itself, "two" by its hidden News category; Sports stays visible.
+        XCTAssertEqual(snapshot.visibleChannels([channel("one"), channel("two"), channel("three", category: "Sports")])
+            .map(\.id), ["three"])
         XCTAssertTrue(reloaded.snapshot(for: .init(profileID: "profile-B", providerID: provider)).hiddenChannelIDs.isEmpty)
         XCTAssertTrue(reloaded.snapshot(for: .init(profileID: "profile-A", providerID: UUID())).hiddenChannelIDs.isEmpty)
     }
