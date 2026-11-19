@@ -37,8 +37,12 @@ enum SettingKey: String, Hashable, Sendable, CaseIterable {
     case playbackSubtitleMode = "playback.subtitle_mode"
     case playbackShowForcedSubtitles = "playback.show_forced_subtitles"
     case catalogMetadataLanguage = "catalog.metadata_language"
+    case playbackSubtitleAppearance = "playback.subtitle_appearance"
+    case playerSubtitleSyncMs = "player.subtitle_sync_ms"
 
     /// Keys the real contract stores at profile scope; everything else here is per device.
+    /// Stored at both `profile` and `profile_device`.
+    static let dual: Set<SettingKey> = [.playbackSubtitleAppearance, .playerSubtitleSyncMs]
     static let profileScoped: Set<SettingKey> = [
         .playbackSubtitleLanguage, .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages,
         .catalogHideUnwatchedEpisodeOverviews, .playerVideoSkipBackSeconds, .playerVideoSkipForwardSeconds,
@@ -54,7 +58,7 @@ enum SettingScopeIdentity: Equatable, Sendable {
     var scope: SettingScope { self == .profile ? .profile : .profileDevice }
 }
 enum SettingJSONValue: Equatable, Sendable {
-    case null, bool(Bool), int(Int), double(Double), string(String)
+    case null, bool(Bool), int(Int), double(Double), string(String), object([String: SettingJSONValue])
     var intValue: Int? {
         switch self {
         case .int(let value): value
@@ -96,6 +100,12 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
     var profileValues: [SettingKey: SettingJSONValue] = [:]
     /// Keys this fake server does not serve, like a server older than their manifest revision.
     var unserved: Set<SettingKey> = []
+    /// Rows of the two keys that live at both scopes: subtitle appearance and subtitle sync.
+    var deviceRows: [SettingKey: SettingJSONValue] = [:]
+    var profileScopeRows: [SettingKey: SettingJSONValue] = [:]
+    var revision = 99
+    /// Fails one (key, scope) write; every other write still succeeds.
+    var failWrite: (key: SettingKey, scope: SettingScopeIdentity)?
     /// A narrower-scope row (device, library or series) that wins over the profile row.
     var overrides: [SettingKey: (scope: SettingScope, value: SettingJSONValue)] = [:]
     var failedKey: SettingKey?
@@ -115,6 +125,23 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
         var rows: [SettingKey: EffectiveSettingValue] = [:]
         for key in keys where !unserved.contains(key) {
             let own: SettingScope = SettingKey.profileScoped.contains(key) ? .profile : .profileDevice
+            if SettingKey.dual.contains(key) {
+                if let hidden = overrides[key] {
+                    rows[key] = EffectiveSettingValue(key: key.rawValue, value: hidden.value, storedValue: nil,
+                                                      scope: hidden.scope, profileId: "profile")
+                } else if let value = deviceRows[key] {
+                    rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
+                                                      scope: .profileDevice, profileId: "profile")
+                } else if let value = profileScopeRows[key] {
+                    rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
+                                                      scope: .profile, profileId: "profile")
+                } else {
+                    rows[key] = EffectiveSettingValue(
+                        key: key.rawValue, value: key == .playerSubtitleSyncMs ? .int(0) : SubtitleFixtures.json([:]),
+                        storedValue: nil, scope: nil, profileId: nil)
+                }
+                continue
+            }
             if let hidden = overrides[key] {
                 rows[key] = EffectiveSettingValue(key: key.rawValue, value: hidden.value, storedValue: nil,
                                                   scope: hidden.scope, profileId: "profile")
@@ -135,20 +162,37 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
     func put(_ key: SettingKey, scope: SettingScopeIdentity, value: SettingJSONValue,
              owner: SettingsBackupRemoteOwner) async throws {
         if offline || key == failedKey || unserved.contains(key) { throw Failure.offline }
-        values[key] = value
+        if let failWrite, failWrite.key == key, failWrite.scope == scope { throw Failure.offline }
+        if SettingKey.dual.contains(key) {
+            if scope == .profileDevice { deviceRows[key] = value } else { profileScopeRows[key] = value }
+        } else { values[key] = value }
         writes.append(key)
         scopes.append(scope)
     }
     func delete(_ key: SettingKey, scope: SettingScopeIdentity,
                 owner: SettingsBackupRemoteOwner) async throws {
         if offline || key == failedKey || unserved.contains(key) { throw Failure.offline }
-        values[key] = nil
+        if let failWrite, failWrite.key == key, failWrite.scope == scope { throw Failure.offline }
+        if SettingKey.dual.contains(key) {
+            if scope == .profileDevice { deviceRows[key] = nil } else { profileScopeRows[key] = nil }
+        } else { values[key] = nil }
         writes.append(key)
         scopes.append(scope)
     }
     func change(_ key: SettingKey, _ value: SettingJSONValue?) { values[key] = value }
     func setProfileValue(_ key: SettingKey, _ value: SettingJSONValue?) { profileValues[key] = value }
     func setUnserved(_ keys: Set<SettingKey>) { unserved = keys }
+    func manifestRevision(owner: SettingsBackupRemoteOwner) async throws -> Int { revision }
+    func setRevision(_ value: Int) { revision = value }
+    func setRow(_ key: SettingKey, _ scope: SettingScopeIdentity, _ value: SettingJSONValue?) {
+        if scope == .profileDevice { deviceRows[key] = value } else { profileScopeRows[key] = value }
+    }
+    func row(_ key: SettingKey, _ scope: SettingScopeIdentity) -> SettingJSONValue? {
+        scope == .profileDevice ? deviceRows[key] : profileScopeRows[key]
+    }
+    func failWriting(_ key: SettingKey?, _ scope: SettingScopeIdentity = .profile) {
+        failWrite = key.map { ($0, scope) }
+    }
     func setOverride(_ key: SettingKey, _ scope: SettingScope?, _ value: SettingJSONValue = .null) {
         overrides[key] = scope.map { ($0, value) }
     }
@@ -217,9 +261,9 @@ enum SettingsBackupUnifiedHostChecks {
 
         await transport.moveProfile()
         await model.loadUnifiedImport(data: file)
-        // This file selected the streaming (6) and subtitles (4) groups; all ten are refused for a
-        // different profile.
-        precondition(model.preview?.skippedCount == 10)
+        // This file selected the streaming (6) and subtitles (7, with the three display items)
+        // groups; all thirteen are refused for a different profile.
+        precondition(model.preview?.skippedCount == 13)
         let before = await transport.writeCount()
         await model.applyUnifiedSelected()
         let after = await transport.writeCount()
@@ -297,8 +341,29 @@ enum SettingsBackupUnifiedHostChecks {
         } catch is CancellationError {}
 
         let batchCount = try await RemoteBatchOneChecks.run()
-        print("SettingsBackupUnifiedHostChecks: \(10 + batchCount) passed")
+        let batchThree = try await RemoteBatchThreeChecks.run()
+        print("SettingsBackupUnifiedHostChecks: \(10 + batchCount + batchThree) passed")
     }
+}
+
+/// Subtitle appearance fixtures: complete server objects, as the effective API returns them.
+enum SubtitleFixtures {
+    static let defaults: [String: SettingJSONValue] = [
+        "fontSize": .string("large"), "fontFamily": .string("sans-serif"), "fontColor": .string("#ffffff"),
+        "backgroundColor": .string("#000000"), "backgroundStyle": .string("box"), "backgroundOpacity": .int(75),
+        "textOpacity": .int(100), "textOutline": .bool(false), "textOutlineColor": .string("#000000"),
+        "position": .string("bottom"),
+    ]
+    static func json(_ changes: [String: SettingJSONValue]) -> SettingJSONValue {
+        .object(defaults.merging(changes) { _, new in new })
+    }
+    static let custom = json([
+        "fontSize": .string("xlarge"), "fontFamily": .string("monospace"), "fontColor": .string("#facc15"),
+        "backgroundColor": .string("#1e3a5f"), "backgroundStyle": .string("shadow"), "backgroundOpacity": .int(40),
+        "textOpacity": .int(80), "textOutline": .bool(true), "textOutlineColor": .string("#7f1d1d"),
+        "position": .string("top"),
+    ])
+    static let other = json(["fontSize": .string("small"), "fontColor": .string("#22c55e"), "position": .string("lower-third")])
 }
 
 /// Batch 1: the fourteen profile-device scalar settings, one table row per value transition.
@@ -384,7 +449,7 @@ private enum RemoteBatchOneChecks {
         // Every new ID passes the document's sensitive-name filter and is owned by the adapter.
         let newIDs = Set(rows.map(\.id))
         precondition(newIDs.count == 24 && newIDs.isSubset(of: SettingsBackupRemoteAdapter.settingIDs))
-        precondition(SettingsBackupRemoteAdapter.settingIDs.count == 27)
+        precondition(SettingsBackupRemoteAdapter.settingIDs.count == 30)
         precondition(SettingsBackupRemoteAdapter.settingIDs.allSatisfy { !SettingsBackupSafety.isSensitiveName($0) })
         checks += 1
 
@@ -573,7 +638,7 @@ private enum RemoteBatchOneChecks {
         }
         let decoded = try SettingsBackupCodec.decode(exported)
         precondition(decoded.groups["player"]?.count == 12 && decoded.groups["interface"]?.count == 5)
-        precondition(decoded.groups["streaming"]?.count == 6 && decoded.groups["subtitles"]?.count == 4)
+        precondition(decoded.groups["streaming"]?.count == 6 && decoded.groups["subtitles"]?.count == 7)
         checks += 1
 
         checks += try await batchTwoChecks()
@@ -673,7 +738,7 @@ private enum RemoteBatchOneChecks {
         await old.setUnserved(gated)
         let oldAdapter = SettingsBackupRemoteAdapter(transport: old, journal: RemoteMemoryJournal())
         let oldExport = try await oldAdapter.export()
-        precondition(oldExport.groups["subtitles"]?.count == 4)
+        precondition(oldExport.groups["subtitles"]?.count == 7)
         for id in ["interface.advisoryAge", "interface.hideEpisodeImages", "interface.hideEpisodeDescriptions"] {
             precondition(oldExport.groups["interface"]?[id] == nil, id)
         }
@@ -768,6 +833,490 @@ private enum RemoteBatchOneChecks {
         case .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages, .catalogHideUnwatchedEpisodeOverviews: .bool(false)
         default: .bool(true)
         }
+    }
+}
+
+/// Batch 3: the subtitle appearance record, the "this device only" switch and the sync offset.
+@MainActor
+private enum RemoteBatchThreeChecks {
+    static let A = SettingKey.playbackSubtitleAppearance
+    static let Y = SettingKey.playerSubtitleSyncMs
+    static let DO = SubtitleDisplayBackup.deviceOnlyID
+    static let AP = SubtitleDisplayBackup.appearanceID
+    static let SY = SubtitleDisplayBackup.syncID
+    static let all: Set<String> = [DO, AP, SY]
+    static let app = SettingsBackupAppInfo(version: "1", build: "98", platform: "iOS", idiom: "phone")
+
+    static func make(_ transport: FakeTransport) -> SettingsBackupRemoteAdapter {
+        SettingsBackupRemoteAdapter(transport: transport, journal: RemoteMemoryJournal(), timeout: .seconds(1))
+    }
+    static func file(_ adapter: SettingsBackupRemoteAdapter) async throws -> IncomingBackup {
+        try await RemoteBatchOneChecks.document(adapter)
+    }
+    static func item(_ groups: [RestorePreviewGroup], _ id: String) -> RestorePreviewItem {
+        guard let found = RemoteBatchOneChecks.item(groups, id) else { fatalError("no preview item \(id)") }
+        return found
+    }
+
+    static func run() async throws -> Int {
+        var checks = 0
+
+        // The three IDs are allowed by the document's safety filter and owned by the adapter.
+        precondition(all.count == 3 && all.isSubset(of: SettingsBackupRemoteAdapter.settingIDs))
+        precondition(all.allSatisfy { !SettingsBackupSafety.isSensitiveName($0) })
+        checks += 1
+
+        // 1. Complete record round trip at profile scope; the file is schema 3 and every field survives.
+        do {
+            let source = FakeTransport()
+            await source.setRow(A, .profile, SubtitleFixtures.custom)
+            let sourceAdapter = make(source)
+            let incoming = try await file(sourceAdapter)
+            precondition(incoming.schemaVersion == 3)
+            guard case .record(let members)? = incoming.groups["subtitles"]?[AP] else { fatalError("no record") }
+            precondition(members.count == 10 && members["fontColor"] == .string("#facc15")
+                         && members["textOpacity"] == .int(80) && members["position"] == .string("top")
+                         && members["textOutline"] == .bool(true) && members["backgroundOpacity"] == .int(40))
+            precondition(incoming.groups["subtitles"]?[DO] == .bool(false))
+            precondition(incoming.groups["subtitles"]?[SY] == RemoteBatchOneChecks.inherit)
+
+            let dest = FakeTransport()
+            await dest.setRow(A, .profile, SubtitleFixtures.other)
+            let adapter = make(dest)
+            let preview = await adapter.preview(incoming)
+            precondition(item(preview, AP).status == .willChange && item(preview, DO).status == .unchanged
+                         && item(preview, SY).status == .unchanged)
+            await dest.clearWrites()
+            let report = await adapter.apply(incoming, selectedIDs: all)
+            precondition(report.applied == [AP] && report.failed.isEmpty, "\(report)")
+            let restored = await dest.row(A, .profile)
+            let writtenScopes = await dest.writtenScopes()
+            precondition(restored == SubtitleFixtures.custom && writtenScopes == [.profile])
+            let deviceRow = await dest.row(A, .profileDevice)
+            precondition(deviceRow == nil)
+            let undo = await adapter.undo()
+            let undone = await dest.row(A, .profile)
+            precondition(undo.applied == [AP] && undone == SubtitleFixtures.other && !adapter.undoAvailable)
+        }
+        checks += 1
+
+        // 2. Device-only appearance: the device row is written and the profile row is never touched.
+        do {
+            let source = FakeTransport()
+            await source.setRow(A, .profileDevice, SubtitleFixtures.custom)
+            await source.setRow(A, .profile, SubtitleFixtures.other)   // hidden by the device row
+            let incoming = try await file(make(source))
+            precondition(incoming.groups["subtitles"]?[DO] == .bool(true))
+            guard case .record? = incoming.groups["subtitles"]?[AP] else { fatalError("device record") }
+            let dest = FakeTransport()
+            let profileRow = SubtitleFixtures.json(["fontSize": .string("medium")])
+            await dest.setRow(A, .profile, profileRow)
+            let adapter = make(dest)
+            let preview = await adapter.preview(incoming)
+            precondition(item(preview, DO).status == .willChange && item(preview, AP).status == .willChange)
+            precondition(item(preview, DO).current == "Off" && item(preview, DO).incoming == "On")
+            await dest.clearWrites()
+            let report = await adapter.apply(incoming, selectedIDs: all)
+            precondition(report.applied == [DO, AP] && report.failed.isEmpty, "\(report)")
+            let device = await dest.row(A, .profileDevice)
+            let profile = await dest.row(A, .profile)
+            let scopes = await dest.writtenScopes()
+            precondition(device == SubtitleFixtures.custom && profile == profileRow && scopes == [.profileDevice])
+            let undo = await adapter.undo()
+            let afterDevice = await dest.row(A, .profileDevice)
+            let afterProfile = await dest.row(A, .profile)
+            precondition(undo.failed.isEmpty && afterDevice == nil && afterProfile == profileRow)
+        }
+        checks += 1
+
+        // 3. Switching device → profile: the device row goes, the profile row takes the saved
+        // appearance, and Undo restores both rows, including the profile row the device row hid.
+        do {
+            let source = FakeTransport()
+            await source.setRow(A, .profile, SubtitleFixtures.custom)
+            let incoming = try await file(make(source))
+            let dest = FakeTransport()
+            let hiddenProfile = SubtitleFixtures.json(["fontSize": .string("medium")])
+            await dest.setRow(A, .profileDevice, SubtitleFixtures.other)
+            await dest.setRow(A, .profile, hiddenProfile)
+            let adapter = make(dest)
+            let preview = await adapter.preview(incoming)
+            precondition(item(preview, DO).current == "On" && item(preview, DO).incoming == "Off")
+            await dest.clearWrites()
+            let report = await adapter.apply(incoming, selectedIDs: all)
+            precondition(report.applied == [DO, AP] && report.failed.isEmpty, "\(report)")
+            let device = await dest.row(A, .profileDevice)
+            let profile = await dest.row(A, .profile)
+            let order = await dest.writtenScopes()
+            precondition(device == nil && profile == SubtitleFixtures.custom && order == [.profileDevice, .profile])
+            let undo = await adapter.undo()
+            let restoredDevice = await dest.row(A, .profileDevice)
+            let restoredProfile = await dest.row(A, .profile)
+            precondition(undo.failed.isEmpty && restoredDevice == SubtitleFixtures.other && restoredProfile == hiddenProfile)
+        }
+        checks += 1
+
+        // 4. Switching profile → device with only the switch selected: the device starts from what is
+        // on screen, so nothing visible changes, and the profile row stays.
+        do {
+            let source = FakeTransport()
+            await source.setRow(A, .profileDevice, SubtitleFixtures.custom)
+            let incoming = try await file(make(source))
+            let dest = FakeTransport()
+            await dest.setRow(A, .profile, SubtitleFixtures.other)
+            let adapter = make(dest)
+            let report = await adapter.apply(incoming, selectedIDs: [DO])
+            let device = await dest.row(A, .profileDevice)
+            let profile = await dest.row(A, .profile)
+            precondition(report.applied == [DO] && device == SubtitleFixtures.other && profile == SubtitleFixtures.other)
+            let undo = await adapter.undo()
+            let afterDevice = await dest.row(A, .profileDevice)
+            precondition(undo.failed.isEmpty && afterDevice == nil)
+        }
+        checks += 1
+
+        // 5. Explicit default, inherited and custom stay three different states.
+        do {
+            let explicit = FakeTransport()
+            await explicit.setRow(A, .profile, SubtitleFixtures.json([:]))
+            let explicitFile = try await file(make(explicit))
+            guard case .record(let defaultMembers)? = explicitFile.groups["subtitles"]?[AP] else {
+                fatalError("explicit default must be a record, not inherited")
+            }
+            precondition(defaultMembers == SubtitleDisplayBackup.defaults)
+            let inheritedFile = try await file(make(FakeTransport()))
+            precondition(inheritedFile.groups["subtitles"]?[AP] == RemoteBatchOneChecks.inherit)
+
+            let dest = FakeTransport()
+            let toExplicit = make(dest)
+            let preview = await toExplicit.preview(explicitFile)
+            precondition(item(preview, AP).status == .willChange && item(preview, AP).current == "Use inherited setting")
+            _ = await toExplicit.apply(explicitFile, selectedIDs: [AP])
+            let created = await dest.row(A, .profile)
+            precondition(created == SubtitleFixtures.json([:]))
+            _ = await toExplicit.undo()
+            let removed = await dest.row(A, .profile)
+            precondition(removed == nil)
+
+            let custom = FakeTransport()
+            await custom.setRow(A, .profile, SubtitleFixtures.custom)
+            let toInherited = make(custom)
+            _ = await toInherited.apply(inheritedFile, selectedIDs: [AP])
+            let cleared = await custom.row(A, .profile)
+            precondition(cleared == nil)
+            _ = await toInherited.undo()
+            let back = await custom.row(A, .profile)
+            precondition(back == SubtitleFixtures.custom)
+        }
+        checks += 1
+
+        // 6. Sync offsets: negative, zero (explicit, distinct from inherited), positive and the limits.
+        for offset in [-750, 0, 1500, -10_000, 10_000] {
+            let source = FakeTransport()
+            await source.setRow(Y, .profile, .int(offset))
+            let incoming = try await file(make(source))
+            precondition(incoming.groups["subtitles"]?[SY] == .int(offset), "\(offset)")
+            let dest = FakeTransport()
+            if offset != 0 { await dest.setRow(Y, .profile, .int(250)) }
+            let adapter = make(dest)
+            let preview = await adapter.preview(incoming)
+            precondition(item(preview, SY).status == .willChange)
+            await dest.clearWrites()
+            let report = await adapter.apply(incoming, selectedIDs: [SY])
+            let row = await dest.row(Y, .profile)
+            let scopes = await dest.writtenScopes()
+            precondition(report.applied == [SY] && row == .int(offset) && scopes == [.profile], "\(offset)")
+            let undo = await adapter.undo()
+            let after = await dest.row(Y, .profile)
+            precondition(undo.applied == [SY] && after == (offset == 0 ? nil : .int(250)), "\(offset)")
+        }
+        // Device scope while the device keeps its own appearance.
+        do {
+            let source = FakeTransport()
+            await source.setRow(A, .profileDevice, SubtitleFixtures.custom)
+            await source.setRow(Y, .profileDevice, .int(300))
+            let incoming = try await file(make(source))
+            let dest = FakeTransport()
+            let adapter = make(dest)
+            await dest.clearWrites()
+            let report = await adapter.apply(incoming, selectedIDs: all)
+            let scopes = await dest.writtenScopes()
+            let deviceSync = await dest.row(Y, .profileDevice)
+            let profileSync = await dest.row(Y, .profile)
+            precondition(report.failed.isEmpty && deviceSync == .int(300) && profileSync == nil)
+            precondition(scopes.allSatisfy { $0 == .profileDevice })
+        }
+        // A leftover device offset is removed so the profile's applies; the hidden profile offset is
+        // recorded so Undo restores both.
+        do {
+            let source = FakeTransport()
+            await source.setRow(Y, .profile, .int(-750))
+            let incoming = try await file(make(source))
+            let dest = FakeTransport()
+            await dest.setRow(Y, .profileDevice, .int(111))
+            await dest.setRow(Y, .profile, .int(40))
+            let adapter = make(dest)
+            let report = await adapter.apply(incoming, selectedIDs: [SY])
+            let device = await dest.row(Y, .profileDevice)
+            let profile = await dest.row(Y, .profile)
+            precondition(report.applied == [SY] && device == nil && profile == .int(-750), "\(report)")
+            _ = await adapter.undo()
+            let restoredDevice = await dest.row(Y, .profileDevice)
+            let restoredProfile = await dest.row(Y, .profile)
+            precondition(restoredDevice == .int(111) && restoredProfile == .int(40))
+        }
+        // A server older than revision 19 stores the offset per device only.
+        do {
+            let source = FakeTransport()
+            await source.setRow(Y, .profile, .int(-750))
+            let incoming = try await file(make(source))
+            let old = FakeTransport()
+            await old.setRevision(18)
+            let adapter = make(old)
+            await old.clearWrites()
+            let report = await adapter.apply(incoming, selectedIDs: [SY])
+            let scopes = await old.writtenScopes()
+            let device = await old.row(Y, .profileDevice)
+            precondition(report.applied == [SY] && scopes == [.profileDevice] && device == .int(-750))
+        }
+        // Out-of-range offsets are invalid and never written.
+        do {
+            let base = try await file(make(FakeTransport()))
+            var groups = base.groups
+            groups["subtitles"]?[SY] = .int(10_001)
+            let invalid = try SettingsBackupCodec.decode(SettingsBackupCodec.makeUnifiedDocument(
+                groups: groups, scope: base.scope, app: app, now: Date()))
+            let dest = FakeTransport()
+            let adapter = make(dest)
+            let preview = await adapter.preview(invalid)
+            precondition(item(preview, SY).status == .invalid("This value is not supported."))
+            await dest.clearWrites()
+            let report = await adapter.apply(invalid, selectedIDs: [SY])
+            let writes = await dest.writeCount()
+            precondition(writes == 0 && report.skipped == [SY])
+        }
+        checks += 1
+
+        // 7. Older server: text opacity needs revision 14. A saved non-default opacity is refused;
+        // a default one is stored without the member.
+        do {
+            let source = FakeTransport()
+            await source.setRow(A, .profile, SubtitleFixtures.custom)
+            let custom = try await file(make(source))
+            let old = FakeTransport()
+            await old.setRevision(10)
+            let adapter = make(old)
+            let preview = await adapter.preview(custom)
+            precondition(item(preview, AP).status == .unsupported("This server is too old to store the saved text opacity."))
+            await old.clearWrites()
+            let skipped = await adapter.apply(custom, selectedIDs: [AP])
+            let none = await old.writeCount()
+            precondition(none == 0 && skipped.skipped == [AP])
+
+            let plain = FakeTransport()
+            await plain.setRow(A, .profile, SubtitleFixtures.other)
+            let plainFile = try await file(make(plain))
+            let report = await adapter.apply(plainFile, selectedIDs: [AP])
+            let stored = await old.row(A, .profile)
+            guard case .object(let fields)? = stored else { fatalError("no stored appearance") }
+            precondition(report.applied == [AP] && fields["textOpacity"] == nil && fields["position"] == .string("lower-third"))
+        }
+        checks += 1
+
+        // 8. Partial API failure: the switch is confirmed, the appearance write fails, the sync offset
+        // is skipped, and recovery puts the device row and the profile row back.
+        do {
+            let source = FakeTransport()
+            await source.setRow(A, .profile, SubtitleFixtures.custom)
+            await source.setRow(Y, .profile, .int(-750))
+            let incoming = try await file(make(source))
+            let dest = FakeTransport()
+            let hidden = SubtitleFixtures.json(["fontSize": .string("medium")])
+            await dest.setRow(A, .profileDevice, SubtitleFixtures.other)
+            await dest.setRow(A, .profile, hidden)
+            await dest.failWriting(A, .profile)
+            let adapter = make(dest)
+            let report = await adapter.apply(incoming, selectedIDs: all)
+            precondition(report.applied == [DO] && report.failed == [AP] && report.skipped == [SY], "\(report)")
+            precondition(adapter.needsRecovery)
+            let device = await dest.row(A, .profileDevice)
+            precondition(device == nil)   // the confirmed switch is reported as applied
+            await dest.failWriting(nil)
+            let undo = await adapter.undo()
+            let restoredDevice = await dest.row(A, .profileDevice)
+            let restoredProfile = await dest.row(A, .profile)
+            let syncTouched = await dest.row(Y, .profile)
+            precondition(undo.failed.isEmpty && restoredDevice == SubtitleFixtures.other
+                         && restoredProfile == hidden && syncTouched == nil)
+            precondition(!adapter.needsRecovery && !adapter.undoAvailable)
+        }
+        checks += 1
+
+        // 9. Selective restore. Appearance alone; offset alone; a profile-inherited appearance cannot
+        // be restored onto a device-only destination unless the switch is restored too.
+        do {
+            let source = FakeTransport()
+            await source.setRow(A, .profile, SubtitleFixtures.custom)
+            await source.setRow(Y, .profile, .int(-750))
+            let incoming = try await file(make(source))
+            let dest = FakeTransport()
+            let adapter = make(dest)
+            await dest.clearWrites()
+            _ = await adapter.apply(incoming, selectedIDs: [SY])
+            let onlySync = await dest.writtenKeys()
+            precondition(onlySync == [Y])
+            _ = await adapter.undo()
+            await dest.clearWrites()
+            _ = await adapter.apply(incoming, selectedIDs: [AP])
+            let onlyAppearance = await dest.writtenKeys()
+            precondition(onlyAppearance == [A])
+            _ = await adapter.undo()
+
+            let inherited = try await file(make(FakeTransport()))
+            let deviceOnly = FakeTransport()
+            await deviceOnly.setRow(A, .profileDevice, SubtitleFixtures.other)
+            let blocked = make(deviceOnly)
+            await deviceOnly.clearWrites()
+            let report = await blocked.apply(inherited, selectedIDs: [AP])
+            let writes = await deviceOnly.writeCount()
+            precondition(report.skipped == [AP] && writes == 0)
+            let withSwitch = await blocked.apply(inherited, selectedIDs: [DO, AP])
+            let device = await deviceOnly.row(A, .profileDevice)
+            precondition(withSwitch.failed.isEmpty && device == nil)
+        }
+        checks += 1
+
+        // 10. Undo leaves a row alone that changed after the restore.
+        do {
+            let source = FakeTransport()
+            await source.setRow(A, .profile, SubtitleFixtures.custom)
+            let incoming = try await file(make(source))
+            let dest = FakeTransport()
+            let adapter = make(dest)
+            _ = await adapter.apply(incoming, selectedIDs: [AP])
+            await dest.setRow(A, .profile, SubtitleFixtures.other)
+            let undo = await adapter.undo()
+            let row = await dest.row(A, .profile)
+            precondition(undo.skipped == [AP] && row == SubtitleFixtures.other)
+        }
+        checks += 1
+
+        // 11. Identity mismatch: all three items are refused and nothing is written.
+        do {
+            let source = FakeTransport()
+            await source.setRow(A, .profile, SubtitleFixtures.custom)
+            await source.setRow(Y, .profile, .int(-750))
+            let adapter = make(source)
+            let incoming = try await file(adapter)
+            await source.moveProfile()
+            let preview = await adapter.preview(incoming)
+            for id in all {
+                precondition(item(preview, id).status
+                    == .unsupported(SettingsBackupRemoteError.destinationMismatch.localizedDescription), id)
+            }
+            await source.clearWrites()
+            let report = await adapter.apply(incoming, selectedIDs: all)
+            let writes = await source.writeCount()
+            precondition(writes == 0 && report.applied.isEmpty)
+        }
+        checks += 1
+
+        // 12. Rows that cannot be transferred safely are reported, never guessed or overwritten.
+        do {
+            let unknown = FakeTransport()
+            await unknown.setRow(A, .profile, .object(["fontSize": .string("large"), "fontWeight": .string("bold")]))
+            let export = try await make(unknown).export()
+            precondition(export.groups["subtitles"]?[AP] == nil && export.groups["subtitles"]?[DO] == nil)
+            precondition(export.groups["subtitles"]?[SY] != nil)
+            precondition(export.omitted.contains { $0.hasPrefix("Subtitle appearance") && $0.contains("can't be transferred") })
+
+            let source = FakeTransport()
+            await source.setRow(A, .profile, SubtitleFixtures.custom)
+            let incoming = try await file(make(source))
+            let adapter = make(unknown)
+            let preview = await adapter.preview(incoming)
+            precondition({ if case .unsupported = item(preview, AP).status { return true }; return false }())
+            await unknown.clearWrites()
+            _ = await adapter.apply(incoming, selectedIDs: [AP])
+            let guarded = await unknown.writeCount()
+            precondition(guarded == 0)
+
+            let library = FakeTransport()
+            await library.setOverride(A, .profileLibrary, SubtitleFixtures.other)
+            let libraryAdapter = make(library)
+            let overridden = try await libraryAdapter.export()
+            precondition(overridden.omitted.contains { $0.contains("override") })
+            let skippedReport = await libraryAdapter.apply(incoming, selectedIDs: all)
+            let libraryWrites = await library.writeCount()
+            precondition(libraryWrites == 0 && skippedReport.failed.isEmpty && !skippedReport.skipped.isEmpty)
+        }
+        checks += 1
+
+        // 13. Through the model: one file, schema 3 only when it holds the record, and a full restore
+        // and Undo of local, scalar and subtitle-display settings together.
+        do {
+            let transport = FakeTransport()
+            let local = LocalStore()
+            let model = SettingsBackupModel(
+                registry: local.registry(), journal: LocalMemoryJournal(), app: app,
+                remote: SettingsBackupRemoteAdapter(transport: transport, journal: RemoteMemoryJournal()))
+            await transport.setRow(A, .profile, SubtitleFixtures.custom)
+            await transport.setRow(Y, .profile, .int(-750))
+            model.exportSelection = [.navigation, .streaming]
+            guard let plain = await model.exportUnifiedDocument() else { fatalError("export") }
+            let plainDoc = try SettingsBackupCodec.decode(plain)
+            precondition(plainDoc.schemaVersion == 2 && plainDoc.groups["subtitles"] == nil)
+
+            model.exportSelection = [.navigation, .streaming, .subtitles]
+            guard let data = await model.exportUnifiedDocument() else { fatalError("export") }
+            let doc = try SettingsBackupCodec.decode(data)
+            precondition(doc.schemaVersion == 3)
+            let text = String(decoding: data, as: UTF8.self)
+            precondition(text.contains("\"minReaderVersion\" : 3"))
+            for secret in ["example.invalid", "https", "\"local\""] { precondition(!text.contains(secret)) }
+
+            local.fourthTab = "forYou"
+            await transport.setRow(A, .profile, SubtitleFixtures.other)
+            await transport.setRow(Y, .profile, .int(250))
+            await model.loadUnifiedImport(data: data)
+            precondition(model.preview?.skippedCount == 0)
+            precondition(model.selectedChangeCount == 3)   // fourth tab, appearance and offset
+            model.setImport(AP, enabled: false)
+            await model.applyUnifiedSelected()
+            let appearanceKept = await transport.row(A, .profile)
+            let syncRestored = await transport.row(Y, .profile)
+            precondition(local.fourthTab == "sports" && appearanceKept == SubtitleFixtures.other && syncRestored == .int(-750))
+            await model.undoUnified()
+            let syncBack = await transport.row(Y, .profile)
+            precondition(local.fourthTab == "forYou" && syncBack == .int(250))
+        }
+        checks += 1
+
+        // 14. Compatibility: a record is refused in a schema-1 or schema-2 file, and a Build 96/97
+        // schema-2 file previews without touching the display unit.
+        do {
+            let scope = SettingsBackupScope(serverFingerprint: String(repeating: "a", count: 64),
+                                            profileFingerprint: String(repeating: "b", count: 64))
+            let members: [String: BackupValue] = ["fontSize": .string("large")]
+            for version in [1, 2] {
+                let bad = try SettingsBackupCodec.makeDocument(
+                    groups: ["subtitles": ["subtitles.appearance": .record(members)]],
+                    schemaVersion: version, minReaderVersion: 1, app: app, now: Date())
+                do { _ = try SettingsBackupCodec.decode(bad); fatalError("schema \(version) carried a record") }
+                catch SettingsBackupError.unsafeContent {}
+            }
+            let old = try SettingsBackupCodec.makeUnifiedDocument(
+                groups: ["subtitles": ["subtitles.language": .string("zh"), "subtitles.mode": .string("off")]],
+                scope: scope, app: app, now: Date())
+            let decoded = try SettingsBackupCodec.decode(old)
+            precondition(decoded.schemaVersion == 2)
+            let adapter = make(FakeTransport())
+            let preview = await adapter.preview(decoded)
+            precondition(preview.flatMap(\.items).count == 2)
+            precondition(preview.flatMap(\.items).allSatisfy { !all.contains($0.id) })
+        }
+        checks += 1
+        return checks
     }
 }
 

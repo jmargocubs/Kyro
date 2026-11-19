@@ -334,3 +334,50 @@ A defect found and fixed during this work: one overridden or unreadable setting 
 | 5 | Card presentation; primary menu + shortcuts | Composite objects; menu contains library IDs needing destination-catalog matching |
 
 Physical-iPhone validation of any API-backed setting is still outstanding.
+
+## API batch 3: subtitle display (2026-11-19)
+
+**Outcome:** the last three scope-sensitive subtitle settings now export, preview, restore selectively, confirm with fresh server reads and Undo in the same `.kyrosettings` workflow. Coverage of the 64 candidates rises from **57/64 to 60/64**. Registered settings rise from 58 to **61** (31 device-local, 30 API-backed).
+
+| Backup ID | Setting | Backup value |
+|---|---|---|
+| `subtitles.appearance` | Subtitle appearance | a record of all 10 synced members, or `~inherit` |
+| `subtitles.appearanceDeviceOnly` | Subtitle appearance "This device only" | true / false |
+| `subtitles.syncOffsetMs` | Subtitle sync offset | integer -10000…10000 ms (0 is explicit), or `~inherit` |
+
+### Storage mappings
+
+* **"This device only" is not a stored value.** The Settings switch means "`playback.subtitle_appearance` has a `profile_device` row for this device" (`PlayerSettings.subtitleUsesDeviceAppearanceOverride`, derived from the winning row's scope). The backup records it as a boolean derived from that scope and restores it by creating or deleting that row. Turning it on copies the appearance on screen, as the Settings switch does; turning it off deletes the device row.
+* **Appearance:** `playback.subtitle_appearance`, an object at `profile` or `profile_device`. The record carries `fontSize`, `fontFamily`, `fontColor`, `backgroundColor`, `backgroundStyle`, `backgroundOpacity`, `textOpacity`, `textOutline`, `textOutlineColor`, `position`. Runtime-only device caption values (`fontOpacity`, system scale and edge style, caption window) are not synced by the app and are not in the record. A test compares the record's members, lists and defaults with the production `SubtitleAppearance`.
+* **Sync offset:** `player.subtitle_sync_ms`. It follows the appearance scope: profile by default, device while the device keeps its own appearance. A server older than revision 19 can only store it per device, so there it is written at `profile_device`.
+* The backup stores a complete canonical record (defaults filled in, hex colors normalized to `#rrggbb`). An absent row is `~inherit`; an explicit all-default row is a full record. The three states (inherited, explicit default, custom) therefore stay distinct. The API cannot show whether a stored object was sparse or complete.
+
+### Restore order, atomicity and rollback
+
+The server has no transaction across rows, so restore is an ordered, journalled sequence: **scope switch → appearance (at the resulting scope) → sync offset**. Each row write is saved in the restore point before it is sent, confirmed by a fresh read, and reversed in the opposite order on Undo or recovery.
+
+* The appearance is written at the scope the switch ends with. If the switch is not selected, it is written at the destination's current scope.
+* A profile appearance of "inherited" cannot be applied to a device-only destination without the switch (a device row can't be inherited), so that item is skipped and reported.
+* Restoring the offset at profile scope first deletes a leftover device offset, which would otherwise hide it. The row hidden behind a device row is read after the device row is deleted, and recorded, so Undo restores both rows.
+* Other rows are never written: a device-only restore leaves the profile row alone, and a profile restore leaves a hidden device row alone unless the switch is restored.
+* On a failure the confirmed items are reported as restored, the failed item as failed and the rest as skipped, the restore point stays in recovery state, and Roll Back reverses the confirmed rows. Undo leaves a row that changed after the restore, or that a device row currently hides, alone.
+* A library or series override that hides the rows, or an appearance object with members this Kyro doesn't know, is not exported (listed with the reason), previewed as unsupported and never written.
+* Server revisions: `textOpacity` needs revision 14. On an older server a saved non-default opacity is refused as unsupported; a default one is stored without the member.
+
+### Schema change
+
+**Schema 3** adds one value type, a flat record of scalars. A file is written as schema 3 with `minReaderVersion` 3 only when it contains a record, which is whenever the Subtitles group is exported; any other file stays schema 2 (or 1), so earlier builds keep reading it. Earlier builds refuse a schema-3 file with the "made by a newer version" message rather than misreading it. The decoder refuses a record in a schema-1 or schema-2 file, a nested record, an empty record, more than 16 members, an unsafe member name and a link-like value; records are covered by the SHA-256 integrity hash. Build 93 to Build 97 files import unchanged. The two existing "future schema" tests now use schemas 4 and 5.
+
+### Validation
+
+* **macOS host checks:** **82 unified checks and 13 codec checks passed**. New: 15 unified checks covering the complete 10-field record round trip, profile-scoped and device-only appearance, switching in both directions with Undo of hidden rows, switch-only restore, explicit default vs inherited vs custom, offsets -10000, -750, 0, 1500 and 10000 (explicit zero distinct from inherited), device-scoped and pre-19 server offsets, leftover device offset removal, out-of-range offsets, older server text opacity, partial failure with recovery, selective restore, Undo skipping a row changed since, identity mismatch with zero writes, unknown members and library overrides, a model-level export/restore/Undo through the real model, and Build 96 / schema-1 / schema-2 compatibility. The 67 earlier checks still pass.
+* **iOS XCTest:** `SettingsBackupSubtitleDisplayTests` (9 tests, real wire models and pins to `SubtitleAppearance`, the three `Subtitle*Preset` enums and the revision constants) and the updated `SettingsBackupUnifiedTests` **compiled** with `xcodebuild build-for-testing` for `generic/platform=iOS`. They were **not executed**; no Simulator was launched. No IPA was built; tvOS was not modified.
+
+### Remaining: 4 of the 64
+
+| Batch | Settings | Blocker |
+|---|---|---|
+| 4 | Cellular quality pair; title art | Two keys written atomically (iPhone/iPad only); apply-to-all scope choice |
+| 5 | Card presentation; primary menu + shortcuts | Composite objects; menu contains library IDs needing destination-catalog matching |
+
+The device caption-matching toggle (`player.subtitleMatchesSystemAppearance`) was already counted among the 30 local settings. Physical-iPhone validation of any API-backed setting is still outstanding.

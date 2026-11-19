@@ -47,7 +47,52 @@ enum SettingsBackupCodecHostChecks {
             fatalError("Credential-like setting passed the allowlist")
         } catch SettingsBackupError.unsafeContent {}
 
-        print("SettingsBackupCodecHostChecks: 6 passed")
+        // Schema 3: a flat record of scalars, only when the file holds one.
+        let appearance: [String: BackupValue] = [
+            "fontSize": .string("xlarge"), "fontColor": .string("#facc15"), "backgroundOpacity": .int(40),
+            "textOutline": .bool(true)]
+        let withRecord = try SettingsBackupCodec.makeUnifiedDocument(
+            groups: ["subtitles": ["subtitles.appearance": .record(appearance)]], scope: scope, app: app, now: Date())
+        let recordDecoded = try SettingsBackupCodec.decode(withRecord)
+        precondition(recordDecoded.schemaVersion == 3)
+        precondition(recordDecoded.groups["subtitles"]?["subtitles.appearance"] == .record(appearance))
+        // Earlier builds must refuse it cleanly rather than misread it: minReaderVersion is 3.
+        precondition(String(decoding: withRecord, as: UTF8.self).contains("\"minReaderVersion\" : 3"))
+        precondition(decoded.schemaVersion == 2)   // a file without a record is unchanged
+
+        let tamperedRecord = String(decoding: withRecord, as: UTF8.self).replacingOccurrences(of: "xlarge", with: "small")
+        do { _ = try SettingsBackupCodec.decode(Data(tamperedRecord.utf8)); fatalError("record tamper passed") }
+        catch SettingsBackupError.integrityMismatch {}
+
+        for version in [1, 2] {
+            let early = try SettingsBackupCodec.makeDocument(
+                groups: ["subtitles": ["subtitles.appearance": .record(appearance)]],
+                schemaVersion: version, minReaderVersion: 1, app: app, now: Date())
+            do { _ = try SettingsBackupCodec.decode(early); fatalError("record in schema \(version)") }
+            catch SettingsBackupError.unsafeContent {}
+        }
+        let unsafeRecords: [[String: BackupValue]] = [
+            [:],                                                       // empty
+            ["a": .record(["b": .int(1)])],                            // nested
+            ["authToken": .string("x")],                               // credential-like member
+            ["fontSize": .string("https://example.com")],              // link-like value
+            Dictionary(uniqueKeysWithValues: (0..<17).map { ("m\($0)", BackupValue.int($0)) }),   // too many
+        ]
+        for members in unsafeRecords {
+            do {
+                _ = try SettingsBackupCodec.makeUnifiedDocument(
+                    groups: ["subtitles": ["subtitles.appearance": .record(members)]], scope: scope, app: app, now: Date())
+                fatalError("unsafe record accepted: \(members.keys)")
+            } catch SettingsBackupError.unsafeContent {}
+        }
+        // A newer file (schema 4) that this build can read in full still decodes.
+        let future = try SettingsBackupCodec.makeDocument(
+            groups: ["navigation": ["navigation.fourthTab": .string("sports")]],
+            schemaVersion: 4, minReaderVersion: 1, app: app, now: Date())
+        let futureDecoded = try SettingsBackupCodec.decode(future)
+        precondition(futureDecoded.isNewerThanSupported)
+
+        print("SettingsBackupCodecHostChecks: 13 passed")
     }
 }
 #endif

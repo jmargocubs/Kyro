@@ -18,6 +18,12 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
     private var profileRows: [SettingKey: SettingJSONValue] = [:]
     private var unserved: Set<SettingKey> = []
     private var overrides: [SettingKey: (scope: SettingScope, value: SettingJSONValue)] = [:]
+    /// Subtitle appearance and sync live at both `profile_device` and `profile`.
+    private var deviceRows: [SettingKey: SettingJSONValue] = [:]
+    private var profileScopeRows: [SettingKey: SettingJSONValue] = [:]
+    private var revision = SettingKey.revision
+    private var failWrite: (key: SettingKey, scope: SettingScopeIdentity)?
+    static let dual: Set<SettingKey> = [.playbackSubtitleAppearance, .playerSubtitleSyncMs]
     private var failedKey: SettingKey?
     private var offline = false
     private var delay: Duration?
@@ -31,6 +37,21 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
         if offline { throw Failure.offline }
         let rows = keys.filter { !unserved.contains($0) }.map { key -> EffectiveSettingValue in
             let ownScope: SettingScope = Self.profileScoped.contains(key) ? .profile : .profileDevice
+            if Self.dual.contains(key) {
+                if let hidden = overrides[key] {
+                    return EffectiveSettingValue(key: key.rawValue, value: hidden.value, source: .scope(hidden.scope),
+                                                 scope: hidden.scope, profileId: destination.request.profileId)
+                }
+                for (rows, scope) in [(deviceRows, SettingScope.profileDevice), (profileScopeRows, .profile)] {
+                    if let value = rows[key] {
+                        return EffectiveSettingValue(key: key.rawValue, value: value, source: .scope(scope),
+                                                     scope: scope, profileId: destination.request.profileId)
+                    }
+                }
+                return EffectiveSettingValue(
+                    key: key.rawValue, value: key == .playerSubtitleSyncMs ? .int(0) : Self.appearance([:]),
+                    source: .contractDefault, scope: nil, profileId: nil)
+            }
             if let hidden = overrides[key] {
                 return EffectiveSettingValue(key: key.rawValue, value: hidden.value, source: .scope(hidden.scope),
                                              scope: hidden.scope, profileId: destination.request.profileId)
@@ -54,8 +75,11 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
     func put(_ key: SettingKey, scope: SettingScopeIdentity, value: SettingJSONValue,
              owner: SettingsBackupRemoteOwner) async throws {
         if offline || key == failedKey || unserved.contains(key) { throw Failure.offline }
+        if let failWrite, failWrite.key == key, failWrite.scope == scope { throw Failure.offline }
         guard owner.request == destination.request else { throw SettingsBackupRemoteError.changedOwner }
-        stored[key] = value
+        if Self.dual.contains(key) {
+            if scope == .profileDevice { deviceRows[key] = value } else { profileScopeRows[key] = value }
+        } else { stored[key] = value }
         writes.append(key)
         writeScopes.append(scope)
     }
@@ -63,7 +87,10 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
     func delete(_ key: SettingKey, scope: SettingScopeIdentity,
                 owner: SettingsBackupRemoteOwner) async throws {
         if offline || key == failedKey || unserved.contains(key) { throw Failure.offline }
-        stored[key] = nil
+        if let failWrite, failWrite.key == key, failWrite.scope == scope { throw Failure.offline }
+        if Self.dual.contains(key) {
+            if scope == .profileDevice { deviceRows[key] = nil } else { profileScopeRows[key] = nil }
+        } else { stored[key] = nil }
         writes.append(key)
         writeScopes.append(scope)
     }
@@ -71,6 +98,27 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
     func set(_ key: SettingKey, to value: SettingJSONValue?) { stored[key] = value }
     func setProfileRow(_ key: SettingKey, to value: SettingJSONValue?) { profileRows[key] = value }
     func setUnserved(_ keys: Set<SettingKey>) { unserved = keys }
+    func manifestRevision(owner: SettingsBackupRemoteOwner) async throws -> Int { revision }
+    func setRevision(_ value: Int) { revision = value }
+    func setRow(_ key: SettingKey, _ scope: SettingScopeIdentity, _ value: SettingJSONValue?) {
+        if scope == .profileDevice { deviceRows[key] = value } else { profileScopeRows[key] = value }
+    }
+    func row(_ key: SettingKey, _ scope: SettingScopeIdentity) -> SettingJSONValue? {
+        scope == .profileDevice ? deviceRows[key] : profileScopeRows[key]
+    }
+    func failWriting(_ key: SettingKey?, _ scope: SettingScopeIdentity = .profile) {
+        failWrite = key.map { ($0, scope) }
+    }
+    /// A complete appearance object as the server returns it, with `changes` applied.
+    static func appearance(_ changes: [String: SettingJSONValue]) -> SettingJSONValue {
+        var fields: [String: SettingJSONValue] = [
+            "fontSize": "large", "fontFamily": "sans-serif", "fontColor": "#ffffff",
+            "backgroundColor": "#000000", "backgroundStyle": "box", "backgroundOpacity": 75,
+            "textOpacity": 100, "textOutline": false, "textOutlineColor": "#000000", "position": "bottom",
+        ]
+        for (name, value) in changes { fields[name] = value }
+        return .object(fields)
+    }
     func setOverride(_ key: SettingKey, _ scope: SettingScope?, _ value: SettingJSONValue = .null) {
         overrides[key] = scope.map { ($0, value) }
     }
@@ -124,7 +172,8 @@ final class SettingsBackupUnifiedTests: XCTestCase {
         let exported = await model.exportUnifiedDocument()
         let data = try XCTUnwrap(exported)
         let decoded = try SettingsBackupCodec.decode(data)
-        XCTAssertEqual(decoded.schemaVersion, 2)
+        // The file holds the subtitle appearance record, so it is schema 3.
+        XCTAssertEqual(decoded.schemaVersion, 3)
         XCTAssertNotNil(decoded.scope)
         XCTAssertEqual(decoded.groups["streaming"]?["streaming.resolution"], .string("1080p"))
         XCTAssertEqual(decoded.groups["streaming"]?["streaming.audioLanguage"], .string("en"))
@@ -162,9 +211,10 @@ final class SettingsBackupUnifiedTests: XCTestCase {
         await transport.moveProfile()
         await model.loadUnifiedImport(data: data)
         let remote = model.preview?.groups.filter { [.streaming, .subtitles].contains($0.group) }
-        // Six streaming settings and four subtitle settings (including batch 2's mode, forced
-        // subtitles and metadata language) are all refused for a different profile.
-        XCTAssertEqual(remote?.flatMap(\.items).count, 10)
+        // Six streaming settings and seven subtitle settings (language, batch 2's mode, forced
+        // subtitles and metadata language, and the three display items) are all refused for a
+        // different profile.
+        XCTAssertEqual(remote?.flatMap(\.items).count, 13)
         XCTAssertTrue(remote?.flatMap(\.items).allSatisfy {
             if case .unsupported = $0.status { return true }; return false
         } ?? false)
@@ -242,6 +292,237 @@ final class SettingsBackupUnifiedTests: XCTestCase {
             _ = try await adapter.export()
             XCTFail("A timed-out authoritative read must not produce a backup")
         } catch { XCTAssertTrue(error is SettingsBackupRemoteError) }
+    }
+}
+
+/// Batch 3: subtitle appearance record, "this device only" switch and sync offset.
+@MainActor
+final class SettingsBackupSubtitleDisplayTests: XCTestCase {
+    private let app = SettingsBackupAppInfo(version: "1", build: "98", platform: "iOS", idiom: "phone")
+    private let A = SettingKey.playbackSubtitleAppearance
+    private let Y = SettingKey.playerSubtitleSyncMs
+    private let all: Set<String> = SubtitleDisplayBackup.ids
+    private let custom = FakeBackupRemoteTransport.appearance([
+        "fontSize": "xlarge", "fontFamily": "monospace", "fontColor": "#facc15", "backgroundColor": "#1e3a5f",
+        "backgroundStyle": "shadow", "backgroundOpacity": 40, "textOpacity": 80, "textOutline": true,
+        "textOutlineColor": "#7f1d1d", "position": "top",
+    ])
+    private let other = FakeBackupRemoteTransport.appearance(["fontSize": "small", "position": "lower-third"])
+
+    private func make(_ transport: FakeBackupRemoteTransport) -> SettingsBackupRemoteAdapter {
+        SettingsBackupRemoteAdapter(transport: transport, journal: MemoryRemoteBackupJournal())
+    }
+    private func file(_ adapter: SettingsBackupRemoteAdapter) async throws -> IncomingBackup {
+        let exported = try await adapter.export()
+        return try SettingsBackupCodec.decode(SettingsBackupCodec.makeUnifiedDocument(
+            groups: exported.groups, scope: exported.scope, app: app, now: Date()))
+    }
+
+    /// The backup's lists and defaults are the production appearance's, not a copy that can drift.
+    func testRecordMatchesProductionAppearance() throws {
+        XCTAssertEqual(SubtitleDisplayBackup.fontSizes, SubtitleFontSizePreset.allCases.map(\.rawValue))
+        XCTAssertEqual(SubtitleDisplayBackup.backgroundStyles, SubtitleBackgroundStylePreset.allCases.map(\.rawValue))
+        XCTAssertEqual(SubtitleDisplayBackup.positions, SubtitlePositionPreset.allCases.map(\.rawValue))
+        let encoded = try SettingJSONValue.encoding(SubtitleAppearance.default)
+        guard case .object(let fields) = encoded else { return XCTFail("appearance is an object") }
+        // Every synced member is in the backup record, and nothing runtime-only is.
+        XCTAssertEqual(Set(fields.keys), Set(SubtitleDisplayBackup.defaults.keys))
+        XCTAssertEqual(try SubtitleDisplayBackup.record(from: encoded), SubtitleDisplayBackup.defaults)
+        XCTAssertEqual(SubtitleDisplayBackup.profileSyncRevision, SettingKey.subtitleSyncProfileScopeRevision)
+        XCTAssertEqual(SubtitleDisplayBackup.textOpacityRevision, SettingKey.subtitleTextOpacityRevision)
+        XCTAssertEqual(SettingKey.playbackSubtitleAppearance.revisionGatedMembers["textOpacity"],
+                       SubtitleDisplayBackup.textOpacityRevision)
+        XCTAssertTrue(SettingKey.playerSubtitleSyncMs.acceptsProfileScope(atRevision: 19))
+        XCTAssertFalse(SettingKey.playerSubtitleSyncMs.acceptsProfileScope(atRevision: 18))
+    }
+
+    func testEverySavedAppearanceFieldSurvivesTheRoundTrip() async throws {
+        let source = FakeBackupRemoteTransport()
+        await source.setRow(A, .profile, custom)
+        let incoming = try await file(make(source))
+        XCTAssertEqual(incoming.schemaVersion, 3)
+        XCTAssertEqual(incoming.groups["subtitles"]?["subtitles.appearanceDeviceOnly"], .bool(false))
+        let dest = FakeBackupRemoteTransport()
+        await dest.setRow(A, .profile, other)
+        let adapter = make(dest)
+        let report = await adapter.apply(incoming, selectedIDs: all)
+        XCTAssertEqual(report.applied, ["subtitles.appearance"])
+        let restored = await dest.row(A, .profile)
+        XCTAssertEqual(restored, custom)
+        let device = await dest.row(A, .profileDevice)
+        XCTAssertNil(device)
+        _ = await adapter.undo()
+        let undone = await dest.row(A, .profile)
+        XCTAssertEqual(undone, other)
+    }
+
+    func testScopeSwitchRestoresBothDirectionsAndUndoRestoresHiddenRows() async throws {
+        let hidden = FakeBackupRemoteTransport.appearance(["fontSize": "medium"])
+        // Device → profile: the profile row hidden behind the device row comes back on Undo.
+        let toProfile = FakeBackupRemoteTransport()
+        await toProfile.setRow(A, .profileDevice, other)
+        await toProfile.setRow(A, .profile, hidden)
+        let profileFile: IncomingBackup = try await {
+            let source = FakeBackupRemoteTransport()
+            await source.setRow(A, .profile, custom)
+            return try await file(make(source))
+        }()
+        let adapter = make(toProfile)
+        let report = await adapter.apply(profileFile, selectedIDs: all)
+        XCTAssertEqual(report.applied, ["subtitles.appearanceDeviceOnly", "subtitles.appearance"])
+        let nowDevice = await toProfile.row(A, .profileDevice)
+        let nowProfile = await toProfile.row(A, .profile)
+        XCTAssertNil(nowDevice)
+        XCTAssertEqual(nowProfile, custom)
+        _ = await adapter.undo()
+        let backDevice = await toProfile.row(A, .profileDevice)
+        let backProfile = await toProfile.row(A, .profile)
+        XCTAssertEqual(backDevice, other)
+        XCTAssertEqual(backProfile, hidden)
+
+        // Profile → device: the device row is created; the profile row is never touched.
+        let toDevice = FakeBackupRemoteTransport()
+        await toDevice.setRow(A, .profile, hidden)
+        let deviceFile: IncomingBackup = try await {
+            let source = FakeBackupRemoteTransport()
+            await source.setRow(A, .profileDevice, custom)
+            return try await file(make(source))
+        }()
+        let deviceAdapter = make(toDevice)
+        let deviceReport = await deviceAdapter.apply(deviceFile, selectedIDs: all)
+        XCTAssertTrue(deviceReport.failed.isEmpty)
+        let createdDevice = await toDevice.row(A, .profileDevice)
+        let untouchedProfile = await toDevice.row(A, .profile)
+        let scopes = await toDevice.writeScopes
+        XCTAssertEqual(createdDevice, custom)
+        XCTAssertEqual(untouchedProfile, hidden)
+        XCTAssertEqual(scopes, [.profileDevice])
+    }
+
+    func testExplicitDefaultInheritedAndCustomStayDistinct() async throws {
+        let explicit = FakeBackupRemoteTransport()
+        await explicit.setRow(A, .profile, FakeBackupRemoteTransport.appearance([:]))
+        let explicitFile = try await file(make(explicit))
+        XCTAssertEqual(explicitFile.groups["subtitles"]?["subtitles.appearance"], .record(SubtitleDisplayBackup.defaults))
+        let inheritedFile = try await file(make(FakeBackupRemoteTransport()))
+        XCTAssertEqual(inheritedFile.groups["subtitles"]?["subtitles.appearance"], .string("~inherit"))
+        let dest = FakeBackupRemoteTransport()
+        await dest.setRow(A, .profile, custom)
+        let adapter = make(dest)
+        _ = await adapter.apply(inheritedFile, selectedIDs: ["subtitles.appearance"])
+        let cleared = await dest.row(A, .profile)
+        XCTAssertNil(cleared)
+    }
+
+    func testSyncOffsetsAtProfileDeviceAndOlderServerScope() async throws {
+        for offset in [-750, 0, 1500] {
+            let source = FakeBackupRemoteTransport()
+            await source.setRow(Y, .profile, .int(offset))
+            let incoming = try await file(make(source))
+            XCTAssertEqual(incoming.groups["subtitles"]?["subtitles.syncOffsetMs"], .int(offset))
+            let dest = FakeBackupRemoteTransport()
+            let adapter = make(dest)
+            let report = await adapter.apply(incoming, selectedIDs: ["subtitles.syncOffsetMs"])
+            let row = await dest.row(Y, .profile)
+            XCTAssertEqual(report.applied, ["subtitles.syncOffsetMs"])
+            XCTAssertEqual(row, .int(offset))
+        }
+        let source = FakeBackupRemoteTransport()
+        await source.setRow(Y, .profile, .int(-750))
+        let incoming = try await file(make(source))
+        let old = FakeBackupRemoteTransport()
+        await old.setRevision(18)
+        _ = await make(old).apply(incoming, selectedIDs: ["subtitles.syncOffsetMs"])
+        let deviceOffset = await old.row(Y, .profileDevice)
+        let profileOffset = await old.row(Y, .profile)
+        XCTAssertEqual(deviceOffset, .int(-750))
+        XCTAssertNil(profileOffset)
+    }
+
+    func testOlderServerRefusesNonDefaultTextOpacity() async throws {
+        let source = FakeBackupRemoteTransport()
+        await source.setRow(A, .profile, custom)
+        let incoming = try await file(make(source))
+        let old = FakeBackupRemoteTransport()
+        await old.setRevision(10)
+        let adapter = make(old)
+        let preview = await adapter.preview(incoming)
+        XCTAssertEqual(preview.flatMap(\.items).first { $0.id == "subtitles.appearance" }?.status,
+                       .unsupported("This server is too old to store the saved text opacity."))
+        let report = await adapter.apply(incoming, selectedIDs: ["subtitles.appearance"])
+        XCTAssertEqual(report.skipped, ["subtitles.appearance"])
+        let writes = await old.writes
+        XCTAssertTrue(writes.isEmpty)
+    }
+
+    func testPartialFailureReportsEachItemAndRecoveryRestoresRows() async throws {
+        let source = FakeBackupRemoteTransport()
+        await source.setRow(A, .profile, custom)
+        await source.setRow(Y, .profile, .int(-750))
+        let incoming = try await file(make(source))
+        let dest = FakeBackupRemoteTransport()
+        let hidden = FakeBackupRemoteTransport.appearance(["fontSize": "medium"])
+        await dest.setRow(A, .profileDevice, other)
+        await dest.setRow(A, .profile, hidden)
+        await dest.failWriting(A, .profile)
+        let adapter = make(dest)
+        let report = await adapter.apply(incoming, selectedIDs: all)
+        XCTAssertEqual(report.applied, ["subtitles.appearanceDeviceOnly"])
+        XCTAssertEqual(report.failed, ["subtitles.appearance"])
+        XCTAssertEqual(report.skipped, ["subtitles.syncOffsetMs"])
+        XCTAssertTrue(adapter.needsRecovery)
+        await dest.failWriting(nil)
+        let undo = await adapter.undo()
+        XCTAssertTrue(undo.failed.isEmpty)
+        let device = await dest.row(A, .profileDevice)
+        let profile = await dest.row(A, .profile)
+        XCTAssertEqual(device, other)
+        XCTAssertEqual(profile, hidden)
+        XCTAssertFalse(adapter.undoAvailable)
+    }
+
+    func testSelectiveRestoreAndIdentityMismatch() async throws {
+        let source = FakeBackupRemoteTransport()
+        await source.setRow(A, .profile, custom)
+        await source.setRow(Y, .profile, .int(-750))
+        let adapter = make(source)
+        let incoming = try await file(adapter)
+        let dest = FakeBackupRemoteTransport()
+        let destAdapter = make(dest)
+        _ = await destAdapter.apply(incoming, selectedIDs: ["subtitles.syncOffsetMs"])
+        let written = await dest.writes
+        XCTAssertEqual(written, [.playerSubtitleSyncMs])
+
+        await source.moveProfile()
+        let preview = await adapter.preview(incoming)
+        for id in all {
+            XCTAssertEqual(preview.flatMap(\.items).first { $0.id == id }?.status,
+                           .unsupported(SettingsBackupRemoteError.destinationMismatch.localizedDescription), id)
+        }
+        await source.clearWrites()
+        _ = await adapter.apply(incoming, selectedIDs: all)
+        let mismatchWrites = await source.writes
+        XCTAssertTrue(mismatchWrites.isEmpty)
+    }
+
+    func testRecordNeedsSchemaThreeAndEarlierFilesStillImport() throws {
+        let members: [String: BackupValue] = ["fontSize": .string("large")]
+        for version in [1, 2] {
+            let bad = try SettingsBackupCodec.makeDocument(
+                groups: ["subtitles": ["subtitles.appearance": .record(members)]],
+                schemaVersion: version, minReaderVersion: 1, app: app, now: Date())
+            XCTAssertThrowsError(try SettingsBackupCodec.decode(bad)) {
+                XCTAssertEqual($0 as? SettingsBackupError, .unsafeContent)
+            }
+        }
+        let scope = SettingsBackupScope(serverFingerprint: String(repeating: "a", count: 64),
+                                        profileFingerprint: String(repeating: "b", count: 64))
+        let build96 = try SettingsBackupCodec.makeUnifiedDocument(
+            groups: ["subtitles": ["subtitles.language": .string("zh")]], scope: scope, app: app, now: Date())
+        XCTAssertEqual(try SettingsBackupCodec.decode(build96).schemaVersion, 2)
+        let withRecord = try SettingsBackupCodec.makeUnifiedDocument(
+            groups: ["subtitles": ["subtitles.appearance": .record(members)]], scope: scope, app: app, now: Date())
+        XCTAssertEqual(try SettingsBackupCodec.decode(withRecord).schemaVersion, 3)
     }
 }
 
@@ -542,7 +823,7 @@ final class SettingsBackupRemoteBatchOneTests: XCTestCase {
         await old.setUnserved(gated)
         let adapter = SettingsBackupRemoteAdapter(transport: old, journal: MemoryRemoteBackupJournal())
         let exported = try await adapter.export()
-        XCTAssertEqual(exported.groups["subtitles"]?.count, 4)
+        XCTAssertEqual(exported.groups["subtitles"]?.count, 7)
         XCTAssertEqual(exported.omitted.count, 7)
         XCTAssertNil(exported.groups["player"]?["player.videoSkipBackSeconds"])
     }

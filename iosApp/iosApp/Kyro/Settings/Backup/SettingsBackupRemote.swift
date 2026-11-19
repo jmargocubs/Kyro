@@ -17,9 +17,13 @@ protocol SettingsBackupRemoteTransport: Sendable {
     func delete(_ key: SettingKey, scope: SettingScopeIdentity,
                 owner: SettingsBackupRemoteOwner) async throws
     func refreshUI() async
+    /// The server's settings-contract revision, which gates the text-opacity member of the subtitle
+    /// appearance (14) and the profile-scoped subtitle offset (19).
+    func manifestRevision(owner: SettingsBackupRemoteOwner) async throws -> Int
 }
 
 extension SettingsBackupRemoteTransport {
+    func manifestRevision(owner: SettingsBackupRemoteOwner) async throws -> Int { Int.max }
     func prepare() async throws {}
     func refreshUI() async {}
 }
@@ -97,6 +101,12 @@ struct SiloSettingsBackupTransport: SettingsBackupRemoteTransport {
         let served = keys.filter(contract.supports)
         guard !served.isEmpty else { throw SettingsBackupRemoteError.unsupportedValue }
         return try await api.getEffectiveValues(keys: served, requestIdentity: owner.request)
+    }
+
+    func manifestRevision(owner: SettingsBackupRemoteOwner) async throws -> Int {
+        let capabilities = await api.getContractCapabilities(requestIdentity: owner.request)
+        guard case .available(let contract) = capabilities else { throw SettingsBackupRemoteError.unsupportedValue }
+        return contract.manifestRevision
     }
 
     func put(_ key: SettingKey, scope: SettingScopeIdentity, value: SettingJSONValue,
@@ -435,6 +445,7 @@ enum RemoteBackupDefinition: CaseIterable {
         case .int(let number):
             if kind == .speedHundredths { return .double(Double(number) / 100) }
             return .int(number)
+        case .record: throw SettingsBackupRemoteError.unsupportedValue
         }
     }
 
@@ -493,6 +504,8 @@ struct RemoteBackupJournal: Codable {
     let scope: SettingsBackupScope
     var changes: [RemoteBackupChange]
     var state: State
+    /// Ordered row writes of the subtitle display unit. Absent in earlier journals.
+    var subtitleSteps: [SubtitleStep]? = nil
     enum State: String, Codable { case applying, applied }
 }
 
@@ -551,7 +564,7 @@ final class SettingsBackupRemoteAdapter {
 
     /// Backup IDs and groups this adapter owns; the model routes them here instead of to the local
     /// registry.
-    nonisolated static var settingIDs: Set<String> { RemoteBackupDefinition.ids }
+    nonisolated static var settingIDs: Set<String> { RemoteBackupDefinition.ids.union(SubtitleDisplayBackup.ids) }
     nonisolated static var groups: [SettingsBackupGroup] { RemoteBackupDefinition.groups }
 
     var undoAvailable: Bool { (try? journal.load()) != nil }
@@ -586,6 +599,11 @@ final class SettingsBackupRemoteAdapter {
                 omitted.append("\(definition.title) (hidden by a device, library or series override)")
             }
         }
+        let subtitle = SubtitleDisplayBackup.export(from: rows)
+        for (id, value) in subtitle.values {
+            groups[SettingsBackupGroup.subtitles.rawValue, default: [:]][id] = value
+        }
+        omitted += subtitle.omitted
         return (owner.scope, groups, omitted)
     }
 
@@ -593,16 +611,26 @@ final class SettingsBackupRemoteAdapter {
         let present = RemoteBackupDefinition.allCases.filter {
             incoming.groups[$0.group.rawValue]?[$0.id] != nil
         }
-        guard !present.isEmpty else { return [] }
+        let subtitleValues = incoming.groups[SettingsBackupGroup.subtitles.rawValue] ?? [:]
+        let subtitlePresent = SubtitleDisplayBackup.orderedIDs.filter { subtitleValues[$0] != nil }
+        guard !present.isEmpty || !subtitlePresent.isEmpty else { return [] }
         var reason: String?
         var current: [SettingKey: EffectiveSettingValue] = [:]
+        var revision = Int.max
         do {
             try await timed { try await self.transport.prepare() }
             let owner = try await timed { try await self.transport.owner() }
             guard owner.scope == incoming.scope else { throw SettingsBackupRemoteError.destinationMismatch }
             current = try await read(owner)
+            if !subtitlePresent.isEmpty { revision = try await timed { try await self.transport.manifestRevision(owner: owner) } }
         } catch { reason = error.localizedDescription }
-        return RemoteBackupDefinition.groups.compactMap { group in
+        let subtitleItems = subtitlePresent.map { id in
+            SubtitleDisplayBackup.previewItem(id: id, incoming: subtitleValues[id]!, siblings: subtitleValues,
+                                              rows: reason == nil ? current : nil, reason: reason, revision: revision)
+        }
+        let allGroups = RemoteBackupDefinition.groups.contains(.subtitles) ? RemoteBackupDefinition.groups
+            : RemoteBackupDefinition.groups + [.subtitles]
+        return allGroups.compactMap { group in
             let items: [RestorePreviewItem] = present.filter { $0.group == group }.map { definition in
                 let value = incoming.groups[group.rawValue]![definition.id]!
                 let row = current[definition.key]
@@ -632,13 +660,15 @@ final class SettingsBackupRemoteAdapter {
                                           current: existing.map(definition.label), incoming: definition.label(value),
                                           status: status, incomingValue: value)
             }
-            return items.isEmpty ? nil : RestorePreviewGroup(group: group, items: items, groupUnsupportedReason: nil)
+            let all = group == .subtitles ? items + subtitleItems : items
+            return all.isEmpty ? nil : RestorePreviewGroup(group: group, items: all, groupUnsupportedReason: nil)
         }
     }
 
     func apply(_ incoming: IncomingBackup, selectedIDs: Set<String>) async -> RemoteBackupApplyReport {
         let definitions = RemoteBackupDefinition.allCases.filter { selectedIDs.contains($0.id) }
-        guard !definitions.isEmpty else { return RemoteBackupApplyReport() }
+        let subtitleIDs = selectedIDs.intersection(SubtitleDisplayBackup.ids)
+        guard !definitions.isEmpty || !subtitleIDs.isEmpty else { return RemoteBackupApplyReport() }
         var report = RemoteBackupApplyReport()
         do {
             guard !needsRecovery else { throw SettingsBackupRemoteError.unconfirmedWrite }
@@ -662,9 +692,10 @@ final class SettingsBackupRemoteAdapter {
                     changes.append(RemoteBackupChange(id: definition.id, previous: previous, applied: desired))
                 }
             }
-            guard !changes.isEmpty else { return report }
+            guard !changes.isEmpty || !subtitleIDs.isEmpty else { return report }
             var record = RemoteBackupJournal(scope: owner.scope, changes: changes, state: .applying)
-            try journal.save(record)
+            var journalSaved = false
+            if !changes.isEmpty { try journal.save(record); journalSaved = true }
             for change in changes {
                 guard let definition = definitions.first(where: { $0.id == change.id }) else { continue }
                 do {
@@ -680,9 +711,18 @@ final class SettingsBackupRemoteAdapter {
                     break
                 }
             }
-            if report.failed.isEmpty { record.state = .applied; try journal.save(record) }
+            if !subtitleIDs.isEmpty {
+                if report.failed.isEmpty {
+                    await applySubtitleDisplay(incoming, selected: subtitleIDs, owner: owner, record: &record,
+                                               journalSaved: &journalSaved, report: &report)
+                } else {
+                    // An earlier write failed, so nothing further is attempted.
+                    report.skipped += subtitleIDs.sorted()
+                }
+            }
+            if report.failed.isEmpty, journalSaved { record.state = .applied; try journal.save(record) }
         } catch {
-            if report.failed.isEmpty { report.failed = definitions.map(\.id) }
+            if report.failed.isEmpty { report.failed = definitions.map(\.id) + subtitleIDs.sorted() }
         }
         return report
     }
@@ -693,6 +733,8 @@ final class SettingsBackupRemoteAdapter {
         do {
             let owner = try await timed { try await self.transport.owner() }
             guard owner.scope == record.scope else { throw SettingsBackupRemoteError.destinationMismatch }
+            // Reverse of apply order: the subtitle row writes were last, so they come back first.
+            await undoSubtitleDisplay(record: &record, owner: owner, report: &report)
             var remaining: [RemoteBackupChange] = []
             for change in record.changes.reversed() {
                 guard let definition = RemoteBackupDefinition.definition(id: change.id) else {
@@ -715,15 +757,18 @@ final class SettingsBackupRemoteAdapter {
                     remaining.append(change)
                 }
             }
-            if remaining.isEmpty { try journal.clear() }
+            if remaining.isEmpty && (record.subtitleSteps ?? []).isEmpty { try journal.clear() }
             else { record.changes = remaining.reversed(); try journal.save(record) }
-        } catch { report.failed = record.changes.map(\.id) }
+        } catch {
+            report.failed = record.changes.map(\.id) + (record.subtitleSteps ?? []).map(\.item)
+        }
         return report
     }
 
     private func read(_ owner: SettingsBackupRemoteOwner) async throws -> [SettingKey: EffectiveSettingValue] {
         let response = try await timed {
-            try await self.transport.read(RemoteBackupDefinition.allCases.map(\.key), owner: owner)
+            try await self.transport.read(
+                RemoteBackupDefinition.allCases.map(\.key) + SubtitleDisplayBackup.keys, owner: owner)
         }
         return response.byKey
     }
@@ -754,6 +799,471 @@ final class SettingsBackupRemoteAdapter {
             guard let result = try await group.next() else { throw SettingsBackupRemoteError.timeout }
             return result
         }
+    }
+}
+
+// MARK: - Subtitle display: appearance record, "this device only" switch, sync offset
+
+enum SubtitleRowSlot: String, Codable, Sendable {
+    case appearanceDevice, appearanceProfile, syncDevice, syncProfile
+}
+
+/// One ordered row write, journalled before it is sent so an interrupted restore can be reversed.
+struct SubtitleStep: Codable, Equatable, Sendable {
+    let item: String
+    let slot: SubtitleRowSlot
+    /// The row before the write; nil means no row.
+    let previous: BackupValue?
+    /// The row after the write; nil means the row was deleted.
+    let applied: BackupValue?
+}
+
+/// What the authoritative API shows for the three subtitle items. The effective endpoint returns
+/// only the winning row, so a profile row is "hidden" while a device row exists.
+struct SubtitleObserved: Equatable {
+    var appearanceDevice: BackupValue?
+    var appearanceProfile: BackupValue?
+    var appearanceProfileHidden = false
+    var visibleAppearance: [String: BackupValue] = SubtitleDisplayBackup.defaults
+    var syncDevice: BackupValue?
+    var syncProfile: BackupValue?
+    var syncProfileHidden = false
+
+    /// `known` is false for a profile row that a device row currently hides.
+    func slot(_ slot: SubtitleRowSlot) -> (known: Bool, value: BackupValue?) {
+        switch slot {
+        case .appearanceDevice: (true, appearanceDevice)
+        case .appearanceProfile: (!appearanceProfileHidden, appearanceProfile)
+        case .syncDevice: (true, syncDevice)
+        case .syncProfile: (!syncProfileHidden, syncProfile)
+        }
+    }
+
+    var isDeviceOnly: Bool { appearanceDevice != nil }
+}
+
+/// The three subtitle settings are one unit. "This device only" is not a stored value: it means
+/// `playback.subtitle_appearance` has a `profile_device` row. The appearance and the sync offset
+/// live at that row's scope, so they are read, compared and written together, in a fixed order.
+enum SubtitleDisplayBackup {
+    static let deviceOnlyID = "subtitles.appearanceDeviceOnly"
+    static let appearanceID = "subtitles.appearance"
+    static let syncID = "subtitles.syncOffsetMs"
+    static let orderedIDs = [deviceOnlyID, appearanceID, syncID]
+    static let ids = Set(orderedIDs)
+    static let appearanceKey = SettingKey.playbackSubtitleAppearance
+    static let syncKey = SettingKey.playerSubtitleSyncMs
+    static let keys = [appearanceKey, syncKey]
+
+    static let syncRange = -10_000...10_000
+    /// `player.subtitle_sync_ms` may be a profile value from this contract revision.
+    static let profileSyncRevision = 19
+    /// `textOpacity` joined the appearance object in this revision; an older server rejects it.
+    static let textOpacityRevision = 14
+
+    static let titles = [deviceOnlyID: "Subtitle appearance: this device only",
+                         appearanceID: "Subtitle appearance", syncID: "Subtitle sync offset"]
+
+    /// The contract defaults. A record is always stored complete, so a value the server filled in
+    /// and a value the person chose read back the same.
+    static let defaults: [String: BackupValue] = [
+        "fontSize": .string("large"), "fontFamily": .string("sans-serif"),
+        "fontColor": .string("#ffffff"), "backgroundColor": .string("#000000"),
+        "backgroundStyle": .string("box"), "backgroundOpacity": .int(75), "textOpacity": .int(100),
+        "textOutline": .bool(false), "textOutlineColor": .string("#000000"), "position": .string("bottom"),
+    ]
+    /// Pinned to the `Subtitle*Preset` enums by a test.
+    static let fontSizes = ["small", "medium", "large", "xlarge", "xxlarge"]
+    static let backgroundStyles = ["box", "shadow", "outline", "none"]
+    static let positions = ["bottom", "lower-third", "top"]
+
+    // MARK: Validation
+
+    private static func hex(_ raw: String) -> String? {
+        let body = raw.hasPrefix("#") ? String(raw.dropFirst()) : raw
+        guard body.count == 6, body.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) })
+        else { return nil }
+        return "#" + body.lowercased()
+    }
+
+    private static func family(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed.count <= 40, trimmed.utf8.allSatisfy({
+            (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0)
+                || $0 == 45 || $0 == 95 || $0 == 32 }) else { return nil }
+        return trimmed
+    }
+
+    /// A complete, canonical record, or nil when any member is unknown or out of range.
+    static func normalized(_ members: [String: BackupValue]) -> [String: BackupValue]? {
+        var result = defaults
+        for (name, value) in members {
+            guard defaults[name] != nil else { return nil }
+            switch (name, value) {
+            case ("fontSize", .string(let raw)) where fontSizes.contains(raw): result[name] = value
+            case ("backgroundStyle", .string(let raw)) where backgroundStyles.contains(raw): result[name] = value
+            case ("position", .string(let raw)) where positions.contains(raw): result[name] = value
+            case ("fontFamily", .string(let raw)):
+                guard let clean = family(raw) else { return nil }
+                result[name] = .string(clean)
+            case ("fontColor", .string(let raw)), ("backgroundColor", .string(let raw)),
+                 ("textOutlineColor", .string(let raw)):
+                guard let clean = hex(raw) else { return nil }
+                result[name] = .string(clean)
+            case ("backgroundOpacity", .int(let number)) where (0...100).contains(number): result[name] = value
+            case ("textOpacity", .int(let number)) where (1...100).contains(number): result[name] = value
+            case ("textOutline", .bool): result[name] = value
+            default: return nil
+            }
+        }
+        return result
+    }
+
+    /// A server value as a canonical record. Members this Kyro doesn't know make it untransferable.
+    static func record(from json: SettingJSONValue) throws -> [String: BackupValue] {
+        guard case .object(let fields) = json else { throw SettingsBackupRemoteError.unsupportedValue }
+        var members: [String: BackupValue] = [:]
+        for (name, field) in fields {
+            switch field {
+            case .bool(let flag): members[name] = .bool(flag)
+            case .string(let text): members[name] = .string(text)
+            default:
+                guard let number = field.intValue else { throw SettingsBackupRemoteError.unsupportedValue }
+                members[name] = .int(number)
+            }
+        }
+        guard let clean = normalized(members) else { throw SettingsBackupRemoteError.unsupportedValue }
+        return clean
+    }
+
+    static func syncValue(from json: SettingJSONValue) throws -> BackupValue {
+        guard let number = json.intValue, syncRange.contains(number) else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        return .int(number)
+    }
+
+    /// The write for one appearance row. A server older than revision 14 does not store the text
+    /// opacity, so the member is dropped; `isStorable` already refused a non-default value.
+    static func wire(_ value: BackupValue, revision: Int) -> SettingJSONValue? {
+        switch value {
+        case .int(let number): return .int(number)
+        case .record(let members):
+            var fields: [String: SettingJSONValue] = [:]
+            for (name, member) in members {
+                if name == "textOpacity" && revision < textOpacityRevision { continue }
+                switch member {
+                case .bool(let flag): fields[name] = .bool(flag)
+                case .int(let number): fields[name] = .int(number)
+                case .string(let text): fields[name] = .string(text)
+                case .record: return nil
+                }
+            }
+            return .object(fields)
+        default: return nil
+        }
+    }
+
+    /// Whether this server can store `value` exactly.
+    static func isStorable(_ value: BackupValue, revision: Int) -> Bool {
+        guard case .record(let members) = value, revision < textOpacityRevision else { return true }
+        return members["textOpacity"] == .int(100)
+    }
+
+    /// The incoming value of one item, validated and normalized; nil when it is not supported.
+    static func validated(id: String, _ value: BackupValue, all: [String: BackupValue]) -> BackupValue? {
+        switch (id, value) {
+        case (deviceOnlyID, .bool(let on)):
+            // A device-only appearance is a device row, which must carry its appearance.
+            if on, all[appearanceID] == .string(RemoteBackupDefinition.inherited) { return nil }
+            return value
+        case (appearanceID, .string(RemoteBackupDefinition.inherited)):
+            return all[deviceOnlyID] == .bool(true) ? nil : value
+        case (appearanceID, .record(let members)): return normalized(members).map(BackupValue.record)
+        case (syncID, .string(RemoteBackupDefinition.inherited)): return value
+        case (syncID, .int(let number)): return syncRange.contains(number) ? value : nil
+        default: return nil
+        }
+    }
+
+    // MARK: Observation
+
+    private enum Winner { case device, profile, none }
+
+    private static func winner(_ row: EffectiveSettingValue) throws -> Winner {
+        guard let scope = row.scope else { return .none }
+        if scope == .profileDevice { return .device }
+        if scope == .profile { return .profile }
+        if scope == .account { return .none }
+        // A client, library or series row decides here; it is not this profile's or device's row.
+        throw SettingsBackupRemoteError.overridden
+    }
+
+    static func observeAppearance(_ row: EffectiveSettingValue, into result: inout SubtitleObserved) throws {
+        guard row.key == appearanceKey.rawValue else { throw SettingsBackupRemoteError.unsupportedValue }
+        let place = try winner(row)
+        result.visibleAppearance = (try? record(from: row.value)) ?? defaults
+        guard place != .none else { return }
+        let stored = BackupValue.record(try record(from: row.storedValue ?? row.value))
+        if place == .device { result.appearanceDevice = stored; result.appearanceProfileHidden = true }
+        else { result.appearanceProfile = stored }
+    }
+
+    static func observeSync(_ row: EffectiveSettingValue, into result: inout SubtitleObserved) throws {
+        guard row.key == syncKey.rawValue else { throw SettingsBackupRemoteError.unsupportedValue }
+        let place = try winner(row)
+        guard place != .none else { return }
+        let stored = try syncValue(from: row.storedValue ?? row.value)
+        if place == .device { result.syncDevice = stored; result.syncProfileHidden = true }
+        else { result.syncProfile = stored }
+    }
+
+    static func observe(_ rows: [SettingKey: EffectiveSettingValue]) throws -> SubtitleObserved {
+        guard let appearance = rows[appearanceKey], let sync = rows[syncKey] else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        var result = SubtitleObserved()
+        try observeAppearance(appearance, into: &result)
+        try observeSync(sync, into: &result)
+        return result
+    }
+
+    // MARK: Backup values
+
+    static func backupValues(_ observed: SubtitleObserved) -> (deviceOnly: BackupValue, appearance: BackupValue, sync: BackupValue) {
+        (.bool(observed.isDeviceOnly),
+         observed.appearanceDevice ?? observed.appearanceProfile ?? .string(RemoteBackupDefinition.inherited),
+         observed.syncDevice ?? observed.syncProfile ?? .string(RemoteBackupDefinition.inherited))
+    }
+
+    /// Items the server's rows can supply. A row that can't be transferred safely is left out of the
+    /// export with its reason instead of failing the whole backup.
+    static func export(from rows: [SettingKey: EffectiveSettingValue]) -> (values: [String: BackupValue], omitted: [String]) {
+        var values: [String: BackupValue] = [:]
+        var omitted: [String] = []
+        var observed = SubtitleObserved()
+        func note(_ ids: [String], _ error: Error) {
+            let why = (error as? SettingsBackupRemoteError) == .overridden
+                ? "hidden by a library or series override" : "its stored value can't be transferred safely"
+            omitted += ids.map { "\(titles[$0] ?? $0) (\(why))" }
+        }
+        if let row = rows[appearanceKey] {
+            do {
+                try observeAppearance(row, into: &observed)
+                let current = backupValues(observed)
+                values[deviceOnlyID] = current.deviceOnly
+                values[appearanceID] = current.appearance
+            } catch { note([deviceOnlyID, appearanceID], error) }
+        } else { omitted += [deviceOnlyID, appearanceID].map { "\(titles[$0]!) (this server doesn't support it)" } }
+        if let row = rows[syncKey] {
+            do {
+                try observeSync(row, into: &observed)
+                values[syncID] = backupValues(observed).sync
+            } catch { note([syncID], error) }
+        } else { omitted.append("\(titles[syncID]!) (this server doesn't support it)") }
+        return (values, omitted)
+    }
+
+    // MARK: Preview
+
+    static func label(id: String, _ value: BackupValue) -> String {
+        switch value {
+        case .string(RemoteBackupDefinition.inherited): return "Use inherited setting"
+        case .bool(let on): return on ? "On" : "Off"
+        case .int(let number): return number == 0 ? "0 ms" : "\(number > 0 ? "+" : "")\(number) ms"
+        case .record(let members):
+            func text(_ name: String) -> String { if case .string(let raw)? = members[name] { raw } else { "" } }
+            func number(_ name: String) -> Int { if case .int(let raw)? = members[name] { raw } else { 0 } }
+            let outline = members["textOutline"] == .bool(true) ? "outline" : "no outline"
+            return "\(text("fontSize")) \(text("fontFamily")), \(text("fontColor")) at \(number("textOpacity"))%, "
+                + "\(text("backgroundStyle")) \(number("backgroundOpacity"))% on \(text("backgroundColor")), "
+                + "\(outline) \(text("textOutlineColor")), \(text("position"))"
+        default: return value.plainText
+        }
+    }
+
+    static func previewItem(id: String, incoming: BackupValue, siblings: [String: BackupValue],
+                            rows: [SettingKey: EffectiveSettingValue]?, reason: String?,
+                            revision: Int) -> RestorePreviewItem {
+        func item(_ current: BackupValue?, _ status: RestoreItemStatus, _ shown: BackupValue) -> RestorePreviewItem {
+            RestorePreviewItem(id: id, group: .subtitles, title: titles[id] ?? id,
+                               current: current.map { label(id: id, $0) }, incoming: label(id: id, shown),
+                               status: status, incomingValue: incoming)
+        }
+        guard let clean = validated(id: id, incoming, all: siblings) else {
+            return item(nil, .invalid("This value is not supported."), incoming)
+        }
+        if let reason { return item(nil, .unsupported(reason), clean) }
+        guard let rows else { return item(nil, .unsupported("Kyro could not read the authoritative value."), clean) }
+        if !isStorable(clean, revision: revision) {
+            return item(nil, .unsupported("This server is too old to store the saved text opacity."), clean)
+        }
+        var observed = SubtitleObserved()
+        do {
+            if id == syncID {
+                guard let row = rows[syncKey] else { throw SettingsBackupRemoteError.unsupportedValue }
+                try observeSync(row, into: &observed)
+            } else {
+                guard let row = rows[appearanceKey] else { throw SettingsBackupRemoteError.unsupportedValue }
+                try observeAppearance(row, into: &observed)
+            }
+        } catch {
+            return item(nil, .unsupported(error.localizedDescription), clean)
+        }
+        let current = backupValues(observed)
+        let existing = id == deviceOnlyID ? current.deviceOnly : id == appearanceID ? current.appearance : current.sync
+        return item(existing, existing == clean ? .unchanged : .willChange, clean)
+    }
+}
+
+extension SettingsBackupRemoteAdapter {
+    private func subtitleRows(_ owner: SettingsBackupRemoteOwner) async throws -> SubtitleObserved {
+        try SubtitleDisplayBackup.observe(try await read(owner))
+    }
+
+    private func writeSubtitleSlot(_ slot: SubtitleRowSlot, value: BackupValue?, owner: SettingsBackupRemoteOwner,
+                                   revision: Int) async throws {
+        let currentOwner = try await timed { try await self.transport.owner() }
+        guard currentOwner.scope == owner.scope, currentOwner.request == owner.request else {
+            throw SettingsBackupRemoteError.changedOwner
+        }
+        let key: SettingKey = (slot == .appearanceDevice || slot == .appearanceProfile)
+            ? SubtitleDisplayBackup.appearanceKey : SubtitleDisplayBackup.syncKey
+        let scope: SettingScopeIdentity = (slot == .appearanceDevice || slot == .syncDevice) ? .profileDevice : .profile
+        if let value {
+            guard let wire = SubtitleDisplayBackup.wire(value, revision: revision) else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            try await timed { try await self.transport.put(key, scope: scope, value: wire, owner: owner) }
+        } else {
+            try await timed { try await self.transport.delete(key, scope: scope, owner: owner) }
+        }
+    }
+
+    /// Restores the selected subtitle items in a fixed order: the scope switch, then the appearance
+    /// at the resulting scope, then the offset. Every row write is journalled first and confirmed by
+    /// a fresh read; the first failure stops the sequence, and the remaining items are reported as
+    /// skipped. Rows the backup doesn't concern are never written.
+    fileprivate func applySubtitleDisplay(
+        _ incoming: IncomingBackup, selected: Set<String>, owner: SettingsBackupRemoteOwner,
+        record: inout RemoteBackupJournal, journalSaved: inout Bool, report: inout RemoteBackupApplyReport
+    ) async {
+        let all = incoming.groups[SettingsBackupGroup.subtitles.rawValue] ?? [:]
+        var wanted: [String: BackupValue] = [:]
+        for id in SubtitleDisplayBackup.orderedIDs where selected.contains(id) {
+            if let value = all[id], let clean = SubtitleDisplayBackup.validated(id: id, value, all: all) { wanted[id] = clean }
+            else { report.skipped.append(id) }
+        }
+        guard !wanted.isEmpty else { return }
+        var current = ""
+        var changed: Set<String> = []
+        do {
+            let revision = try await timed { try await self.transport.manifestRevision(owner: owner) }
+            for (id, value) in wanted where !SubtitleDisplayBackup.isStorable(value, revision: revision) {
+                report.skipped.append(id); wanted[id] = nil
+            }
+            var observed = try await subtitleRows(owner)
+
+            func perform(_ item: String, _ slot: SubtitleRowSlot, to value: BackupValue?) async throws {
+                let step = SubtitleStep(item: item, slot: slot, previous: observed.slot(slot).value, applied: value)
+                record.subtitleSteps = (record.subtitleSteps ?? []) + [step]
+                try journal.save(record)
+                journalSaved = true
+                try Task.checkCancellation()
+                try await writeSubtitleSlot(slot, value: value, owner: owner, revision: revision)
+                observed = try await subtitleRows(owner)
+                let after = observed.slot(slot)
+                guard after.known, after.value == value else { throw SettingsBackupRemoteError.unconfirmedWrite }
+                changed.insert(item)
+            }
+
+            var wantsDevice = observed.isDeviceOnly
+            if let value = wanted[SubtitleDisplayBackup.deviceOnlyID], case .bool(let on) = value {
+                current = SubtitleDisplayBackup.deviceOnlyID
+                wantsDevice = on
+                if on != observed.isDeviceOnly {
+                    if on {
+                        // Like the Settings switch: the device starts from what is on screen now.
+                        let copy: BackupValue
+                        let savedAppearance = wanted[SubtitleDisplayBackup.appearanceID]
+                        if let saved = savedAppearance, saved.isRecord { copy = saved }
+                        else { copy = .record(observed.visibleAppearance) }
+                        try await perform(current, .appearanceDevice, to: copy)
+                        // The device row now holds the saved appearance, so that item is restored too.
+                        if savedAppearance == copy { changed.insert(SubtitleDisplayBackup.appearanceID) }
+                    } else {
+                        try await perform(current, .appearanceDevice, to: nil)
+                    }
+                }
+            }
+            if let value = wanted[SubtitleDisplayBackup.appearanceID] {
+                current = SubtitleDisplayBackup.appearanceID
+                if wantsDevice {
+                    if value.isRecord {
+                        if observed.appearanceDevice != value { try await perform(current, .appearanceDevice, to: value) }
+                    } else { report.skipped.append(current) }   // a device row can't be "inherited"
+                } else if value.isRecord {
+                    if observed.appearanceProfile != value { try await perform(current, .appearanceProfile, to: value) }
+                } else if observed.appearanceProfile != nil {
+                    try await perform(current, .appearanceProfile, to: nil)
+                }
+            }
+            if let value = wanted[SubtitleDisplayBackup.syncID] {
+                current = SubtitleDisplayBackup.syncID
+                let target: BackupValue? = value.isRecord || value == .string(RemoteBackupDefinition.inherited) ? nil : value
+                if !wantsDevice && revision >= SubtitleDisplayBackup.profileSyncRevision {
+                    // A leftover device offset would hide the profile's, so it goes first.
+                    if observed.syncDevice != nil { try await perform(current, .syncDevice, to: nil) }
+                    if observed.syncProfile != target { try await perform(current, .syncProfile, to: target) }
+                } else if observed.syncDevice != target {
+                    try await perform(current, .syncDevice, to: target)
+                }
+            }
+            report.applied += SubtitleDisplayBackup.orderedIDs.filter { changed.contains($0) }
+        } catch SettingsBackupRemoteError.overridden where current.isEmpty {
+            // A library or series row hides the profile or device row: nothing was written.
+            report.skipped += wanted.keys.sorted()
+        } catch {
+            // Items already confirmed stay applied (and journalled for Undo); the one in flight failed.
+            report.applied += SubtitleDisplayBackup.orderedIDs.filter { changed.contains($0) && $0 != current }
+            if current.isEmpty {
+                report.failed += wanted.keys.sorted()
+            } else {
+                report.failed.append(current)
+                let order = SubtitleDisplayBackup.orderedIDs
+                if let at = order.firstIndex(of: current) {
+                    report.skipped += order[(at + 1)...].filter { wanted[$0] != nil }
+                }
+            }
+        }
+    }
+
+    /// Reverses journalled subtitle rows, newest first. A row someone changed since the restore is
+    /// left alone; a row hidden by a device row can't be checked, so it is left alone too.
+    fileprivate func undoSubtitleDisplay(
+        record: inout RemoteBackupJournal, owner: SettingsBackupRemoteOwner, report: inout RemoteBackupApplyReport
+    ) async {
+        guard let steps = record.subtitleSteps, !steps.isEmpty else { return }
+        var remaining: [SubtitleStep] = []
+        var revision = Int.max
+        revision = (try? await timed { try await self.transport.manifestRevision(owner: owner) }) ?? Int.max
+        for step in steps.reversed() {
+            do {
+                let observed = try await subtitleRows(owner)
+                let now = observed.slot(step.slot)
+                guard now.known else { report.skipped.append(step.item); continue }
+                if now.value == step.previous { continue }
+                guard now.value == step.applied else { report.skipped.append(step.item); continue }
+                try await writeSubtitleSlot(step.slot, value: step.previous, owner: owner, revision: revision)
+                let after = try await subtitleRows(owner).slot(step.slot)
+                guard after.known, after.value == step.previous else { throw SettingsBackupRemoteError.unconfirmedWrite }
+                if !report.applied.contains(step.item) { report.applied.append(step.item) }
+            } catch {
+                report.failed.append(step.item)
+                remaining.append(step)
+            }
+        }
+        record.subtitleSteps = remaining.reversed()
     }
 }
 #endif

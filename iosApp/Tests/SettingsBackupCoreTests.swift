@@ -345,16 +345,16 @@ final class SettingsBackupCoreTests: XCTestCase {
     }
 
     func testFutureSchemaWithOldEnoughReaderVersionIsAccepted() throws {
-        let data = try document(["navigation": ["navigation.fourthTab": .string("forYou")]], schema: 2, minReader: 1)
+        let data = try document(["navigation": ["navigation.fourthTab": .string("forYou")]], schema: 4, minReader: 1)
         let incoming = try SettingsBackupCodec.decode(data)
         XCTAssertTrue(incoming.isNewerThanSupported)
         XCTAssertTrue(try preview(data, BackupFakeStore(baseValues())).isNewerThanSupported)
     }
 
     func testFutureSchemaThatNeedsANewerReaderIsRefusedWithAClearError() throws {
-        let data = try document(["navigation": ["navigation.fourthTab": .string("forYou")]], schema: 3, minReader: 2)
+        let data = try document(["navigation": ["navigation.fourthTab": .string("forYou")]], schema: 5, minReader: 4)
         XCTAssertThrowsError(try SettingsBackupCodec.decode(data)) {
-            XCTAssertEqual($0 as? SettingsBackupError, .requiresNewerApp(minReaderVersion: 2))
+            XCTAssertEqual($0 as? SettingsBackupError, .requiresNewerApp(minReaderVersion: 4))
             XCTAssertNotNil(($0 as? SettingsBackupError)?.errorDescription)
         }
     }
