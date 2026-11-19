@@ -101,6 +101,59 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         XCTAssertEqual(ids, Set(mapping.values))
     }
 
+    func testEveryRegisteredLocalPreferenceExportsComparesRestoresAndUndoes() throws {
+        let registry = makeRig().registry
+        let alternatives: [String: BackupValue] = [
+            "general.launchBehavior": .string("afterOneHour"),
+            "navigation.fourthTab": .string("favorites"),
+            "navigation.showAudiobooks": .bool(true),
+            "liveTV.categoryAppearance": .string("Grid"),
+            "liveTV.categoryGrouping": .string("Grouped"),
+            "liveTV.guideStyle": .string("grid"),
+            "downloads.preferredFormat": .string("5mbps"),
+            "downloads.wifiOnly": .bool(false),
+            "downloads.defaultDeleteWatched": .bool(true),
+            "downloads.defaultMaxStorageGB": .int(50),
+            "downloads.sortOption": .string("alphabetical"),
+            "downloads.keepWatched": .bool(true),
+            "downloads.simultaneous": .int(4),
+            "playback.bufferAhead": .string("extended"),
+            "playback.losslessAudio": .bool(true),
+            "pip.backgroundPlayback": .bool(true),
+            "advancedAV.deinterlaceMode": .string("software"),
+            "advancedAV.deinterlaceFieldRate": .string("frame"),
+            "advancedAV.trueHDAtmos": .bool(false),
+            "subtitleDisplay.matchesSystem": .bool(true),
+            "liveTVNav.style": .string("glassDock"),
+            "liveTVNav.startingEdge": .string("left"),
+            "liveTVNav.idleBehavior": .string("stayVisible"),
+            "liveTVNav.autoCollapse": .bool(false),
+            "liveTVNav.haptics": .bool(false),
+            "liveTVNav.thumbScrubbing": .bool(false),
+            "liveTVNav.allowsDragging": .bool(false),
+            "liveTVNav.destinationOrder": .string("guide,home,favorites,channels,search"),
+            "liveTVNav.hiddenDestinations": .string("search"),
+        ]
+        XCTAssertEqual(Set(registry.settings.map(\.id)), Set(alternatives.keys))
+        for setting in registry.settings {
+            let original = try XCTUnwrap(setting.read(), setting.id)
+            let changed = try XCTUnwrap(alternatives[setting.id])
+            XCTAssertNotEqual(original, changed, setting.id)
+            try setting.write(changed)
+            let saved = try SettingsBackupExporter.export(registry: registry, groups: [setting.group], app: app)
+            XCTAssertEqual(try SettingsBackupCodec.decode(saved).groups[setting.group.rawValue]?[setting.id], changed, setting.id)
+            try setting.write(original)
+            let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(saved), registry: registry)
+            XCTAssertEqual(preview.groups.flatMap(\.items).first { $0.id == setting.id }?.status, .willChange, setting.id)
+            let applier = SettingsBackupApplier(registry: registry, journal: BackupMemoryJournal())
+            guard case .applied = applier.apply(preview: preview, selectedGroups: [setting.group],
+                                                selectedIDs: [setting.id]) else { return XCTFail(setting.id) }
+            XCTAssertEqual(setting.read(), changed, setting.id)
+            XCTAssertEqual(applier.undo().reverted, [setting.id], setting.id)
+            XCTAssertEqual(setting.read(), original, setting.id)
+        }
+    }
+
     func testRoundTripThroughRealStores() throws {
         let source = makeRig()
         source.navigation.preferences.fourthTab = .favorites
