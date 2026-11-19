@@ -341,8 +341,7 @@ struct TVXtreamVODView: View {
     }
 }
 
-/// Poster card sized like the Silo dense poster rows: 2:3 artwork, title, and a resume bar.
-private /// IPTV VOD poster grid geometry (Build 99).
+/// IPTV VOD poster grid geometry (Build 99).
 enum TVXtreamVODLayout {
     static var cellWidth: CGFloat { SiloTheme.Skyline.densePosterCardWidth + 24 }
     static let columnSpacing: CGFloat = 34
@@ -354,7 +353,8 @@ enum TVXtreamVODLayout {
     }
 }
 
-struct TVXtreamVODPosterCard: View {
+/// Poster card sized like the Silo dense poster rows: 2:3 artwork, title, and a resume bar.
+private struct TVXtreamVODPosterCard: View {
     let item: XtreamVODItem
     let providerName: String
     let progress: Double?
