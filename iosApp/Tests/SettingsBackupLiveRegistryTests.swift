@@ -342,6 +342,7 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
             schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
         let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(data), registry: rig.registry)
         XCTAssertEqual(preview.unrecognizedSettings, 2)
+        XCTAssertEqual(preview.skippedCount, 2)
         XCTAssertEqual(preview.totalChanges, 1)
         guard case .applied = SettingsBackupApplier(registry: rig.registry, journal: BackupMemoryJournal())
             .apply(preview: preview, selectedGroups: Set(SettingsBackupGroup.allCases)) else { return XCTFail("not applied") }
@@ -589,6 +590,7 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(incoming), registry: rig.registry)
         XCTAssertEqual(preview.unrecognizedGroups, 1)
         XCTAssertEqual(preview.unrecognizedSettings, 2)
+        XCTAssertEqual(preview.skippedCount, 3)
         XCTAssertEqual(preview.totalChanges, 1)
         XCTAssertFalse(rig.playback.backgroundPlaybackEnabled)
     }

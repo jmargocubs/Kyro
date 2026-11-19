@@ -6,8 +6,8 @@ import UIKit
 // The one place that names which device-local Kyro settings a backup may carry.
 //
 // Every entry reads and writes through the store that already owns the setting. Nothing here
-// touches the server, the Keychain, a provider, a library ID or a profile, and a setting that is not
-// listed cannot be exported or restored. Excluded on purpose: server-authoritative values,
+// touches the server, the Keychain, a provider, a library ID or a profile identity, and a setting
+// that is not listed cannot be exported or restored. Excluded on purpose: server-authoritative values,
 // Live TV providers and their credentials, provider-specific pins and hidden categories, recent
 // categories, favorites, the selected Sports league or screen, experimental and internal flags,
 // diagnostics, and authentication or pairing state.
