@@ -38,5 +38,18 @@ enum TVLiveTVProviderFocusPlanner {
     static func afterAddProvider(savedProviderID: UUID?) -> TVLiveTVProviderFocus {
         savedProviderID.map(TVLiveTVProviderFocus.provider) ?? .addProvider
     }
+
+    /// A provider snapshot may change repeatedly during refresh. It is not a
+    /// focus request unless the actual focused provider row was removed.
+    static func relocationIfRemoved(_ focus: TVLiveTVProviderFocus?,
+                                    providerIDs: [UUID]) -> TVLiveTVProviderFocus? {
+        guard let focus else { return nil }
+        switch focus {
+        case .provider(let id), .refresh(let id), .remove(let id):
+            return providerIDs.contains(id) ? nil : afterRemoval(remainingProviderIDs: providerIDs)
+        case .back, .phoneSetup, .addProvider, .save:
+            return nil
+        }
+    }
 }
 #endif

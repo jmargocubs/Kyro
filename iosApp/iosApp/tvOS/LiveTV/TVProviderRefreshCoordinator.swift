@@ -159,7 +159,6 @@ struct TVProviderRefreshPanel: View {
     let coordinator: TVProviderRefreshCoordinator
     @Bindable var service: LiveTVService
     let vod: XtreamVODService
-    var onDismiss: () -> Void = {}
 
     var body: some View {
         switch coordinator.phase {
@@ -189,14 +188,9 @@ struct TVProviderRefreshPanel: View {
         case .finished(_, let succeeded, let message):
             panel(symbol: succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
                   tint: succeeded ? KyroTheme.accentInk : KyroTheme.live) {
-                HStack(spacing: 20) {
-                    Text(message).font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(succeeded ? Color.primary : KyroTheme.live)
-                        .lineLimit(3)
-                    Spacer(minLength: 0)
-                    Button("Dismiss") { coordinator.dismissResult(); onDismiss() }
-                        .buttonStyle(TVKyroChipStyle())
-                }
+                Text(message).font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(succeeded ? Color.primary : KyroTheme.live)
+                    .lineLimit(3)
             }
             .accessibilityIdentifier("providers.refreshResult")
         }
@@ -211,7 +205,6 @@ struct TVProviderRefreshPanel: View {
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.siloSurface.opacity(0.92), in: RoundedRectangle(cornerRadius: 20))
-        .focusSection()
     }
 
     private func providerName(_ id: UUID) -> String {

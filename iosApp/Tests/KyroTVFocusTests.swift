@@ -274,6 +274,44 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertEqual(TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: [next]), .provider(next))
     }
 
+    func testProviderStatusAndRefreshUpdatesNeverRequestAnotherFocusTarget() {
+        let first = UUID(), second = UUID()
+        let ids = [first, second]
+        for target in [TVLiveTVProviderFocus.back, .provider(first), .refresh(first),
+                       .remove(second), .phoneSetup, .addProvider] {
+            for _ in 0..<100 {
+                XCTAssertNil(TVLiveTVProviderFocusPlanner.relocationIfRemoved(target, providerIDs: ids))
+            }
+        }
+        XCTAssertNil(TVLiveTVProviderFocusPlanner.relocationIfRemoved(nil, providerIDs: ids),
+                     "Sheet presentation may clear FocusState without authorizing a new target")
+        XCTAssertEqual(TVLiveTVProviderFocusPlanner.relocationIfRemoved(.refresh(first), providerIDs: [second]),
+                       .provider(second))
+    }
+
+    func testAddProviderDismissalAndNavigationRestorationAreExplicit() {
+        let saved = UUID()
+        XCTAssertEqual(TVLiveTVProviderFocusPlanner.afterAddProvider(savedProviderID: nil), .addProvider)
+        XCTAssertEqual(TVLiveTVProviderFocusPlanner.afterAddProvider(savedProviderID: saved), .provider(saved))
+        let target = TVLiveTVRootView.FocusTarget.channel("news")
+        XCTAssertEqual(TVLiveTVRootView.restorationTarget(target, channelIDs: ["news"],
+                                                          categories: [], section: .channels), target)
+        XCTAssertEqual(TVLiveTVRootView.restorationTarget(target, channelIDs: [],
+                                                          categories: [], section: .channels), .section(.channels))
+    }
+
+    func testGuideLayoutUsesViewportAndNeverOverlapsAdjacentProgramCells() {
+        XCTAssertLessThan(TVLiveTVGuideLayout.horizontalInset, 58)
+        XCTAssertGreaterThan(TVLiveTVGuideLayout.channelWidth, 310)
+        XCTAssertGreaterThan(TVLiveTVGuideLayout.rowHeight, 112)
+        XCTAssertGreaterThan(TVLiveTVGuideLayout.visibleProgramWidth(viewportWidth: 1920), 1400)
+        for width in [CGFloat(1), 6, 20, 90, 180] {
+            let rendered = TVLiveTVGuideLayout.programCellWidth(width)
+            XCTAssertGreaterThan(rendered, 0)
+            XCTAssertLessThanOrEqual(rendered, width)
+        }
+    }
+
     func testRemovingTopProviderKeepsNextRowAsEntryAndBackEscape() {
         let first = UUID(), next = UUID()
         XCTAssertEqual(TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: [first, next]), .provider(first))
