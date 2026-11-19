@@ -82,7 +82,8 @@ final class XtreamVODService {
     /// Opened lazily and retried on every refresh, so one storage failure never disables VOD for
     /// the rest of the app session (Build 93 held a nil store until relaunch).
     private var store: XtreamVODCatalogStore?
-    private let makeStore: () throws -> XtreamVODCatalogStore
+    private let makeStore: @Sendable () throws -> XtreamVODCatalogStore
+    private var storeOpening: Task<XtreamVODCatalogStore, Error>?
     private let session: URLSession
     private let defaults: UserDefaults
     private var work: Task<Void, Never>?
@@ -101,7 +102,7 @@ final class XtreamVODService {
          session: URLSession = .shared, defaults: UserDefaults = .standard,
          limits: @escaping (XtreamVODKind) -> XtreamVODCatalogLimits = XtreamVODCatalogLimits.standard(for:),
          availableDiskBytes: @escaping () -> Int64? = XtreamVODHTTP.availableDiskBytes,
-         makeStore: @escaping () throws -> XtreamVODCatalogStore = { try XtreamVODCatalogStore() }) {
+         makeStore: @escaping @Sendable () throws -> XtreamVODCatalogStore = { try XtreamVODCatalogStore() }) {
         self.store = store
         self.makeStore = makeStore
         self.session = session
@@ -110,14 +111,27 @@ final class XtreamVODService {
         self.availableDiskBytes = availableDiskBytes
     }
 
-    private func openStore() throws -> XtreamVODCatalogStore {
+    private func openStore() async throws -> XtreamVODCatalogStore {
         if let store { return store }
-        let opened = try makeStore()
-        store = opened
-        return opened
+        if storeOpening == nil {
+            let factory = makeStore
+            storeOpening = Task.detached(priority: .utility) { try factory() }
+        }
+        guard let opening = storeOpening else { throw XtreamVODError.storage }
+        do {
+            let opened = try await opening.value
+            store = opened
+            storeOpening = nil
+            return opened
+        } catch {
+            storeOpening = nil
+            throw error
+        }
     }
 
-    private var readableStore: XtreamVODCatalogStore? { try? openStore() }
+    private var readableStore: XtreamVODCatalogStore? {
+        get async { try? await openStore() }
+    }
 
     /// Starts one refresh of the provider's selected catalogs and waits for it. Every outcome other
     /// than `.alreadyRunning` publishes visible `progress` before returning.
@@ -171,7 +185,10 @@ final class XtreamVODService {
             return
         }
         let store: XtreamVODCatalogStore
-        do { store = try openStore() }
+        do {
+            store = try await openStore()
+            try await store.pruneOrphanedGenerations()
+        }
         catch {
             failBeforeDownload(.storage, stage: .storage, enabledKinds: enabledKinds)
             return
@@ -243,6 +260,8 @@ final class XtreamVODService {
                     continue
                 }
                 stage = .promotion
+                try await store.buildPageAnchors(providerID: providerID, kind: kind, generation: generation)
+                try Task.checkCancellation()
                 try await store.promote(providerID: providerID, kind: kind, generation: generation)
                 revision &+= 1
                 succeeded += 1
@@ -275,6 +294,9 @@ final class XtreamVODService {
             } else {
                 progress?.message = summary
             }
+            // Promotion is intentionally quick; retire old generations in cancellable batches
+            // after the new catalog is visible. A later refresh also reclaims crash orphans.
+            try? await store.pruneOrphanedGenerations()
         } catch {
             if !(error is CancellationError), progress?.failedStage == nil {
                 XtreamVODDiagnostics.failure(stage, kind: nil, error: error)
@@ -345,18 +367,18 @@ final class XtreamVODService {
     func page(providerID: UUID, kind: XtreamVODKind, query: String = "", category: String? = nil,
               offset: Int = 0) async -> [XtreamVODItem] {
         guard IPTVVODPreference.isEnabled(in: defaults) else { return [] }
-        return await readableStore?.page(providerID: providerID, kind: kind, query: query,
+        return await (await readableStore)?.page(providerID: providerID, kind: kind, query: query,
                                          category: category, offset: offset) ?? []
     }
 
     func count(providerID: UUID, kind: XtreamVODKind) async -> Int {
         guard IPTVVODPreference.isEnabled(in: defaults) else { return 0 }
-        return await readableStore?.count(providerID: providerID, kind: kind) ?? 0
+        return await (await readableStore)?.count(providerID: providerID, kind: kind) ?? 0
     }
 
     func categories(providerID: UUID, kind: XtreamVODKind) async -> [String] {
         guard IPTVVODPreference.isEnabled(in: defaults) else { return [] }
-        return await readableStore?.categories(providerID: providerID, kind: kind) ?? []
+        return await (await readableStore)?.categories(providerID: providerID, kind: kind) ?? []
     }
 
     func refreshedAt(providerID: UUID) -> Date? {
@@ -366,7 +388,7 @@ final class XtreamVODService {
     /// Clearing cached VOD never deletes a provider or its keychain credentials.
     func clearCache(providerID: UUID) async {
         guard activeProviderID != providerID else { return }
-        await readableStore?.remove(providerID: providerID)
+        await (await readableStore)?.remove(providerID: providerID)
         defaults.removeObject(forKey: "kyro.iptvvod.lastRefresh.\(providerID.uuidString)")
         lastSuccessfulRefresh[providerID] = nil
         cachedDetails = cachedDetails.filter { !$0.key.hasPrefix(providerID.uuidString) }
@@ -388,7 +410,7 @@ final class XtreamVODService {
         var seen = Set<Int>()
         var result: [XtreamVODItem] = []
         for (id, _) in saved where seen.insert(id).inserted {
-            if let item = await readableStore?.item(providerID: providerID, kind: kind, remoteID: id) { result.append(item) }
+            if let item = await (await readableStore)?.item(providerID: providerID, kind: kind, remoteID: id) { result.append(item) }
             if result.count == 100 { break }
         }
         return result
@@ -467,7 +489,7 @@ final class XtreamVODService {
             work = nil
             activeProviderID = nil
         }
-        await readableStore?.remove(providerID: providerID)
+        await (await readableStore)?.remove(providerID: providerID)
         defaults.removeObject(forKey: "kyro.iptvvod.lastRefresh.\(providerID.uuidString)")
         lastSuccessfulRefresh[providerID] = nil
         cachedDetails = cachedDetails.filter { !$0.key.hasPrefix(providerID.uuidString) }

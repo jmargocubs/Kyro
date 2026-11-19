@@ -57,6 +57,39 @@ final class IPTVVODFoundationTests: XCTestCase {
         await store.close()
     }
 
+    func testIndexedSearchDeduplicationAndCrashRecovery() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("IPTVVODFoundation-\(UUID().uuidString)")
+        let provider = UUID(), other = UUID()
+        let store = try XtreamVODCatalogStore(directory: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func item(_ owner: UUID, _ id: Int, _ title: String) -> XtreamVODItem {
+            .init(providerID: owner, kind: .movie, remoteID: id, title: title,
+                  category: "Drama", poster: nil, fileExtension: "mp4", summary: nil,
+                  genre: nil, rating: nil)
+        }
+        try await store.stage([item(provider, 1, "First Example"), item(provider, 1, "Final Example")], generation: "active")
+        try await store.promote(providerID: provider, kind: .movie, generation: "active")
+        try await store.stage([item(provider, 2, "Orphan Example")], generation: "interrupted")
+        try await store.stage([item(other, 1, "Other Example")], generation: "active")
+        try await store.promote(providerID: other, kind: .movie, generation: "active")
+        let before = await store.page(providerID: provider, kind: .movie, query: "fin ex")
+        let hidden = await store.page(providerID: provider, kind: .movie, query: "orphan")
+        XCTAssertEqual(before.map(\.title), ["Final Example"])
+        XCTAssertTrue(hidden.isEmpty)
+        await store.close()
+        let recovered = try XtreamVODCatalogStore(directory: root)
+        try await recovered.pruneOrphanedGenerations()
+        let retainedCount = await recovered.count(providerID: provider, kind: .movie)
+        let retained = await recovered.page(providerID: provider, kind: .movie, query: "final")
+        let removed = await recovered.page(providerID: provider, kind: .movie, query: "orphan")
+        let isolated = await recovered.page(providerID: other, kind: .movie, query: "other")
+        XCTAssertEqual(retainedCount, 1)
+        XCTAssertEqual(retained.map(\.title), ["Final Example"])
+        XCTAssertTrue(removed.isEmpty)
+        XCTAssertEqual(isolated.count, 1)
+        await recovered.close()
+    }
+
     func testPlaybackURLAndNamespacedIDs() throws {
         let provider = UUID()
         let movie = XtreamVODItem(providerID: provider, kind: .movie, remoteID: 42,

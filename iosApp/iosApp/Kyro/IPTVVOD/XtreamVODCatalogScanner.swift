@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || KYRO_VOD_HOST_TESTS
 import Foundation
 
 /// Splits an Xtream catalog body into its top-level members without building the whole document.

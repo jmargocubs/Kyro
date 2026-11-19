@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || KYRO_VOD_HOST_TESTS
 import Foundation
 
 enum XtreamVODKind: String, Codable, CaseIterable, Sendable {
