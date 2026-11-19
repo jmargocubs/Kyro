@@ -1326,6 +1326,7 @@ struct TVLiveTVGuideView: View {
     @State private var timeline = LiveTVGuideTimeline(now: .now, timeZone: .current, lookBack: 30 * 60,
                                                       lookAhead: 6 * 60 * 60, pointsPerMinute: 3)
     @State private var category: String?
+    @State private var didSeedCategory = false
     @State private var favoritesOnly = false
     @State private var rows: [LiveTVChannel] = []
     @State private var rowIDs: [String] = []
@@ -1371,7 +1372,10 @@ struct TVLiveTVGuideView: View {
         .onAppear {
             service.presentation.surfaceAppeared(.guide)
             if let last = TVLiveTVGuideMemory.lastChannelID { navigationState.focus(channelID: last) }
-            category = initialCategory
+            if !didSeedCategory {
+                category = initialCategory
+                didSeedCategory = true
+            }
             rebuildRows()
         }
         .onDisappear { service.presentation.surfaceDisappeared(.guide) }
