@@ -129,6 +129,7 @@ actor LiveTVChannelCatalogStore {
     /// Refuses incomplete or non-contiguous imports. Promotion never deletes the old generation
     /// in its transaction; the reader-visible switch stays short even at 100,000 rows.
     func promote(providerID: UUID, generation: String, expectedCount: Int) throws {
+        try Task.checkCancellation()
         guard expectedCount > 0 else { throw StoreError.invalidGeneration }
         try execute("BEGIN IMMEDIATE")
         do {
@@ -169,6 +170,29 @@ actor LiveTVChannelCatalogStore {
         return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
     }
 
+    /// Transitional 40K offline bridge. All pages run in one actor turn, so promotion cannot
+    /// splice two generations into one restore. A read transaction also pins a WAL snapshot
+    /// against another store connection promoting and pruning. Do not use this for a future
+    /// 100K UI catalog.
+    func offlineCatalog(providerID: UUID, maximumChannels: Int) -> [LiveTVChannel]? {
+        guard (try? execute("BEGIN")) != nil else { return nil }
+        defer { try? execute("ROLLBACK") }
+        let expected = count(providerID: providerID)
+        guard expected > 0, expected <= maximumChannels else { return nil }
+        var channels: [LiveTVChannel] = []
+        channels.reserveCapacity(expected)
+        var offset = 0
+        while offset < expected {
+            guard !Task.isCancelled else { return nil }
+            let batch = page(providerID: providerID, offset: offset, limit: 200)
+            guard !batch.isEmpty else { return nil }
+            channels.append(contentsOf: batch)
+            offset += batch.count
+        }
+        guard channels.count == expected, (try? execute("COMMIT")) != nil else { return nil }
+        return channels
+    }
+
     func setFavorite(_ favorite: Bool, channelID: String, providerID: UUID) throws {
         guard channelID.hasPrefix(providerID.uuidString + ":") else { throw StoreError.invalidIdentity }
         let statement = try prepare(favorite
@@ -178,6 +202,35 @@ actor LiveTVChannelCatalogStore {
         bind(providerID.uuidString, 1, statement)
         bind(channelID, 2, statement)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.storage }
+    }
+
+    /// Reconciles the existing UserDefaults favorites source of truth with the indexed table.
+    /// Cancellation rolls back the entire provider replacement; no partial favorite list leaks.
+    func replaceFavorites(_ ids: Set<String>, providerID: UUID) throws {
+        let prefix = providerID.uuidString + ":"
+        guard ids.allSatisfy({ $0.hasPrefix(prefix) }) else { throw StoreError.invalidIdentity }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let removal = try prepare("DELETE FROM channel_favorites WHERE provider=?")
+            bind(providerID.uuidString, 1, removal)
+            let removed = sqlite3_step(removal)
+            sqlite3_finalize(removal)
+            guard removed == SQLITE_DONE else { throw StoreError.storage }
+            let insertion = try prepare("INSERT INTO channel_favorites(provider,id) VALUES(?,?)")
+            defer { sqlite3_finalize(insertion) }
+            for (index, id) in ids.enumerated() {
+                if index.isMultiple(of: 256) { try Task.checkCancellation() }
+                sqlite3_reset(insertion)
+                sqlite3_clear_bindings(insertion)
+                bind(providerID.uuidString, 1, insertion)
+                bind(id, 2, insertion)
+                guard sqlite3_step(insertion) == SQLITE_DONE else { throw StoreError.storage }
+            }
+            try execute("COMMIT")
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
     }
 
     private static func expression(_ query: String) -> String? {

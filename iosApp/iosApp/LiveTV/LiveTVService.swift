@@ -75,10 +75,19 @@ final class LiveTVService {
     /// the next app launch, never midway through a guide session.
     var activeEPGStorageMode: EPGStorageMode { epg.storage }
     @ObservationIgnored private let channelSnapshotStore: LiveTVChannelSnapshotStore
+    #if os(iOS)
+    @ObservationIgnored private var channelStoreTask: Task<LiveTVChannelCatalogStore?, Never>?
+    @ObservationIgnored private let channelStoreDirectory: URL?
+    @ObservationIgnored private var favoriteStoreRevision = 0
+    @ObservationIgnored private var favoriteStoreSyncedRevisions: [UUID: Int] = [:]
+    #endif
     @ObservationIgnored private let recentHistoryStore: LiveTVRecentHistoryStore
     /// The one playlist download in flight. Removing its provider cancels it and clears this, so a
     /// late result can no longer be applied.
     @ObservationIgnored private var playlistRefresh: (providerID: UUID, token: UUID, task: Task<LiveTVCachedCatalog, Error>)?
+    #if os(iOS)
+    @ObservationIgnored private var catalogImportInProgress = false
+    #endif
     /// Cached channel and guide restores, kept after they finish so each provider is read from disk once.
     @ObservationIgnored private var cacheRestores: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var guideCacheOrphanSweep: Task<Void, Never>?
@@ -148,12 +157,16 @@ final class LiveTVService {
         session: URLSession? = nil,
         epg: EPGService? = nil,
         channelSnapshotStore: LiveTVChannelSnapshotStore = LiveTVChannelSnapshotStore(),
+        channelStoreDirectory: URL? = nil,
         recentHistoryStore: LiveTVRecentHistoryStore? = nil,
         shortEPGNow: @escaping () -> Date = { Date() }
     ) {
         self.defaults = defaults
         self.secretStore = secretStore ?? KeychainLiveTVSecretStore()
         self.channelSnapshotStore = channelSnapshotStore
+        #if os(iOS)
+        self.channelStoreDirectory = channelStoreDirectory
+        #endif
         self.recentHistoryStore = recentHistoryStore ?? LiveTVRecentHistoryStore(defaults: defaults)
         self.recentlyWatchedRecords = self.recentHistoryStore.read()
         self.shortEPGNow = shortEPGNow
@@ -200,6 +213,44 @@ final class LiveTVService {
     func hasCatalog(for providerID: UUID) -> Bool {
         channelCatalogs[providerID] != nil
     }
+
+    #if os(iOS)
+    /// The shared channel database opens on a utility executor. Failed opens are retried on the
+    /// next request; they never block the main actor or replace a previously usable catalog.
+    private func channelStore() async -> LiveTVChannelCatalogStore? {
+        #if DEBUG
+        // Most isolated XCTest services use a suite-local defaults object. Unless a test
+        // explicitly injects a catalog directory, never write their fixtures into the app cache.
+        if channelStoreDirectory == nil && defaults !== UserDefaults.standard { return nil }
+        #endif
+        if let channelStoreTask { return await channelStoreTask.value }
+        let directory = channelStoreDirectory
+        let task = Task.detached(priority: .utility) { try? LiveTVChannelCatalogStore(directory: directory) }
+        channelStoreTask = task
+        let store = await task.value
+        if store == nil { channelStoreTask = nil }
+        return store
+    }
+
+    /// Provider-scoped bounded query for the in-progress iOS UI migration. The actor keeps all
+    /// SQL work off the main actor; callers discard results if the provider or revision changes.
+    func channelPage(providerID: UUID, query: String = "", category: String? = nil,
+                     favoritesOnly: Bool = false, offset: Int = 0, limit: Int = 100) async -> [LiveTVChannel] {
+        guard providers.contains(where: { $0.id == providerID }), let store = await channelStore() else { return [] }
+        if favoritesOnly, favoriteStoreSyncedRevisions[providerID] != favoriteStoreRevision {
+            let revision = favoriteStoreRevision
+            let prefix = providerID.uuidString + ":"
+            let scoped = Set(favoriteChannelIDs.filter { $0.hasPrefix(prefix) })
+            do {
+                try await store.replaceFavorites(scoped, providerID: providerID)
+                if favoriteStoreRevision == revision { favoriteStoreSyncedRevisions[providerID] = revision }
+            } catch { return [] }
+            guard favoriteStoreSyncedRevisions[providerID] == favoriteStoreRevision else { return [] }
+        }
+        return await store.page(providerID: providerID, query: query, category: category,
+                                favoritesOnly: favoritesOnly, offset: offset, limit: limit)
+    }
+    #endif
 
     var favoriteChannels: [LiveTVChannel] { homeFavoriteChannels }
 
@@ -257,10 +308,27 @@ final class LiveTVService {
            channelCatalogs[providerID] == nil, providers.contains(where: { $0.id == providerID }) {
             channelCatalogs[providerID] = cached.channels
             categoryCatalogs[providerID] = cached.categories
+            #if os(iOS)
+            await pruneRecentHistory(for: providerID, validChannels: cached.channels)
+            #else
             pruneRecentHistory(for: providerID, validChannels: cached.channels)
+            #endif
             channelCatalogRevision &+= 1
             if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
         }
+        #if os(iOS)
+        // The JSON snapshot is the first migration fallback for existing installations. A
+        // completed SQLite generation also restores offline if that older snapshot is absent.
+        if channelCatalogs[providerID] == nil, let store = await channelStore(),
+           let restored = await LiveTVChannelCatalogImporter.restore(providerID: providerID, from: store),
+           channelCatalogs[providerID] == nil, providers.contains(where: { $0.id == providerID }) {
+            channelCatalogs[providerID] = restored
+            categoryCatalogs[providerID] = await store.categories(providerID: providerID).map(\.name)
+            await pruneRecentHistory(for: providerID, validChannels: restored)
+            channelCatalogRevision &+= 1
+            if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
+        }
+        #endif
         // The guide cache is keyed by provider and only returned while still usable. Short-guide
         // listings alone never stand in for it.
         guard !showsFullGuide(providerID), let epgSource,
@@ -358,6 +426,9 @@ final class LiveTVService {
         providers.removeAll { $0.id == id }
         channelCatalogs[id] = nil
         categoryCatalogs[id] = nil
+        #if os(iOS)
+        favoriteStoreSyncedRevisions[id] = nil
+        #endif
         setGuideIndex(nil, for: id)
         if residencyProviderID == id {
             residencyTask?.cancel()
@@ -391,6 +462,9 @@ final class LiveTVService {
     /// The disk half of removal: the channel snapshot and the guide cache.
     func deleteProviderFiles(_ id: UUID) async {
         await channelSnapshotStore.remove(providerID: id)
+        #if os(iOS)
+        if let store = await channelStore() { try? await store.remove(providerID: id) }
+        #endif
         await epg.remove(providerID: id)
     }
 
@@ -400,7 +474,14 @@ final class LiveTVService {
     }
 
     func refresh(providerID: UUID) async {
+        #if os(iOS)
+        guard playlistRefresh == nil, !catalogImportInProgress else { return }
+        catalogImportInProgress = true
+        defer { catalogImportInProgress = false }
+        defer { isLoading = false }
+        #else
         guard playlistRefresh == nil else { return }
+        #endif
         guard providers.contains(where: { $0.id == providerID }),
               let serialized = secretStore.read(account: Self.secretAccount(providerID)),
               let data = serialized.data(using: .utf8),
@@ -429,7 +510,9 @@ final class LiveTVService {
         // Removing the provider cancels this refresh and has already cleared the loading state.
         guard playlistRefresh?.token == token else { return }
         playlistRefresh = nil
+        #if !os(iOS)
         isLoading = false
+        #endif
         guard providers.contains(where: { $0.id == providerID }) else { return }
 
         let loaded: LiveTVCachedCatalog
@@ -445,13 +528,48 @@ final class LiveTVService {
             }
             return
         }
+        #if os(iOS)
+        guard !Task.isCancelled, providers.contains(where: { $0.id == providerID }),
+              loadSourceConfiguration(providerID: providerID) == source else { return }
+        if let store = await channelStore() {
+            // A cancelled or failed stage leaves its previous generation selected. Keep the
+            // established in-memory/JSON path usable during this staged UI migration.
+            _ = try? await LiveTVChannelCatalogImporter.replace(loaded.channels, providerID: providerID, in: store)
+        }
+        guard !Task.isCancelled, providers.contains(where: { $0.id == providerID }),
+              loadSourceConfiguration(providerID: providerID) == source else {
+            if !providers.contains(where: { $0.id == providerID }), let store = await channelStore() {
+                try? await store.remove(providerID: providerID)
+            }
+            return
+        }
+        #endif
         let previousChannels = channelCatalogs[providerID] ?? []
+        #if os(iOS)
+        let previousFilter = await Task.detached(priority: .utility) {
+            EPGChannelFilter(guideIDs: previousChannels.map(\.guideID), names: previousChannels.map(\.name))
+        }.value
+        let refreshedChannels = loaded.channels
+        let updatedFilter = await Task.detached(priority: .utility) {
+            EPGChannelFilter(guideIDs: refreshedChannels.map(\.guideID), names: refreshedChannels.map(\.name))
+        }.value
+        guard !Task.isCancelled, providers.contains(where: { $0.id == providerID }),
+              loadSourceConfiguration(providerID: providerID) == source else { return }
+        #else
         let previousFilter = EPGChannelFilter(guideIDs: previousChannels.map(\.guideID), names: previousChannels.map(\.name))
         let updatedFilter = EPGChannelFilter(guideIDs: loaded.channels.map(\.guideID), names: loaded.channels.map(\.name))
+        #endif
         let guideFilterChanged = !previousChannels.isEmpty && previousFilter != updatedFilter
         channelCatalogs[providerID] = loaded.channels
         categoryCatalogs[providerID] = loaded.categories
+        #if os(iOS)
+        isLoading = false
+        #endif
+        #if os(iOS)
+        await pruneRecentHistory(for: providerID, validChannels: loaded.channels)
+        #else
         pruneRecentHistory(for: providerID, validChannels: loaded.channels)
+        #endif
         channelCatalogRevision &+= 1
         if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
         liveCatalogs.insert(providerID)
@@ -472,6 +590,9 @@ final class LiveTVService {
         // The provider may have been removed while the snapshot was written; never leave it behind.
         guard providers.contains(where: { $0.id == providerID }) else {
             await channelSnapshotStore.remove(providerID: providerID)
+            #if os(iOS)
+            if let store = await channelStore() { try? await store.remove(providerID: providerID) }
+            #endif
             return
         }
         // Channels are usable now; the guide fills in behind them.
@@ -529,7 +650,13 @@ final class LiveTVService {
         if selectedProviderID == providerID { isGuideLoading = true }
         defer { if selectedProviderID == providerID { isGuideLoading = false } }
         let channels = channelCatalogs[providerID] ?? []
+        #if os(iOS)
+        let filter = await Task.detached(priority: .utility) {
+            EPGChannelFilter(guideIDs: channels.map(\.guideID), names: channels.map(\.name))
+        }.value
+        #else
         let filter = EPGChannelFilter(guideIDs: channels.map(\.guideID), names: channels.map(\.name))
+        #endif
         let currentEPGSource = Self.epgFeedSource(source)
         if !showsFullGuide(providerID), let currentEPGSource {
             let cached = await epg.index(for: providerID, source: currentEPGSource)
@@ -1074,6 +1201,9 @@ final class LiveTVService {
 
     func toggleFavorite(_ channel: LiveTVChannel) {
         if !favoriteChannelIDs.insert(channel.id).inserted { favoriteChannelIDs.remove(channel.id) }
+        #if os(iOS)
+        favoriteStoreRevision &+= 1
+        #endif
         defaults.set(favoriteChannelIDs.sorted(), forKey: Self.favoritesKey)
         if UUID(uuidString: String(channel.id.prefix(36))) == selectedProviderID { scheduleHomePreviewRebuild() }
     }
@@ -1087,18 +1217,37 @@ final class LiveTVService {
     private func recordPlayingReady(channelID: String, generation: Int) {
         let session = playerSession
         let providerID = UUID(uuidString: String(channelID.prefix(36)))
+        #if os(iOS)
+        let validChannelIDs: Set<String> = providerID.flatMap { channelCatalogs[$0] }?.contains(where: { $0.id == channelID }) == true
+            ? [channelID] : []
+        #else
+        let validChannelIDs = providerID.flatMap { channelCatalogs[$0] }.map { Set($0.map(\.id)) } ?? []
+        #endif
         guard let entry = LiveTVRecentHistory.playingReadyEntry(
                   channelID: channelID, generation: generation,
                   currentGeneration: session.controller.generation, activeChannelID: session.activeChannelID,
                   isPlaying: session.state == .playing,
                   providerIsPresent: providerID.map { id in providers.contains(where: { $0.id == id }) } ?? false,
-                  validChannelIDs: providerID.flatMap { channelCatalogs[$0] }.map { Set($0.map(\.id)) } ?? []),
+                  validChannelIDs: validChannelIDs),
               recentlyWatchedRecords.first != entry else { return }
         recentlyWatchedRecords = LiveTVRecentHistory.inserting(entry, into: recentlyWatchedRecords)
         recentHistoryStore.save(recentlyWatchedRecords)
         if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
     }
 
+    #if os(iOS)
+    private func pruneRecentHistory(for providerID: UUID, validChannels: [LiveTVChannel]) async {
+        let records = recentlyWatchedRecords
+        let updated = await Task.detached(priority: .utility) {
+            let wanted = Set(records.filter { $0.providerID == providerID }.map(\.channelID))
+            let validIDs = Set(validChannels.lazy.map(\.id).filter { wanted.contains($0) })
+            return LiveTVRecentHistory.pruning(records, providerID: providerID, validChannelIDs: validIDs)
+        }.value
+        guard records == recentlyWatchedRecords, updated != recentlyWatchedRecords else { return }
+        recentlyWatchedRecords = updated
+        recentHistoryStore.save(updated)
+    }
+    #else
     private func pruneRecentHistory(for providerID: UUID, validChannels: [LiveTVChannel]) {
         let validIDs = Set(validChannels.map(\.id))
         let updated = LiveTVRecentHistory.pruning(recentlyWatchedRecords, providerID: providerID,
@@ -1107,6 +1256,7 @@ final class LiveTVService {
         recentlyWatchedRecords = updated
         recentHistoryStore.save(updated)
     }
+    #endif
 
     /// Rebuild only when the active provider's catalog, favorites, or recents change. The scan
     /// runs off-main, retains only the bounded Home selections, and rejects stale generations.
