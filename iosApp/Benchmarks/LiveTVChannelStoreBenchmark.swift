@@ -69,8 +69,10 @@ enum LiveTVChannelStoreBenchmark {
         precondition(oldProvider.map(\.id) == [other.id])
         let collision = await store.channel(providerID: first, id: other.id)
         let guideMatched = await store.channel(providerID: first, id: original[0].id)
+        let guideIDs = await store.channelIDs(providerID: first, guideID: "epg-1")
         precondition(collision == nil)
         precondition(guideMatched?.guideID == "epg-1")
+        precondition(guideIDs == [original[0].id])
         let cancelledImport = Task { () -> Bool in
             withUnsafeCurrentTask { $0?.cancel() }
             do {
@@ -110,20 +112,32 @@ enum LiveTVChannelStoreBenchmark {
         let searchStart = ContinuousClock.now
         let search = await store.page(providerID: first, query: "Channel 0001234")
         let searchMS = milliseconds(searchStart)
+        let broadSearchStart = ContinuousClock.now
+        let broadSearch = await store.page(providerID: first, query: "Channel")
+        let broadSearchMS = milliseconds(broadSearchStart)
         let categoryStart = ContinuousClock.now
         let category = await store.page(providerID: first, category: "Category 17", offset: 100)
         let categoryMS = milliseconds(categoryStart)
+        let deepCategoryStart = ContinuousClock.now
+        let deepCategory = await store.page(providerID: first, category: "Category 17",
+                                            offset: count / 40 - 100)
+        let deepCategoryMS = milliseconds(deepCategoryStart)
         let guideStart = ContinuousClock.now
         let guide = await store.page(providerID: first, offset: count - 100)
         let guideMS = milliseconds(guideStart)
         let keysetStart = ContinuousClock.now
         let keyset = await store.page(providerID: first, afterOrdinal: count - 101)
         let keysetMS = milliseconds(keysetStart)
+        let epgStart = ContinuousClock.now
+        let epgIDs = await store.channelIDs(providerID: first, guideID: "epg-\(count)")
+        let epgMS = milliseconds(epgStart)
         let categories = await store.categories(providerID: first)
         let stored = await store.count(providerID: first)
         let isolated = await store.count(providerID: second)
         precondition(stored == count && isolated == 0 && search.count == 1 && search[0].streamID == 1_235)
-        precondition(category.count == 100 && guide.count == 100 && keyset.count == 100)
+        precondition(category.count == 100 && deepCategory.count == 100
+                     && guide.count == 100 && keyset.count == 100 && broadSearch.count == 100)
+        precondition(epgIDs == [channel(count - 1).id])
         precondition(guide.first?.streamID == count - 99 && guide.last?.streamID == count)
         precondition(categories.count == 40 && categories.reduce(0) { $0 + $1.count } == count)
         let last = channel(count - 1)
@@ -135,7 +149,7 @@ enum LiveTVChannelStoreBenchmark {
         await store.close()
         let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("channels.sqlite").path)
         let bytes = (attributes[.size] as? NSNumber)?.intValue ?? -1
-        print("\(count),\(importMS),\(searchMS),\(categoryMS),\(guideMS),\(keysetMS),\(bytes),\(peakRSSMB())")
+        print("\(count),\(importMS),\(searchMS),\(broadSearchMS),\(categoryMS),\(deepCategoryMS),\(guideMS),\(keysetMS),\(epgMS),\(bytes),\(peakRSSMB())")
     }
 
     static func main() async throws {
@@ -145,7 +159,7 @@ enum LiveTVChannelStoreBenchmark {
         }
         let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         try await correctness(root: root)
-        print("count,import_ms,search_ms,category_ms,guide_page_ms,keyset_page_ms,sqlite_bytes,process_peak_rss_mb")
+        print("count,import_ms,search_ms,broad_search_ms,category_ms,deep_category_ms,guide_page_ms,keyset_page_ms,epg_lookup_ms,sqlite_bytes,process_peak_rss_mb")
         for count in [40_000, 60_000, 80_000, 100_000] { try await run(count: count, root: root) }
     }
 }

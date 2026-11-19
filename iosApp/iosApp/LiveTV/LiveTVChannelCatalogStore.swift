@@ -49,7 +49,7 @@ actor LiveTVChannelCatalogStore {
             );
             CREATE INDEX IF NOT EXISTS channel_order ON channel_items(provider,generation,ordinal);
             CREATE INDEX IF NOT EXISTS channel_category ON channel_items(provider,generation,category,ordinal);
-            CREATE INDEX IF NOT EXISTS channel_guide ON channel_items(provider,generation,guide_id);
+            CREATE INDEX IF NOT EXISTS channel_guide ON channel_items(provider,generation,guide_id,ordinal);
             CREATE VIRTUAL TABLE IF NOT EXISTS channel_search USING fts5(
               name, category, content='channel_items', content_rowid='rowid',
               tokenize='unicode61 remove_diacritics 2'
@@ -266,6 +266,25 @@ actor LiveTVChannelCatalogStore {
                              logoURL: value(4).flatMap(URL.init(string:)), category: category,
                              streamID: sqlite3_column_type(statement, 5) == SQLITE_NULL
                                  ? nil : Int(sqlite3_column_int64(statement, 5)))
+    }
+
+    /// A guide ID may legitimately map to several provider channels. Keep the lookup bounded
+    /// and provider/generation-scoped rather than building a process-wide EPG association map.
+    func channelIDs(providerID: UUID, guideID: String, limit: Int = 200) -> [String] {
+        guard let statement = try? prepare("""
+            SELECT i.id FROM channel_items i JOIN channel_active a
+              ON i.provider=a.provider AND i.generation=a.generation
+            WHERE i.provider=? AND i.guide_id=? ORDER BY i.ordinal LIMIT ?
+            """) else { return [] }
+        defer { sqlite3_finalize(statement) }
+        bind(providerID.uuidString, 1, statement)
+        bind(guideID, 2, statement)
+        sqlite3_bind_int(statement, 3, Int32(min(max(limit, 1), 200)))
+        var ids: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let raw = sqlite3_column_text(statement, 0) { ids.append(String(cString: raw)) }
+        }
+        return ids
     }
 
     func categories(providerID: UUID) -> [(name: String, count: Int)] {
