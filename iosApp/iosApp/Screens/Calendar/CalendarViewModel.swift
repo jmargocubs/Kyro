@@ -10,8 +10,6 @@ final class CalendarViewModel {
         _ start: String, _ end: String, _ filter: String, _ timezone: String
     ) async throws -> CalendarResponse
 
-    private static let filterDefaultsKey = "calendar.filter"
-
     private(set) var days: [CalendarDay] = []
     /// Each day's events keyed by its "YYYY-MM-DD" date; set with `days`.
     private var eventsByDay: [String: [CalendarEvent]] = [:]
@@ -31,6 +29,7 @@ final class CalendarViewModel {
     @ObservationIgnored private let fetchWeek: FetchCalendarWeek
     /// The device timezone, read on every load so a change is picked up.
     @ObservationIgnored private let deviceTimeZone: () -> TimeZone
+    @ObservationIgnored private let defaults: UserDefaults
 
     init(
         deviceTimeZone: @escaping () -> TimeZone = { .current },
@@ -38,13 +37,14 @@ final class CalendarViewModel {
             try await SiloAPI.shared.calendarEvents(
                 start: start, end: end, filter: filter, timezone: timezone
             )
-        }
+        },
+        defaults: UserDefaults = .standard
     ) {
         self.deviceTimeZone = deviceTimeZone
         self.fetchWeek = fetchWeek
+        self.defaults = defaults
         week = CalendarWeek(containing: Date(), timeZone: deviceTimeZone())
-        let stored = UserDefaults.standard.string(forKey: Self.filterDefaultsKey) ?? ""
-        filter = CalendarFilter(rawValue: stored) ?? .following
+        filter = CalendarFilterPreference.load(from: defaults)
     }
 
     // MARK: - Derived
@@ -80,7 +80,15 @@ final class CalendarViewModel {
     func select(filter newFilter: CalendarFilter) {
         guard newFilter != filter else { return }
         filter = newFilter
-        UserDefaults.standard.set(newFilter.rawValue, forKey: Self.filterDefaultsKey)
+        CalendarFilterPreference.save(newFilter, to: defaults)
+        Task { await load() }
+    }
+
+    /// Reloads the persisted filter after Backup & Restore. The visible week and selected day stay put.
+    func applyRestoredFilter() {
+        let stored = CalendarFilterPreference.load(from: defaults)
+        guard stored != filter else { return }
+        filter = stored
         Task { await load() }
     }
 

@@ -25,6 +25,22 @@ enum CalendarFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// The Calendar filter the user last chose. It lives in UserDefaults on this device.
+/// The selected day and week are not stored here.
+enum CalendarFilterPreference {
+    static let defaultsKey = "calendar.filter"
+
+    /// A missing or unrecognized value is Following, matching the Calendar screen.
+    static func load(from defaults: UserDefaults = .standard) -> CalendarFilter {
+        let stored = defaults.string(forKey: defaultsKey) ?? ""
+        return CalendarFilter(rawValue: stored) ?? .following
+    }
+
+    static func save(_ filter: CalendarFilter, to defaults: UserDefaults = .standard) {
+        defaults.set(filter.rawValue, forKey: defaultsKey)
+    }
+}
+
 // MARK: - Wire types
 
 /// Response from `GET /api/v2/calendar`. Snake_case keys are mapped by the

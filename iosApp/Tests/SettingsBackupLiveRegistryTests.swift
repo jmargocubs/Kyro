@@ -73,6 +73,7 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let ids = Set(makeRig().registry.settings.map(\.id))
         XCTAssertEqual(ids, [
             "general.launchBehavior",
+            "calendar.filter",
             "navigation.fourthTab", "navigation.showAudiobooks",
             "liveTV.categoryAppearance", "liveTV.categoryGrouping", "liveTV.guideStyle",
             "downloads.preferredFormat", "downloads.wifiOnly", "downloads.defaultDeleteWatched",
@@ -105,6 +106,7 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let registry = makeRig().registry
         let alternatives: [String: BackupValue] = [
             "general.launchBehavior": .string("afterOneHour"),
+            "calendar.filter": .string("trending"),
             "navigation.fourthTab": .string("favorites"),
             "navigation.showAudiobooks": .bool(true),
             "liveTV.categoryAppearance": .string("Grid"),
@@ -351,6 +353,61 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         XCTAssertEqual(rig.navigation.preferences.style, .classic)
         XCTAssertEqual(rig.liveTVNavigation.preferences.style, .classic)
         XCTAssertNil(defaults.object(forKey: KyroSportsSupplementFlag.tennisNewsKey))
+    }
+
+    func testCalendarFilterRestoresSelectivelyAndLeavesTheVisibleWeekAlone() throws {
+        CalendarFilterPreference.save(.trending, to: defaults)
+        let viewModel = CalendarViewModel(
+            deviceTimeZone: { TimeZone(secondsFromGMT: 0)! },
+            fetchWeek: { _, _, _, _ in CalendarResponse(events: []) },
+            defaults: defaults)
+        XCTAssertEqual(viewModel.filter, .trending)
+        let week = viewModel.week
+        viewModel.selectDay(week.startDate.addingTimeInterval(86_400))
+        let selectedDay = viewModel.selectedDay
+        let rig = makeRig()
+        rig.navigation.preferences.fourthTab = .sports
+        let before = defaults.persistentDomain(forName: suiteName) ?? [:]
+
+        let incoming = try SettingsBackupCodec.makeDocument(
+            groups: ["calendar": ["calendar.filter": .string("everything")]],
+            schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+        let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(incoming), registry: rig.registry)
+        XCTAssertEqual(preview.totalChanges, 1)
+        XCTAssertEqual(preview.groups.flatMap(\.items).first { $0.id == "calendar.filter" }?.incoming, "All")
+        let journal = BackupMemoryJournal()
+        guard case .applied = SettingsBackupApplier(registry: rig.registry, journal: journal)
+            .apply(preview: preview, selectedGroups: [.calendar]) else { return XCTFail("not applied") }
+
+        XCTAssertEqual(CalendarFilterPreference.load(from: defaults), .everything)
+        XCTAssertEqual(rig.navigation.preferences.fourthTab, .sports)
+        viewModel.applyRestoredFilter()
+        XCTAssertEqual(viewModel.filter, .everything)
+        XCTAssertEqual(viewModel.week, week)
+        XCTAssertEqual(viewModel.selectedDay, selectedDay)
+        let after = defaults.persistentDomain(forName: suiteName) ?? [:]
+        let changedKeys = Set(before.keys).union(after.keys).filter { before[$0] as? NSObject != after[$0] as? NSObject }
+        XCTAssertEqual(changedKeys, Set([CalendarFilterPreference.defaultsKey]))
+
+        let report = SettingsBackupApplier(registry: rig.registry, journal: journal).undo()
+        XCTAssertEqual(report.reverted, ["calendar.filter"])
+        XCTAssertEqual(CalendarFilterPreference.load(from: defaults), .trending)
+        viewModel.applyRestoredFilter()
+        XCTAssertEqual(viewModel.filter, .trending)
+        XCTAssertEqual(viewModel.week, week)
+        XCTAssertEqual(viewModel.selectedDay, selectedDay)
+
+        let legacy = try SettingsBackupCodec.makeDocument(
+            groups: ["sports": ["sports.tennisNews": .bool(false)],
+                     "navigation": ["navigation.fourthTab": .string("favorites")]],
+            schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+        let legacyPreview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(legacy), registry: rig.registry)
+        XCTAssertEqual(legacyPreview.unrecognizedSettings, 1)
+        XCTAssertEqual(legacyPreview.skippedCount, 1)
+        guard case .applied = SettingsBackupApplier(registry: rig.registry, journal: BackupMemoryJournal())
+            .apply(preview: legacyPreview, selectedGroups: Set(SettingsBackupGroup.allCases)) else { return XCTFail("not applied") }
+        XCTAssertEqual(CalendarFilterPreference.load(from: defaults), .trending)
+        XCTAssertEqual(rig.navigation.preferences.fourthTab, .favorites)
     }
 
     func testProfileSelectionBacksUpOnlyBehaviorAndUndoPreservesOtherLaunchState() throws {

@@ -104,6 +104,13 @@ enum SettingsBackupLiveRegistry {
             label: { (value: ProfileLaunchBehavior) in value.title },
             read: { d.launch.behavior }, write: { d.launch.behavior = $0 }))
 
+        // The Calendar screen stores only this preset. The visible week and selected day are memory.
+        settings.append(enumSetting(
+            "calendar.filter", .calendar, "Calendar filter",
+            label: { (filter: CalendarFilter) in filter.displayLabel },
+            read: { CalendarFilterPreference.load(from: d.defaults) },
+            write: { CalendarFilterPreference.save($0, to: d.defaults) }))
+
         // MARK: Navigation (portable)
         settings.append(enumSetting(
             "navigation.fourthTab", .navigation, "Fourth tab",

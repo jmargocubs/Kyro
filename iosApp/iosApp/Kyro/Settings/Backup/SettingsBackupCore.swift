@@ -86,6 +86,7 @@ enum BackupValue: Equatable, Sendable, Codable {
 /// groups still restore only onto the same kind of device they were saved from.
 enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable {
     case general
+    case calendar
     case navigation
     case liveTVCategories
     case guideLayout
@@ -101,7 +102,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
 
     var isDeviceSpecific: Bool {
         switch self {
-        case .general, .navigation, .liveTVCategories, .guideLayout, .sports, .downloads: false
+        case .general, .calendar, .navigation, .liveTVCategories, .guideLayout, .sports, .downloads: false
         case .playbackOptions, .pictureInPicture, .advancedAudioVideo, .subtitleDisplay, .navigationLayout: true
         }
     }
@@ -109,6 +110,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
     var title: String {
         switch self {
         case .general: "General"
+        case .calendar: "Calendar"
         case .navigation: "Navigation"
         case .liveTVCategories: "Live TV categories"
         case .guideLayout: "Guide layout"
@@ -125,6 +127,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
     var summary: String {
         switch self {
         case .general: "How Kyro selects a profile when it opens."
+        case .calendar: "Which events the Calendar shows."
         case .navigation: "The fourth tab."
         case .liveTVCategories: "How categories look and group."
         case .guideLayout: "List or grid guide on the watch screen."

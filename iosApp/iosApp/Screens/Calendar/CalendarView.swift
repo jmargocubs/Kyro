@@ -35,6 +35,11 @@ struct CalendarView: View {
             .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
                 Task { await viewModel.load() }
             }
+            #if os(iOS)
+            .onReceive(NotificationCenter.default.publisher(for: .kyroSettingsDidRestore)) { _ in
+                viewModel.applyRestoredFilter()
+            }
+            #endif
         #if !os(tvOS)
             .refreshable {
                 await viewModel.load()
