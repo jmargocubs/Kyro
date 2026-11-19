@@ -97,11 +97,11 @@ struct SettingsBackupView: View {
             .accessibilityIdentifier("settingsBackup.export")
 
             DisclosureGroup("Choose what to include", isExpanded: $showsOptions) {
-                ForEach(SettingsBackupGroup.portable) { group in exportToggle(group) }
+                ForEach(model.availablePortableGroups) { group in exportToggle(group) }
                 Text("Device-specific settings")
                     .font(.footnote.weight(.semibold)).foregroundStyle(Color.siloSecondaryText)
-                ForEach(SettingsBackupGroup.deviceSpecific) { group in exportToggle(group) }
-                Text("Device-specific settings are off by default and only restore to the same kind of device.")
+                ForEach(model.availableDeviceGroups) { group in exportToggle(group) }
+                Text("Device-specific settings restore only to the same kind of device.")
                     .font(.footnote).foregroundStyle(Color.siloSecondaryText)
                 Button {
                     if let text = model.exportText() {
@@ -218,13 +218,19 @@ private struct SettingsBackupReviewScreen: View {
                 }
                 Section {
                     if preview.totalChanges == 0 {
-                        Text("Your settings already match this backup.")
+                        Text(preview.skippedCount == 0
+                             ? "Your settings already match this backup."
+                             : "No supported settings need to change.")
                     } else {
                         Text("\(model.selectedChangeCount) setting\(model.selectedChangeCount == 1 ? "" : "s") will change.")
                             .font(.headline)
                     }
                     if preview.isNewerThanSupported {
                         Text("This backup came from a newer Kyro. Only supported settings are shown.")
+                            .font(.footnote).foregroundStyle(Color.siloSecondaryText)
+                    }
+                    if preview.skippedCount > 0 {
+                        Text("\(preview.skippedCount) setting\(preview.skippedCount == 1 ? "" : "s") will be skipped.")
                             .font(.footnote).foregroundStyle(Color.siloSecondaryText)
                     }
                 }

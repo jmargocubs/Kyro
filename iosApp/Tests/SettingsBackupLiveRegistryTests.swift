@@ -36,18 +36,30 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
     private struct Rig {
         let registry: SettingsBackupRegistry
         let navigation: KyroGlobalNavigationStore
+        let appNavigation: AppNavPreferences
+        let liveTVNavigation: KyroLiveTVNavigationStore
+        let launch: ProfileLaunchPreferences
         let downloads: DownloadSettings
         let playback: FakeLocalPlayback
     }
 
     private func makeRig(idiom: String = "phone", pip: Bool = true) -> Rig {
         let navigation = KyroGlobalNavigationStore(defaults: defaults)
+        let appNavigation = AppNavPreferences(
+            defaults: SharedDefaults(suite: defaults, standard: defaults),
+            storageKey: { "ios.nav.showAudiobooks.test" })
+        let liveTVNavigation = KyroLiveTVNavigationStore(defaults: defaults)
+        let launch = ProfileLaunchPreferences(defaults: SharedDefaults(suite: defaults, standard: defaults))
         let downloads = DownloadSettings(defaults: defaults)
         let playback = FakeLocalPlayback()
         let registry = SettingsBackupLiveRegistry.make(.init(
-            navigation: navigation, downloads: downloads, playback: playback,
+            navigation: navigation, appNavigation: appNavigation,
+            liveTVNavigation: liveTVNavigation, launch: launch,
+            downloads: downloads, playback: playback,
             defaults: defaults, idiom: idiom, supportsPictureInPicture: pip))
-        return Rig(registry: registry, navigation: navigation, downloads: downloads, playback: playback)
+        return Rig(registry: registry, navigation: navigation, appNavigation: appNavigation,
+                   liveTVNavigation: liveTVNavigation,
+                   launch: launch, downloads: downloads, playback: playback)
     }
 
     private func applyAll(_ data: Data, to rig: Rig, journal: RestoreJournalStoring = BackupMemoryJournal(),
@@ -59,15 +71,16 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
     func testEverySettingIsOnTheExplicitLocalAllowlist() {
         let ids = Set(makeRig().registry.settings.map(\.id))
         XCTAssertEqual(ids, [
-            "navigation.fourthTab",
+            "general.launchBehavior",
+            "navigation.fourthTab", "navigation.showAudiobooks",
             "liveTV.categoryAppearance", "liveTV.categoryGrouping", "liveTV.guideStyle",
-            "sports.soccerSupplement", "sports.wtaStats", "sports.tennisNews", "sports.atpStats", "sports.tennisPlayerInfo",
             "downloads.preferredFormat", "downloads.wifiOnly", "downloads.defaultDeleteWatched",
             "downloads.defaultMaxStorageGB", "downloads.sortOption", "downloads.keepWatched", "downloads.simultaneous",
             "playback.bufferAhead", "playback.losslessAudio", "pip.backgroundPlayback",
             "advancedAV.deinterlaceMode", "advancedAV.deinterlaceFieldRate", "advancedAV.trueHDAtmos",
-            "nav.style", "nav.startingEdge", "nav.idleBehavior", "nav.autoCollapse", "nav.haptics",
-            "nav.thumbScrubbing", "nav.allowsDragging",
+            "liveTVNav.style", "liveTVNav.startingEdge", "liveTVNav.idleBehavior", "liveTVNav.autoCollapse",
+            "liveTVNav.haptics", "liveTVNav.thumbScrubbing", "liveTVNav.allowsDragging",
+            "liveTVNav.destinationOrder", "liveTVNav.hiddenDestinations",
         ])
         for id in ids { XCTAssertFalse(SettingsBackupSafety.isSensitiveName(id), id) }
     }
@@ -75,13 +88,14 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
     func testRoundTripThroughRealStores() throws {
         let source = makeRig()
         source.navigation.preferences.fourthTab = .favorites
+        source.appNavigation.setShowAudiobooks(true)
+        source.liveTVNavigation.preferences.style = .glassDock
+        source.launch.behavior = .afterOneHour
         source.downloads.wifiOnly = false
         source.downloads.simultaneousDownloads = 4
         source.downloads.defaultMaxStorageGB = 50
         source.downloads.sortOption = .alphabetical
         source.playback.bufferAhead = .extended
-        source.navigation.preferences.style = .glassDock
-        defaults.set(false, forKey: KyroSportsSupplementFlag.tennisNewsKey)
         defaults.set(LiveTVEmbeddedGuideStyle.grid.rawValue, forKey: LiveTVEmbeddedGuideStyle.defaultsKey)
         var categories = LiveTVCategoryPreferences()
         categories.appearance = .grid
@@ -94,23 +108,34 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let freshDefaults = UserDefaults(suiteName: suiteName + ".destination")!
         defer { freshDefaults.removePersistentDomain(forName: suiteName + ".destination") }
         let navigation = KyroGlobalNavigationStore(defaults: freshDefaults)
+        let appNavigation = AppNavPreferences(
+            defaults: SharedDefaults(suite: freshDefaults, standard: freshDefaults),
+            storageKey: { "ios.nav.showAudiobooks.test" })
+        let liveTVNavigation = KyroLiveTVNavigationStore(defaults: freshDefaults)
+        let launch = ProfileLaunchPreferences(defaults: SharedDefaults(suite: freshDefaults, standard: freshDefaults))
         let downloads = DownloadSettings(defaults: freshDefaults)
         let playback = FakeLocalPlayback()
         let destination = Rig(
             registry: SettingsBackupLiveRegistry.make(.init(
-                navigation: navigation, downloads: downloads, playback: playback,
+                navigation: navigation, appNavigation: appNavigation,
+                liveTVNavigation: liveTVNavigation, launch: launch,
+                downloads: downloads, playback: playback,
                 defaults: freshDefaults, idiom: "phone", supportsPictureInPicture: true)),
-            navigation: navigation, downloads: downloads, playback: playback)
+            navigation: navigation, appNavigation: appNavigation,
+            liveTVNavigation: liveTVNavigation, launch: launch,
+            downloads: downloads, playback: playback)
 
         guard case .applied = try applyAll(data, to: destination) else { return XCTFail("not applied") }
         XCTAssertEqual(navigation.preferences.fourthTab, .favorites)
-        XCTAssertEqual(navigation.preferences.style, .glassDock)
+        XCTAssertTrue(appNavigation.showAudiobooks)
+        XCTAssertEqual(liveTVNavigation.preferences.style, .glassDock)
+        XCTAssertEqual(launch.behavior, .afterOneHour)
         XCTAssertFalse(downloads.wifiOnly)
         XCTAssertEqual(downloads.simultaneousDownloads, 4)
         XCTAssertEqual(downloads.defaultMaxStorageGB, 50)
         XCTAssertEqual(downloads.sortOption, .alphabetical)
         XCTAssertEqual(playback.bufferAhead, .extended)
-        XCTAssertFalse(KyroSportsSupplementFlag.isEnabled(key: KyroSportsSupplementFlag.tennisNewsKey, defaults: freshDefaults))
+        XCTAssertNil(freshDefaults.object(forKey: KyroSportsSupplementFlag.tennisNewsKey))
         XCTAssertEqual(freshDefaults.string(forKey: LiveTVEmbeddedGuideStyle.defaultsKey), "grid")
         let loaded = LiveTVCategoryPreferences.load(providerID: nil, from: freshDefaults)
         XCTAssertEqual(loaded.appearance, .grid)
@@ -174,12 +199,13 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         XCTAssertEqual(preview.totalChanges, 0)
     }
 
-    func testDeviceSpecificGroupsStayOffUnlessChosen() throws {
+    func testDefaultExportIncludesSafeDeviceSpecificGroups() throws {
         let rig = makeRig()
         rig.playback.bufferAhead = .unlimited
         let data = try SettingsBackupExporter.export(registry: rig.registry, groups: SettingsBackupGroup.defaultSelection, app: app)
-        XCTAssertNil(try SettingsBackupCodec.decode(data).groups["playbackOptions"])
-        XCTAssertNil(try SettingsBackupCodec.decode(data).groups["navigationLayout"])
+        XCTAssertNotNil(try SettingsBackupCodec.decode(data).groups["playbackOptions"])
+        XCTAssertNotNil(try SettingsBackupCodec.decode(data).groups["navigationLayout"])
+        XCTAssertNil(try SettingsBackupCodec.decode(data).groups["sports"])
     }
 
     func testDownloadsValuesOutsideTheStoreLimitsAreSkipped() throws {
@@ -191,6 +217,121 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let before = rig.downloads.simultaneousDownloads
         XCTAssertEqual(try applyAll(data, to: rig), .nothingToApply)
         XCTAssertEqual(rig.downloads.simultaneousDownloads, before)
+    }
+
+    func testFloatingNavigationUsesEditorStoreAndUndo() throws {
+        let rig = makeRig()
+        rig.liveTVNavigation.preferences.style = .thumbFan
+        rig.liveTVNavigation.preferences.startingEdge = .left
+        let data = try SettingsBackupExporter.export(registry: rig.registry, groups: [.navigationLayout], app: app)
+        let saved = try SettingsBackupCodec.decode(data)
+        XCTAssertEqual(saved.groups["navigationLayout"]?["liveTVNav.style"], .string("thumbFan"))
+        XCTAssertNil(saved.groups["navigationLayout"]?["nav.style"])
+        rig.liveTVNavigation.preferences.style = .classic
+        rig.liveTVNavigation.preferences.startingEdge = .right
+        let preview = SettingsBackupPlanner.preview(saved, registry: rig.registry)
+        XCTAssertEqual(preview.totalChanges, 2)
+        let journal = BackupMemoryJournal()
+        let applier = SettingsBackupApplier(registry: rig.registry, journal: journal)
+        guard case .applied = applier.apply(preview: preview, selectedGroups: [.navigationLayout],
+                                            selectedIDs: ["liveTVNav.style"]) else { return XCTFail("not applied") }
+        XCTAssertEqual(rig.liveTVNavigation.preferences.style, .thumbFan)
+        XCTAssertEqual(rig.liveTVNavigation.preferences.startingEdge, .right)
+        XCTAssertEqual(rig.navigation.preferences.style, .classic)
+        let persisted = KyroLiveTVNavigationStore(defaults: defaults)
+        XCTAssertEqual(persisted.preferences.style, .thumbFan)
+        XCTAssertEqual(applier.undo().reverted, ["liveTVNav.style"])
+        XCTAssertEqual(rig.liveTVNavigation.preferences.style, .classic)
+    }
+
+    func testDestinationOrderAndVisibilityRestoreSelectivelyAndUndo() throws {
+        let rig = makeRig()
+        rig.liveTVNavigation.preferences.move(fromOffsets: IndexSet(integer: 1), toOffset: 4)
+        rig.liveTVNavigation.preferences.setVisible(false, for: .search)
+        let data = try SettingsBackupExporter.export(registry: rig.registry, groups: [.navigationLayout], app: app)
+        rig.liveTVNavigation.preferences.resetDestinations()
+        let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(data), registry: rig.registry)
+        XCTAssertEqual(preview.groups.flatMap(\.items).filter { $0.status == .willChange && $0.id.hasPrefix("liveTVNav.destination") }.count, 1)
+        let applier = SettingsBackupApplier(registry: rig.registry, journal: BackupMemoryJournal())
+        guard case .applied = applier.apply(preview: preview, selectedGroups: [.navigationLayout],
+                                            selectedIDs: ["liveTVNav.destinationOrder", "liveTVNav.hiddenDestinations"]) else {
+            return XCTFail("not applied")
+        }
+        XCTAssertFalse(rig.liveTVNavigation.preferences.isVisible(.search))
+        XCTAssertEqual(KyroLiveTVNavigationStore(defaults: defaults).preferences.order, rig.liveTVNavigation.preferences.order)
+        XCTAssertEqual(applier.undo().reverted.count, 2)
+        XCTAssertTrue(rig.liveTVNavigation.preferences.isVisible(.search))
+        XCTAssertEqual(rig.liveTVNavigation.preferences.order, KyroLiveTVDestination.defaultOrder)
+    }
+
+    func testBuild93LegacyFieldsImportButNeverTouchInternalFlagsOrWrongNavigationStore() throws {
+        let rig = makeRig()
+        let data = try SettingsBackupCodec.makeDocument(
+            groups: ["sports": ["sports.tennisNews": .bool(false)],
+                     "navigationLayout": ["nav.style": .string("glassDock")],
+                     "navigation": ["navigation.fourthTab": .string("favorites")]],
+            schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+        let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(data), registry: rig.registry)
+        XCTAssertEqual(preview.unrecognizedSettings, 2)
+        XCTAssertEqual(preview.totalChanges, 1)
+        guard case .applied = SettingsBackupApplier(registry: rig.registry, journal: BackupMemoryJournal())
+            .apply(preview: preview, selectedGroups: Set(SettingsBackupGroup.allCases)) else { return XCTFail("not applied") }
+        XCTAssertEqual(rig.navigation.preferences.fourthTab, .favorites)
+        XCTAssertEqual(rig.navigation.preferences.style, .classic)
+        XCTAssertEqual(rig.liveTVNavigation.preferences.style, .classic)
+        XCTAssertNil(defaults.object(forKey: KyroSportsSupplementFlag.tennisNewsKey))
+    }
+
+    func testProfileSelectionBacksUpOnlyBehaviorAndUndoPreservesOtherLaunchState() throws {
+        let rig = makeRig()
+        rig.launch.behavior = .afterTwelveHours
+        let data = try SettingsBackupExporter.export(registry: rig.registry, groups: [.general], app: app)
+        let decoded = try SettingsBackupCodec.decode(data)
+        XCTAssertEqual(decoded.groups["general"]?.count, 1)
+        XCTAssertEqual(decoded.groups["general"]?["general.launchBehavior"], .string("afterTwelveHours"))
+        rig.launch.behavior = .automatic
+        let preview = SettingsBackupPlanner.preview(decoded, registry: rig.registry)
+        XCTAssertEqual(preview.totalChanges, 1)
+        let applier = SettingsBackupApplier(registry: rig.registry, journal: BackupMemoryJournal())
+        guard case .applied = applier.apply(preview: preview, selectedGroups: [.general]) else { return XCTFail("not applied") }
+        XCTAssertEqual(rig.launch.behavior, .afterTwelveHours)
+        XCTAssertEqual(applier.undo().reverted, ["general.launchBehavior"])
+        XCTAssertEqual(rig.launch.behavior, .automatic)
+    }
+
+    func testAudiobookVisibilityUsesScopedLocalOwnerAndUndo() throws {
+        let rig = makeRig()
+        rig.appNavigation.setShowAudiobooks(true)
+        let data = try SettingsBackupExporter.export(registry: rig.registry, groups: [.navigation], app: app)
+        XCTAssertEqual(try SettingsBackupCodec.decode(data).groups["navigation"]?["navigation.showAudiobooks"], .bool(true))
+        rig.appNavigation.setShowAudiobooks(false)
+        let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(data), registry: rig.registry)
+        let applier = SettingsBackupApplier(registry: rig.registry, journal: BackupMemoryJournal())
+        guard case .applied = applier.apply(preview: preview, selectedGroups: [.navigation],
+                                            selectedIDs: ["navigation.showAudiobooks"]) else { return XCTFail("not applied") }
+        XCTAssertTrue(rig.appNavigation.showAudiobooks)
+        XCTAssertTrue(AppNavPreferences(
+            defaults: SharedDefaults(suite: defaults, standard: defaults),
+            storageKey: { "ios.nav.showAudiobooks.test" }).showAudiobooks)
+        XCTAssertEqual(applier.undo().reverted, ["navigation.showAudiobooks"])
+        XCTAssertFalse(rig.appNavigation.showAudiobooks)
+    }
+
+    func testUnknownDownloadQualityIsNotExportedAsOriginalAndCanBeUndone() throws {
+        let rig = makeRig()
+        rig.downloads.preferredFormat = "future-format"
+        let data = try SettingsBackupExporter.export(registry: rig.registry, groups: [.downloads], app: app)
+        XCTAssertNil(try SettingsBackupCodec.decode(data).groups["downloads"]?["downloads.preferredFormat"])
+        let incoming = try SettingsBackupCodec.makeDocument(
+            groups: ["downloads": ["downloads.preferredFormat": .string("5mbps")]],
+            schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+        let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(incoming), registry: rig.registry)
+        XCTAssertEqual(preview.totalChanges, 1)
+        let applier = SettingsBackupApplier(registry: rig.registry, journal: BackupMemoryJournal())
+        guard case .applied = applier.apply(preview: preview, selectedGroups: [.downloads]) else { return XCTFail("not applied") }
+        XCTAssertEqual(rig.downloads.preferredFormat, "5mbps")
+        XCTAssertEqual(applier.undo().reverted, ["downloads.preferredFormat"])
+        XCTAssertEqual(rig.downloads.preferredFormat, "future-format")
     }
     // MARK: Build 88.1: import / apply / Undo through real stores and a real restore-point file
 
@@ -214,10 +355,17 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let destDefaults = UserDefaults(suiteName: name)!
         defer { destDefaults.removePersistentDomain(forName: name) }
         let navigation = KyroGlobalNavigationStore(defaults: destDefaults)
+        let appNavigation = AppNavPreferences(
+            defaults: SharedDefaults(suite: destDefaults, standard: destDefaults),
+            storageKey: { "ios.nav.showAudiobooks.test" })
+        let liveTVNavigation = KyroLiveTVNavigationStore(defaults: destDefaults)
+        let launch = ProfileLaunchPreferences(defaults: SharedDefaults(suite: destDefaults, standard: destDefaults))
         let downloads = DownloadSettings(defaults: destDefaults)
         let playback = FakeLocalPlayback()
         let registry = SettingsBackupLiveRegistry.make(.init(
-            navigation: navigation, downloads: downloads, playback: playback,
+            navigation: navigation, appNavigation: appNavigation,
+            liveTVNavigation: liveTVNavigation, launch: launch,
+            downloads: downloads, playback: playback,
             defaults: destDefaults, idiom: "phone", supportsPictureInPicture: true))
         let originalTab = navigation.preferences.fourthTab
 
@@ -249,7 +397,6 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let source = makeRig()
         source.navigation.preferences.fourthTab = .favorites
         source.downloads.wifiOnly = false
-        defaults.set(false, forKey: KyroSportsSupplementFlag.tennisNewsKey)
         let data = try SettingsBackupExporter.export(registry: source.registry, groups: SettingsBackupGroup.defaultSelection, app: app)
 
         let name = suiteName + ".untouched"
@@ -257,21 +404,28 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         defer { destDefaults.removePersistentDomain(forName: name) }
         destDefaults.set("keep", forKey: "some.other.preference")
         let navigation = KyroGlobalNavigationStore(defaults: destDefaults)
+        let appNavigation = AppNavPreferences(
+            defaults: SharedDefaults(suite: destDefaults, standard: destDefaults),
+            storageKey: { "ios.nav.showAudiobooks.test" })
+        let liveTVNavigation = KyroLiveTVNavigationStore(defaults: destDefaults)
+        let launch = ProfileLaunchPreferences(defaults: SharedDefaults(suite: destDefaults, standard: destDefaults))
         let downloads = DownloadSettings(defaults: destDefaults)
         let registry = SettingsBackupLiveRegistry.make(.init(
-            navigation: navigation, downloads: downloads, playback: FakeLocalPlayback(),
+            navigation: navigation, appNavigation: appNavigation,
+            liveTVNavigation: liveTVNavigation, launch: launch,
+            downloads: downloads, playback: FakeLocalPlayback(),
             defaults: destDefaults, idiom: "phone", supportsPictureInPicture: true))
         let before = destDefaults.persistentDomain(forName: name) ?? [:]
 
         let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(data), registry: registry)
         let (journal, directory) = temporaryJournal()
         defer { try? FileManager.default.removeItem(at: directory) }
-        guard case .applied = SettingsBackupApplier(registry: registry, journal: journal).apply(preview: preview, selectedGroups: [.sports]) else {
+        guard case .applied = SettingsBackupApplier(registry: registry, journal: journal).apply(preview: preview, selectedGroups: [.downloads]) else {
             return XCTFail("not applied")
         }
         let after = destDefaults.persistentDomain(forName: name) ?? [:]
         let changed = Set(after.keys).union(before.keys).filter { (after[$0] as? NSObject) != (before[$0] as? NSObject) }
-        XCTAssertEqual(changed, [KyroSportsSupplementFlag.tennisNewsKey])
+        XCTAssertEqual(changed, ["downloads.wifiOnly"])
         XCTAssertEqual(destDefaults.string(forKey: "some.other.preference"), "keep")
         XCTAssertEqual(navigation.preferences.fourthTab, KyroGlobalNavigationPreferences().fourthTab)
         XCTAssertTrue(downloads.wifiOnly)

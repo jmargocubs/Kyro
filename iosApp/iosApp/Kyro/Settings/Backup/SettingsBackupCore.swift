@@ -82,9 +82,10 @@ enum BackupValue: Equatable, Sendable, Codable {
 
 // MARK: - Groups
 
-/// The unit a user chooses to export or restore. Portable groups are on by default; device-specific
-/// groups are off by default and only restore onto the same kind of device they were saved from.
+/// The unit a user chooses to export or restore. Safe local groups are on by default; device-specific
+/// groups still restore only onto the same kind of device they were saved from.
 enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable {
+    case general
     case navigation
     case liveTVCategories
     case guideLayout
@@ -99,13 +100,14 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
 
     var isDeviceSpecific: Bool {
         switch self {
-        case .navigation, .liveTVCategories, .guideLayout, .sports, .downloads: false
+        case .general, .navigation, .liveTVCategories, .guideLayout, .sports, .downloads: false
         case .playbackOptions, .pictureInPicture, .advancedAudioVideo, .navigationLayout: true
         }
     }
 
     var title: String {
         switch self {
+        case .general: "General"
         case .navigation: "Navigation"
         case .liveTVCategories: "Live TV categories"
         case .guideLayout: "Guide layout"
@@ -120,6 +122,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
 
     var summary: String {
         switch self {
+        case .general: "How Kyro selects a profile when it opens."
         case .navigation: "The fourth tab."
         case .liveTVCategories: "How categories look and group."
         case .guideLayout: "List or grid guide on the watch screen."
@@ -132,9 +135,11 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         }
     }
 
+    // Keep the Sports group name for Build 93 imports. The production registry no longer has its
+    // internal flags, so SettingsBackupModel hides this empty group from new exports.
     static var portable: [SettingsBackupGroup] { allCases.filter { !$0.isDeviceSpecific } }
     static var deviceSpecific: [SettingsBackupGroup] { allCases.filter(\.isDeviceSpecific) }
-    static var defaultSelection: Set<SettingsBackupGroup> { Set(portable) }
+    static var defaultSelection: Set<SettingsBackupGroup> { Set(allCases.filter { $0 != .sports }) }
 }
 
 // MARK: - Settings

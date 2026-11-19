@@ -47,6 +47,16 @@ struct RestorePreview: Equatable {
     let isNewerThanSupported: Bool
 
     var totalChanges: Int { groups.reduce(0) { $0 + $1.changeCount } }
+    var skippedCount: Int {
+        unrecognizedSettings + groups.reduce(0) { count, group in
+            count + group.items.filter { item in
+                switch item.status {
+                case .unsupported, .invalid: true
+                case .willChange, .unchanged: false
+                }
+            }.count
+        }
+    }
 }
 
 enum SettingsBackupPlanner {

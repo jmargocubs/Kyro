@@ -49,7 +49,7 @@ final class SettingsBackupTextImportTests: XCTestCase {
         fromFile.loadImport(data: Data(text.utf8))
 
         let preview = try XCTUnwrap(fromText.preview)
-        XCTAssertEqual(preview.totalChanges, 5)
+        XCTAssertEqual(preview.totalChanges, 4)
         XCTAssertEqual(preview.totalChanges, fromFile.preview?.totalChanges)
         XCTAssertEqual(fromText.importSelection, fromFile.importSelection)
         let fourthTab = try XCTUnwrap(preview.groups.flatMap(\.items).first { $0.id == "navigation.fourthTab" })
@@ -63,7 +63,7 @@ final class SettingsBackupTextImportTests: XCTestCase {
         let store = BackupFakeStore(current)
         let loaded = model(store)
         XCTAssertNil(loaded.loadImport(text: reformatted))
-        XCTAssertEqual(loaded.preview?.totalChanges, 5)
+        XCTAssertEqual(loaded.preview?.totalChanges, 4)
     }
 
     func testEditedValueFailsTheIntegrityCheck() throws {
@@ -115,7 +115,7 @@ final class SettingsBackupTextImportTests: XCTestCase {
         let loaded = model(store, journal)
         XCTAssertNil(loaded.loadImport(text: try copiedText()))
         loaded.setImport(.downloads, enabled: false)
-        XCTAssertEqual(loaded.selectedChangeCount, 3)
+        XCTAssertEqual(loaded.selectedChangeCount, 2)
 
         loaded.applySelected()
         XCTAssertEqual(loaded.banner?.kind, .success)

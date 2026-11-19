@@ -144,6 +144,14 @@ struct KyroLiveTVNavigationPreferences: Codable, Equatable, Sendable {
         order = reordered
     }
 
+    /// Used by an explicitly validated settings restore. The editor still uses `move`; keeping
+    /// this operation on the owning model lets an Undo restore the exact prior order.
+    mutating func setDestinationOrder(_ destinations: [KyroLiveTVDestination]) {
+        guard destinations.count == KyroLiveTVDestination.available.count,
+              Set(destinations) == Set(KyroLiveTVDestination.available) else { return }
+        order = destinations
+    }
+
     mutating func resetDestinations() {
         order = KyroLiveTVDestination.defaultOrder
         hidden = []

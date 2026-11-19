@@ -148,18 +148,20 @@ final class SettingsBackupCoreTests: XCTestCase {
         XCTAssertEqual(store.values, changedValues())
     }
 
-    func testDefaultExportHasPortableGroupsOnly() throws {
+    func testDefaultExportIncludesSafeLocalDeviceGroups() throws {
         let data = try sourceBackup(groups: SettingsBackupGroup.defaultSelection)
         let incoming = try SettingsBackupCodec.decode(data)
-        XCTAssertEqual(Set(incoming.groups.keys), Set(["navigation", "liveTVCategories", "downloads", "sports"]))
-        for group in SettingsBackupGroup.deviceSpecific { XCTAssertNil(incoming.groups[group.rawValue]) }
+        XCTAssertEqual(Set(incoming.groups.keys), Set([
+            "navigation", "liveTVCategories", "downloads", "playbackOptions", "pictureInPicture", "navigationLayout"
+        ]))
+        XCTAssertNil(incoming.groups["sports"])
     }
 
-    func testDeviceSpecificGroupsExportOnlyWhenChosen() throws {
-        let data = try sourceBackup(groups: SettingsBackupGroup.defaultSelection.union([.playbackOptions]))
+    func testDeviceSpecificGroupCanStillBeExcluded() throws {
+        let data = try sourceBackup(groups: SettingsBackupGroup.defaultSelection.subtracting([.playbackOptions]))
         let incoming = try SettingsBackupCodec.decode(data)
-        XCTAssertNotNil(incoming.groups["playbackOptions"])
-        XCTAssertNil(incoming.groups["navigationLayout"])
+        XCTAssertNil(incoming.groups["playbackOptions"])
+        XCTAssertNotNil(incoming.groups["navigationLayout"])
     }
 
     func testUnsupportedSettingIsLeftOutOfExport() throws {

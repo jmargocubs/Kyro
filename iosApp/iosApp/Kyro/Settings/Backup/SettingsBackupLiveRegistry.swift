@@ -3,11 +3,11 @@ import AVKit
 import Foundation
 import UIKit
 
-// Build 88: the one place that names which Kyro settings a backup may carry.
+// The one place that names which device-local Kyro settings a backup may carry.
 //
 // Every entry reads and writes through the store that already owns the setting. Nothing here
 // touches the server, the Keychain, a provider, a library ID or a profile, and a setting that is not
-// listed cannot be exported or restored. Excluded on purpose: server/profile/family values,
+// listed cannot be exported or restored. Excluded on purpose: server-authoritative values,
 // Live TV providers and their credentials, provider-specific pins and hidden categories, recent
 // categories, favorites, the selected Sports league or screen, experimental and internal flags,
 // diagnostics, and authentication or pairing state.
@@ -59,6 +59,9 @@ final class PlayerSettingsLocalPlayback: LocalPlaybackPreferences {
 enum SettingsBackupLiveRegistry {
     struct Dependencies {
         var navigation: KyroGlobalNavigationStore
+        var appNavigation: AppNavPreferences
+        var liveTVNavigation: KyroLiveTVNavigationStore
+        var launch: ProfileLaunchPreferences
         var downloads: DownloadSettings
         var playback: LocalPlaybackPreferences
         var defaults: UserDefaults
@@ -75,6 +78,9 @@ enum SettingsBackupLiveRegistry {
     static func standard() -> SettingsBackupRegistry {
         make(Dependencies(
             navigation: KyroGlobalNavigationStore.shared,
+            appNavigation: AppNavPreferences.shared,
+            liveTVNavigation: KyroLiveTVNavigationStore.shared,
+            launch: ProfileLaunchPreferences.shared,
             downloads: DownloadSettings.shared,
             playback: PlayerSettingsLocalPlayback(),
             defaults: .standard,
@@ -86,12 +92,23 @@ enum SettingsBackupLiveRegistry {
     static func make(_ d: Dependencies) -> SettingsBackupRegistry {
         var settings: [BackupSetting] = []
 
+        // Only the behavior is portable. The containing launch-state record also holds server IDs,
+        // remembered profile IDs and PIN state; never serialize that record wholesale.
+        settings.append(enumSetting(
+            "general.launchBehavior", .general, "Profile selection",
+            label: { (value: ProfileLaunchBehavior) in value.title },
+            read: { d.launch.behavior }, write: { d.launch.behavior = $0 }))
+
         // MARK: Navigation (portable)
         settings.append(enumSetting(
             "navigation.fourthTab", .navigation, "Fourth tab",
             label: { (tab: KyroFourthTab) in tab.title },
             read: { d.navigation.preferences.fourthTab },
             write: { d.navigation.preferences.fourthTab = $0 }))
+        settings.append(boolSetting(
+            "navigation.showAudiobooks", .navigation, "Show audiobooks",
+            read: { d.appNavigation.showAudiobooks },
+            write: { d.appNavigation.setShowAudiobooks($0) }))
 
         // MARK: Live TV categories (portable). Appearance and grouping only: pins, hidden and
         // recent categories are per provider and never leave the device.
@@ -121,28 +138,21 @@ enum SettingsBackupLiveRegistry {
             read: { LiveTVEmbeddedGuideStyle.resolve(stored: d.defaults.string(forKey: LiveTVEmbeddedGuideStyle.defaultsKey)) },
             write: { d.defaults.set($0.rawValue, forKey: LiveTVEmbeddedGuideStyle.defaultsKey) }))
 
-        // MARK: Sports sources (portable). The selected league, category and per-league tab are
-        // session state and are not included.
-        let sportsFlags: [(String, String, String)] = [
-            ("sports.soccerSupplement", "Soccer extra statistics", KyroSportsSupplementFlag.defaultsKey),
-            ("sports.wtaStats", "WTA match statistics", KyroSportsSupplementFlag.wtaStatsKey),
-            ("sports.tennisNews", "Tennis news", KyroSportsSupplementFlag.tennisNewsKey),
-            ("sports.atpStats", "ATP match statistics", KyroSportsSupplementFlag.tmlStatsKey),
-            ("sports.tennisPlayerInfo", "Tennis player info", KyroSportsSupplementFlag.tennisPlayerInfoKey),
-        ]
-        for (id, title, key) in sportsFlags {
-            settings.append(boolSetting(
-                id, .sports, title,
-                read: { KyroSportsSupplementFlag.isEnabled(key: key, defaults: d.defaults) },
-                write: { d.defaults.set($0, forKey: key) }))
-        }
-
         // MARK: Downloads (portable)
-        settings.append(enumSetting(
-            "downloads.preferredFormat", .downloads, "Download quality",
-            label: { (format: DownloadFormat) in format.displayName },
-            read: { DownloadFormat(rawValue: d.downloads.preferredFormat) ?? .original },
-            write: { d.downloads.preferredFormat = $0.rawValue }))
+        settings.append(BackupSetting(
+            id: "downloads.preferredFormat", group: .downloads, title: "Download quality",
+            validate: { if case .string(let raw) = $0 { DownloadFormat(rawValue: raw) != nil } else { false } },
+            // Keep the actual raw value for preview/Undo. Export skips a value this build does not
+            // understand instead of silently turning it into Original.
+            read: { .string(d.downloads.preferredFormat) },
+            write: { value in
+                guard case .string(let raw) = value else { throw InvalidValue() }
+                d.downloads.preferredFormat = raw
+            },
+            label: { value in
+                guard case .string(let raw) = value else { return value.plainText }
+                return DownloadFormat(rawValue: raw)?.displayName ?? raw
+            }))
         settings.append(boolSetting(
             "downloads.wifiOnly", .downloads, "Download on Wi-Fi only",
             read: { d.downloads.wifiOnly }, write: { d.downloads.wifiOnly = $0 }))
@@ -194,39 +204,79 @@ enum SettingsBackupLiveRegistry {
             "advancedAV.trueHDAtmos", .advancedAudioVideo, "TrueHD Atmos and DTS:X heights",
             read: { d.playback.trueHDAtmosEnabled }, write: { d.playback.trueHDAtmosEnabled = $0 }))
 
-        // MARK: Navigation layout & appearance (device-specific). Saved screen positions are
-        // coordinates for one device and are never exported.
+        // MARK: Floating Live TV navigation (device-specific). Build 93's nav.* entries read a
+        // dormant global record, not the editor's store. Their old IDs are deliberately omitted:
+        // old files still decode and count them as skipped, but never write the wrong record.
+        // Saved screen positions remain excluded because they are device coordinates.
         settings.append(enumSetting(
-            "nav.style", .navigationLayout, "Navigation style",
-            label: { (style: KyroNavigationPresentationStyle) in
-                switch style { case .classic: "Classic"; case .glassDock: "Glass Dock"; case .thumbFan: "Thumb Fan" }
-            },
-            read: { d.navigation.preferences.style }, write: { d.navigation.preferences.style = $0 }))
+            "liveTVNav.style", .navigationLayout, "Navigation style",
+            label: { (style: KyroLiveTVNavigationStyle) in style.title },
+            read: { d.liveTVNavigation.preferences.style }, write: { d.liveTVNavigation.preferences.style = $0 }))
         settings.append(enumSetting(
-            "nav.startingEdge", .navigationLayout, "Starting edge",
+            "liveTVNav.startingEdge", .navigationLayout, "Starting edge",
             label: { (edge: KyroNavigationEdge) in edge.title },
-            read: { d.navigation.preferences.startingEdge }, write: { d.navigation.preferences.startingEdge = $0 }))
+            read: { d.liveTVNavigation.preferences.startingEdge }, write: { d.liveTVNavigation.preferences.startingEdge = $0 }))
         settings.append(enumSetting(
-            "nav.idleBehavior", .navigationLayout, "When idle",
+            "liveTVNav.idleBehavior", .navigationLayout, "When idle",
             label: { (value: KyroLiveTVNavigationIdleBehavior) in value.title },
-            read: { d.navigation.preferences.idleBehavior }, write: { d.navigation.preferences.idleBehavior = $0 }))
+            read: { d.liveTVNavigation.preferences.idleBehavior }, write: { d.liveTVNavigation.preferences.idleBehavior = $0 }))
         settings.append(boolSetting(
-            "nav.autoCollapse", .navigationLayout, "Collapse automatically",
-            read: { d.navigation.preferences.autoCollapse }, write: { d.navigation.preferences.autoCollapse = $0 }))
+            "liveTVNav.autoCollapse", .navigationLayout, "Collapse automatically",
+            read: { d.liveTVNavigation.preferences.autoCollapse }, write: { d.liveTVNavigation.preferences.autoCollapse = $0 }))
         settings.append(boolSetting(
-            "nav.haptics", .navigationLayout, "Haptics",
-            read: { d.navigation.preferences.hapticsEnabled }, write: { d.navigation.preferences.hapticsEnabled = $0 }))
+            "liveTVNav.haptics", .navigationLayout, "Haptics",
+            read: { d.liveTVNavigation.preferences.hapticsEnabled }, write: { d.liveTVNavigation.preferences.hapticsEnabled = $0 }))
         settings.append(boolSetting(
-            "nav.thumbScrubbing", .navigationLayout, "Thumb scrubbing",
-            read: { d.navigation.preferences.thumbScrubbing }, write: { d.navigation.preferences.thumbScrubbing = $0 }))
+            "liveTVNav.thumbScrubbing", .navigationLayout, "Thumb scrubbing",
+            read: { d.liveTVNavigation.preferences.thumbScrubbing }, write: { d.liveTVNavigation.preferences.thumbScrubbing = $0 }))
         settings.append(boolSetting(
-            "nav.allowsDragging", .navigationLayout, "Drag to reposition",
-            read: { d.navigation.preferences.allowsDragging }, write: { d.navigation.preferences.allowsDragging = $0 }))
+            "liveTVNav.allowsDragging", .navigationLayout, "Drag to reposition",
+            read: { d.liveTVNavigation.preferences.allowsDragging }, write: { d.liveTVNavigation.preferences.allowsDragging = $0 }))
+        settings.append(BackupSetting(
+            id: "liveTVNav.destinationOrder", group: .navigationLayout, title: "Destination order",
+            validate: { value in Self.destinationList(value, requiresCompleteOrder: true) != nil },
+            read: { .string(d.liveTVNavigation.preferences.order.map(\.rawValue).joined(separator: ",")) },
+            write: { value in
+                guard let order = Self.destinationList(value, requiresCompleteOrder: true) else { throw InvalidValue() }
+                d.liveTVNavigation.preferences.setDestinationOrder(order)
+            },
+            label: { value in Self.destinationList(value, requiresCompleteOrder: true)?
+                .map(\.title).joined(separator: ", ") ?? value.plainText }))
+        settings.append(BackupSetting(
+            id: "liveTVNav.hiddenDestinations", group: .navigationLayout, title: "Hidden destinations",
+            validate: { value in Self.destinationList(value, requiresCompleteOrder: false) != nil },
+            read: { .string(KyroLiveTVDestination.available
+                .filter { !d.liveTVNavigation.preferences.isVisible($0) }.map(\.rawValue).joined(separator: ",")) },
+            write: { value in
+                guard let hidden = Self.destinationList(value, requiresCompleteOrder: false) else { throw InvalidValue() }
+                for destination in KyroLiveTVDestination.available {
+                    d.liveTVNavigation.preferences.setVisible(!hidden.contains(destination), for: destination)
+                }
+            },
+            label: { value in
+                guard let hidden = Self.destinationList(value, requiresCompleteOrder: false) else { return value.plainText }
+                return hidden.isEmpty ? "None" : hidden.map(\.title).joined(separator: ", ")
+            }))
 
         return SettingsBackupRegistry(settings: settings, deviceIdiom: d.idiom)
     }
 
     // MARK: Builders
+
+    private static func destinationList(_ value: BackupValue, requiresCompleteOrder: Bool) -> [KyroLiveTVDestination]? {
+        guard case .string(let raw) = value else { return nil }
+        let parts = raw.isEmpty ? [] : raw.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        let destinations = parts.compactMap(KyroLiveTVDestination.init(rawValue:))
+        guard destinations.count == parts.count,
+              Set(destinations).count == destinations.count,
+              destinations.allSatisfy(\.isAvailable) else { return nil }
+        if requiresCompleteOrder {
+            guard Set(destinations) == Set(KyroLiveTVDestination.available) else { return nil }
+        } else if destinations.contains(.home) {
+            return nil
+        }
+        return destinations
+    }
 
     @MainActor
     private static func boolSetting(

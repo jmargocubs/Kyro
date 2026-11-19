@@ -28,6 +28,14 @@ final class SettingsBackupModel {
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let notifications: NotificationCenter
 
+    var availablePortableGroups: [SettingsBackupGroup] {
+        SettingsBackupGroup.portable.filter { !registry.settings(in: $0).isEmpty }
+    }
+
+    var availableDeviceGroups: [SettingsBackupGroup] {
+        SettingsBackupGroup.deviceSpecific.filter { !registry.settings(in: $0).isEmpty }
+    }
+
     init(
         registry: SettingsBackupRegistry,
         journal: RestoreJournalStoring,
@@ -37,6 +45,7 @@ final class SettingsBackupModel {
     ) {
         self.notifications = notifications
         self.registry = registry
+        self.exportSelection = SettingsBackupGroup.defaultSelection.filter { !registry.settings(in: $0).isEmpty }
         self.applier = SettingsBackupApplier(registry: registry, journal: journal, now: now)
         self.app = app
         self.now = now
