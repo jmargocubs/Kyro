@@ -1088,7 +1088,7 @@ struct TVLiveTVImportView: View {
         .fullScreenCover(isPresented: Binding(get: { browseKind != nil }, set: { if !$0 { browseKind = nil } })) {
             if let kind = browseKind, let provider {
                 TVXtreamVODView(provider: provider, kind: kind, focusRequest: 0,
-                                isTopMenuFocused: false, onMoveUp: nil)
+                                isTopMenuFocused: false, onMoveUp: nil, topInset: 70)
             }
         }
         .animation(.easeInOut(duration: 0.25), value: progress.stage)
@@ -1155,6 +1155,9 @@ struct TVLiveTVImportView: View {
             return cached > 0 ? "Previous catalog retained · \(cached.formatted()) available" : "No catalog imported"
         }
         guard count.total > 0 else { return "\(count.accepted.formatted()) available" }
+        if count.overLimit > 0, vodStatus(kind) == "Ready" {
+            return "\(count.accepted.formatted()) imported · \(count.overLimit.formatted()) over the on-device limit"
+        }
         let percentage = Int(((count.fraction ?? 0) * 100).rounded(.down))
         return "\(count.processed.formatted()) / \(count.total.formatted()) source records · \(percentage)%"
     }

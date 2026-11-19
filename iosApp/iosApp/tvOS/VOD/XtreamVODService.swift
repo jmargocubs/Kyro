@@ -92,13 +92,22 @@ final class XtreamVODService {
     private(set) var startedRefreshCount = 0
     var isRefreshing: Bool { work != nil }
 
+    /// Per-kind import ceilings; tests pass small values to exercise the boundaries.
+    private let limits: (XtreamVODKind) -> XtreamVODCatalogLimits
+    /// Free space on the transfer volume, or `nil` when unknown.
+    private let availableDiskBytes: () -> Int64?
+
     init(store: XtreamVODCatalogStore? = nil,
          session: URLSession = .shared, defaults: UserDefaults = .standard,
+         limits: @escaping (XtreamVODKind) -> XtreamVODCatalogLimits = XtreamVODCatalogLimits.standard(for:),
+         availableDiskBytes: @escaping () -> Int64? = XtreamVODHTTP.availableDiskBytes,
          makeStore: @escaping () throws -> XtreamVODCatalogStore = { try XtreamVODCatalogStore() }) {
         self.store = store
         self.makeStore = makeStore
         self.session = session
         self.defaults = defaults
+        self.limits = limits
+        self.availableDiskBytes = availableDiskBytes
     }
 
     private func openStore() throws -> XtreamVODCatalogStore {
@@ -168,11 +177,7 @@ final class XtreamVODService {
             return
         }
         let secrets = LiveTVSnapshotSecrets(source: source)
-        func safe(_ raw: String?, limit: Int) -> String? {
-            guard let text = XtreamVODParser.clean(raw, limit: limit),
-                  LiveTVSnapshotRedaction.isSafe(text, maximumBytes: limit * 4, secrets: secrets) else { return nil }
-            return text
-        }
+        XtreamVODHTTP.removeStaleTemporaryFiles()
         var firstError: Error?
         var succeeded = 0
         var stage = XtreamVODPipelineStage.authentication
@@ -190,59 +195,45 @@ final class XtreamVODService {
                 do {
                 progress?.stage = .downloading(kind)
                 stage = .categories
-                let categories = await categoryNames(kind: kind, server: server, user: user, password: password)
+                let rawCategories = await categoryNames(kind: kind, server: server, user: user, password: password)
+                // Sanitized once per category instead of once per title.
+                let categories = rawCategories.compactMapValues {
+                    XtreamVODCatalogImporter.safe($0, limit: 128, secrets: secrets)
+                }
                 stage = .download
                 let url = try XtreamURLBuilder.vodAPIURL(server: server, username: user, password: password,
                                                          action: kind.catalogAction)
-                // Panels often build the whole catalog before sending the first byte.
-                let data = try await XtreamVODHTTP.fetch(url, session: session, maximumBytes: 96 * 1024 * 1024,
-                                                         timeout: 180)
+                let kindLimits = limits(kind)
+                // Panels often build the whole catalog before sending the first byte. The body goes
+                // to a temporary file so its size never becomes resident memory.
+                let file = try await XtreamVODHTTP.download(url, session: session, limits: kindLimits,
+                                                            availableBytes: availableDiskBytes)
+                defer { try? FileManager.default.removeItem(at: file) }
                 stage = .parsing
-                let decode = Task.detached(priority: .utility) { try XtreamVODParser.records(data) }
-                let records = try await withTaskCancellationHandler { try await decode.value } onCancel: { decode.cancel() }
-                let maximumRecords = kind == .movie ? 100_000 : 50_000
-                guard records.count <= maximumRecords else { throw XtreamVODError.responseTooLarge }
-                XtreamVODDiagnostics.event("decoded", kind: kind, count: records.count)
+                let counting = Task.detached(priority: .utility) {
+                    try XtreamVODCatalogFile.countRecords(at: file, limits: kindLimits)
+                }
+                let total = try await withTaskCancellationHandler { try await counting.value } onCancel: { counting.cancel() }
+                XtreamVODDiagnostics.event("decoded", kind: kind, count: total)
                 stage = .persistence
                 progress?.stage = .importing(kind)
-                var accepted = 0, malformed = 0, duplicate = 0
-                var seen = Set<Int>()
-                var batch: [XtreamVODItem] = []
-                batch.reserveCapacity(512)
-                setCount(.init(processed: 0, total: records.count, accepted: 0, malformed: 0, duplicate: 0), kind: kind)
-                for (index, record) in records.enumerated() {
-                    if index % 256 == 0 { try Task.checkCancellation() }
-                    guard let id = record.remoteID, id > 0,
-                          let title = safe(record.title, limit: 256) else {
-                        malformed += 1
-                        continueCount(index: index, total: records.count, accepted: accepted,
-                                      malformed: malformed, duplicate: duplicate, kind: kind)
-                        continue
-                    }
-                    guard seen.insert(id).inserted else {
-                        duplicate += 1
-                        continueCount(index: index, total: records.count, accepted: accepted,
-                                      malformed: malformed, duplicate: duplicate, kind: kind)
-                        continue
-                    }
-                    batch.append(.init(providerID: providerID, kind: kind, remoteID: id, title: title,
-                                       category: safe(categories[record.categoryID ?? ""], limit: 128) ?? "Other",
-                                       poster: XtreamVODParser.safeArtwork(record.poster, username: user, password: password),
-                                       fileExtension: safe(record.fileExtension, limit: 8),
-                                       summary: safe(record.summary, limit: 1000),
-                                       genre: safe(record.genre, limit: 128),
-                                       rating: safe(record.rating, limit: 16)))
-                    if batch.count == 512 {
-                        try await store.stage(batch, generation: generation)
-                        accepted += batch.count
-                        batch.removeAll(keepingCapacity: true)
-                    }
-                    continueCount(index: index, total: records.count, accepted: accepted,
-                                  malformed: malformed, duplicate: duplicate, kind: kind)
+                setCount(.init(processed: 0, total: total, accepted: 0, malformed: 0, duplicate: 0), kind: kind)
+                let importer = XtreamVODCatalogImporter(providerID: providerID, kind: kind, generation: generation,
+                                                        categories: categories, secrets: secrets,
+                                                        username: user, password: password, limits: kindLimits)
+                let report: @Sendable (XtreamVODImportCount) async -> Void = { [weak self] count in
+                    await self?.setCount(count, kind: kind)
                 }
-                if !batch.isEmpty { try await store.stage(batch, generation: generation); accepted += batch.count }
-                setCount(.init(processed: records.count, total: records.count, accepted: accepted,
-                               malformed: malformed, duplicate: duplicate), kind: kind)
+                // Parsing, redaction, and inserts run off the main actor; only counts hop back.
+                let importing = Task.detached(priority: .utility) {
+                    try await importer.run(file: file, total: total, store: store, progress: report)
+                }
+                let imported = try await withTaskCancellationHandler { try await importing.value } onCancel: { importing.cancel() }
+                setCount(imported, kind: kind)
+                let accepted = imported.accepted
+                if imported.overLimit > 0 {
+                    XtreamVODDiagnostics.event("record_limit", kind: kind, count: imported.overLimit)
+                }
                 try Task.checkCancellation()
                 if accepted == 0 {
                     // An empty answer never replaces a previously imported catalog.
@@ -273,8 +264,7 @@ final class XtreamVODService {
                 lastSuccessfulRefresh[providerID] = refreshed
                 defaults.set(refreshed, forKey: "kyro.iptvvod.lastRefresh.\(providerID.uuidString)")
             }
-            let importedMovies = progress?.movies.accepted ?? 0
-            let importedSeries = progress?.series.accepted ?? 0
+            let summary = importSummary(enabledKinds: enabledKinds)
             progress?.stage = firstError == nil ? .ready : .failed
             progress?.failure = firstError.flatMap(XtreamVODError.from)
             if let firstError {
@@ -283,7 +273,7 @@ final class XtreamVODService {
                     ? "Some catalogs could not be imported: \(reason) Successful catalogs are available; previous catalogs are unchanged."
                     : reason
             } else {
-                progress?.message = "\(importedMovies.formatted()) movies and \(importedSeries.formatted()) series imported."
+                progress?.message = summary
             }
         } catch {
             if !(error is CancellationError), progress?.failedStage == nil {
@@ -319,13 +309,20 @@ final class XtreamVODService {
         }
     }
 
-    private func continueCount(index: Int, total: Int, accepted: Int, malformed: Int,
-                               duplicate: Int, kind: XtreamVODKind) {
-        let processed = index + 1
-        if processed % 256 == 0 || processed == total {
-            setCount(.init(processed: processed, total: total, accepted: accepted,
-                           malformed: malformed, duplicate: duplicate), kind: kind)
+    /// Counts for the selected catalogs only, and an explicit note when a catalog was larger than
+    /// the on-device record limit.
+    private func importSummary(enabledKinds: [XtreamVODKind]) -> String {
+        var parts: [String] = []
+        var notes: [String] = []
+        for kind in enabledKinds {
+            let count = kind == .movie ? progress?.movies : progress?.series
+            let noun = kind == .movie ? "movies" : "series"
+            parts.append("\((count?.accepted ?? 0).formatted()) \(noun)")
+            if let count, count.overLimit > 0 {
+                notes.append("The provider lists \(count.total.formatted()) \(noun); Kyro keeps the first \(limits(kind).maximumRecords.formatted()) titles on this Apple TV.")
+            }
         }
+        return ([parts.joined(separator: " and ") + " imported."] + notes).joined(separator: " ")
     }
 
     private func setCount(_ count: XtreamVODImportCount, kind: XtreamVODKind) {

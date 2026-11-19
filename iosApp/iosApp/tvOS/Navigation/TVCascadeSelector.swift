@@ -15,8 +15,11 @@ enum TVCascadeMove: Equatable {
 
 /// One remote direction produces at most one selection or ownership change.
 enum TVCascadeFocusPlanner {
+    /// `libraryIDs` lists every level-1 row in order. `sectionlessIDs` are rows without a section
+    /// flyout (IPTV providers): Right stays put and Select commits the row.
     static func move(from focus: TVCascadeSelection, direction: MoveCommandDirection,
-                     libraryIDs: [Int], pills: [TVLibraryPill], singleLibrary: Bool) -> TVCascadeMove {
+                     libraryIDs: [Int], pills: [TVLibraryPill], singleLibrary: Bool,
+                     sectionlessIDs: Set<Int> = []) -> TVCascadeMove {
         switch (focus, direction) {
         case (.library(let id), .up), (.library(let id), .down):
             guard let index = libraryIDs.firstIndex(of: id) else { return .stay }
@@ -24,7 +27,7 @@ enum TVCascadeFocusPlanner {
             guard libraryIDs.indices.contains(next) else { return direction == .up ? .close : .content }
             return .select(.library(libraryIDs[next]))
         case (.library(let id), .right):
-            guard let first = pills.first else { return .stay }
+            guard !sectionlessIDs.contains(id), let first = pills.first else { return .stay }
             return .select(.section(id, first))
         case (.section(let id, let pill), .up), (.section(let id, let pill), .down):
             guard let index = pills.firstIndex(of: pill) else { return .stay }
@@ -35,6 +38,22 @@ enum TVCascadeFocusPlanner {
             return .select(.library(id))
         default:
             return .stay
+        }
+    }
+}
+
+/// An IPTV provider listed under a Movies or Series dropdown. `rowID` is a negative cascade-only
+/// identifier, so provider rows share the library rows' focus model without colliding with
+/// server library IDs, which are positive.
+struct TVCascadeProviderRow: Identifiable, Equatable {
+    let rowID: Int
+    let providerID: UUID
+    let name: String
+    var id: Int { rowID }
+
+    static func rows(for providers: [LiveTVProvider]) -> [TVCascadeProviderRow] {
+        providers.enumerated().map { index, provider in
+            TVCascadeProviderRow(rowID: -(index + 1), providerID: provider.id, name: provider.name)
         }
     }
 }
@@ -70,6 +89,9 @@ struct TVCascadeSelector: View {
     let type: TVLibraryTabType
     /// Libraries of `type`, already ordered by sort order.
     let libraries: [Library]
+    /// IPTV providers with this tab's catalog, listed after the libraries. Selecting one shows
+    /// that provider's catalog in place of a Silo library.
+    var providers: [TVCascadeProviderRow] = []
     /// The library currently scoped for this tab (gets the `✓`, and the
     /// row focus lands here on entry).
     let currentScopeId: Int?
@@ -82,6 +104,8 @@ struct TVCascadeSelector: View {
     let onCommitLibrary: (Library) -> Void
     /// Commit a library scope + land on a specific section (pill).
     let onCommitSection: (Library, TVLibraryPill) -> Void
+    /// Commit an IPTV provider as the tab's source.
+    var onCommitProvider: (UUID) -> Void = { _ in }
     /// Warm the library landing after its row rests under focus. The host
     /// joins this same request when the scope is committed, so a deliberate
     /// menu selection can arrive with sections and artwork already cached.
@@ -130,7 +154,10 @@ struct TVCascadeSelector: View {
 
     /// A single-library tab skips the library list and shows just that
     /// library's sections (§5.3 single-level panel).
-    private var isSingleLibrary: Bool { libraries.count <= 1 }
+    private var isSingleLibrary: Bool { libraries.count <= 1 && providers.isEmpty }
+
+    /// Every level-1 row in display order: libraries, then providers.
+    private var rowIDs: [Int] { libraries.map(\.id) + providers.map(\.rowID) }
 
     var body: some View {
         Group {
@@ -155,7 +182,7 @@ struct TVCascadeSelector: View {
             }
         }
         .onAppear {
-            flyoutAnchorId = currentScopeId ?? libraries.first?.id
+            flyoutAnchorId = currentScopeId ?? rowIDs.first
             if entersPanel { applyEntryGeneration(focusEntryGeneration) }
         }
         .onDisappear { flyoutFollowTask?.cancel() }
@@ -223,7 +250,9 @@ struct TVCascadeSelector: View {
 
     private var librariesPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
-            panelHeader(type.librariesHeader)
+            if !libraries.isEmpty {
+                panelHeader(type.librariesHeader)
+            }
 
             libraryRows
         }
@@ -238,11 +267,19 @@ struct TVCascadeSelector: View {
 
     @ViewBuilder
     private var libraryRows: some View {
-        let rows = ForEach(libraries) { library in
-            libraryRow(library)
+        let rows = Group {
+            ForEach(libraries) { library in
+                libraryRow(library)
+            }
+            if !providers.isEmpty {
+                panelHeader("IPTV PROVIDERS")
+                ForEach(providers) { provider in
+                    providerRow(provider)
+                }
+            }
         }
 
-        if libraries.count > SiloTheme.Skyline.cascadeMaxVisibleRows {
+        if libraries.count + providers.count > SiloTheme.Skyline.cascadeMaxVisibleRows {
             // Cap the visible height at the spec's 6 rows, then scroll
             // internally as the composite cascade focus rolls the list.
             ScrollViewReader { proxy in
@@ -281,6 +318,20 @@ struct TVCascadeSelector: View {
             .background(libraryRowCenterReporter(for: library))
             .accessibilityLabel(accessibilityLabel(for: library, isCurrent: isCurrent))
             .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
+    /// Level-1 IPTV provider row. No chevron: a provider has no section flyout, so Select opens it.
+    private func providerRow(_ provider: TVCascadeProviderRow) -> some View {
+        let isCurrent = provider.rowID == currentScopeId
+        return TVCascadeLibraryRowLabel(
+            title: provider.name,
+            systemImage: "antenna.radiowaves.left.and.right",
+            trailingGlyph: isCurrent ? "checkmark" : nil,
+            isFocused: focus == .library(provider.rowID)
+        )
+        .id(Focus.library(provider.rowID))
+        .accessibilityLabel("\(provider.name), IPTV \(type.title)" + (isCurrent ? ", current source" : ""))
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 
     private func libraryRowCenterReporter(for library: Library) -> some View {
@@ -405,7 +456,7 @@ struct TVCascadeSelector: View {
             claimPanelFocus()
         } else {
             // Two-level: land on the current-scope row, else the first.
-            let target = currentScopeId ?? libraries.first?.id
+            let target = currentScopeId.flatMap { rowIDs.contains($0) ? $0 : nil } ?? rowIDs.first
             if let target {
                 focus = .library(target)
                 flyoutAnchorId = target
@@ -472,8 +523,9 @@ struct TVCascadeSelector: View {
     private func handleMoveCommand(_ direction: MoveCommandDirection) {
         guard entersPanel, panelFocused, let currentFocus = focus else { return }
         switch TVCascadeFocusPlanner.move(from: currentFocus, direction: direction,
-                                          libraryIDs: libraries.map(\.id), pills: pills,
-                                          singleLibrary: isSingleLibrary) {
+                                          libraryIDs: rowIDs, pills: pills,
+                                          singleLibrary: isSingleLibrary,
+                                          sectionlessIDs: Set(providers.map(\.rowID))) {
         case .select(let selection):
             if case .section(let id, _) = selection {
                 flyoutFollowTask?.cancel()
@@ -492,6 +544,8 @@ struct TVCascadeSelector: View {
         case .library(let libraryId):
             if let library = libraries.first(where: { $0.id == libraryId }) {
                 onCommitLibrary(library)
+            } else if let provider = providers.first(where: { $0.rowID == libraryId }) {
+                onCommitProvider(provider.providerID)
             }
         case .section(let libraryId, let pill):
             if let library = libraries.first(where: { $0.id == libraryId }) {
@@ -513,7 +567,7 @@ struct TVCascadeSelector: View {
 private struct TVCascadeLibraryRowLabel: View {
     let title: String
     let systemImage: String
-    let trailingGlyph: String
+    let trailingGlyph: String?
     let isFocused: Bool
 
     var body: some View {
@@ -528,9 +582,11 @@ private struct TVCascadeLibraryRowLabel: View {
 
             Spacer(minLength: 12)
 
-            Image(systemName: trailingGlyph)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(foreground.opacity(isFocused ? 1 : 0.5))
+            if let trailingGlyph {
+                Image(systemName: trailingGlyph)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(foreground.opacity(isFocused ? 1 : 0.5))
+            }
         }
         .foregroundStyle(foreground)
         .padding(.horizontal, SiloTheme.Skyline.cascadeRowPaddingHorizontal)

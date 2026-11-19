@@ -2,194 +2,402 @@
 import SwiftUI
 import AVKit
 
-/// Provider-only catalog page; Silo cards, collections and playback never pass through this route.
+/// The three IPTV browse modes. Continue Watching and Favorites come from Kyro's local IPTV
+/// watch history, which is separate from Silo's server-side progress.
+enum XtreamVODBrowseMode: Int, CaseIterable, Hashable {
+    case catalog, continueWatching, favorites
+
+    var title: String {
+        switch self {
+        case .catalog: return "All Titles"
+        case .continueWatching: return "Continue Watching"
+        case .favorites: return "Favorites"
+        }
+    }
+}
+
+/// Pure focus rules for the IPTV catalog page, kept out of the view so they can be tested.
+enum TVXtreamVODFocusPlanner {
+    enum Target: Equatable {
+        /// The first title card.
+        case firstCard(String)
+        /// The selected browse-mode control, when the page has no titles to land on.
+        case mode(XtreamVODBrowseMode)
+        /// Titles are still loading; claim once they arrive.
+        case wait
+    }
+
+    /// Entering the page from the top menu lands on the first title, like the Silo feed.
+    static func entryTarget(itemIDs: [String], isLoading: Bool, mode: XtreamVODBrowseMode) -> Target {
+        if let first = itemIDs.first { return .firstCard(first) }
+        return isLoading ? .wait : .mode(mode)
+    }
+
+    /// Load the next page once focus nears the end of the loaded titles.
+    static func shouldLoadMore(focusedIndex: Int, loadedCount: Int, hasMore: Bool, isLoading: Bool) -> Bool {
+        hasMore && !isLoading && focusedIndex >= max(0, loadedCount - pagePrefetchDistance)
+    }
+
+    static let pageSize = 100
+    static let pagePrefetchDistance = 15
+}
+
+/// One IPTV provider's Movies or Series catalog. Silo cards, collections and playback never pass
+/// through this page, and it never shares the screen with the Silo feed.
+///
+/// Focus follows docs/tvos-focus.md: the control row is the page's top row and the only place
+/// Up hands focus back to the top menu; everything else is the native focus graph. A top-menu
+/// selection resets the scroll and lands on the first title.
 struct TVXtreamVODView: View {
     let provider: LiveTVProvider
     let kind: XtreamVODKind
     let focusRequest: Int
     let isTopMenuFocused: Bool
     let onMoveUp: (() -> Void)?
+    /// Space above the header. The tab page sits under the top menu; the Live TV full-screen
+    /// cover has no menu above it.
+    var topInset: CGFloat = TVTopMenuLayout.contentTopInset
+
+    private enum Field: Hashable {
+        case search, mode(XtreamVODBrowseMode), refresh, card(String)
+    }
+
     @State private var vod = XtreamVODService.shared
     @State private var items: [XtreamVODItem] = []
+    @State private var totalCount = 0
+    @State private var hasMore = false
     @State private var query = ""
-    @State private var personalMode = 0 // 0 catalog, 1 favorites, 2 continue watching
-    @State private var isLoading = false
+    /// The query the visible titles were loaded for, so the search debounce only reloads on change.
+    @State private var loadedQuery = ""
+    @State private var mode: XtreamVODBrowseMode = .catalog
+    @State private var isLoading = true
+    @State private var loadGeneration = 0
     @State private var selected: XtreamVODItem?
-    private let columns = Array(repeating: GridItem(.flexible(minimum: 220, maximum: 320), spacing: 28), count: 5)
+    @State private var entryRequest = 0
+    @State private var pendingEntryClaim = false
+    @FocusState private var focused: Field?
+
+    private let columns = Array(repeating: GridItem(.fixed(SiloTheme.Skyline.densePosterCardWidth + 24), spacing: 34), count: 7)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack {
-                VStack(alignment: .leading) {
-                    Text("\(provider.name) \(kind.title)").font(.system(size: 42, weight: .bold))
-                    Text("Provider catalog · separate from Silo").font(.system(size: 21))
-                        .foregroundStyle(Color.siloSecondaryText)
-                }
-                Spacer()
-                Button("Refresh Catalog") { Task { await vod.refresh(providerID: provider.id) } }
-                    .buttonStyle(TVKyroChipStyle())
-                    .disabled(vod.activeProviderID != nil)
-                    .onMoveCommand { if $0 == .up { onMoveUp?() } }
-            }
-            HStack {
-                TextField("Search \(kind.title.lowercased())", text: $query)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 25))
-                    .padding(15)
-                    .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 12))
-                    .frame(width: 500)
-                    .onMoveCommand { if $0 == .up { onMoveUp?() } }
-                if isLoading { ProgressView() }
-                Button("All") { personalMode = 0; Task { await reload() } }
-                    .buttonStyle(TVKyroChipStyle(isSelected: personalMode == 0))
-                Button("Favorites") { personalMode = 1; Task { await reload() } }
-                    .buttonStyle(TVKyroChipStyle(isSelected: personalMode == 1))
-                Button("Continue Watching") { personalMode = 2; Task { await reload() } }
-                    .buttonStyle(TVKyroChipStyle(isSelected: personalMode == 2))
-            }
-            if let progress = vod.progress, progress.providerID == provider.id,
-               progress.stage != .ready {
+        VStack(alignment: .leading, spacing: 24) {
+            header
+            controls
+            if let progress = vod.progress, Self.showsImportStatus(progress, providerID: provider.id, kind: kind) {
                 importStatus(progress)
             }
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 30) {
-                    ForEach(items) { item in
-                        Button { selected = item } label: { card(item) }
-                            .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 16))
-                    }
-                    if personalMode == 0 && items.count >= 100 {
-                        Button("Load More") { Task { await loadMore() } }
-                            .buttonStyle(TVKyroChipStyle())
-                    }
-                }
-            }
-            if items.isEmpty && !isLoading {
-                Text("No \(kind.title.lowercased()) in this catalog. Enable and refresh VOD in Live TV Providers.")
-                    .font(.system(size: 25)).foregroundStyle(Color.siloSecondaryText)
-            }
+            grid
         }
-        .padding(.horizontal, 72)
-        .padding(.top, 28)
-        .padding(.bottom, 30)
-        .background(TVKyroAmbientBackdrop())
-        .task(id: "\(provider.id)-\(kind.rawValue)-\(vod.revision)") { await reload() }
+        .padding(.horizontal, 80)
+        .padding(.top, topInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(TVKyroAmbientBackdrop().ignoresSafeArea())
+        .task(id: "\(provider.id)-\(kind.rawValue)-\(vod.revision)-\(mode.rawValue)") { await reload() }
         .task(id: query) {
-            try? await Task.sleep(for: .milliseconds(250))
+            guard query != loadedQuery else { return }
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             await reload()
         }
+        .onAppear { requestEntry(focusRequest > 0 ? focusRequest : 1) }
+        .onChange(of: focusRequest) { _, request in requestEntry(request) }
+        .onChange(of: isTopMenuFocused) { _, menuOwnsFocus in if menuOwnsFocus { pendingEntryClaim = false } }
         .sheet(item: $selected) { item in TVXtreamVODDetailView(item: item) }
     }
 
+    // MARK: - Header and controls
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(provider.name)
+                .font(.system(size: 46, weight: .bold))
+                .lineLimit(1)
+            Text(subtitle)
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var subtitle: String {
+        var parts = ["IPTV \(kind.title)"]
+        if mode == .catalog, totalCount > 0 { parts.append("\(totalCount.formatted()) titles") }
+        if let refreshed = vod.refreshedAt(providerID: provider.id) {
+            parts.append("Updated \(refreshed.formatted(.relative(presentation: .named)))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The page's single top row. Up from any control here returns to the top menu.
+    private var controls: some View {
+        HStack(spacing: 18) {
+            TextField("Search \(kind.title.lowercased())", text: $query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 25))
+                .padding(.horizontal, 18)
+                .frame(width: 440, height: 58)
+                .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 12))
+                .focused($focused, equals: .search)
+                .onMoveCommand(perform: handleTopRowMove)
+            ForEach(XtreamVODBrowseMode.allCases, id: \.self) { option in
+                Button(option.title) { mode = option }
+                    .buttonStyle(TVKyroChipStyle(isSelected: mode == option))
+                    .focused($focused, equals: .mode(option))
+                    .onMoveCommand(perform: handleTopRowMove)
+            }
+            Spacer(minLength: 0)
+            if isLoading { ProgressView() }
+            Button("Refresh Catalog") { Task { await vod.refresh(providerID: provider.id) } }
+                .buttonStyle(TVKyroChipStyle())
+                .disabled(vod.activeProviderID != nil)
+                .focused($focused, equals: .refresh)
+                .onMoveCommand(perform: handleTopRowMove)
+        }
+        .focusSection()
+    }
+
+    private func handleTopRowMove(_ direction: MoveCommandDirection) {
+        // The intentional page-to-menu boundary. Every other move stays native.
+        if direction == .up { onMoveUp?() }
+    }
+
+    // MARK: - Grid
+
+    private var grid: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            if items.isEmpty && !isLoading {
+                Text(emptyMessage)
+                    .font(.system(size: 26))
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 30)
+            } else {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 38) {
+                    ForEach(items) { item in
+                        Button { selected = item } label: {
+                            TVXtreamVODPosterCard(item: item, providerName: provider.name,
+                                                  progress: progressFraction(item))
+                        }
+                        .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 14))
+                        .focused($focused, equals: .card(item.id))
+                    }
+                }
+                // Room for the focused card's lift inside the clipped scroll view.
+                .padding(.vertical, 24)
+                .padding(.horizontal, 24)
+            }
+        }
+        .padding(.horizontal, -24)
+        .onChange(of: focused) { _, field in
+            guard case .card(let id)? = field, let index = items.firstIndex(where: { $0.id == id }) else { return }
+            if TVXtreamVODFocusPlanner.shouldLoadMore(focusedIndex: index, loadedCount: items.count,
+                                                       hasMore: hasMore, isLoading: isLoading) {
+                Task { await loadMore() }
+            }
+        }
+        .modifier(TVMenuEntryScroll(request: entryRequest, isTopMenuFocused: isTopMenuFocused,
+                                    onReady: { _ in claimEntryFocus() }))
+    }
+
+    private var emptyMessage: String {
+        switch mode {
+        case .catalog:
+            if !query.isEmpty { return "No \(kind.title.lowercased()) match “\(query)”." }
+            return "No \(kind.title.lowercased()) imported yet. Refresh the catalog, or check this provider in Live TV Providers."
+        case .continueWatching: return "Nothing in progress. \(kind.title) you start from this provider appear here."
+        case .favorites: return "No favorites yet. Add titles from their detail page."
+        }
+    }
+
+    private func progressFraction(_ item: XtreamVODItem) -> Double? {
+        guard kind == .movie else { return nil }
+        let state = vod.watchState(for: item)
+        guard state.duration > 0, state.position > 0, !state.completed else { return nil }
+        return min(1, state.position / state.duration)
+    }
+
+    // MARK: - Focus
+
+    private func requestEntry(_ request: Int) {
+        guard request > 0, !isTopMenuFocused else { return }
+        entryRequest = request
+    }
+
+    private func claimEntryFocus() {
+        guard !isTopMenuFocused else { return }
+        switch TVXtreamVODFocusPlanner.entryTarget(itemIDs: items.prefix(1).map(\.id), isLoading: isLoading, mode: mode) {
+        case .firstCard(let id): focused = .card(id); pendingEntryClaim = false
+        case .mode(let option): focused = .mode(option); pendingEntryClaim = false
+        case .wait: pendingEntryClaim = true
+        }
+    }
+
+    // MARK: - Data
+
     private func reload() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
         let result: [XtreamVODItem]
-        if personalMode == 0 {
+        var more = false
+        switch mode {
+        case .catalog:
             result = await vod.page(providerID: provider.id, kind: kind, query: query)
-        } else {
-            let personal = await vod.personalItems(providerID: provider.id, kind: kind, favorites: personalMode == 1)
+            more = result.count >= TVXtreamVODFocusPlanner.pageSize
+            let count = await vod.count(providerID: provider.id, kind: kind)
+            if generation == loadGeneration { totalCount = count }
+        case .continueWatching, .favorites:
+            let personal = await vod.personalItems(providerID: provider.id, kind: kind,
+                                                   favorites: mode == .favorites)
             result = query.isEmpty ? personal : personal.filter { $0.title.localizedCaseInsensitiveContains(query) }
         }
-        guard !Task.isCancelled else { return }
+        // A newer reload owns the state; never leave the spinner stuck on a superseded one.
+        guard generation == loadGeneration else { return }
+        let focusedCardSurvives: Bool = {
+            guard case .card(let id)? = focused else { return true }
+            return result.contains { $0.id == id }
+        }()
         items = result
+        loadedQuery = query
+        hasMore = more
         isLoading = false
+        if pendingEntryClaim {
+            claimEntryFocus()
+        } else if !focusedCardSurvives {
+            // The focused title disappeared (new query or mode): move to its nearest neighbour.
+            focused = result.first.map { .card($0.id) } ?? .mode(mode)
+        }
     }
 
     private func loadMore() async {
-        guard !isLoading else { return }
+        guard mode == .catalog, hasMore, !isLoading else { return }
+        let generation = loadGeneration
         isLoading = true
         let next = await vod.page(providerID: provider.id, kind: kind, query: query, offset: items.count)
-        items += next
+        guard generation == loadGeneration else { return }
+        let known = Set(items.map(\.id))
+        items += next.filter { !known.contains($0.id) }
+        hasMore = next.count >= TVXtreamVODFocusPlanner.pageSize
         isLoading = false
     }
 
-    private func card(_ item: XtreamVODItem) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            if let poster = item.poster, let url = URL(string: poster) {
-                AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: {
-                    Image(systemName: kind == .movie ? "film" : "tv").font(.system(size: 46))
-                }
-                .frame(height: 210).frame(maxWidth: .infinity).clipped()
-            } else {
-                Image(systemName: kind == .movie ? "film" : "tv")
-                    .font(.system(size: 46)).frame(maxWidth: .infinity).frame(height: 210)
+    // MARK: - Import status
+
+    /// In-progress imports show on every page of the provider; a finished import shows only
+    /// where this page's own catalog failed, so a Movies failure does not clutter Series.
+    static func showsImportStatus(_ progress: XtreamVODImportProgress, providerID: UUID, kind: XtreamVODKind) -> Bool {
+        guard progress.providerID == providerID else { return false }
+        switch progress.stage {
+        case .connecting, .downloading, .importing: return true
+        case .ready: return false
+        case .failed, .cancelled:
+            switch kind == .movie ? progress.movieResult : progress.seriesResult {
+            case .failed, .unsupported, .authentication, .cancelled: return true
+            case .notSelected, .waiting, .loading, .ready, .empty: return false
             }
-            Text(item.title).font(.system(size: 23, weight: .semibold)).lineLimit(2)
-            Text("\(provider.name) · \(item.category)").font(.system(size: 17)).lineLimit(1)
-                .foregroundStyle(Color.siloSecondaryText)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 16))
     }
 
     private func importStatus(_ progress: XtreamVODImportProgress) -> some View {
         let count: XtreamVODImportCount
         let stage: String
         switch progress.stage {
-        case .connecting: count = progress.movies; stage = "Connecting to provider"
-        case .downloading(let kind): count = kind == .movie ? progress.movies : progress.series; stage = "Downloading \(kind.title)"
-        case .importing(let kind): count = kind == .movie ? progress.movies : progress.series; stage = "Importing \(kind.title)"
-        case .ready: count = progress.series; stage = "Ready"
-        case .failed: count = progress.series; stage = "Import failed"
-        case .cancelled: count = progress.series; stage = "Import cancelled"
+        case .connecting: count = kind == .movie ? progress.movies : progress.series; stage = "Connecting to provider"
+        case .downloading(let active): count = active == .movie ? progress.movies : progress.series; stage = "Downloading \(active.title)"
+        case .importing(let active): count = active == .movie ? progress.movies : progress.series; stage = "Importing \(active.title)"
+        case .ready: count = kind == .movie ? progress.movies : progress.series; stage = "Ready"
+        case .failed: count = kind == .movie ? progress.movies : progress.series; stage = "Import failed"
+        case .cancelled: count = kind == .movie ? progress.movies : progress.series; stage = "Import cancelled"
         }
-        return VStack(alignment: .leading, spacing: 12) {
-            Text(stage).font(.system(size: 25, weight: .semibold))
-            if case .importing = progress.stage, let fraction = count.fraction {
-                ProgressView(value: fraction)
-                Text("\(count.processed.formatted()) / \(count.total.formatted()) records · \(count.accepted.formatted()) accepted · \(count.malformed + count.duplicate) skipped")
-            } else if progress.stage != .failed && progress.stage != .cancelled { ProgressView() }
-            if let message = progress.message { Text(message) }
+        return HStack(alignment: .center, spacing: 24) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(stage).font(.system(size: 24, weight: .semibold))
+                if case .importing = progress.stage, let fraction = count.fraction {
+                    ProgressView(value: fraction).frame(maxWidth: 520)
+                    Text("\(count.processed.formatted()) / \(count.total.formatted()) source records · \(count.accepted.formatted()) imported")
+                        .foregroundStyle(Color.siloSecondaryText)
+                } else if progress.stage != .failed && progress.stage != .cancelled {
+                    ProgressView()
+                }
+                if let message = progress.message {
+                    Text(message).foregroundStyle(Color.siloSecondaryText).lineLimit(3)
+                }
+            }
+            Spacer(minLength: 0)
             if vod.activeProviderID == provider.id {
-                Button("Cancel VOD Import") { vod.cancel() }.buttonStyle(TVKyroChipStyle())
+                Button("Cancel Import") { vod.cancel() }.buttonStyle(TVKyroChipStyle())
             } else if progress.stage == .failed || progress.stage == .cancelled {
-                Button("Retry VOD Import") { Task { await vod.refresh(providerID: provider.id) } }
+                Button("Retry Import") { Task { await vod.refresh(providerID: provider.id) } }
                     .buttonStyle(TVKyroChipStyle())
             }
         }
         .font(.system(size: 20))
         .padding(20)
-        .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 14))
+        .background(Color.siloSurface.opacity(0.9), in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
-struct TVXtreamVODRail: View {
-    let providers: [LiveTVProvider]
-    let kind: XtreamVODKind
-    @State private var vod = XtreamVODService.shared
-    @State private var entries: [(LiveTVProvider, XtreamVODItem)] = []
-    @State private var selected: XtreamVODItem?
+/// Poster card sized like the Silo dense poster rows: 2:3 artwork, title, and a resume bar.
+private struct TVXtreamVODPosterCard: View {
+    let item: XtreamVODItem
+    let providerName: String
+    let progress: Double?
+
+    private var width: CGFloat { SiloTheme.Skyline.densePosterCardWidth + 24 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("IPTV \(kind.title)").font(.system(size: 28, weight: .bold))
-            ScrollView(.horizontal) {
-                HStack(spacing: 16) {
-                    ForEach(entries, id: \.1.id) { provider, item in
-                        Button { selected = item } label: {
-                            VStack(alignment: .leading) {
-                                Text(item.title).font(.system(size: 21, weight: .semibold)).lineLimit(2)
-                                Text(provider.name).font(.system(size: 17)).foregroundStyle(Color.siloSecondaryText)
-                            }
-                            .frame(width: 210, height: 84, alignment: .leading).padding(14)
-                            .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 14))
+        VStack(alignment: .leading, spacing: 10) {
+            ZStack(alignment: .bottomLeading) {
+                artwork
+                    .frame(width: width, height: width * 1.5)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                if let progress {
+                    Capsule().fill(Color.white.opacity(0.25))
+                        .frame(height: 6)
+                        .overlay(alignment: .leading) {
+                            Capsule().fill(KyroTheme.accentInk).frame(width: max(6, (width - 20) * progress))
                         }
-                        .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 14))
-                    }
+                        .padding(10)
                 }
             }
+            Text(item.title)
+                .font(.system(size: 20, weight: .semibold))
+                .lineLimit(2)
+                .frame(width: width, alignment: .leading)
         }
-        .padding(.horizontal, 72)
-        .frame(height: 156)
-        .task(id: vod.revision) {
-            var result: [(LiveTVProvider, XtreamVODItem)] = []
-            for provider in providers {
-                result += await vod.page(providerID: provider.id, kind: kind).prefix(8).map { (provider, $0) }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.title), \(item.category), \(providerName)")
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        if let poster = item.poster, let url = URL(string: poster) {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    placeholder
+                }
             }
-            entries = result
+        } else {
+            placeholder
         }
-        .sheet(item: $selected) { item in TVXtreamVODDetailView(item: item) }
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            Color.siloSurface
+            VStack(spacing: 10) {
+                Image(systemName: item.kind == .movie ? "film" : "tv")
+                    .font(.system(size: 40, weight: .semibold))
+                Text(item.title)
+                    .font(.system(size: 17, weight: .semibold))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .padding(.horizontal, 10)
+            }
+            .foregroundStyle(Color.siloSecondaryText)
+        }
     }
 }
 

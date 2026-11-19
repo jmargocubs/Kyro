@@ -28,7 +28,10 @@ actor XtreamVODCatalogStore {
         func initialize(_ sql: String) throws {
             guard sqlite3_exec(openedDatabase, sql, nil, nil, nil) == SQLITE_OK else { throw XtreamVODError.storage }
         }
-        try initialize("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+        // NORMAL is durable across app crashes in WAL mode and keeps 100k-row imports fast. A power
+        // loss can drop only the last commit; promotion is a single transaction, so the active
+        // catalog is always a complete generation.
+        try initialize("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;")
         try initialize("""
             CREATE TABLE IF NOT EXISTS vod_items (
               provider TEXT NOT NULL, kind TEXT NOT NULL, generation TEXT NOT NULL, remote_id INTEGER NOT NULL,
@@ -162,24 +165,31 @@ actor XtreamVODCatalogStore {
 
     func page(providerID: UUID, kind: XtreamVODKind, query: String = "", offset: Int = 0, limit: Int = 100) -> [XtreamVODItem] {
         let statement: OpaquePointer
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Browsing (no query) walks the title index directly instead of testing every row.
+        let filter = trimmed.isEmpty ? "" : " AND i.title LIKE ? ESCAPE '\\'"
         do {
             statement = try prepare("""
                 SELECT i.remote_id,i.title,i.category,i.poster,i.ext,i.summary,i.genre,i.rating
                 FROM vod_items i JOIN vod_active a
                   ON i.provider=a.provider AND i.kind=a.kind AND i.generation=a.generation
-                WHERE i.provider=? AND i.kind=? AND i.title LIKE ? ESCAPE '\\'
+                WHERE i.provider=? AND i.kind=?\(filter)
                 ORDER BY i.title COLLATE NOCASE, i.remote_id LIMIT ? OFFSET ?
                 """)
         } catch { return [] }
         defer { sqlite3_finalize(statement) }
         bind(providerID.uuidString, at: 1, in: statement)
         bind(kind.rawValue, at: 2, in: statement)
-        let escaped = query.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "%", with: "\\%")
-            .replacingOccurrences(of: "_", with: "\\_")
-        bind("%\(escaped)%", at: 3, in: statement)
-        sqlite3_bind_int(statement, 4, Int32(min(max(limit, 1), 100)))
-        sqlite3_bind_int(statement, 5, Int32(max(0, offset)))
+        var next: Int32 = 3
+        if !trimmed.isEmpty {
+            let escaped = trimmed.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "%", with: "\\%")
+                .replacingOccurrences(of: "_", with: "\\_")
+            bind("%\(escaped)%", at: next, in: statement)
+            next += 1
+        }
+        sqlite3_bind_int(statement, next, Int32(min(max(limit, 1), 100)))
+        sqlite3_bind_int(statement, next + 1, Int32(max(0, offset)))
         func value(_ index: Int32) -> String? {
             guard let raw = sqlite3_column_text(statement, index) else { return nil }
             return String(cString: raw)

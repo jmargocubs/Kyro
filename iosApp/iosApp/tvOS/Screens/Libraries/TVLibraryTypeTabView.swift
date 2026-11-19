@@ -22,73 +22,39 @@ struct TVLibraryTypeTabView: View {
     /// passes false: the user picked the whole library, not a video tab, so
     /// a mixed library keeps both movies and series.
     var scopesMixedLibraries: Bool = true
+    /// The IPTV provider this Movies/Series tab shows instead of a Silo library, chosen in the
+    /// tab's top-bar cascade. `nil` shows the Silo library exactly as before IPTV VOD existed.
+    var vodProvider: LiveTVProvider? = nil
     var focusRequest: Int = 0
     var isTopMenuFocused: Bool = false
     let onTopMenuFocusRequest: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var vodSource = "all"
 
-    private var vodKind: XtreamVODKind? {
-        switch type {
-        case .movies: .movie
-        case .series: .series
-        default: nil
-        }
+    /// Which page the tab renders. Pure so the source rules can be tested without a view.
+    enum Page: Equatable {
+        case silo
+        case provider(UUID, XtreamVODKind)
     }
 
-    private var vodProviders: [LiveTVProvider] {
-        guard let vodKind, scopesMixedLibraries else { return [] }
-        return LiveTVService.shared.providers.filter {
-            $0.kind == .xtream && (vodKind == .movie ? $0.vodMoviesEnabled : $0.vodSeriesEnabled)
-        }
+    static func page(for type: TVLibraryTabType, vodProvider: LiveTVProvider?,
+                     scopesMixedLibraries: Bool) -> Page {
+        guard scopesMixedLibraries, let vodProvider,
+              let kind = TVVideoSourceResolver.vodKind(for: type) else { return .silo }
+        return .provider(vodProvider.id, kind)
     }
 
     var body: some View {
-        Group {
-            if let kind = vodKind, !vodProviders.isEmpty {
-                VStack(spacing: 0) {
-                    sourcePicker
-                    if vodSource == "silo", activeLibrary != nil {
-                        siloBody
-                    } else if let provider = vodProviders.first(where: { $0.id.uuidString == vodSource }) {
-                        TVXtreamVODView(provider: provider, kind: kind, focusRequest: focusRequest,
-                                        isTopMenuFocused: isTopMenuFocused, onMoveUp: onTopMenuFocusRequest)
-                    } else if activeLibrary != nil {
-                        TVXtreamVODRail(providers: vodProviders, kind: kind)
-                        siloBody
-                    } else {
-                        TVXtreamVODRail(providers: vodProviders, kind: kind)
-                    }
-                }
-            } else {
-                siloBody
+        switch Self.page(for: type, vodProvider: vodProvider, scopesMixedLibraries: scopesMixedLibraries) {
+        case .provider(_, let kind):
+            if let vodProvider {
+                TVXtreamVODView(provider: vodProvider, kind: kind, focusRequest: focusRequest,
+                                isTopMenuFocused: isTopMenuFocused, onMoveUp: onTopMenuFocusRequest)
+                    .id("\(vodProvider.id)-\(kind.rawValue)")
             }
+        case .silo:
+            siloBody
         }
-    }
-
-    private var sourcePicker: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 14) {
-                sourceButton("All", id: "all")
-                if activeLibrary != nil {
-                    sourceButton("Silo", id: "silo")
-                }
-                ForEach(vodProviders) { provider in
-                    sourceButton(provider.name, id: provider.id.uuidString)
-                }
-            }
-            .padding(.horizontal, 72)
-        }
-        .frame(height: 78)
-        .padding(.top, TVTopMenuLayout.contentTopInset)
-        .focusSection()
-    }
-
-    private func sourceButton(_ title: String, id: String) -> some View {
-        Button(title) { vodSource = id }
-            .buttonStyle(TVKyroChipStyle(isSelected: vodSource == id))
-            .onMoveCommand { if $0 == .up { onTopMenuFocusRequest?() } }
     }
 
     private var siloBody: some View {

@@ -89,6 +89,9 @@ struct TVMainTabView: View {
     /// re-persisted by the cascade selector. Single-library types resolve
     /// trivially and never need an entry.
     @State private var scopeSelections: [TVLibraryTabType: Int] = [:]
+    /// Per-type source for Movies/Series: a Silo library or one IPTV provider, chosen in the same
+    /// cascade as the library scope. Seeded from `TVVideoSourceStore`.
+    @State private var sourceSelections: [TVLibraryTabType: TVVideoSource] = [:]
     /// The anchored panel currently open from the top bar (cascade or
     /// profile), plus whether focus has descended into it. Owned here so it
     /// renders as a scrimmed overlay over the page (§5.3) — not a pushed
@@ -467,6 +470,7 @@ struct TVMainTabView: View {
                 type: type,
                 activeLibrary: active,
                 selectedPill: pillSelection(for: type),
+                vodProvider: activeProvider(for: type),
                 focusRequest: contentFocusRequest,
                 isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
@@ -718,14 +722,20 @@ struct TVMainTabView: View {
     }
 
     private func cascadePanel(for type: TVLibraryTabType, isActive: Bool) -> some View {
-        TVCascadeSelector(
+        let providerRows = TVCascadeProviderRow.rows(for: vodProviders(for: type))
+        let currentProviderRow = activeSource(for: type).providerID.flatMap { id in
+            providerRows.first(where: { $0.providerID == id })?.rowID
+        }
+        return TVCascadeSelector(
             type: type,
             libraries: libraries(of: type),
-            currentScopeId: activeLibrary(for: type)?.id,
+            providers: providerRows,
+            currentScopeId: currentProviderRow ?? activeLibrary(for: type)?.id,
             entersPanel: isActive && panelEntersFocus,
             focusEntryGeneration: panelFocusEntryGeneration,
             onCommitLibrary: { commitScope(type: type, library: $0, pill: nil) },
             onCommitSection: { commitScope(type: type, library: $0, pill: $1) },
+            onCommitProvider: { commitProvider(type: type, providerID: $0) },
             onPreviewLibrary: { prefetchLibrarySectionsIfNeeded($0) },
             onClose: { closePanel() },
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
@@ -974,10 +984,27 @@ struct TVMainTabView: View {
         scopeSelections[type] = library.id
         TVLibraryScopeStore.shared.setSelectedLibraryId(library.id, for: type)
         pillSelections[type] = pill ?? .recommended
+        if TVVideoSourceResolver.vodKind(for: type) != nil {
+            sourceSelections[type] = .silo
+            TVVideoSourceStore.shared.setSource(.silo, for: type)
+        }
 
         // Tear down the panel first, then select the tab + hand focus to the
         // swapped-in content. Selecting the root bumps contentFocusRequest,
         // which the new page consumes as its entry generation.
+        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
+            openPanel = nil
+        }
+        panelEntersFocus = false
+        panelHasFocus = false
+        selectRoot(.libraryType(type))
+    }
+
+    /// Commit an IPTV provider as a Movies/Series tab's source. Same teardown and focus hand-off
+    /// as a library commit, so the provider page claims focus like any other page.
+    private func commitProvider(type: TVLibraryTabType, providerID: UUID) {
+        sourceSelections[type] = .provider(providerID)
+        TVVideoSourceStore.shared.setSource(.provider(providerID), for: type)
         withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
             openPanel = nil
         }
@@ -1009,20 +1036,11 @@ struct TVMainTabView: View {
     /// fixed outside this list, which keeps their focus anchors stable while
     /// the user rearranges content tabs.
     private var visibleRoots: [TVRootDestination] {
-        var roots = TVPrimaryMenuProjection.roots(
+        TVPrimaryMenuProjection.roots(
             for: uiCustomization.resolvedPrimaryMenuItems(),
-            libraries: libraries
+            libraries: libraries,
+            vodTypes: TVVideoSourceResolver.vodTypes(in: LiveTVService.shared.providers)
         )
-        for type in [TVLibraryTabType.movies, .series] {
-            let hasSource = LiveTVService.shared.providers.contains {
-                $0.kind == .xtream && (type == .movies ? $0.vodMoviesEnabled : $0.vodSeriesEnabled)
-            }
-            if hasSource {
-                let destination = TVRootDestination.libraryType(type)
-                if !roots.contains(destination) { roots.append(destination) }
-            }
-        }
-        return roots
     }
 
     private func tabType(for library: Library) -> TVLibraryTabType? {
@@ -1048,6 +1066,25 @@ struct TVMainTabView: View {
             return match
         }
         return TVLibraryScopeStore.shared.resolvedLibrary(for: type, in: available)
+    }
+
+    private func vodProviders(for type: TVLibraryTabType) -> [LiveTVProvider] {
+        TVVideoSourceResolver.providers(for: type, in: LiveTVService.shared.providers)
+    }
+
+    /// The source a Movies/Series tab shows: this session's choice, else the persisted one,
+    /// else Silo when the profile has a library of the type, else the first provider.
+    private func activeSource(for type: TVLibraryTabType) -> TVVideoSource {
+        TVVideoSourceResolver.resolve(
+            selected: sourceSelections[type] ?? TVVideoSourceStore.shared.source(for: type),
+            hasSiloLibrary: activeLibrary(for: type) != nil,
+            providers: vodProviders(for: type)
+        )
+    }
+
+    private func activeProvider(for type: TVLibraryTabType) -> LiveTVProvider? {
+        guard let id = activeSource(for: type).providerID else { return nil }
+        return vodProviders(for: type).first(where: { $0.id == id })
     }
 
     private func pillSelection(for type: TVLibraryTabType) -> Binding<TVLibraryPill> {

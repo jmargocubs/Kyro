@@ -41,12 +41,47 @@ struct XtreamVODDetail: Sendable {
 }
 
 struct XtreamVODImportCount: Equatable, Sendable {
+    /// Source records examined so far. `accepted + malformed + duplicate == processed`.
     let processed: Int
+    /// Source records the provider sent. `processed + overLimit == total` once an import ends.
     let total: Int
     let accepted: Int
     let malformed: Int
     let duplicate: Int
-    var fraction: Double? { total > 0 ? Double(min(processed, total)) / Double(total) : nil }
+    /// Records left out because the catalog is larger than `XtreamVODCatalogLimits.maximumRecords`.
+    var overLimit: Int = 0
+    var fraction: Double? { total > 0 ? Double(min(processed + overLimit, total)) / Double(total) : nil }
+}
+
+/// Ceilings for one catalog import. Records are parsed one at a time from a temporary file, so
+/// memory stays bounded by `maximumRecordBytes` plus one insert batch, whatever the catalog size.
+/// The transfer cap bounds the temporary file; the record cap bounds the on-device database.
+struct XtreamVODCatalogLimits: Equatable, Sendable {
+    /// Largest catalog body Kyro downloads. Exceeding it fails the import without touching the
+    /// previous catalog.
+    var maximumDownloadBytes: Int
+    /// Most titles kept per provider and kind. Larger catalogs import this many and report the rest.
+    var maximumRecords: Int
+    /// Largest single record. Bigger records are skipped and counted as malformed.
+    var maximumRecordBytes: Int
+    /// Free space kept in reserve beyond the expected download size.
+    var reservedDiskBytes: Int
+
+    /// Build 94 buffered the whole body in memory and stopped at 96 MiB or 100,000 movies, which
+    /// large providers exceed. A typical movie record is 300–600 bytes and a series record
+    /// 1–2 KB, so these ceilings fit catalogs several times the size seen on device.
+    static func standard(for kind: XtreamVODKind) -> XtreamVODCatalogLimits {
+        switch kind {
+        case .movie:
+            return .init(maximumDownloadBytes: 384 * 1_048_576, maximumRecords: 400_000,
+                         maximumRecordBytes: 256 * 1024, reservedDiskBytes: 64 * 1_048_576)
+        case .series:
+            return .init(maximumDownloadBytes: 384 * 1_048_576, maximumRecords: 200_000,
+                         maximumRecordBytes: 256 * 1024, reservedDiskBytes: 64 * 1_048_576)
+        }
+    }
+
+    var maximumDownloadMegabytes: Int { maximumDownloadBytes / 1_048_576 }
 }
 
 enum XtreamVODImportStage: Equatable {
@@ -92,6 +127,8 @@ enum XtreamVODError: Error, LocalizedError, Equatable {
     case configuration
     /// The provider answered but returned zero catalog records.
     case emptyCatalog
+    /// The catalog body is larger than the transfer cap for its kind.
+    case downloadLimit(megabytes: Int)
 
     var errorDescription: String? {
         switch self {
@@ -100,6 +137,7 @@ enum XtreamVODError: Error, LocalizedError, Equatable {
         case .authentication: "VOD authentication failed. Check the provider credentials and retry."
         case .unsupported: "This provider does not support the requested VOD catalog endpoint."
         case .responseTooLarge: "The VOD catalog exceeds the supported download limit. Your previous catalog is unchanged."
+        case .downloadLimit(let megabytes): "The catalog is larger than Kyro's \(megabytes) MB download limit. Your previous catalog is unchanged."
         case .unsupportedFormat: "This provider video format is not supported by the Apple TV player."
         case .storage: "Kyro could not open its on-device VOD catalog. Free some Apple TV storage, then retry."
         case .network: "The provider could not be reached. Check the network connection, then retry."
@@ -116,7 +154,7 @@ enum XtreamVODError: Error, LocalizedError, Equatable {
         case .unavailable: "unavailable"
         case .authentication: "authentication"
         case .unsupported: "unsupported_endpoint"
-        case .responseTooLarge: "response_too_large"
+        case .responseTooLarge, .downloadLimit: "response_too_large"
         case .unsupportedFormat: "unsupported_format"
         case .storage: "storage"
         case .network: "network"
@@ -181,41 +219,45 @@ enum XtreamVODParser {
     /// `{}` for an empty catalog; an object keyed by ID whose values are records; and arrays that
     /// contain stray `null` or scalar elements. An account object with `auth: 0` is an
     /// authentication failure; HTML or other non-JSON bodies are invalid responses.
-    static func records(_ data: Data) throws -> [XtreamVODRecord] {
-        let trimmed = data.drop(while: { $0 == 0x20 || $0 == 0x0A || $0 == 0x0D || $0 == 0x09 || $0 == 0xEF || $0 == 0xBB || $0 == 0xBF })
-        guard let first = trimmed.first else { return [] }
-        if first == UInt8(ascii: "n"), String(decoding: trimmed.prefix(4), as: UTF8.self) == "null" { return [] }
-        if first == UInt8(ascii: "[") {
-            guard let rows = try? JSONDecoder().decode([LossyRecord].self, from: Data(trimmed)) else {
-                throw XtreamVODError.invalidResponse
+    ///
+    /// In-memory convenience over `XtreamVODCatalogScanner`, used for small bodies and tests. The
+    /// import pipeline scans a downloaded file instead and never holds the whole catalog.
+    static func records(_ data: Data, maximumRecordBytes: Int = 256 * 1024) throws -> [XtreamVODRecord] {
+        var scanner = XtreamVODCatalogScanner(maximumMemberBytes: maximumRecordBytes)
+        var records: [XtreamVODRecord] = []
+        var sawAccount = false
+        let decoder = JSONDecoder()
+        _ = try data.withUnsafeBytes { raw in
+            try scanner.consume(raw.bindMemory(to: UInt8.self)) { member in
+                if member.key == "user_info" {
+                    try rejectAccountObject(member.bytes)
+                    sawAccount = true
+                    return true
+                }
+                guard member.isObject, member.key != "server_info", let bytes = member.bytes,
+                      let record = record(from: bytes, decoder: decoder) else { return true }
+                records.append(record)
+                return true
             }
-            return rows.compactMap(\.record)
         }
-        if first == UInt8(ascii: "{") {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(trimmed)) as? [String: Any] else {
-                throw XtreamVODError.invalidResponse
-            }
-            if object.isEmpty { return [] }
-            if let user = object["user_info"] as? [String: Any] {
-                let auth = (user["auth"] as? NSNumber)?.intValue ?? (user["auth"] as? String).flatMap(Int.init)
-                if auth == 0 { throw XtreamVODError.authentication }
-                return []
-            }
-            let rows = object.keys.sorted { (Int($0) ?? .max, $0) < (Int($1) ?? .max, $1) }
-                .compactMap { object[$0] as? [String: Any] }
-            guard !rows.isEmpty, let encoded = try? JSONSerialization.data(withJSONObject: rows),
-                  let decoded = try? JSONDecoder().decode([LossyRecord].self, from: encoded) else {
-                throw XtreamVODError.invalidResponse
-            }
-            return decoded.compactMap(\.record)
-        }
-        throw XtreamVODError.invalidResponse
+        try scanner.finish()
+        // An account object (`user_info`) instead of a catalog is not a list of titles.
+        return sawAccount ? [] : records
     }
 
-    /// One malformed element must not discard an otherwise valid catalog.
-    private struct LossyRecord: Decodable {
-        let record: XtreamVODRecord?
-        init(from decoder: Decoder) throws { record = try? XtreamVODRecord(from: decoder) }
+    /// Decodes one record. A malformed element never discards the rest of the catalog.
+    static func record(from bytes: [UInt8], decoder: JSONDecoder) -> XtreamVODRecord? {
+        bytes.withUnsafeBufferPointer { buffer in
+            try? decoder.decode(XtreamVODRecord.self, from: Data(buffer: buffer))
+        }
+    }
+
+    /// An account object with `auth: 0` in place of a catalog means the credentials were rejected.
+    static func rejectAccountObject(_ bytes: [UInt8]?) throws {
+        guard let bytes,
+              let user = try? JSONSerialization.jsonObject(with: Data(bytes)) as? [String: Any] else { return }
+        let auth = (user["auth"] as? NSNumber)?.intValue ?? (user["auth"] as? String).flatMap(Int.init)
+        if auth == 0 { throw XtreamVODError.authentication }
     }
 
     static func detail(_ data: Data, kind: XtreamVODKind) throws -> XtreamVODDetail {
