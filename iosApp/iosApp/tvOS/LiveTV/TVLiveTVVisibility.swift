@@ -24,7 +24,7 @@ struct TVLiveTVVisibilitySnapshot: Codable, Equatable {
 
     func visibleChannels(_ source: [LiveTVChannel]) -> [LiveTVChannel] {
         if channels.isEmpty { return source }
-        source.filter { channels[$0.id] == nil }
+        return source.filter { channels[$0.id] == nil }
     }
 
     func visibleCategories(_ source: [String]) -> [String] {

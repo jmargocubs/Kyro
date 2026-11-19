@@ -147,8 +147,8 @@ struct TVLiveTVRootView: View {
     @State private var categoryCounts: [String: Int] = [:]
 
     private var scope: TVLiveTVVisibilityScope? {
-        guard let profileID, let providerID = service.selectedProviderID else { return nil }
-        return TVLiveTVVisibilityScope(profileID: profileID, providerID: providerID)
+        guard let providerID = service.selectedProviderID else { return nil }
+        return TVLiveTVVisibilityScope(profileID: profileID ?? "local", providerID: providerID)
     }
 
     private var hidden: TVLiveTVVisibilitySnapshot { visibility.snapshot(for: scope) }
@@ -1511,8 +1511,8 @@ struct TVLiveTVGuideView: View {
     private var channelWidth: CGFloat { TVLiveTVGuideLayout.channelWidth(viewportWidth: viewportSize.width) }
     private var rowHeight: CGFloat { TVLiveTVGuideLayout.rowHeight(viewportHeight: viewportSize.height) }
     private var scope: TVLiveTVVisibilityScope? {
-        guard let profileID, let providerID = service.selectedProviderID else { return nil }
-        return TVLiveTVVisibilityScope(profileID: profileID, providerID: providerID)
+        guard let providerID = service.selectedProviderID else { return nil }
+        return TVLiveTVVisibilityScope(profileID: profileID ?? "local", providerID: providerID)
     }
     private var hidden: TVLiveTVVisibilitySnapshot { visibility.snapshot(for: scope) }
 

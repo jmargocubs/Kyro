@@ -11,8 +11,8 @@ struct TVLiveTVHiddenManagementView: View {
     @FocusState private var focusedItem: String?
 
     private var scope: TVLiveTVVisibilityScope? {
-        guard let profileID, let providerID = service.selectedProviderID else { return nil }
-        return TVLiveTVVisibilityScope(profileID: profileID, providerID: providerID)
+        guard let providerID = service.selectedProviderID else { return nil }
+        return TVLiveTVVisibilityScope(profileID: profileID ?? "local", providerID: providerID)
     }
 
     private var hidden: TVLiveTVVisibilitySnapshot { visibility.snapshot(for: scope) }
