@@ -9,6 +9,8 @@ struct TVLiveTVPairingView: View {
     @Bindable var service: LiveTVService
     let onStartWatching: () -> Void
     @State private var receiver: TVLiveTVPairingReceiver
+    @State private var choosingContent = false
+    @State private var contentSelection = IPTVContentSelection.legacyLiveOnly
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focus: Focus?
 
@@ -35,6 +37,7 @@ struct TVLiveTVPairingView: View {
             }
         }
         .onExitCommand {
+            if case .completed = receiver.status, service.importProgress != nil { return }
             receiver.stop()
             dismiss()
         }
@@ -132,7 +135,8 @@ struct TVLiveTVPairingView: View {
 
     private func approval(summary: LiveTVPairingPayload.Summary, deviceName: String) -> some View {
         VStack(alignment: .leading, spacing: 38) {
-            Text("Add this provider?").font(.system(size: 64, weight: .heavy))
+            Text(choosingContent ? "Choose Content" : "Add this provider?")
+                .font(.system(size: 64, weight: .heavy))
             VStack(alignment: .leading, spacing: 18) {
                 Text(summary.name).font(.system(size: 48, weight: .bold))
                 Text("\(summary.kind == .xtream ? "Xtream Codes" : "M3U playlist") · \(summary.host)")
@@ -142,16 +146,33 @@ struct TVLiveTVPairingView: View {
             .padding(42)
             .frame(maxWidth: .infinity, minHeight: 210, alignment: .leading)
             .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-            Text("Only allow this if you just sent it from your own iPhone. Credentials are saved in the Apple TV keychain.")
-                .font(.system(size: 30, weight: .medium)).foregroundStyle(Color.siloOnSurface)
-                .fixedSize(horizontal: false, vertical: true)
+            if choosingContent {
+                TVIPTVContentSelectionView(selection: $contentSelection,
+                                           kind: summary.kind == .xtream ? .xtream : .m3u)
+            } else {
+                Text("Only allow this if you just sent it from your own iPhone. Credentials are saved in the Apple TV keychain.")
+                    .font(.system(size: 30, weight: .medium)).foregroundStyle(Color.siloOnSurface)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text("Expires in \(Self.clock(receiver.remaining))")
                 .font(.system(size: 30, weight: .semibold).monospacedDigit()).foregroundStyle(Color.siloOnSurface)
             HStack(spacing: 40) {
-                Button("Allow") { receiver.approve() }
+                Button(choosingContent ? "Add Service" : "Allow") {
+                    if choosingContent {
+                        receiver.approve(selection: contentSelection)
+                    } else {
+                        contentSelection = .newProvider(for: summary.kind == .xtream ? .xtream : .m3u)
+                        choosingContent = true
+                    }
+                }
                     .buttonStyle(TVKyroChipStyle(isSelected: true, fontSize: 32, minHeight: 88, horizontalPadding: 48))
                     .focused($focus, equals: .allow)
                     .accessibilityIdentifier("liveTV.approval.allow")
+                    .disabled(choosingContent && !contentSelection.isValid(for: summary.kind == .xtream ? .xtream : .m3u))
+                if choosingContent {
+                    Button("Back") { choosingContent = false }
+                        .buttonStyle(TVKyroChipStyle())
+                }
                 Button("Decline") { receiver.decline() }
                     .buttonStyle(TVKyroChipStyle(isDestructive: true, fontSize: 32, minHeight: 88, horizontalPadding: 48))
                     .focused($focus, equals: .decline)

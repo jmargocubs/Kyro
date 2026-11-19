@@ -73,11 +73,22 @@ final class XtreamVODService {
 
     func refresh(providerID: UUID, liveTV: LiveTVService? = nil) async {
         let liveTV = liveTV ?? .shared
-        guard work == nil, let source = liveTV.xtreamVODConfiguration(for: providerID), store != nil,
-              let provider = liveTV.providers.first(where: { $0.id == providerID }) else { return }
+        guard work == nil, let provider = liveTV.providers.first(where: { $0.id == providerID }) else { return }
         let enabledKinds = XtreamVODKind.allCases.filter { $0 == .movie ? provider.vodMoviesEnabled : provider.vodSeriesEnabled }
+        guard !enabledKinds.isEmpty else { return }
+        guard let source = liveTV.xtreamVODConfiguration(for: providerID), store != nil else {
+            progress = XtreamVODImportProgress(providerID: providerID)
+            progress?.stage = .failed
+            progress?.failure = .unavailable
+            progress?.message = "The selected VOD catalogs could not be opened. Check provider credentials and storage, then retry."
+            progress?.movieResult = enabledKinds.contains(.movie) ? .failed : .notSelected
+            progress?.seriesResult = enabledKinds.contains(.series) ? .failed : .notSelected
+            return
+        }
         activeProviderID = providerID
         progress = XtreamVODImportProgress(providerID: providerID)
+        progress?.movieResult = enabledKinds.contains(.movie) ? .waiting : .notSelected
+        progress?.seriesResult = enabledKinds.contains(.series) ? .waiting : .notSelected
         let task = Task { [weak self] in
             guard let self else { return }
             await self.performRefresh(providerID: providerID, source: source, enabledKinds: enabledKinds)
@@ -97,13 +108,17 @@ final class XtreamVODService {
                   LiveTVSnapshotRedaction.isSafe(text, maximumBytes: limit * 4, secrets: secrets) else { return nil }
             return text
         }
-        var staged: [(XtreamVODKind, String)] = []
+        var firstError: Error?
+        var succeeded = 0
         do {
             let authURL = try XtreamURLBuilder.apiURL(server: server, username: user, password: password)
             let authData = try await XtreamVODHTTP.fetch(authURL, session: session, maximumBytes: 1 * 1024 * 1024)
             try XtreamResponseParser.account(from: authData)
             for kind in enabledKinds {
                 try Task.checkCancellation()
+                setResult(.loading, kind: kind)
+                let generation = UUID().uuidString
+                do {
                 progress?.stage = .downloading(kind)
                 let categories = await categoryNames(kind: kind, server: server, user: user, password: password)
                 let url = try XtreamURLBuilder.vodAPIURL(server: server, username: user, password: password,
@@ -114,8 +129,6 @@ final class XtreamVODService {
                 let maximumRecords = kind == .movie ? 100_000 : 50_000
                 guard records.count <= maximumRecords else { throw XtreamVODError.responseTooLarge }
                 progress?.stage = .importing(kind)
-                let generation = UUID().uuidString
-                staged.append((kind, generation))
                 var accepted = 0, malformed = 0, duplicate = 0
                 var seen = Set<Int>()
                 var batch: [XtreamVODItem] = []
@@ -154,23 +167,55 @@ final class XtreamVODService {
                 if !batch.isEmpty { try await store.stage(batch, generation: generation); accepted += batch.count }
                 setCount(.init(processed: records.count, total: records.count, accepted: accepted,
                                malformed: malformed, duplicate: duplicate), kind: kind)
+                try Task.checkCancellation()
+                try await store.promote(providerID: providerID, kind: kind, generation: generation)
+                revision &+= 1
+                succeeded += 1
+                setResult(accepted > 0 ? .ready : .empty, kind: kind)
+                } catch {
+                    await store.discard(providerID: providerID, kind: kind, generation: generation)
+                    setResult(result(for: error), kind: kind)
+                    if firstError == nil { firstError = error }
+                    if error is CancellationError { throw error }
+                }
             }
-            try Task.checkCancellation()
-            try await store.promoteAll(providerID: providerID, generations: staged)
-            revision &+= 1
-            let refreshed = Date()
-            lastSuccessfulRefresh[providerID] = refreshed
-            defaults.set(refreshed, forKey: "kyro.iptvvod.lastRefresh.\(providerID.uuidString)")
+            if succeeded > 0 {
+                let refreshed = Date()
+                lastSuccessfulRefresh[providerID] = refreshed
+                defaults.set(refreshed, forKey: "kyro.iptvvod.lastRefresh.\(providerID.uuidString)")
+            }
             let importedMovies = progress?.movies.accepted ?? 0
             let importedSeries = progress?.series.accepted ?? 0
-            progress?.stage = .ready
-            progress?.message = "\(importedMovies) movies and \(importedSeries) series imported."
+            progress?.stage = firstError == nil ? .ready : .failed
+            progress?.failure = firstError as? XtreamVODError
+            progress?.message = firstError == nil
+                ? "\(importedMovies) movies and \(importedSeries) series imported."
+                : "Some selected catalogs could not be imported. Successful catalogs are available; previous catalogs are unchanged for failed imports."
         } catch {
-            for (kind, generation) in staged { await store.discard(providerID: providerID, kind: kind, generation: generation) }
+            for kind in enabledKinds where catalogResult(kind) == .waiting || catalogResult(kind) == .loading {
+                setResult(result(for: error), kind: kind)
+            }
             progress?.stage = error is CancellationError ? .cancelled : .failed
             progress?.failure = error as? XtreamVODError
-            progress?.message = error is CancellationError ? "VOD import cancelled. Previous catalogs are unchanged."
+            progress?.message = error is CancellationError ? "VOD import cancelled. Completed catalogs remain available."
                 : (error as? LocalizedError)?.errorDescription ?? "VOD import failed. Previous catalogs are unchanged."
+        }
+    }
+
+    private func catalogResult(_ kind: XtreamVODKind) -> XtreamVODCatalogResult {
+        kind == .movie ? (progress?.movieResult ?? .notSelected) : (progress?.seriesResult ?? .notSelected)
+    }
+
+    private func setResult(_ result: XtreamVODCatalogResult, kind: XtreamVODKind) {
+        if kind == .movie { progress?.movieResult = result } else { progress?.seriesResult = result }
+    }
+
+    private func result(for error: Error) -> XtreamVODCatalogResult {
+        if error is CancellationError { return .cancelled }
+        switch error as? XtreamVODError {
+        case .unsupported: return .unsupported
+        case .authentication: return .authentication
+        default: return .failed
         }
     }
 

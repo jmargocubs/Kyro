@@ -32,6 +32,7 @@ final class XtreamVODTests: XCTestCase {
         catalogStores.append(store)
         vod = XtreamVODService(store: store, session: session, defaults: defaults)
         VODURLProtocol.mode = .normal
+        VODURLProtocol.resetActions()
     }
 
     override func tearDown() async throws {
@@ -84,6 +85,59 @@ final class XtreamVODTests: XCTestCase {
         XCTAssertFalse(TVProviderSetupState.isComplete(live: .ready, vodEnabled: true, vod: .importing(.series)))
         XCTAssertTrue(TVProviderSetupState.isComplete(live: .ready, vodEnabled: true, vod: .ready))
         XCTAssertTrue(TVProviderSetupState.isComplete(live: .ready, vodEnabled: true, vod: .failed))
+        XCTAssertFalse(TVProviderSetupState.isComplete(live: .ready, liveSelected: false, vodEnabled: true, vod: nil))
+        XCTAssertTrue(TVProviderSetupState.isComplete(live: .ready, liveSelected: false, vodEnabled: true, vod: .ready))
+    }
+
+    func testAllContentSelectionsAndNewProviderDefaults() throws {
+        XCTAssertEqual(IPTVContentSelection.newProvider(for: .xtream),
+                       .init(liveTV: true, movies: true, series: true))
+        XCTAssertEqual(IPTVContentSelection.newProvider(for: .m3u), .legacyLiveOnly)
+        for bits in 0..<8 {
+            let selection = IPTVContentSelection(liveTV: bits & 1 != 0, movies: bits & 2 != 0,
+                                                 series: bits & 4 != 0)
+            XCTAssertEqual(selection.isValid(for: .xtream), bits != 0)
+            XCTAssertEqual(selection.isValid(for: .m3u), bits == 1)
+            if bits == 0 { continue }
+            let id = try live.saveXtreamConfiguration(name: "Choice \(bits)", serverURL: "https://vod.test",
+                                                       username: "viewer", password: "fake-secret", selection: selection)
+            XCTAssertEqual(live.providers.first(where: { $0.id == id })?.contentSelection, selection)
+        }
+    }
+
+    func testMovieOnlyProviderSkipsLiveAndSeriesRequests() async throws {
+        let selection = IPTVContentSelection(liveTV: false, movies: true, series: false)
+        let id = try live.saveXtreamConfiguration(name: "Movies only", serverURL: "https://vod.test",
+                                                   username: "viewer", password: "fake-secret", selection: selection)
+        await live.startSetup(providerID: id)
+        XCTAssertEqual(live.importProgress?.stage, .ready)
+        XCTAssertEqual(live.importProgress?.count.accepted, 0)
+        XCTAssertTrue(VODURLProtocol.actions().isEmpty)
+        await vod.refresh(providerID: id, liveTV: live)
+        XCTAssertEqual(vod.progress?.movieResult, .ready)
+        XCTAssertEqual(vod.progress?.seriesResult, .notSelected)
+        let movies = await vod.count(providerID: id, kind: .movie)
+        let series = await vod.count(providerID: id, kind: .series)
+        XCTAssertEqual(movies, 2)
+        XCTAssertEqual(series, 0)
+        XCTAssertEqual(Set(VODURLProtocol.actions()), Set(["auth", "get_vod_categories", "get_vod_streams"]))
+    }
+
+    func testLegacyProviderKeepsLiveOnlyAfterDecode() throws {
+        let old = "{\"id\":\"\(UUID().uuidString)\",\"name\":\"Old\",\"channelCount\":4,\"kind\":\"xtream\"}"
+        let provider = try JSONDecoder().decode(LiveTVProvider.self, from: Data(old.utf8))
+        XCTAssertEqual(provider.contentSelection, .legacyLiveOnly)
+    }
+
+    func testSeriesOnlySkipsMovieEndpoints() async throws {
+        let selection = IPTVContentSelection(liveTV: false, movies: false, series: true)
+        let id = try live.saveXtreamConfiguration(name: "Series only", serverURL: "https://vod.test",
+                                                   username: "viewer", password: "fake-secret", selection: selection)
+        await live.startSetup(providerID: id)
+        await vod.refresh(providerID: id, liveTV: live)
+        XCTAssertEqual(vod.progress?.movieResult, .notSelected)
+        XCTAssertEqual(vod.progress?.seriesResult, .ready)
+        XCTAssertEqual(Set(VODURLProtocol.actions()), Set(["auth", "get_series_categories", "get_series"]))
     }
 
     func testUnsupportedAndAuthenticationFailuresAreDistinct() async throws {
@@ -91,9 +145,23 @@ final class XtreamVODTests: XCTestCase {
         VODURLProtocol.mode = .unsupported
         await vod.refresh(providerID: id, liveTV: live)
         XCTAssertEqual(vod.progress?.failure, .unsupported)
+        XCTAssertEqual(vod.progress?.movieResult, .unsupported)
+        XCTAssertEqual(vod.progress?.seriesResult, .ready)
         VODURLProtocol.mode = .authentication
         await vod.refresh(providerID: id, liveTV: live)
         XCTAssertEqual(vod.progress?.failure, .authentication)
+        XCTAssertEqual(vod.progress?.movieResult, .authentication)
+        XCTAssertEqual(vod.progress?.seriesResult, .authentication)
+    }
+
+    func testEmptySelectedCatalogIsNotReportedReady() async throws {
+        let id = try add("Empty catalog")
+        VODURLProtocol.mode = .emptyMovies
+        await vod.refresh(providerID: id, liveTV: live)
+        XCTAssertEqual(vod.progress?.stage, .ready)
+        XCTAssertEqual(vod.progress?.movieResult, .empty)
+        XCTAssertEqual(vod.progress?.seriesResult, .ready)
+        XCTAssertEqual(vod.progress?.movies.accepted, 0)
     }
 
     func testBuild92ProviderMigrationPreservesOptIn() throws {
@@ -144,6 +212,8 @@ final class XtreamVODTests: XCTestCase {
         VODURLProtocol.mode = .badSeries
         await vod.refresh(providerID: id, liveTV: live)
         XCTAssertEqual(vod.progress?.stage, .failed)
+        XCTAssertEqual(vod.progress?.movieResult, .ready)
+        XCTAssertEqual(vod.progress?.seriesResult, .failed)
         let retainedMovies = await vod.count(providerID: id, kind: .movie)
         let retainedSeries = await vod.count(providerID: id, kind: .series)
         XCTAssertEqual(retainedMovies, 2)
@@ -207,19 +277,26 @@ final class XtreamVODTests: XCTestCase {
 }
 
 private final class VODURLProtocol: URLProtocol {
-    enum Mode: Equatable { case normal, badSeries, unsupported, authentication }
+    enum Mode: Equatable { case normal, badSeries, unsupported, authentication, emptyMovies }
     static var mode: Mode = .normal
+    private static let actionsLock = NSLock()
+    private static var recordedActions: [String] = []
+    static func resetActions() { actionsLock.lock(); defer { actionsLock.unlock() }; recordedActions = [] }
+    static func actions() -> [String] { actionsLock.lock(); defer { actionsLock.unlock() }; return recordedActions }
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "vod.test" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let action = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
             .first(where: { $0.name == "action" })?.value
+        Self.actionsLock.lock()
+        Self.recordedActions.append(action ?? "auth")
+        Self.actionsLock.unlock()
         let body: String
         switch action {
         case nil: body = #"{"user_info":{"auth":1,"status":"Active"}}"#
         case "get_vod_categories": body = #"[{"category_id":"1","category_name":"Drama"}]"#
         case "get_series_categories": body = "[]"
-        case "get_vod_streams": body = #"[{"stream_id":1,"name":"Alpha","category_id":"1","stream_icon":"https://art.test/a.jpg?token=sensitive","container_extension":"mp4"},{"stream_id":2,"name":"Beta","container_extension":"mkv"},{"stream_id":2,"name":"Duplicate"},{"stream_id":3,"name":""}]"#
+        case "get_vod_streams": body = Self.mode == .emptyMovies ? "[]" : #"[{"stream_id":1,"name":"Alpha","category_id":"1","stream_icon":"https://art.test/a.jpg?token=sensitive","container_extension":"mp4"},{"stream_id":2,"name":"Beta","container_extension":"mkv"},{"stream_id":2,"name":"Duplicate"},{"stream_id":3,"name":""}]"#
         case "get_series": body = Self.mode == .badSeries ? "not-json" : #"[{"series_id":"9","name":"Show","cover":"https://art.test/show.jpg"}]"#
         case "get_series_info": body = #"{"info":{"plot":"A show"},"episodes":{"2":[{"id":"1002","episode_num":1,"title":"Second","container_extension":"mp4"}],"1":[{"id":1001,"episode_num":1,"title":"First","container_extension":"mp4"}]}}"#
         case "get_vod_info": body = #"{"info":{"plot":"A movie","duration_secs":3600}}"#

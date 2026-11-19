@@ -2,6 +2,20 @@ import Foundation
 import CryptoKit
 import Observation
 
+struct IPTVContentSelection: Codable, Equatable, Sendable {
+    var liveTV: Bool
+    var movies: Bool
+    var series: Bool
+
+    static let legacyLiveOnly = Self(liveTV: true, movies: false, series: false)
+    static func newProvider(for kind: LiveTVProviderKind) -> Self {
+        kind == .xtream ? Self(liveTV: true, movies: true, series: true) : .legacyLiveOnly
+    }
+    func isValid(for kind: LiveTVProviderKind) -> Bool {
+        (liveTV || movies || series) && (kind == .xtream || (liveTV && !movies && !series))
+    }
+}
+
 struct LiveTVProvider: Codable, Hashable, Identifiable, Sendable {
     let id: UUID
     var name: String
@@ -9,13 +23,14 @@ struct LiveTVProvider: Codable, Hashable, Identifiable, Sendable {
     var lastRefreshed: Date?
     var kind: LiveTVProviderKind = .m3u
     var allowedOutputFormats: [String] = []
+    var liveEnabled = true
     var vodEnabled = false
     var vodMoviesEnabled = false
     var vodSeriesEnabled = false
     /// Nil means the provider predates persisted import completeness metadata.
     var catalogWasTruncated: Bool?
 
-    private enum CodingKeys: String, CodingKey { case id, name, channelCount, lastRefreshed, kind, allowedOutputFormats, catalogWasTruncated, vodEnabled, vodMoviesEnabled, vodSeriesEnabled }
+    private enum CodingKeys: String, CodingKey { case id, name, channelCount, lastRefreshed, kind, allowedOutputFormats, catalogWasTruncated, liveEnabled, vodEnabled, vodMoviesEnabled, vodSeriesEnabled }
 
     init(id: UUID, name: String, channelCount: Int, lastRefreshed: Date?, kind: LiveTVProviderKind = .m3u, allowedOutputFormats: [String] = [], catalogWasTruncated: Bool? = nil) {
         self.id = id
@@ -35,10 +50,15 @@ struct LiveTVProvider: Codable, Hashable, Identifiable, Sendable {
         lastRefreshed = try values.decodeIfPresent(Date.self, forKey: .lastRefreshed)
         kind = try values.decodeIfPresent(LiveTVProviderKind.self, forKey: .kind) ?? .m3u
         allowedOutputFormats = Self.normalizedOutputFormats((try? values.decode([String].self, forKey: .allowedOutputFormats)) ?? [])
+        liveEnabled = try values.decodeIfPresent(Bool.self, forKey: .liveEnabled) ?? true
         vodEnabled = try values.decodeIfPresent(Bool.self, forKey: .vodEnabled) ?? false
         vodMoviesEnabled = try values.decodeIfPresent(Bool.self, forKey: .vodMoviesEnabled) ?? vodEnabled
         vodSeriesEnabled = try values.decodeIfPresent(Bool.self, forKey: .vodSeriesEnabled) ?? vodEnabled
         catalogWasTruncated = try values.decodeIfPresent(Bool.self, forKey: .catalogWasTruncated)
+    }
+
+    var contentSelection: IPTVContentSelection {
+        .init(liveTV: liveEnabled, movies: vodMoviesEnabled, series: vodSeriesEnabled)
     }
 
     static func normalizedOutputFormats(_ formats: [String]) -> [String] {

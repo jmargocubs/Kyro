@@ -76,7 +76,7 @@ jobs:
             -only-testing:SiloTVTests/KyroTVLiveTVTests \
             -only-testing:SiloTVTests/LiveTVImportProgressTests \
             -only-testing:SiloTVTests/XtreamVODTests \
-            -only-testing:SiloTVTests/KyroTVPairingTransferTests/testPairedProviderUsesTheSameMeasuredImportProgress \
+            -only-testing:SiloTVTests/KyroTVPairingTransferTests \
             -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testImportProgressCompletesOnlyAfterGuideAndCountsAcceptedChannels \
             -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testNetworkFailureAndRetryPreservePreviousChannels \
             -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testXtreamImportCountsDecodedStreamRecords \

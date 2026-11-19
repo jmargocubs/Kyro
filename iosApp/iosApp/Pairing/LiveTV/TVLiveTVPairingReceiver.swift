@@ -72,8 +72,10 @@ final class TVLiveTVPairingReceiver {
     func stop() { teardown(); status = .idle }
 
     /// The TV user pressed Allow.
-    func approve() {
+    func approve(selection: IPTVContentSelection) {
         guard var current = session else { return }
+        guard case .awaitingApproval(let summary, _) = status,
+              selection.isValid(for: summary.kind == .xtream ? .xtream : .m3u) else { return }
         let result = current.approve(now: Date())
         session = current
         switch result {
@@ -82,7 +84,7 @@ final class TVLiveTVPairingReceiver {
             finish(.failed(failure))
         case .success(let payload):
             status = .saving
-            save(payload)
+            save(payload, selection: selection)
         }
     }
 
@@ -95,15 +97,15 @@ final class TVLiveTVPairingReceiver {
 
     // MARK: Saving
 
-    private func save(_ payload: LiveTVPairingPayload) {
+    private func save(_ payload: LiveTVPairingPayload, selection: IPTVContentSelection) {
         do {
-            let id = try service.savePairedProvider(payload)
+            let id = try service.savePairedProvider(payload, selection: selection)
             Self.log.notice("Pairing completed; provider saved")
             send(LiveTVPairingFrame(type: .result, ok: true))
             closeConnectionSoon()
             finish(.completed(providerName: payload.name))
             // The channel catalog and guide load through the same path a typed provider uses.
-            Task { await service.refresh(providerID: id) }
+            Task { await service.startSetup(providerID: id) }
         } catch {
             Self.log.error("Pairing failed to save provider")
             send(LiveTVPairingFrame(type: .result, ok: false, error: .invalidProvider))

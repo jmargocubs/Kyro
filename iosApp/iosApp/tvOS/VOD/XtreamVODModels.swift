@@ -53,11 +53,17 @@ enum XtreamVODImportStage: Equatable {
     case connecting, downloading(XtreamVODKind), importing(XtreamVODKind), ready, failed, cancelled
 }
 
+enum XtreamVODCatalogResult: Equatable {
+    case notSelected, waiting, loading, ready, empty, unsupported, authentication, failed, cancelled
+}
+
 struct XtreamVODImportProgress: Equatable {
     let providerID: UUID
     var stage: XtreamVODImportStage = .connecting
     var movies = XtreamVODImportCount(processed: 0, total: 0, accepted: 0, malformed: 0, duplicate: 0)
     var series = XtreamVODImportCount(processed: 0, total: 0, accepted: 0, malformed: 0, duplicate: 0)
+    var movieResult: XtreamVODCatalogResult = .notSelected
+    var seriesResult: XtreamVODCatalogResult = .notSelected
     var message: String?
     var failure: XtreamVODError?
 }
