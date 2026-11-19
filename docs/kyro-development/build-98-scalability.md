@@ -67,7 +67,53 @@ category/page query (including final page) <50 ms, main DB <250 MB and host proc
 meet those budgets, but do **not** validate provider JSON download/scan time, image load, deep
 pagination, populated metadata, disk-full behavior, concurrent UI work, or iPhone memory.
 
-## Live TV work still required
+## Live TV channel-store foundation (this milestone)
+
+The iOS-only `LiveTVChannelCatalogStore` now provides a separate SQLite channel database;
+VOD tables, identities, and lifecycle are unchanged. Rows are scoped by provider and import
+generation. Imports commit in bounded batches; a count and contiguous-ordinal check gates a
+single-transaction active-generation switch. Old and crash-orphaned rows can be pruned in
+1,024-row cancellable batches. Source ordinals preserve provider order. An ordinal index pages
+Guide rows, a category/ordinal index pages categories, FTS5 indexes name/category search, and
+provider-scoped favorites survive a generation replacement. Individual channel lookup retains
+guide ID, stream URL, and stream ID for future EPG/playback integration. A host correctness run
+checks interrupted promotion, cancellation, provider ID collision, category replacement,
+favorite persistence, guide ID persistence, and recovery on reopen. Each scale fixture also
+checks final-channel URL/guide lookup and favorite retrieval.
+
+FTS initially took 8.8 seconds for a 100K search because SQLite chose the ordinal index and
+probed the virtual table per row. Rewriting the predicate as a one-time rowid subquery reduced
+that synthetic query to 14 ms. This is a query-plan fix, not an iPhone responsiveness claim.
+
+The benchmark compiles the **production** channel store with `KYRO_CHANNEL_HOST_TESTS`; only
+`LiveTVChannel` is a matching host stub. It generates deterministic numbered channels in
+1,024-row batches across 40 categories, one provider and one generation. Import time includes
+fixture creation and SQLite indexing. Results are one optimized-Swift run on Apple M2/macOS
+26.6, not p95; RSS is whole-process high-water mark across the sequential run. DB size is the
+closed main file, excluding WAL/SHM and filesystem overhead. No Simulator ran.
+
+```sh
+swiftc -O -D KYRO_CHANNEL_HOST_TESTS -lsqlite3 \
+  iosApp/iosApp/LiveTV/LiveTVChannelCatalogStore.swift \
+  iosApp/Benchmarks/LiveTVChannelStoreBenchmark.swift -o /tmp/kyro-channel-benchmark
+BENCH_DIR=$(mktemp -d)
+/tmp/kyro-channel-benchmark "$BENCH_DIR"
+```
+
+| Channels | Generate + import + index | Indexed search | Category page | Final Guide page | Keyset page | DB file | Process peak RSS |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 40,000 | 1.453 s | 6 ms | <1 ms | <1 ms | <1 ms | 30.3 MB | 19 MB |
+| 60,000 | 2.172 s | 8 ms | <1 ms | <1 ms | <1 ms | 45.5 MB | 19 MB |
+| 80,000 | 2.993 s | 11 ms | <1 ms | <1 ms | <1 ms | 60.7 MB | 19 MB |
+| 100,000 | 3.758 s | 14 ms | <1 ms | <1 ms | <1 ms | 75.9 MB | 19 MB |
+
+Provisional channel-store budgets: 100K synthetic generate/import/index <10 s, selective
+search <50 ms, category and Guide page <50 ms, main DB <100 MB, host process peak RSS <100 MB.
+These fixtures meet them. They do not exercise provider download/parsing, mixed-content EPG,
+long-running UI work, image loading, low storage, or real-device memory. The search fixture is
+selective; broad-query and deep category-query p95 still require profiling.
+
+## Live TV integration still required
 
 Live TV remains limited to **40,000** channels. Raising the constant now would be unsafe:
 
@@ -76,19 +122,21 @@ Live TV remains limited to **40,000** channels. Raising the constant now would b
 - `LiveTVChannelSearchIndex` duplicates the catalog metadata and scans every entry per query;
   a blank query materializes every match. Browse/Guide SwiftUI state still receives full arrays.
 - The offline channel snapshot is a whole-array JSON encode/decode with a 32 MB file ceiling.
-- M3U and Xtream imports build full arrays before replacement. Neither has paged disk-backed
-  channels, incremental import, or measured 40K/60K/80K/100K performance.
+- M3U and Xtream imports still build full arrays before replacement. The new SQLite store is
+  **not yet wired** to the production import, offline restore, Browse, Guide, search, Sports
+  Hub, playback or EPG services. Existing full-array paths remain in use; this host benchmark
+  validates the store, not the app at 100K.
 
-The next milestone must add a provider-scoped SQLite channel catalog with stable ordinals,
-indexed category and FTS search, atomic active-generation replacement, bounded paging and
-ID-based playback resolution; then migrate Browse/Guide, favorites, provider switching and EPG
-matching off the full-array path. Benchmark 40K, 60K, 80K and 100K and verify EPG lookup,
-scrolling and memory before changing the import cap.
+The next milestone must stream M3U/Xtream into the staged store, replace whole-array JSON
+offline snapshots, expose bounded page loaders to Browse/Guide/search, and migrate favorites,
+provider switching, EPG matching, Sports Hub and playback resolution to ID-based paths. It
+must rerun correctness/performance on the integrated app before changing the 40K import cap.
 
 ## Validation and device acceptance
 
-The generic iOS `build-for-testing` is a compile gate only. It does **not** run XCTest.
-The Mac host benchmark exercises VOD SQLite correctness and synthetic scale; iOS tests for
+The generic iOS `build-for-testing` succeeded as a compile gate only. It does **not** run XCTest.
+The Mac host benchmarks exercise VOD and channel-store SQLite correctness and synthetic scale;
+iOS tests for
 VOD preference, backup, import cancellation and source separation still need an approved
 runtime test environment. No Simulator or IPA was used in this milestone.
 
