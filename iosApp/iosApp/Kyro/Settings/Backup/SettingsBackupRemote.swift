@@ -108,41 +108,44 @@ struct SiloSettingsBackupTransport: SettingsBackupRemoteTransport {
 #endif
 
 private enum RemoteBackupDefinition: CaseIterable {
-    case resolution, subtitleLanguage
+    case resolution, audioLanguage, subtitleLanguage
 
     var id: String {
         switch self {
         case .resolution: "streaming.resolution"
+        case .audioLanguage: "streaming.audioLanguage"
         case .subtitleLanguage: "subtitles.language"
         }
     }
     var group: SettingsBackupGroup {
         switch self {
-        case .resolution: .streaming
+        case .resolution, .audioLanguage: .streaming
         case .subtitleLanguage: .subtitles
         }
     }
     var title: String {
         switch self {
         case .resolution: "Playback resolution"
+        case .audioLanguage: "Audio language"
         case .subtitleLanguage: "Subtitle language"
         }
     }
     var key: SettingKey {
         switch self {
         case .resolution: .playbackPreferredQuality
+        case .audioLanguage: .playbackAudioLanguage
         case .subtitleLanguage: .playbackSubtitleLanguage
         }
     }
     var scope: SettingScopeIdentity {
         switch self {
-        case .resolution: .profileDevice
+        case .resolution, .audioLanguage: .profileDevice
         case .subtitleLanguage: .profile
         }
     }
     var expectedScope: SettingScope { scope.scope }
 
-    /// The two reserved values distinguish an inherited row from an explicit JSON null.
+    /// The reserved value distinguishes an inherited row from an explicit value.
     static let inherited = "~inherit"
     static let null = "~null"
 
@@ -151,6 +154,8 @@ private enum RemoteBackupDefinition: CaseIterable {
         if raw == Self.inherited { return true }
         switch self {
         case .resolution: return SiloQualityPresets.resolutionChoices.contains(raw)
+        case .audioLanguage:
+            return Self.isPortableLanguageTag(raw)
         case .subtitleLanguage:
             if raw == Self.null { return true }
             return !raw.isEmpty && raw.count <= 32
@@ -172,12 +177,13 @@ private enum RemoteBackupDefinition: CaseIterable {
                 guard validate(result) else { throw SettingsBackupRemoteError.unsupportedValue }
                 return result
             case .null where self == .subtitleLanguage: return .string(Self.null)
+            case .null where self == .audioLanguage: return .string(Self.inherited)
             default: throw SettingsBackupRemoteError.unsupportedValue
             }
         }
         // A lower-scope or contract default must remain inherited. A higher-scope answer
         // cannot be treated as the value of the row this adapter writes.
-        if row.scope == nil || row.scope == .profile && self == .resolution {
+        if row.scope == nil || row.scope == .profile && self != .subtitleLanguage {
             return .string(Self.inherited)
         }
         throw SettingsBackupRemoteError.unsupportedValue
@@ -196,7 +202,21 @@ private enum RemoteBackupDefinition: CaseIterable {
         guard case .string(let raw) = value else { return value.plainText }
         if raw == Self.inherited { return "Use inherited setting" }
         if raw == Self.null { return "No preference" }
-        return self == .resolution ? SiloQualityPresets.resolutionLabel(raw) : raw
+        if self == .resolution { return SiloQualityPresets.resolutionLabel(raw) }
+        if self == .audioLanguage { return raw == "x-silo-original" ? "Original language" : raw }
+        return raw
+    }
+
+    private static func isPortableLanguageTag(_ raw: String) -> Bool {
+        guard !raw.isEmpty, raw.count <= 64,
+              raw.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0)
+                  || (48...57).contains($0) || $0 == 45 }) else { return false }
+        guard raw != "x-silo-original" else { return true }
+        let subtags = raw.split(separator: "-", omittingEmptySubsequences: false)
+        guard let language = subtags.first, (2...8).contains(language.count),
+              language.allSatisfy({ $0.isASCII && $0.isLetter }),
+              subtags.dropFirst().allSatisfy({ (1...8).contains($0.count) }) else { return false }
+        return true
     }
 }
 

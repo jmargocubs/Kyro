@@ -12,6 +12,7 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
                                    profileFingerprint: String(repeating: "b", count: 64)))
     private var stored: [SettingKey: SettingJSONValue] = [
         .playbackPreferredQuality: .string("1080p"),
+        .playbackAudioLanguage: .string("en"),
         .playbackSubtitleLanguage: .string("en"),
     ]
     private var failedKey: SettingKey?
@@ -25,7 +26,7 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
         if let delay { try await Task.sleep(for: delay) }
         if offline { throw Failure.offline }
         let rows = keys.map { key -> EffectiveSettingValue in
-            let scope: SettingScope = key == .playbackPreferredQuality ? .profileDevice : .profile
+            let scope: SettingScope = key == .playbackSubtitleLanguage ? .profile : .profileDevice
             let value = stored[key]
             return EffectiveSettingValue(
                 key: key.rawValue,
@@ -87,7 +88,7 @@ final class SettingsBackupUnifiedTests: XCTestCase {
             remote: SettingsBackupRemoteAdapter(transport: transport, journal: remoteJournal))
     }
 
-    func testOneFileRoundTripRestoresLocalResolutionAndSubtitleFromAuthoritativeOwners() async throws {
+    func testOneFileRoundTripRestoresLocalResolutionAudioAndSubtitleFromAuthoritativeOwners() async throws {
         let local = BackupFakeStore(["navigation.fourthTab": .string("sports")])
         let transport = FakeBackupRemoteTransport()
         let model = makeModel(local: local, transport: transport)
@@ -98,20 +99,29 @@ final class SettingsBackupUnifiedTests: XCTestCase {
         XCTAssertEqual(decoded.schemaVersion, 2)
         XCTAssertNotNil(decoded.scope)
         XCTAssertEqual(decoded.groups["streaming"]?["streaming.resolution"], .string("1080p"))
+        XCTAssertEqual(decoded.groups["streaming"]?["streaming.audioLanguage"], .string("en"))
         XCTAssertEqual(decoded.groups["subtitles"]?["subtitles.language"], .string("en"))
 
         local.values["navigation.fourthTab"] = .string("forYou")
         await transport.set(.playbackPreferredQuality, to: .string("480p"))
+        await transport.set(.playbackAudioLanguage, to: .string("zh"))
         await transport.set(.playbackSubtitleLanguage, to: .string("zh"))
         await model.loadUnifiedImport(data: data)
-        XCTAssertEqual(model.selectedChangeCount, 3)
+        let audioPreview = try XCTUnwrap(model.preview?.groups.flatMap(\.items)
+            .first { $0.id == "streaming.audioLanguage" })
+        XCTAssertEqual(audioPreview.current, "zh")
+        XCTAssertEqual(audioPreview.incoming, "en")
+        XCTAssertEqual(audioPreview.status, .willChange)
+        XCTAssertEqual(model.selectedChangeCount, 4)
         await model.applyUnifiedSelected()
         XCTAssertEqual(local.values["navigation.fourthTab"], .string("sports"))
         let resolution = await transport.value(.playbackPreferredQuality)
+        let audio = await transport.value(.playbackAudioLanguage)
         let language = await transport.value(.playbackSubtitleLanguage)
         XCTAssertEqual(resolution, .string("1080p"))
+        XCTAssertEqual(audio, .string("en"))
         XCTAssertEqual(language, .string("en"))
-        XCTAssertEqual(model.lastRestoredCount, 3)
+        XCTAssertEqual(model.lastRestoredCount, 4)
     }
 
     func testDifferentProfileSkipsRemoteWithoutWritingIt() async throws {
@@ -124,7 +134,7 @@ final class SettingsBackupUnifiedTests: XCTestCase {
         await transport.moveProfile()
         await model.loadUnifiedImport(data: data)
         let remote = model.preview?.groups.filter { [.streaming, .subtitles].contains($0.group) }
-        XCTAssertEqual(remote?.flatMap(\.items).count, 2)
+        XCTAssertEqual(remote?.flatMap(\.items).count, 3)
         XCTAssertTrue(remote?.flatMap(\.items).allSatisfy {
             if case .unsupported = $0.status { return true }; return false
         } ?? false)
@@ -153,14 +163,17 @@ final class SettingsBackupUnifiedTests: XCTestCase {
         let data = try XCTUnwrap(exported)
         local.values["navigation.fourthTab"] = .string("forYou")
         await transport.set(.playbackPreferredQuality, to: .string("480p"))
+        await transport.set(.playbackAudioLanguage, to: .string("zh"))
         await transport.set(.playbackSubtitleLanguage, to: .string("zh"))
         await transport.fail(.playbackSubtitleLanguage)
         await model.loadUnifiedImport(data: data)
         await model.applyUnifiedSelected()
         XCTAssertEqual(local.values["navigation.fourthTab"], .string("forYou"))
         let resolution = await transport.value(.playbackPreferredQuality)
+        let audio = await transport.value(.playbackAudioLanguage)
         let language = await transport.value(.playbackSubtitleLanguage)
         XCTAssertEqual(resolution, .string("1080p"))
+        XCTAssertEqual(audio, .string("en"))
         XCTAssertEqual(language, .string("zh"))
         XCTAssertEqual(journal.record?.state, .applying)
         XCTAssertTrue(model.needsRecovery)

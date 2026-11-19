@@ -73,7 +73,7 @@ final class SettingsBackupModel {
         }
     }
 
-    /// The production export reads the two remote owners before creating one schema-2 file.
+    /// The production export reads remote owners before creating one schema-2 file.
     /// A remote failure aborts export; a local-only file must not masquerade as complete.
     func exportUnifiedDocument() async -> Data? {
         guard !isBusy else { return nil }
@@ -195,7 +195,7 @@ final class SettingsBackupModel {
             let localPreview = SettingsBackupPlanner.preview(local, registry: registry)
             let remoteGroups = await remote.preview(incoming)
             let unknownStreaming = incoming.groups[SettingsBackupGroup.streaming.rawValue]?.keys
-                .filter { $0 != "streaming.resolution" }.count ?? 0
+                .filter { !["streaming.resolution", "streaming.audioLanguage"].contains($0) }.count ?? 0
             let unknownSubtitles = incoming.groups[SettingsBackupGroup.subtitles.rawValue]?.keys
                 .filter { $0 != "subtitles.language" }.count ?? 0
             let result = RestorePreview(
@@ -343,7 +343,9 @@ final class SettingsBackupModel {
         }
         isBusy = true
         defer { isBusy = false; refreshRestorePointState() }
-        let remoteIDs = selectedSettingIDs.intersection(["streaming.resolution", "subtitles.language"])
+        let remoteIDs = selectedSettingIDs.intersection([
+            "streaming.resolution", "streaming.audioLanguage", "subtitles.language"
+        ])
         let remoteReport = await remote.apply(incomingBackup, selectedIDs: remoteIDs)
         let skippedText = remoteReport.skipped.isEmpty ? "" : " \(remoteReport.skipped.count) synced settings were skipped."
         if !remoteReport.failed.isEmpty {
