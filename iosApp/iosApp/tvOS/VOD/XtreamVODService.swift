@@ -69,7 +69,8 @@ final class XtreamVODService {
         self.defaults = defaults
     }
 
-    func refresh(providerID: UUID, liveTV: LiveTVService = .shared) async {
+    func refresh(providerID: UUID, liveTV: LiveTVService? = nil) async {
+        let liveTV = liveTV ?? .shared
         guard work == nil, let source = liveTV.xtreamVODConfiguration(for: providerID), store != nil else { return }
         activeProviderID = providerID
         progress = XtreamVODImportProgress(providerID: providerID)
@@ -153,8 +154,10 @@ final class XtreamVODService {
             try Task.checkCancellation()
             try await store.promoteAll(providerID: providerID, generations: staged)
             revision &+= 1
+            let importedMovies = progress?.movies.accepted ?? 0
+            let importedSeries = progress?.series.accepted ?? 0
             progress?.stage = .ready
-            progress?.message = "\(progress?.movies.accepted ?? 0) movies and \(progress?.series.accepted ?? 0) series imported."
+            progress?.message = "\(importedMovies) movies and \(importedSeries) series imported."
         } catch {
             for (kind, generation) in staged { await store.discard(providerID: providerID, kind: kind, generation: generation) }
             progress?.stage = error is CancellationError ? .cancelled : .failed
@@ -218,7 +221,8 @@ final class XtreamVODService {
         return result
     }
 
-    func detail(for item: XtreamVODItem, liveTV: LiveTVService = .shared) async throws -> XtreamVODDetail {
+    func detail(for item: XtreamVODItem, liveTV: LiveTVService? = nil) async throws -> XtreamVODDetail {
+        let liveTV = liveTV ?? .shared
         if let cached = cachedDetails[item.id], Date().timeIntervalSince(cached.0) < 3600 { return cached.1 }
         guard let source = liveTV.xtreamVODConfiguration(for: item.providerID),
               let server = source.serverURL, let user = source.username, let password = source.password else {
@@ -235,7 +239,8 @@ final class XtreamVODService {
     }
 
     func playbackURL(for item: XtreamVODItem, episode: XtreamVODEpisode? = nil,
-                     liveTV: LiveTVService = .shared) throws -> URL {
+                     liveTV: LiveTVService? = nil) throws -> URL {
+        let liveTV = liveTV ?? .shared
         guard let source = liveTV.xtreamVODConfiguration(for: item.providerID),
               let server = source.serverURL, let user = source.username, let password = source.password else {
             throw XtreamVODError.unavailable

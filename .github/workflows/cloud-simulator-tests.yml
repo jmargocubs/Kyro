@@ -68,7 +68,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          KYRO_BENCH_CHANNELS=100000 xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme SiloTV \
+          xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme SiloTV \
             -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
             -derivedDataPath "$RUNNER_TEMP/kyro-derived" \
             -jobs 2 -parallel-testing-enabled NO -collect-test-diagnostics never \
@@ -85,7 +85,7 @@ jobs:
             -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testTransferCapStopsUnknownLengthResponse \
             -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test40kImportKeepsEveryChannelBelowTheNewCap \
             -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test60kAnd100kCountsAndCap \
-            -only-testing:SiloTVTests/LiveTVCatalogBenchmarkTests/testCatalogPipelineBenchmark \
+            -only-testing:SiloTVTests/LiveTVCatalogBenchmarkTests/test100kHostedBenchmark \
             -only-testing:SiloTVTests/TVMenuEntryFocusStateTests \
             -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test40kSearchAndEventMatching \
             -resultBundlePath "$RUNNER_TEMP/tvos-focus.xcresult" \

@@ -174,6 +174,15 @@ final class LiveTVCatalogBenchmarkTests: XCTestCase {
         guard let raw = ProcessInfo.processInfo.environment["KYRO_BENCH_CHANNELS"], let count = Int(raw) else {
             throw XCTSkip("set KYRO_BENCH_CHANNELS to run")
         }
+        try await benchmark(count: count)
+    }
+
+    /// Selected explicitly by hosted validation; XCTest does not inherit xcodebuild's shell variables.
+    func test100kHostedBenchmark() async throws {
+        try await benchmark(count: 100_000)
+    }
+
+    private func benchmark(count: Int) async throws {
         func ms(_ start: UInt64) -> String { String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6) }
         func line(_ text: String) { print("KYRO-BENCH n=\(count) \(text) footprint_mb=\(KyroSyntheticCatalog.footprintMB())") }
 

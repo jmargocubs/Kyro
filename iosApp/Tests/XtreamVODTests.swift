@@ -17,6 +17,7 @@ final class XtreamVODTests: XCTestCase {
     private var suite: String!
     private var live: LiveTVService!
     private var vod: XtreamVODService!
+    private var catalogStores: [XtreamVODCatalogStore] = []
 
     override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("VODTests-\(UUID().uuidString)")
@@ -27,11 +28,17 @@ final class XtreamVODTests: XCTestCase {
         let session = URLSession(configuration: config)
         live = LiveTVService(defaults: defaults, secretStore: Secrets(), session: session,
                              channelSnapshotStore: LiveTVChannelSnapshotStore(directory: directory.appendingPathComponent("live")))
-        vod = XtreamVODService(store: try XtreamVODCatalogStore(directory: directory), session: session, defaults: defaults)
+        let store = try XtreamVODCatalogStore(directory: directory)
+        catalogStores.append(store)
+        vod = XtreamVODService(store: store, session: session, defaults: defaults)
         VODURLProtocol.mode = .normal
     }
 
     override func tearDown() async throws {
+        vod = nil
+        live = nil
+        for store in catalogStores { await store.close() }
+        catalogStores.removeAll()
         defaults.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: directory)
     }
@@ -94,6 +101,7 @@ final class XtreamVODTests: XCTestCase {
 
     func testStagedCatalogIsInvisibleUntilPromotionAndRemovalIsScoped() async throws {
         let store = try XtreamVODCatalogStore(directory: directory.appendingPathComponent("direct"))
+        catalogStores.append(store)
         let first = UUID(), second = UUID()
         func item(_ provider: UUID, _ title: String) -> XtreamVODItem {
             .init(providerID: provider, kind: .movie, remoteID: 7, title: title, category: "Other",
@@ -116,6 +124,7 @@ final class XtreamVODTests: XCTestCase {
 
     func testFiftyThousandMoviesAndTwentyThousandSeriesStayPaged() async throws {
         let store = try XtreamVODCatalogStore(directory: directory.appendingPathComponent("large"))
+        catalogStores.append(store)
         let provider = UUID()
         let start = DispatchTime.now().uptimeNanoseconds
         for (kind, amount) in [(XtreamVODKind.movie, 50_000), (.series, 20_000)] {

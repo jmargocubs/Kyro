@@ -15,8 +15,11 @@ actor XtreamVODCatalogStore {
         guard sqlite3_open_v2(path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             throw XtreamVODError.unavailable
         }
-        try execute("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-        try execute("""
+        func initialize(_ sql: String) throws {
+            guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else { throw XtreamVODError.unavailable }
+        }
+        try initialize("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+        try initialize("""
             CREATE TABLE IF NOT EXISTS vod_items (
               provider TEXT NOT NULL, kind TEXT NOT NULL, generation TEXT NOT NULL, remote_id INTEGER NOT NULL,
               title TEXT NOT NULL, category TEXT NOT NULL, poster TEXT, ext TEXT, summary TEXT, genre TEXT, rating TEXT,
@@ -31,6 +34,12 @@ actor XtreamVODCatalogStore {
     }
 
     deinit { if let database { sqlite3_close(database) } }
+
+    /// Close explicitly before test fixtures are removed; production stores close on deinit.
+    func close() {
+        if let database { sqlite3_close(database) }
+        database = nil
+    }
 
     private func execute(_ sql: String) throws {
         guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else { throw XtreamVODError.unavailable }
