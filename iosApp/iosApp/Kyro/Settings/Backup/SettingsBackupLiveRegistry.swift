@@ -9,7 +9,7 @@ import UIKit
 // touches the server, the Keychain, a provider, a library ID or a profile identity, and a setting
 // that is not listed cannot be exported or restored. Excluded on purpose: server-authoritative values,
 // Live TV providers and their credentials, provider-specific pins and hidden categories, recent
-// categories, favorites, the selected Sports league or screen, experimental and internal flags,
+// categories, favorites, the selected Sports league or screen, and internal flags,
 // diagnostics, and authentication or pairing state.
 
 /// The device-local player preferences a backup may carry, as their own setters. The synced player
@@ -157,6 +157,30 @@ enum SettingsBackupLiveRegistry {
             label: { (style: LiveTVEmbeddedGuideStyle) in style.title },
             read: { LiveTVEmbeddedGuideStyle.resolve(stored: d.defaults.string(forKey: LiveTVEmbeddedGuideStyle.defaultsKey)) },
             write: { d.defaults.set($0.rawValue, forKey: LiveTVEmbeddedGuideStyle.defaultsKey) }))
+
+        // Sports dashboard modes are explicit per-league choices in UserDefaults. An absent key
+        // means data-driven Automatic, so do not flatten it to today's effective mode.
+        for league in KyroSportLeague.allCases {
+            let key = KyroSportsHubStore.modeKey(league)
+            settings.append(BackupSetting(
+                id: "sports.dashboardMode.\(league.rawValue)", group: .sports,
+                title: "\(league.displayName) dashboard",
+                validate: { value in
+                    guard case .string(let raw) = value else { return false }
+                    return raw == "~automatic" || KyroSportsDashboardMode(rawValue: raw) != nil
+                },
+                read: { .string(d.defaults.string(forKey: key) ?? "~automatic") },
+                write: { value in
+                    guard case .string(let raw) = value else { throw InvalidValue() }
+                    if raw == "~automatic" { d.defaults.removeObject(forKey: key) }
+                    else if KyroSportsDashboardMode(rawValue: raw) != nil { d.defaults.set(raw, forKey: key) }
+                    else { throw InvalidValue() }
+                },
+                label: { value in
+                    guard case .string(let raw) = value else { return value.plainText }
+                    return raw == "~automatic" ? "Automatic" : KyroSportsDashboardMode(rawValue: raw)?.title ?? raw
+                }))
+        }
 
         // MARK: Downloads (portable)
         settings.append(BackupSetting(

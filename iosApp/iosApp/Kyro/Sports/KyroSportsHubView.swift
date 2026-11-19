@@ -211,6 +211,9 @@ struct KyroSportsHubView: View {
             startRefreshLoopIfNeeded()
         }
         .onChange(of: liveNowTrigger) { _, _ in updateLiveNow() }
+        .onReceive(NotificationCenter.default.publisher(for: .kyroSettingsDidRestore)) { _ in
+            store.reloadDashboardModesFromPreferences()
+        }
         .onChange(of: isFeedVisible) { _, visible in feedVisibilityChanged(visible) }
         .task(id: pinnedRefreshKey) {
             guard let key = pinnedRefreshKey, let pinned = playback.context?.game, pinned.id == key.gameID else { return }

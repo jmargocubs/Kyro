@@ -113,7 +113,16 @@ enum SettingsBackupCodecHostChecks {
         let futureDecoded = try SettingsBackupCodec.decode(future)
         precondition(futureDecoded.isNewerThanSupported)
 
-        print("SettingsBackupCodecHostChecks: 19 passed")
+        // New local Sports modes use the existing scalar encoding, so adding them never forces
+        // a schema upgrade or changes how a Build-93 document is decoded.
+        let sports = try SettingsBackupCodec.makeDocument(
+            groups: ["sports": ["sports.dashboardMode.nfl": .string("~automatic"),
+                               "sports.dashboardMode.nba": .string("results")]],
+            schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+        let decodedSports = try SettingsBackupCodec.decode(sports)
+        precondition(decodedSports.groups["sports"]?.count == 2)
+
+        print("SettingsBackupCodecHostChecks: 20 passed")
     }
 }
 #endif

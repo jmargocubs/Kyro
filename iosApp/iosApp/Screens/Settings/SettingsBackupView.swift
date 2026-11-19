@@ -289,6 +289,18 @@ private struct SettingsBackupReviewScreen: View {
                 .listRowBackground(Color.siloGroupedCell)
 
                 Section {
+                    DisclosureGroup("Settings not included in backups") {
+                        Text("IPTV providers, playlist URLs, credentials and EPG sources are excluded because the source configuration can contain secrets. Reconnect providers on the destination.")
+                        Text("Live TV favorites and pinned or hidden categories are tied to a provider's local ID and catalog. Kyro cannot verify that another installation has the same provider and channels, so these are skipped.")
+                        Text("Library favorites and saved browse filters depend on server, profile and catalog identities. They are not transferred without a verified destination mapping.")
+                        Text("Privacy consent, diagnostics switches and last-opened screens are intentionally not restored.")
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+                }
+                .listRowBackground(Color.siloGroupedCell)
+
+                Section {
                     if preview.totalChanges == 0 {
                         Button("Done") { model.cancelImport(); dismiss() }
                             .accessibilityIdentifier("settingsBackup.done")

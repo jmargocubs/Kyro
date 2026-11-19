@@ -340,6 +340,23 @@ final class KyroSportsLeagueStoreTests: XCTestCase {
         XCTAssertEqual(second.selectedDashboardMode, .upcoming, "untouched leagues keep the default")
     }
 
+    func testBackupRestoreReloadsDashboardModesWithoutChangingSelectedLeague() async {
+        let defaults = ephemeralDefaults()
+        let store = makeStore(stub: LeagueStub(), preferences: defaults)
+        store.selectedLeague = .nba
+        store.selectDashboardMode(.results)
+        defaults.set("live", forKey: KyroSportsHubStore.modeKey(.nba))
+        defaults.set("results", forKey: KyroSportsHubStore.modeKey(.nhl))
+        store.reloadDashboardModesFromPreferences()
+        XCTAssertEqual(store.selectedLeague, .nba)
+        XCTAssertEqual(store.selectedDashboardMode, .live)
+        store.selectedLeague = .nhl
+        XCTAssertEqual(store.selectedDashboardMode, .results)
+        defaults.removeObject(forKey: KyroSportsHubStore.modeKey(.nhl))
+        store.reloadDashboardModesFromPreferences()
+        XCTAssertEqual(store.selectedDashboardMode, .upcoming)
+    }
+
     func testModeIsIndependentPerLeagueAndSurvivesRefreshes() async {
         let stub = LeagueStub()
         await stub.set(.nba, output([game("live", .nba, .live, hoursFromNow: -1)]))

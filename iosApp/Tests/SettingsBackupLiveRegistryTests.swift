@@ -80,6 +80,9 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
             "calendar.filter",
             "navigation.fourthTab", "navigation.showAudiobooks",
             "liveTV.categoryAppearance", "liveTV.categoryGrouping", "liveTV.guideStyle",
+            "sports.dashboardMode.nfl", "sports.dashboardMode.nba", "sports.dashboardMode.collegeFootball",
+            "sports.dashboardMode.mlb", "sports.dashboardMode.nhl", "sports.dashboardMode.atp",
+            "sports.dashboardMode.wta", "sports.dashboardMode.soccer",
             "downloads.preferredFormat", "downloads.wifiOnly", "downloads.defaultDeleteWatched",
             "downloads.defaultMaxStorageGB", "downloads.sortOption", "downloads.keepWatched", "downloads.simultaneous",
             "playback.bufferAhead", "playback.losslessAudio", "pip.backgroundPlayback",
@@ -311,7 +314,57 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let data = try SettingsBackupExporter.export(registry: rig.registry, groups: SettingsBackupGroup.defaultSelection, app: app)
         XCTAssertNotNil(try SettingsBackupCodec.decode(data).groups["playbackOptions"])
         XCTAssertNotNil(try SettingsBackupCodec.decode(data).groups["navigationLayout"])
-        XCTAssertNil(try SettingsBackupCodec.decode(data).groups["sports"])
+        XCTAssertEqual(try SettingsBackupCodec.decode(data).groups["sports"]?.count,
+                       KyroSportLeague.allCases.count)
+    }
+
+    func testSportsModesRoundTripAutomaticSelectiveRestoreAndUndo() throws {
+        let rig = makeRig()
+        for (index, league) in KyroSportLeague.allCases.enumerated() {
+            let mode = KyroSportsDashboardMode.allCases[index % KyroSportsDashboardMode.allCases.count]
+            defaults.set(mode.rawValue, forKey: KyroSportsHubStore.modeKey(league))
+        }
+        let saved = try SettingsBackupExporter.export(registry: rig.registry, groups: [.sports], app: app)
+        let incoming = try SettingsBackupCodec.decode(saved)
+        XCTAssertEqual(incoming.groups["sports"]?.count, KyroSportLeague.allCases.count)
+        for league in KyroSportLeague.allCases {
+            defaults.removeObject(forKey: KyroSportsHubStore.modeKey(league))
+        }
+        let preview = SettingsBackupPlanner.preview(incoming, registry: rig.registry)
+        XCTAssertEqual(preview.totalChanges, KyroSportLeague.allCases.count)
+        let journal = BackupMemoryJournal()
+        let applier = SettingsBackupApplier(registry: rig.registry, journal: journal)
+        guard case .applied = applier.apply(preview: preview, selectedGroups: [.sports]) else {
+            return XCTFail("Sports modes were not restored")
+        }
+        for league in KyroSportLeague.allCases {
+            XCTAssertEqual(defaults.string(forKey: KyroSportsHubStore.modeKey(league)),
+                           incoming.groups["sports"]?["sports.dashboardMode.\(league.rawValue)"]?.plainText)
+        }
+        XCTAssertEqual(applier.undo().reverted.count, KyroSportLeague.allCases.count)
+        for league in KyroSportLeague.allCases {
+            XCTAssertNil(defaults.object(forKey: KyroSportsHubStore.modeKey(league)))
+        }
+
+        let nflKey = KyroSportsHubStore.modeKey(.nfl)
+        let automatic = try SettingsBackupCodec.makeDocument(
+            groups: ["sports": ["sports.dashboardMode.nfl": .string("~automatic")]],
+            schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+        defaults.set("results", forKey: nflKey)
+        let autoPreview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(automatic), registry: rig.registry)
+        guard case .applied = applier.apply(preview: autoPreview, selectedGroups: [.sports]) else {
+            return XCTFail("Automatic mode was not restored")
+        }
+        XCTAssertNil(defaults.object(forKey: nflKey))
+        XCTAssertEqual(applier.undo().reverted, ["sports.dashboardMode.nfl"])
+        XCTAssertEqual(defaults.string(forKey: nflKey), "results")
+
+        let invalid = try SettingsBackupCodec.makeDocument(
+            groups: ["sports": ["sports.dashboardMode.nfl": .string("unknown")]],
+            schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+        let invalidPreview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(invalid), registry: rig.registry)
+        XCTAssertEqual(invalidPreview.totalChanges, 0)
+        XCTAssertEqual(defaults.string(forKey: nflKey), "results")
     }
 
     func testDownloadsValuesOutsideTheStoreLimitsAreSkipped() throws {

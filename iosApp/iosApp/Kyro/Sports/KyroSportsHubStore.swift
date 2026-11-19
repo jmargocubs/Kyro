@@ -342,8 +342,22 @@ final class KyroSportsHubStore {
 
     private static let selectedLeagueKey = "kyro.sports.selectedLeague"
     private static let selectedCategoryKey = "kyro.sports.selectedCategory"
-    private static func modeKey(_ league: KyroSportLeague) -> String {
+    static func modeKey(_ league: KyroSportLeague) -> String {
         "kyro.sports.mode.\(league.rawValue)"
+    }
+
+    /// Re-read persisted choices after a settings restore or Undo. Without an explicit choice,
+    /// the dashboard uses its current data-driven mode rather than a fixed backup value.
+    func reloadDashboardModesFromPreferences() {
+        guard let preferences else { return }
+        for league in KyroSportLeague.allCases {
+            let explicit = preferences.string(forKey: Self.modeKey(league))
+                .flatMap(KyroSportsDashboardMode.init(rawValue:))
+            update(league) { state in
+                state.mode = explicit ?? KyroSportsDashboard.defaultMode(for: state.sections)
+                state.hasResolvedMode = explicit != nil || !state.sections.isEmpty
+            }
+        }
     }
 
     init(

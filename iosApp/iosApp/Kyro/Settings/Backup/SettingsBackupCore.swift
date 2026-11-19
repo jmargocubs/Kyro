@@ -140,7 +140,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .navigation: "Navigation"
         case .liveTVCategories: "Live TV categories"
         case .guideLayout: "Guide layout"
-        case .sports: "Sports sources"
+        case .sports: "Sports dashboard"
         case .downloads: "Downloads"
         case .playbackOptions: "Playback options"
         case .pictureInPicture: "Picture in Picture"
@@ -162,7 +162,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .navigation: "The fourth tab."
         case .liveTVCategories: "How categories look and group."
         case .guideLayout: "List or grid guide on the watch screen."
-        case .sports: "Which extra Sports data sources are on."
+        case .sports: "Preferred dashboard view for each sport."
         case .downloads: "Wi-Fi only, quality, limits and sorting."
         case .playbackOptions: "Buffering and lossless audio."
         case .pictureInPicture: "Keep playing when you leave the app."
@@ -186,11 +186,11 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         }
     }
 
-    // Keep the Sports group name for Build 93 imports. The production registry no longer has its
-    // internal flags, so SettingsBackupModel hides this empty group from new exports.
+    // Keep the Sports group identifier for Build 93 imports. Old internal flag IDs remain unknown
+    // and are skipped; dashboard-mode IDs are genuine user choices.
     static var portable: [SettingsBackupGroup] { allCases.filter { !$0.isDeviceSpecific } }
     static var deviceSpecific: [SettingsBackupGroup] { allCases.filter(\.isDeviceSpecific) }
-    static var defaultSelection: Set<SettingsBackupGroup> { Set(allCases.filter { $0 != .sports }) }
+    static var defaultSelection: Set<SettingsBackupGroup> { Set(allCases) }
 }
 
 // MARK: - Settings
