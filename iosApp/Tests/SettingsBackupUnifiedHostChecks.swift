@@ -39,10 +39,16 @@ enum SettingKey: String, Hashable, Sendable, CaseIterable {
     case catalogMetadataLanguage = "catalog.metadata_language"
     case playbackSubtitleAppearance = "playback.subtitle_appearance"
     case playerSubtitleSyncMs = "player.subtitle_sync_ms"
+    case playbackCellularPreferredQuality = "playback.cellular_preferred_quality"
+    case playbackCellularMaxBitrateKbps = "playback.cellular_max_bitrate_kbps"
+    case uiTitleArt = "ui.title_art"
+    static let cellularQualityRevision = 20
+    var introducedIn: Int { self == .uiTitleArt ? 16 : 1 }
 
     /// Keys the real contract stores at profile scope; everything else here is per device.
     /// Stored at both `profile` and `profile_device`.
-    static let dual: Set<SettingKey> = [.playbackSubtitleAppearance, .playerSubtitleSyncMs]
+    static let dual: Set<SettingKey> = [.playbackSubtitleAppearance, .playerSubtitleSyncMs,
+        .playbackCellularPreferredQuality, .playbackCellularMaxBitrateKbps, .uiTitleArt]
     static let profileScoped: Set<SettingKey> = [
         .playbackSubtitleLanguage, .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages,
         .catalogHideUnwatchedEpisodeOverviews, .playerVideoSkipBackSeconds, .playerVideoSkipForwardSeconds,
@@ -52,6 +58,15 @@ enum SettingKey: String, Hashable, Sendable, CaseIterable {
 }
 enum SettingScope: Equatable, Sendable {
     case account, profile, profileDevice, profileLibrary, profileSeries
+    var rawValue: String {
+        switch self {
+        case .account: "account"
+        case .profile: "profile"
+        case .profileDevice: "profile_device"
+        case .profileLibrary: "profile_library"
+        case .profileSeries: "profile_series"
+        }
+    }
 }
 enum SettingScopeIdentity: Equatable, Sendable {
     case profile, profileDevice
@@ -123,12 +138,17 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
         if let delay { try await Task.sleep(for: delay) }
         if offline { throw Failure.offline }
         var rows: [SettingKey: EffectiveSettingValue] = [:]
-        for key in keys where !unserved.contains(key) {
+        for key in keys where !unserved.contains(key)
+            && !(revision < SettingKey.cellularQualityRevision
+                 && (key == .playbackCellularPreferredQuality || key == .playbackCellularMaxBitrateKbps)) {
             let own: SettingScope = SettingKey.profileScoped.contains(key) ? .profile : .profileDevice
             if SettingKey.dual.contains(key) {
                 if let hidden = overrides[key] {
                     rows[key] = EffectiveSettingValue(key: key.rawValue, value: hidden.value, storedValue: nil,
                                                       scope: hidden.scope, profileId: "profile")
+                } else if key == .uiTitleArt, let value = profileScopeRows[key] {
+                    rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
+                                                      scope: .profile, profileId: "profile")
                 } else if let value = deviceRows[key] {
                     rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
                                                       scope: .profileDevice, profileId: "profile")
@@ -136,8 +156,16 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
                     rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
                                                       scope: .profile, profileId: "profile")
                 } else {
+                    let candidates: [([SettingKey: SettingJSONValue], SettingScope)] = key == .uiTitleArt
+                        ? [(profileScopeRows, .profile), (deviceRows, .profileDevice)]
+                        : [(deviceRows, .profileDevice), (profileScopeRows, .profile)]
+                    if let selected = candidates.first(where: { $0.0[key] != nil }), let value = selected.0[key] {
+                        rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
+                                                          scope: selected.1, profileId: "profile")
+                        continue
+                    }
                     rows[key] = EffectiveSettingValue(
-                        key: key.rawValue, value: key == .playerSubtitleSyncMs ? .int(0) : SubtitleFixtures.json([:]),
+                        key: key.rawValue, value: defaultValue(key),
                         storedValue: nil, scope: nil, profileId: nil)
                 }
                 continue
@@ -190,6 +218,16 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
     func row(_ key: SettingKey, _ scope: SettingScopeIdentity) -> SettingJSONValue? {
         scope == .profileDevice ? deviceRows[key] : profileScopeRows[key]
     }
+    private func defaultValue(_ key: SettingKey) -> SettingJSONValue {
+        switch key {
+        case .playerSubtitleSyncMs: .int(0)
+        case .playbackSubtitleAppearance: SubtitleFixtures.json([:])
+        case .playbackCellularPreferredQuality: .string("720p")
+        case .playbackCellularMaxBitrateKbps: .int(2000)
+        case .uiTitleArt: .bool(true)
+        default: .null
+        }
+    }
     func failWriting(_ key: SettingKey?, _ scope: SettingScopeIdentity = .profile) {
         failWrite = key.map { ($0, scope) }
     }
@@ -232,7 +270,7 @@ enum SettingsBackupUnifiedHostChecks {
         model.exportSelection = [.navigation, .streaming, .subtitles]
         guard let file = await model.exportUnifiedDocument() else { fatalError("export failed") }
         let document = try SettingsBackupCodec.decode(file)
-        precondition(document.schemaVersion == 2 && document.scope != nil)
+        precondition(document.schemaVersion == 3 && document.scope != nil)
         precondition(document.groups["streaming"]?["streaming.resolution"] == .string("1080p"))
         precondition(document.groups["streaming"]?["streaming.audioLanguage"] == .string("en"))
         precondition(document.groups["subtitles"]?["subtitles.language"] == .string("en"))
@@ -261,9 +299,9 @@ enum SettingsBackupUnifiedHostChecks {
 
         await transport.moveProfile()
         await model.loadUnifiedImport(data: file)
-        // This file selected the streaming (6) and subtitles (7, with the three display items)
-        // groups; all thirteen are refused for a different profile.
-        precondition(model.preview?.skippedCount == 13)
+        // Streaming and subtitle values, including the composite cellular pair, are refused for
+        // a different profile.
+        precondition(model.preview?.skippedCount == 14)
         let before = await transport.writeCount()
         await model.applyUnifiedSelected()
         let after = await transport.writeCount()
@@ -342,7 +380,8 @@ enum SettingsBackupUnifiedHostChecks {
 
         let batchCount = try await RemoteBatchOneChecks.run()
         let batchThree = try await RemoteBatchThreeChecks.run()
-        print("SettingsBackupUnifiedHostChecks: \(10 + batchCount + batchThree) passed")
+        let batchFour = try await RemoteBatchFourChecks.run()
+        print("SettingsBackupUnifiedHostChecks: \(10 + batchCount + batchThree + batchFour) passed")
     }
 }
 
@@ -449,7 +488,7 @@ private enum RemoteBatchOneChecks {
         // Every new ID passes the document's sensitive-name filter and is owned by the adapter.
         let newIDs = Set(rows.map(\.id))
         precondition(newIDs.count == 24 && newIDs.isSubset(of: SettingsBackupRemoteAdapter.settingIDs))
-        precondition(SettingsBackupRemoteAdapter.settingIDs.count == 30)
+        precondition(SettingsBackupRemoteAdapter.settingIDs.count == 32)
         precondition(SettingsBackupRemoteAdapter.settingIDs.allSatisfy { !SettingsBackupSafety.isSensitiveName($0) })
         checks += 1
 
@@ -637,8 +676,8 @@ private enum RemoteBatchOneChecks {
             precondition(!text.contains(secret), "document leaked \(secret)")
         }
         let decoded = try SettingsBackupCodec.decode(exported)
-        precondition(decoded.groups["player"]?.count == 12 && decoded.groups["interface"]?.count == 5)
-        precondition(decoded.groups["streaming"]?.count == 6 && decoded.groups["subtitles"]?.count == 7)
+        precondition(decoded.groups["player"]?.count == 12 && decoded.groups["interface"]?.count == 6)
+        precondition(decoded.groups["streaming"]?.count == 7 && decoded.groups["subtitles"]?.count == 7)
         checks += 1
 
         checks += try await batchTwoChecks()
@@ -1265,7 +1304,7 @@ private enum RemoteBatchThreeChecks {
             model.exportSelection = [.navigation, .streaming]
             guard let plain = await model.exportUnifiedDocument() else { fatalError("export") }
             let plainDoc = try SettingsBackupCodec.decode(plain)
-            precondition(plainDoc.schemaVersion == 2 && plainDoc.groups["subtitles"] == nil)
+            precondition(plainDoc.schemaVersion == 3 && plainDoc.groups["subtitles"] == nil)
 
             model.exportSelection = [.navigation, .streaming, .subtitles]
             guard let data = await model.exportUnifiedDocument() else { fatalError("export") }
@@ -1314,6 +1353,166 @@ private enum RemoteBatchThreeChecks {
             let preview = await adapter.preview(decoded)
             precondition(preview.flatMap(\.items).count == 2)
             precondition(preview.flatMap(\.items).allSatisfy { !all.contains($0.id) })
+        }
+        checks += 1
+        return checks
+    }
+}
+
+@MainActor
+private enum RemoteBatchFourChecks {
+    static let app = SettingsBackupAppInfo(version: "1", build: "96", platform: "iOS", idiom: "phone")
+    static let cell = ScopedCompositeBackup.cellularID
+    static let art = ScopedCompositeBackup.titleArtID
+    static let scope = SettingsBackupScope(serverFingerprint: String(repeating: "a", count: 64),
+                                           profileFingerprint: String(repeating: "b", count: 64))
+
+    static func adapter(_ transport: FakeTransport, _ journal: RemoteMemoryJournal = RemoteMemoryJournal()) -> SettingsBackupRemoteAdapter {
+        SettingsBackupRemoteAdapter(transport: transport, journal: journal, timeout: .seconds(1))
+    }
+    static func incoming(_ group: String, _ id: String, _ value: BackupValue) throws -> IncomingBackup {
+        try SettingsBackupCodec.decode(SettingsBackupCodec.makeUnifiedDocument(
+            groups: [group: [id: value]], scope: scope, app: app, now: Date()))
+    }
+    static func cellular(_ resolution: String, _ cap: BackupValue, _ at: String = "profile_device") -> BackupValue {
+        .record(["scope": .string(at), "resolution": .string(resolution), "bitrateKbps": cap])
+    }
+    static func title(_ value: Bool, _ at: String) -> BackupValue {
+        .record(["scope": .string(at), "enabled": .bool(value)])
+    }
+
+    static func run() async throws -> Int {
+        var checks = 0
+        // All UI presets are round-tripped as the two authoritative rows; nil cap is explicit unlimited.
+        for (resolution, cap) in [("auto", SettingJSONValue.null), ("2160p", .null), ("1080p", .int(10000)),
+                                  ("1080p", .int(6000)), ("1080p", .int(3000)), ("720p", .int(4000)),
+                                  ("720p", .int(2000)), ("480p", .int(1500))] {
+            let source = FakeTransport()
+            await source.setRow(.playbackCellularPreferredQuality, .profileDevice, .string(resolution))
+            await source.setRow(.playbackCellularMaxBitrateKbps, .profileDevice, cap)
+            let exported = try await adapter(source).export()
+            let expectedCap: BackupValue = cap == .null ? .string(RemoteBackupDefinition.null) : {
+                if case .int(let value) = cap { return .int(value) }; return .int(-1)
+            }()
+            let saved = exported.groups["streaming"]?[cell]
+            precondition(saved == cellular(resolution, expectedCap))
+            let target = FakeTransport()
+            let data = try incoming("streaming", cell, saved!)
+            let restored = await adapter(target).apply(data, selectedIDs: [cell])
+            let restoredQuality = await target.row(.playbackCellularPreferredQuality, .profileDevice)
+            let restoredCap = await target.row(.playbackCellularMaxBitrateKbps, .profileDevice)
+            precondition(restored.applied == [cell] && restoredQuality == .string(resolution) && restoredCap == cap)
+        }
+        checks += 1
+
+        // Writes and verifies both cellular keys, and Undo restores their old values.
+        do {
+            let data = try incoming("streaming", cell, cellular("480p", .int(1500)))
+            let target = FakeTransport()
+            await target.setRow(.playbackCellularPreferredQuality, .profileDevice, .string("720p"))
+            await target.setRow(.playbackCellularMaxBitrateKbps, .profileDevice, .int(2000))
+            let journal = RemoteMemoryJournal(); let remote = adapter(target, journal)
+            let preview = await remote.preview(data)
+            precondition(RemoteBatchThreeChecks.item(preview, cell).status == .willChange)
+            let report = await remote.apply(data, selectedIDs: [cell])
+            let quality = await target.row(.playbackCellularPreferredQuality, .profileDevice)
+            let cap = await target.row(.playbackCellularMaxBitrateKbps, .profileDevice)
+            precondition(report.applied == [cell] && quality == .string("480p") && cap == .int(1500))
+            let undone = await remote.undo()
+            let oldQuality = await target.row(.playbackCellularPreferredQuality, .profileDevice)
+            let oldCap = await target.row(.playbackCellularMaxBitrateKbps, .profileDevice)
+            precondition(undone.failed.isEmpty && oldQuality == .string("720p") && oldCap == .int(2000))
+        }
+        checks += 1
+
+        // Default/inherited differs from explicit null (unlimited); unsafe deletion of hidden rows is refused.
+        do {
+            let defaultData = try incoming("streaming", cell, cellular("720p", .int(2000), "default"))
+            let defaultAdapter = adapter(FakeTransport())
+            let unchanged = await defaultAdapter.preview(defaultData)
+            precondition(RemoteBatchThreeChecks.item(unchanged, cell).status == .unchanged)
+            let explicitNull = try incoming("streaming", cell, cellular("720p", .string(RemoteBackupDefinition.null), "profile_device"))
+            let target = FakeTransport(); let result = await adapter(target).apply(explicitNull, selectedIDs: [cell])
+            let savedNull = await target.row(.playbackCellularMaxBitrateKbps, .profileDevice)
+            precondition(result.applied == [cell] && savedNull == .null)
+            let profile = FakeTransport()
+            await profile.setRow(.playbackCellularPreferredQuality, .profile, .string("1080p"))
+            await profile.setRow(.playbackCellularMaxBitrateKbps, .profile, .int(6000))
+            let profileSaved = try await adapter(profile).export().groups["streaming"]![cell]!
+            precondition(profileSaved == cellular("1080p", .int(6000), "profile"))
+            let profileRestore = try incoming("streaming", cell, profileSaved)
+            let profileDestination = FakeTransport()
+            let profileReport = await adapter(profileDestination).apply(profileRestore, selectedIDs: [cell])
+            let profileQuality = await profileDestination.row(.playbackCellularPreferredQuality, .profile)
+            let profileCap = await profileDestination.row(.playbackCellularMaxBitrateKbps, .profile)
+            precondition(profileReport.applied == [cell] && profileQuality == .string("1080p") && profileCap == .int(6000))
+            let unsafe = await adapter(profile).preview(defaultData)
+            if case .unsupported(_) = RemoteBatchThreeChecks.item(unsafe, cell).status {} else { fatalError("unsafe default clear was offered") }
+        }
+        checks += 1
+
+        // Profile title-art write preserves the existing device value; the inverse hidden-row transition is refused.
+        do {
+            let inheritedArt = try await adapter(FakeTransport()).export().groups["interface"]![art]!
+            precondition(inheritedArt == title(true, "default"))
+            let explicitDefault = FakeTransport(); await explicitDefault.setRow(.uiTitleArt, .profile, .bool(true))
+            let profileDefault = try await adapter(explicitDefault).export().groups["interface"]![art]!
+            precondition(profileDefault == title(true, "profile"))
+            let data = try incoming("interface", art, title(false, "profile"))
+            let target = FakeTransport(); await target.setRow(.uiTitleArt, .profileDevice, .bool(true))
+            let journal = RemoteMemoryJournal(); let remote = adapter(target, journal)
+            let report = await remote.apply(data, selectedIDs: [art])
+            let profileValue = await target.row(.uiTitleArt, .profile)
+            let deviceValue = await target.row(.uiTitleArt, .profileDevice)
+            precondition(report.applied == [art] && profileValue == .bool(false) && deviceValue == .bool(true),
+                         "title art report=\(report.applied)/\(report.failed)/\(report.skipped), rows=\(String(describing: profileValue))/\(String(describing: deviceValue))")
+            let undo = await remote.undo()
+            let restoredProfile = await target.row(.uiTitleArt, .profile)
+            precondition(undo.failed.isEmpty && restoredProfile == nil)
+            let profileTarget = FakeTransport(); await profileTarget.setRow(.uiTitleArt, .profile, .bool(true))
+            let deviceData = try incoming("interface", art, title(false, "profile_device"))
+            let unsafe = await adapter(profileTarget).preview(deviceData)
+            if case .unsupported(_) = RemoteBatchThreeChecks.item(unsafe, art).status {} else { fatalError("hidden device art was overwritten") }
+        }
+        checks += 1
+
+        // Partial second-row failure is journalled; recovery reverses first row. Identity mismatch writes zero rows.
+        do {
+            let data = try incoming("streaming", cell, cellular("480p", .int(1500)))
+            let partial = FakeTransport()
+            await partial.setRow(.playbackCellularPreferredQuality, .profileDevice, .string("720p"))
+            await partial.setRow(.playbackCellularMaxBitrateKbps, .profileDevice, .int(2000))
+            await partial.failWriting(.playbackCellularMaxBitrateKbps, .profileDevice)
+            let journal = RemoteMemoryJournal(); let remote = adapter(partial, journal)
+            let failure = await remote.apply(data, selectedIDs: [cell])
+            precondition(failure.failed == [cell] && remote.needsRecovery)
+            await partial.failWriting(nil)
+            let recovery = await remote.undo()
+            let restored = await partial.row(.playbackCellularPreferredQuality, .profileDevice)
+            precondition(recovery.failed.isEmpty && restored == .string("720p"))
+            let mismatch = FakeTransport(); await mismatch.moveProfile()
+            let mismatched = adapter(mismatch); let before = await mismatch.writeCount()
+            let mismatchReport = await mismatched.apply(data, selectedIDs: [cell])
+            let after = await mismatch.writeCount()
+            precondition(!mismatchReport.failed.isEmpty && before == after)
+        }
+        checks += 1
+
+        // Older server capability and schema 1/2 readers remain unchanged.
+        do {
+            let data = try incoming("streaming", cell, cellular("480p", .int(1500), "profile_device"))
+            let old = FakeTransport(); await old.setRevision(19)
+            let preview = await adapter(old).preview(data)
+            if case .unsupported(_) = RemoteBatchThreeChecks.item(preview, cell).status {} else { fatalError("old server advertised cellular setting") }
+            let legacy = try SettingsBackupCodec.makeUnifiedDocument(
+                groups: ["streaming": ["streaming.resolution": .string("720p")]], scope: scope, app: app, now: Date())
+            let legacyDecoded = try SettingsBackupCodec.decode(legacy)
+            precondition(legacyDecoded.schemaVersion == 2)
+            let schema1 = try SettingsBackupCodec.makeDocument(
+                groups: ["navigation": ["navigation.fourthTab": .string("sports")]],
+                schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+            let schema1Decoded = try SettingsBackupCodec.decode(schema1)
+            precondition(schema1Decoded.schemaVersion == 1)
         }
         checks += 1
         return checks

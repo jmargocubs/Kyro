@@ -381,3 +381,33 @@ The server has no transaction across rows, so restore is an ordered, journalled 
 | 5 | Card presentation; primary menu + shortcuts | Composite objects; menu contains library IDs needing destination-catalog matching |
 
 The device caption-matching toggle (`player.subtitleMatchesSystemAppearance`) was already counted among the 30 local settings. Physical-iPhone validation of any API-backed setting is still outstanding.
+
+## API batch 4: cellular quality and title art (2026-11-19)
+
+**Outcome:** the unified schema-3 adapter now exports and restores both additional logical settings through the authenticated effective-settings API. The potential-candidate count moves from **60/64 to 62/64**; registered supported IDs move from **61 to 63** (31 device-local, 32 server/profile-backed). The two new composite values remain one selectable row each in the existing Streaming and Interface groups.
+
+| Backup ID | API mapping | Portable representation |
+|---|---|---|
+| `streaming.cellularQuality` | `playback.cellular_preferred_quality` + `playback.cellular_max_bitrate_kbps`, `profile` or `profile_device` | Schema-3 record of scope, resolution and cap; explicit JSON null cap is `~null` (unlimited), while `scope: default` means no authored row |
+| `interface.titleArt` | `ui.title_art`, `profile` or `profile_device` | Schema-3 record of the authoritative source scope and boolean; default/inherited is distinct from explicit true |
+
+The adapter uses `storedValue ?? value` for policy-constrained effective rows, confirms each row with a fresh read, and never reads from the `PlayerSettings` or `TitleArtPreferences` caches. Cellular export validates that the two API rows share the same winning scope, and retains the independent pair members rather than reconstructing them from a named preset. This carries custom contract-valid pairs too. It does not run on tvOS: this target and its export UI are iOS-only; the contract keys themselves are available on iOS and iPadOS.
+
+### Multi-row safety and remaining scope limitation
+
+The settings API exposes effective values and the winning scope, but **does not expose a scope-targeted read for a hidden row**. Batch 4 therefore journals and confirms every actual row write, then reverses writes in order on Undo/recovery. It supports cellular explicit profile/device pairs, explicit unlimited caps, both values and schema-3 default/inherited markers. Profile restore is refused when an active device pair hides an unknown profile pair; a default/inherited restore is accepted as unchanged at a default destination but refused if clearing would expose unread lower-scope rows. This avoids destructive guessing.
+
+Title-art profile writes preserve a hidden device row because profile scope wins. A saved device scope applies where no profile row currently wins. Restoring profile scope over a visible device value is safe (writing profile makes it win; Undo removes that new row and reveals the untouched device value). Restoring device scope over a visible profile value is **shown as unsupported**: turning the profile row off would expose a device row that the API cannot read or journal. A saved `default` state is likewise only a no-op when the destination is already at default. This is a concrete API capability limit, not silent omission; preview gives a reason and no writes occur. Full bidirectional scope switching requires the server to add a read-at-scope operation or an atomic scoped mutation API.
+
+### Validation
+
+* **macOS host checks:** **88 unified checks passed**. Added checks cover all eight shipped cellular picker pairs (including each two-key restore), explicit uncapped null vs inherited default, profile-scoped cellular rows, profile title-art restoration while preserving the device row, safe Undo, refusing unsafe reverse scope shifts, a second-row write failure and recovery, an older revision-19 server, mismatched profile with zero writes, and schema-1/schema-2 compatibility. Existing local/remote/subtitle tests also pass.
+* **Generic iOS build-for-testing:** `xcodebuild -project Silo.xcodeproj -scheme Silo -destination 'generic/platform=iOS' -configuration Debug -jobs 2 CODE_SIGNING_ALLOWED=NO build-for-testing` succeeded (`TEST BUILD SUCCEEDED`). The Silo app and test target compiled, without running tests or launching Simulator.
+
+### Remaining: 2 of the 64 candidates
+
+| Batch | Settings | Work / dependency |
+|---|---|---|
+| 5 | Card presentation; primary menu + shortcuts | Composite objects; library IDs in menus/shortcuts need destination-catalog identity mapping, validation and safe merge/Undo |
+
+The two visible settings above are not claimed as unconditionally portable across any server state: profile/device hidden-row transitions listed above remain explicitly unsupported until the API exposes those rows. Physical-iPhone validation is still outstanding.

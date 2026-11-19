@@ -494,6 +494,83 @@ enum RemoteBackupDefinition: CaseIterable {
     }
 }
 
+/// The two Batch-4 logical settings whose UI state spans more than one API row or scope.
+enum ScopedCompositeBackup {
+    static let cellularID = "streaming.cellularQuality"
+    static let titleArtID = "interface.titleArt"
+    static let cellularKeys: [SettingKey] = [.playbackCellularPreferredQuality, .playbackCellularMaxBitrateKbps]
+    static let titleArtKey = SettingKey.uiTitleArt
+    static let ids: Set<String> = [cellularID, titleArtID]
+    static let revision = SettingKey.cellularQualityRevision
+
+    static func cellular(_ rows: [SettingKey: EffectiveSettingValue]) throws -> BackupValue {
+        guard let quality = rows[.playbackCellularPreferredQuality],
+              let bitrate = rows[.playbackCellularMaxBitrateKbps],
+              quality.scope == bitrate.scope,
+              case .string(let resolution) = (quality.storedValue ?? quality.value),
+              SiloQualityPresets.resolutionChoices.contains(resolution) else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        let cap: BackupValue
+        let storedBitrate = bitrate.storedValue ?? bitrate.value
+        if case .null = storedBitrate { cap = .string(RemoteBackupDefinition.null) }
+        else if let number = storedBitrate.intValue, (100...200_000).contains(number) { cap = .int(number) }
+        else { throw SettingsBackupRemoteError.unsupportedValue }
+        return .record(["scope": .string(quality.scope?.rawValue ?? "default"),
+                        "resolution": .string(resolution), "bitrateKbps": cap])
+    }
+
+    static func titleArt(_ rows: [SettingKey: EffectiveSettingValue]) throws -> BackupValue {
+        guard let row = rows[titleArtKey], case .bool(let enabled) = (row.storedValue ?? row.value),
+              row.scope == nil || row.scope == .profile || row.scope == .profileDevice else {
+            throw SettingsBackupRemoteError.unsupportedValue
+        }
+        return .record(["scope": .string(row.scope?.rawValue ?? "default"), "enabled": .bool(enabled)])
+    }
+
+    static func scope(_ value: BackupValue, id: String) -> String? {
+        guard case .record(let fields) = value, case .string(let scope)? = fields["scope"] else { return nil }
+        guard id == cellularID ? ["default", "profile", "profile_device"].contains(scope)
+              : ["default", "profile", "profile_device"].contains(scope) else { return nil }
+        return scope
+    }
+
+    static func cellularFields(_ value: BackupValue) -> (scope: String, resolution: BackupValue, bitrate: BackupValue)? {
+        guard case .record(let fields) = value, let scope = scope(value, id: cellularID),
+              Set(fields.keys) == Set(["scope", "resolution", "bitrateKbps"]),
+              case .string(let resolution)? = fields["resolution"],
+              SiloQualityPresets.resolutionChoices.contains(resolution),
+              let bitrate = fields["bitrateKbps"], validCap(bitrate) else { return nil }
+        return (scope, .string(resolution), bitrate)
+    }
+
+    static func titleArtFields(_ value: BackupValue) -> (scope: String, enabled: BackupValue)? {
+        guard case .record(let fields) = value, let scope = scope(value, id: titleArtID),
+              Set(fields.keys) == Set(["scope", "enabled"]),
+              let enabled = fields["enabled"], case .bool = enabled else { return nil }
+        return (scope, enabled)
+    }
+
+    private static func validCap(_ value: BackupValue) -> Bool {
+        if value == .string(RemoteBackupDefinition.null) { return true }
+        if case .int(let number) = value { return (100...200_000).contains(number) }
+        return false
+    }
+
+    static func label(_ id: String, _ value: BackupValue) -> String {
+        if id == cellularID, let fields = cellularFields(value) {
+            let cap = fields.bitrate == .string(RemoteBackupDefinition.null)
+                ? "unlimited" : "\(fields.bitrate.plainText) Kbps"
+            return "\(fields.resolution.plainText), \(cap) (\(fields.scope))"
+        }
+        if id == titleArtID, let fields = titleArtFields(value) {
+            let enabled = fields.enabled == .bool(true) ? "On" : "Off"
+            return "\(enabled) (\(fields.scope))"
+        }
+        return value.plainText
+    }
+}
+
 struct RemoteBackupChange: Codable, Equatable {
     let id: String
     let previous: BackupValue
@@ -506,7 +583,22 @@ struct RemoteBackupJournal: Codable {
     var state: State
     /// Ordered row writes of the subtitle display unit. Absent in earlier journals.
     var subtitleSteps: [SubtitleStep]? = nil
+    /// Ordered authoritative row writes for composite settings such as cellular quality and title art.
+    var rowSteps: [ScopedBackupRowStep]? = nil
     enum State: String, Codable { case applying, applied }
+}
+
+/// A reversible, identity-pinned row mutation. `previousEffective` and `appliedEffective` guard
+/// Undo against an intervening change while allowing a delete to reveal an inherited lower scope.
+struct ScopedBackupRowStep: Codable, Equatable, Sendable {
+    let item: String
+    let key: String
+    let scope: String
+    let previousRow: BackupValue?
+    let appliedRow: BackupValue?
+    let previousEffective: BackupValue
+    let previousEffectiveScope: String?
+    let appliedEffective: BackupValue
 }
 
 protocol RemoteBackupJournalStoring: AnyObject {
@@ -564,8 +656,12 @@ final class SettingsBackupRemoteAdapter {
 
     /// Backup IDs and groups this adapter owns; the model routes them here instead of to the local
     /// registry.
-    nonisolated static var settingIDs: Set<String> { RemoteBackupDefinition.ids.union(SubtitleDisplayBackup.ids) }
-    nonisolated static var groups: [SettingsBackupGroup] { RemoteBackupDefinition.groups }
+    nonisolated static var settingIDs: Set<String> { RemoteBackupDefinition.ids.union(SubtitleDisplayBackup.ids).union(ScopedCompositeBackup.ids) }
+    nonisolated static var groups: [SettingsBackupGroup] {
+        var result = RemoteBackupDefinition.groups
+        if !result.contains(.interface) { result.append(.interface) }
+        return result
+    }
 
     var undoAvailable: Bool { (try? journal.load()) != nil }
     var needsRecovery: Bool { (try? journal.load())?.state == .applying }
@@ -604,6 +700,12 @@ final class SettingsBackupRemoteAdapter {
             groups[SettingsBackupGroup.subtitles.rawValue, default: [:]][id] = value
         }
         omitted += subtitle.omitted
+        do {
+            groups[SettingsBackupGroup.streaming.rawValue, default: [:]][ScopedCompositeBackup.cellularID] = try ScopedCompositeBackup.cellular(rows)
+        } catch { omitted.append("Cellular streaming quality (the authoritative quality pair or scope could not be read safely)") }
+        do {
+            groups[SettingsBackupGroup.interface.rawValue, default: [:]][ScopedCompositeBackup.titleArtID] = try ScopedCompositeBackup.titleArt(rows)
+        } catch { omitted.append("Title artwork preference (the authoritative value or scope could not be read safely)") }
         return (owner.scope, groups, omitted)
     }
 
@@ -611,9 +713,13 @@ final class SettingsBackupRemoteAdapter {
         let present = RemoteBackupDefinition.allCases.filter {
             incoming.groups[$0.group.rawValue]?[$0.id] != nil
         }
+        let composites = ScopedCompositeBackup.ids.filter { id in
+            let group = id == ScopedCompositeBackup.cellularID ? SettingsBackupGroup.streaming : .interface
+            return incoming.groups[group.rawValue]?[id] != nil
+        }.sorted()
         let subtitleValues = incoming.groups[SettingsBackupGroup.subtitles.rawValue] ?? [:]
         let subtitlePresent = SubtitleDisplayBackup.orderedIDs.filter { subtitleValues[$0] != nil }
-        guard !present.isEmpty || !subtitlePresent.isEmpty else { return [] }
+        guard !present.isEmpty || !subtitlePresent.isEmpty || !composites.isEmpty else { return [] }
         var reason: String?
         var current: [SettingKey: EffectiveSettingValue] = [:]
         var revision = Int.max
@@ -622,14 +728,17 @@ final class SettingsBackupRemoteAdapter {
             let owner = try await timed { try await self.transport.owner() }
             guard owner.scope == incoming.scope else { throw SettingsBackupRemoteError.destinationMismatch }
             current = try await read(owner)
-            if !subtitlePresent.isEmpty { revision = try await timed { try await self.transport.manifestRevision(owner: owner) } }
+            if !subtitlePresent.isEmpty || !composites.isEmpty {
+                revision = try await timed { try await self.transport.manifestRevision(owner: owner) }
+            }
         } catch { reason = error.localizedDescription }
         let subtitleItems = subtitlePresent.map { id in
             SubtitleDisplayBackup.previewItem(id: id, incoming: subtitleValues[id]!, siblings: subtitleValues,
                                               rows: reason == nil ? current : nil, reason: reason, revision: revision)
         }
-        let allGroups = RemoteBackupDefinition.groups.contains(.subtitles) ? RemoteBackupDefinition.groups
-            : RemoteBackupDefinition.groups + [.subtitles]
+        let compositeItems = composites.map { compositePreviewItem(id: $0, incoming: incoming,
+            rows: reason == nil ? current : nil, reason: reason, revision: revision) }
+        let allGroups = Self.groups
         return allGroups.compactMap { group in
             let items: [RestorePreviewItem] = present.filter { $0.group == group }.map { definition in
                 let value = incoming.groups[group.rawValue]![definition.id]!
@@ -660,15 +769,17 @@ final class SettingsBackupRemoteAdapter {
                                           current: existing.map(definition.label), incoming: definition.label(value),
                                           status: status, incomingValue: value)
             }
-            let all = group == .subtitles ? items + subtitleItems : items
+            let all = group == .subtitles ? items + subtitleItems
+                : items + compositeItems.filter { $0.group == group }
             return all.isEmpty ? nil : RestorePreviewGroup(group: group, items: all, groupUnsupportedReason: nil)
         }
     }
 
     func apply(_ incoming: IncomingBackup, selectedIDs: Set<String>) async -> RemoteBackupApplyReport {
+        let compositeIDs = selectedIDs.intersection(ScopedCompositeBackup.ids)
         let definitions = RemoteBackupDefinition.allCases.filter { selectedIDs.contains($0.id) }
         let subtitleIDs = selectedIDs.intersection(SubtitleDisplayBackup.ids)
-        guard !definitions.isEmpty || !subtitleIDs.isEmpty else { return RemoteBackupApplyReport() }
+        guard !definitions.isEmpty || !subtitleIDs.isEmpty || !compositeIDs.isEmpty else { return RemoteBackupApplyReport() }
         var report = RemoteBackupApplyReport()
         do {
             guard !needsRecovery else { throw SettingsBackupRemoteError.unconfirmedWrite }
@@ -692,7 +803,7 @@ final class SettingsBackupRemoteAdapter {
                     changes.append(RemoteBackupChange(id: definition.id, previous: previous, applied: desired))
                 }
             }
-            guard !changes.isEmpty || !subtitleIDs.isEmpty else { return report }
+            guard !changes.isEmpty || !subtitleIDs.isEmpty || !compositeIDs.isEmpty else { return report }
             var record = RemoteBackupJournal(scope: owner.scope, changes: changes, state: .applying)
             var journalSaved = false
             if !changes.isEmpty { try journal.save(record); journalSaved = true }
@@ -720,9 +831,15 @@ final class SettingsBackupRemoteAdapter {
                     report.skipped += subtitleIDs.sorted()
                 }
             }
+            if !compositeIDs.isEmpty {
+                if report.failed.isEmpty {
+                    await applyComposites(incoming, selected: compositeIDs, owner: owner, record: &record,
+                                          journalSaved: &journalSaved, report: &report)
+                } else { report.skipped += compositeIDs.sorted() }
+            }
             if report.failed.isEmpty, journalSaved { record.state = .applied; try journal.save(record) }
         } catch {
-            if report.failed.isEmpty { report.failed = definitions.map(\.id) + subtitleIDs.sorted() }
+            if report.failed.isEmpty { report.failed = definitions.map(\.id) + subtitleIDs.sorted() + compositeIDs.sorted() }
         }
         return report
     }
@@ -733,7 +850,8 @@ final class SettingsBackupRemoteAdapter {
         do {
             let owner = try await timed { try await self.transport.owner() }
             guard owner.scope == record.scope else { throw SettingsBackupRemoteError.destinationMismatch }
-            // Reverse of apply order: the subtitle row writes were last, so they come back first.
+            // Composite rows are the last writes in an apply; reverse them before subtitle rows.
+            await undoCompositeRows(record: &record, owner: owner, report: &report)
             await undoSubtitleDisplay(record: &record, owner: owner, report: &report)
             var remaining: [RemoteBackupChange] = []
             for change in record.changes.reversed() {
@@ -757,7 +875,7 @@ final class SettingsBackupRemoteAdapter {
                     remaining.append(change)
                 }
             }
-            if remaining.isEmpty && (record.subtitleSteps ?? []).isEmpty { try journal.clear() }
+            if remaining.isEmpty && (record.subtitleSteps ?? []).isEmpty && (record.rowSteps ?? []).isEmpty { try journal.clear() }
             else { record.changes = remaining.reversed(); try journal.save(record) }
         } catch {
             report.failed = record.changes.map(\.id) + (record.subtitleSteps ?? []).map(\.item)
@@ -768,7 +886,8 @@ final class SettingsBackupRemoteAdapter {
     private func read(_ owner: SettingsBackupRemoteOwner) async throws -> [SettingKey: EffectiveSettingValue] {
         let response = try await timed {
             try await self.transport.read(
-                RemoteBackupDefinition.allCases.map(\.key) + SubtitleDisplayBackup.keys, owner: owner)
+                RemoteBackupDefinition.allCases.map(\.key) + SubtitleDisplayBackup.keys
+                    + ScopedCompositeBackup.cellularKeys + [ScopedCompositeBackup.titleArtKey], owner: owner)
         }
         return response.byKey
     }
@@ -1117,6 +1236,205 @@ enum SubtitleDisplayBackup {
 }
 
 extension SettingsBackupRemoteAdapter {
+    private struct CompositeMutation {
+        let id: String
+        let key: SettingKey
+        let scope: SettingScopeIdentity
+        let previousRow: BackupValue?
+        let appliedRow: BackupValue?
+        let previousEffective: BackupValue
+        let previousEffectiveScope: String?
+        let appliedEffective: BackupValue
+    }
+
+    private func compositePreviewItem(id: String, incoming: IncomingBackup,
+                                      rows: [SettingKey: EffectiveSettingValue]?, reason: String?,
+                                      revision: Int) -> RestorePreviewItem {
+        let group: SettingsBackupGroup = id == ScopedCompositeBackup.cellularID ? .streaming : .interface
+        let value = incoming.groups[group.rawValue]?[id] ?? .string("invalid")
+        let rowSnapshot = try? compositeSnapshot(id: id, rows: rows ?? [:])
+        var status: RestoreItemStatus
+        var reasonText = reason
+        if rowSnapshot == nil, reasonText == nil { reasonText = "The authoritative value is unavailable or not safely comparable." }
+        if id == ScopedCompositeBackup.cellularID, revision < ScopedCompositeBackup.revision {
+            reasonText = "This server does not support cellular quality settings."
+        } else if id == ScopedCompositeBackup.titleArtID, revision < SettingKey.uiTitleArt.introducedIn {
+            reasonText = "This server does not support title artwork settings."
+        }
+        if reasonText == nil, let current = rowSnapshot,
+           let safe = compositeCanApply(id: id, desired: value, current: current) {
+            status = current == value ? .unchanged : (safe ? .willChange : .unsupported(compositeScopeReason(id: id)))
+        } else if reasonText == nil {
+            status = .invalid("This value or scope is not supported.")
+        } else {
+            status = .unsupported(reasonText!)
+        }
+        let title = id == ScopedCompositeBackup.cellularID ? "Cellular streaming quality" : "Title artwork preference"
+        return RestorePreviewItem(id: id, group: group, title: title,
+                                  current: rowSnapshot.map { ScopedCompositeBackup.label(id, $0) },
+                                  incoming: ScopedCompositeBackup.label(id, value), status: status,
+                                  incomingValue: value)
+    }
+
+    private func compositeSnapshot(id: String, rows: [SettingKey: EffectiveSettingValue]) throws -> BackupValue {
+        if id == ScopedCompositeBackup.cellularID { return try ScopedCompositeBackup.cellular(rows) }
+        return try ScopedCompositeBackup.titleArt(rows)
+    }
+
+    /// A scope transition is safe only when the effective API proves that writing the target row
+    /// won't destroy an unread hidden row. The API exposes only the winning row, not raw scoped rows.
+    private func compositeCanApply(id: String, desired: BackupValue, current: BackupValue) -> Bool? {
+        guard let wantedScope = ScopedCompositeBackup.scope(desired, id: id),
+              let currentScope = ScopedCompositeBackup.scope(current, id: id) else { return nil }
+        if wantedScope == "default" { return currentScope == "default" }
+        if id == ScopedCompositeBackup.cellularID {
+            // Device rows have higher precedence. A profile restore cannot safely replace a
+            // currently visible device pair because the profile pair beneath it is unreadable.
+            if wantedScope == "profile", currentScope == "profile_device" { return false }
+            return true
+        }
+        // Title art resolves profile before device. Moving a profile-owned value down to device
+        // would require clearing a visible profile row while preserving an unread device row.
+        if wantedScope == "profile_device", currentScope == "profile" { return false }
+        return true
+    }
+
+    private func compositeScopeReason(id: String) -> String {
+        id == ScopedCompositeBackup.cellularID
+            ? "A hidden profile value can't be read safely while a device override is active."
+            : "A hidden device value can't be read safely while the profile-wide title-art value is active."
+    }
+
+    private func compositeMutations(id: String, desired: BackupValue,
+                                    rows: [SettingKey: EffectiveSettingValue]) throws -> [CompositeMutation]? {
+        let current = try compositeSnapshot(id: id, rows: rows)
+        guard let targetScope = ScopedCompositeBackup.scope(desired, id: id),
+              let canApply = compositeCanApply(id: id, desired: desired, current: current), canApply else { return nil }
+        if targetScope == "default" { return [] }
+        let identity: SettingScopeIdentity = targetScope == "profile" ? .profile : .profileDevice
+        let keys: [(SettingKey, BackupValue)]
+        if id == ScopedCompositeBackup.cellularID {
+            guard let fields = ScopedCompositeBackup.cellularFields(desired) else { throw SettingsBackupRemoteError.unsupportedValue }
+            let cap: BackupValue = fields.bitrate
+            keys = [(.playbackCellularPreferredQuality, fields.resolution), (.playbackCellularMaxBitrateKbps, cap)]
+        } else {
+            guard let fields = ScopedCompositeBackup.titleArtFields(desired) else { throw SettingsBackupRemoteError.unsupportedValue }
+            keys = [(ScopedCompositeBackup.titleArtKey, fields.enabled)]
+        }
+        var mutations: [CompositeMutation] = []
+        for (key, value) in keys {
+            guard let row = rows[key], let previousEffective = compositeRowValue(row) else {
+                throw SettingsBackupRemoteError.unsupportedValue
+            }
+            let previousRow = row.scope?.rawValue == targetScope ? previousEffective : nil
+            if previousRow == value { continue }
+            mutations.append(CompositeMutation(id: id, key: key, scope: identity,
+                previousRow: previousRow, appliedRow: value, previousEffective: previousEffective,
+                previousEffectiveScope: row.scope?.rawValue, appliedEffective: value))
+        }
+        return mutations
+    }
+
+    private func compositeRowValue(_ row: EffectiveSettingValue) -> BackupValue? {
+        switch row.storedValue ?? row.value {
+        case .bool(let value): .bool(value)
+        case .int(let value): .int(value)
+        case .string(let value): .string(value)
+        case .null: .string(RemoteBackupDefinition.null)
+        default: nil
+        }
+    }
+
+    private func wire(_ value: BackupValue?) -> SettingJSONValue? {
+        guard let value else { return nil }
+        if value == .string(RemoteBackupDefinition.null) { return .null }
+        switch value {
+        case .bool(let flag): return SettingJSONValue.bool(flag)
+        case .int(let number): return SettingJSONValue.int(number)
+        case .string(let text): return SettingJSONValue.string(text)
+        case .record: return nil
+        }
+    }
+
+    private func applyComposites(_ incoming: IncomingBackup, selected: Set<String>, owner: SettingsBackupRemoteOwner,
+                                 record: inout RemoteBackupJournal, journalSaved: inout Bool,
+                                 report: inout RemoteBackupApplyReport) async {
+        for id in [ScopedCompositeBackup.cellularID, ScopedCompositeBackup.titleArtID] where selected.contains(id) {
+            let group: SettingsBackupGroup = id == ScopedCompositeBackup.cellularID ? .streaming : .interface
+            guard let desired = incoming.groups[group.rawValue]?[id],
+                  id == ScopedCompositeBackup.cellularID ? ScopedCompositeBackup.cellularFields(desired) != nil
+                    : ScopedCompositeBackup.titleArtFields(desired) != nil else {
+                report.skipped.append(id); continue
+            }
+            do {
+                let revision = try await timed { try await self.transport.manifestRevision(owner: owner) }
+                if (id == ScopedCompositeBackup.cellularID && revision < ScopedCompositeBackup.revision)
+                    || (id == ScopedCompositeBackup.titleArtID && revision < SettingKey.uiTitleArt.introducedIn) {
+                    report.skipped.append(id); continue
+                }
+                let currentRows = try await read(owner)
+                guard let mutations = try compositeMutations(id: id, desired: desired, rows: currentRows) else {
+                    report.skipped.append(id); continue
+                }
+                guard !mutations.isEmpty else { continue }
+                var changed = false
+                for mutation in mutations {
+                    record.rowSteps = (record.rowSteps ?? []) + [ScopedBackupRowStep(
+                        item: id, key: mutation.key.rawValue, scope: mutation.scope.scope.rawValue,
+                        previousRow: mutation.previousRow, appliedRow: mutation.appliedRow,
+                        previousEffective: mutation.previousEffective,
+                        previousEffectiveScope: mutation.previousEffectiveScope,
+                        appliedEffective: mutation.appliedEffective)]
+                    try journal.save(record); journalSaved = true
+                    try Task.checkCancellation()
+                    guard let wireValue = wire(mutation.appliedRow) else { throw SettingsBackupRemoteError.unsupportedValue }
+                    try await timed { try await self.transport.put(mutation.key, scope: mutation.scope, value: wireValue, owner: owner) }
+                    let confirmed = try await read(owner)
+                    guard let row = confirmed[mutation.key], row.scope?.rawValue == mutation.scope.scope.rawValue,
+                          compositeRowValue(row) == mutation.appliedEffective else {
+                        throw SettingsBackupRemoteError.unconfirmedWrite
+                    }
+                    changed = true
+                }
+                if changed { report.applied.append(id) }
+            } catch {
+                report.failed.append(id)
+                break
+            }
+        }
+    }
+
+    private func undoCompositeRows(record: inout RemoteBackupJournal, owner: SettingsBackupRemoteOwner,
+                                   report: inout RemoteBackupApplyReport) async {
+        guard let steps = record.rowSteps, !steps.isEmpty else { return }
+        var remaining: [ScopedBackupRowStep] = []
+        for step in steps.reversed() {
+            do {
+                guard let key = SettingKey(rawValue: step.key) else { report.skipped.append(step.item); continue }
+                let scope: SettingScopeIdentity = step.scope == "profile" ? .profile : .profileDevice
+                let rows = try await read(owner)
+                guard let current = rows[key], current.scope?.rawValue == step.scope,
+                      compositeRowValue(current) == step.appliedEffective else {
+                    report.skipped.append(step.item); continue
+                }
+                if let prior = step.previousRow, let value = wire(prior) {
+                    try await timed { try await self.transport.put(key, scope: scope, value: value, owner: owner) }
+                } else {
+                    try await timed { try await self.transport.delete(key, scope: scope, owner: owner) }
+                }
+                let restored = try await read(owner)[key]
+                guard restored?.scope?.rawValue == step.previousEffectiveScope,
+                      restored.flatMap(compositeRowValue) == step.previousEffective else {
+                    throw SettingsBackupRemoteError.unconfirmedWrite
+                }
+                if !report.applied.contains(step.item) { report.applied.append(step.item) }
+            } catch {
+                report.failed.append(step.item); remaining.append(step)
+            }
+        }
+        record.rowSteps = remaining.reversed()
+    }
+
     private func subtitleRows(_ owner: SettingsBackupRemoteOwner) async throws -> SubtitleObserved {
         try SubtitleDisplayBackup.observe(try await read(owner))
     }

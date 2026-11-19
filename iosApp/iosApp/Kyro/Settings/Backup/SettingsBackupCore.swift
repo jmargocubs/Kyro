@@ -157,11 +157,11 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .advancedAudioVideo: "Deinterlacing and TrueHD Atmos."
         case .subtitleDisplay: "Use this device's caption appearance."
         case .navigationLayout: "Floating navigation style and behavior."
-        case .streaming: "Server-synced quality, bitrate, audio language, HDR and Dolby Vision."
+        case .streaming: "Server-synced playback and cellular quality, audio language, HDR and Dolby Vision."
         case .subtitles: "Profile subtitle preferences."
         case .features: "Opt-in feature preferences."
         case .player: "Server-synced skipping, Next Up, speed, sizing, orientation and seeking."
-        case .interface: "Server-synced theme music."
+        case .interface: "Server-synced theme music and title artwork."
         }
     }
 
