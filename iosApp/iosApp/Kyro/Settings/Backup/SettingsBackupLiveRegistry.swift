@@ -120,6 +120,12 @@ enum SettingsBackupLiveRegistry {
             "features.watchParty", .features, "Watch Party",
             read: { d.readWatchPartyEnabled() }, write: { d.writeWatchPartyEnabled($0) }))
 
+        // Only the portable opt-in travels. Provider IDs, credentials and VOD catalog data do not.
+        settings.append(boolSetting(
+            "features.iptvVOD", .features, "Enable IPTV VOD",
+            read: { IPTVVODPreference.isEnabled(in: d.defaults) },
+            write: { IPTVVODPreference.setEnabled($0, in: d.defaults) }))
+
         settings.append(enumSetting(
             "navigation.fourthTab", .navigation, "Fourth tab",
             label: { (tab: KyroFourthTab) in tab.title },

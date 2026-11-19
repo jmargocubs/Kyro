@@ -322,6 +322,18 @@ final class LiveTVService {
         return try store(configuration, name: cleanName, kind: .xtream)
     }
 
+    #if os(iOS)
+    /// Credentials stay in the existing Keychain-backed provider record; VOD never persists them.
+    func xtreamVODConfiguration(for providerID: UUID) -> LiveTVSourceConfiguration? {
+        guard providers.contains(where: { $0.id == providerID && $0.kind == .xtream }),
+              let serialized = secretStore.read(account: Self.secretAccount(providerID)),
+              let data = serialized.data(using: .utf8),
+              let source = try? JSONDecoder().decode(LiveTVSourceConfiguration.self, from: data),
+              source.kind == .xtream else { return nil }
+        return source
+    }
+    #endif
+
     private func store(_ configuration: LiveTVSourceConfiguration, name: String, kind: LiveTVProviderKind) throws -> UUID {
         let id = UUID()
         let encoded = try JSONEncoder().encode(configuration)
@@ -392,6 +404,9 @@ final class LiveTVService {
     func deleteProviderFiles(_ id: UUID) async {
         await channelSnapshotStore.remove(providerID: id)
         await epg.remove(providerID: id)
+        #if os(iOS)
+        await XtreamVODService.shared.remove(providerID: id)
+        #endif
     }
 
     func refreshSelectedProvider() async {

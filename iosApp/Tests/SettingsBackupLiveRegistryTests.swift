@@ -76,7 +76,7 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let ids = Set(makeRig().registry.settings.map(\.id))
         XCTAssertEqual(ids, [
             "general.launchBehavior",
-            "features.watchParty",
+            "features.watchParty", "features.iptvVOD",
             "calendar.filter",
             "navigation.fourthTab", "navigation.showAudiobooks",
             "liveTV.categoryAppearance", "liveTV.categoryGrouping", "liveTV.guideStyle",
@@ -125,6 +125,26 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         XCTAssertEqual(exportedOn.groups["features"]?["features.watchParty"], .bool(true))
     }
 
+    func testIPTVVODOptInBackupPreviewRestoreAndUndo() throws {
+        let rig = makeRig()
+        XCTAssertFalse(IPTVVODPreference.isEnabled(in: defaults))
+        let data = try SettingsBackupCodec.makeDocument(
+            groups: ["features": ["features.iptvVOD": .bool(true)]],
+            schemaVersion: 2, minReaderVersion: 1, app: app, now: Date())
+        let preview = SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(data), registry: rig.registry)
+        XCTAssertEqual(preview.groups.flatMap(\.items).map(\.id), ["features.iptvVOD"])
+        let applier = SettingsBackupApplier(registry: rig.registry, journal: BackupMemoryJournal())
+        guard case .applied = applier.apply(preview: preview, selectedGroups: [.features]) else {
+            return XCTFail("IPTV VOD opt-in was not restored")
+        }
+        XCTAssertTrue(IPTVVODPreference.isEnabled(in: defaults))
+        let exported = try SettingsBackupCodec.decode(SettingsBackupExporter.export(
+            registry: rig.registry, groups: [.features], app: app))
+        XCTAssertEqual(exported.groups["features"]?["features.iptvVOD"], .bool(true))
+        XCTAssertEqual(applier.undo().reverted, ["features.iptvVOD"])
+        XCTAssertFalse(IPTVVODPreference.isEnabled(in: defaults))
+    }
+
     func testPersistedLiveTVNavigationFieldsCannotOutgrowTheBackupRegistrySilently() {
         let mapping = [
             "style": "liveTVNav.style", "order": "liveTVNav.destinationOrder",
@@ -143,6 +163,8 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         let registry = makeRig().registry
         let alternatives: [String: BackupValue] = [
             "general.launchBehavior": .string("afterOneHour"),
+            "features.watchParty": .bool(false),
+            "features.iptvVOD": .bool(true),
             "calendar.filter": .string("trending"),
             "navigation.fourthTab": .string("favorites"),
             "navigation.showAudiobooks": .bool(true),

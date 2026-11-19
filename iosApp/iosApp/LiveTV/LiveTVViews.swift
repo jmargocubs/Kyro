@@ -529,6 +529,9 @@ enum LiveTVSettingsPresentation: Equatable {
 
 struct LiveTVSettingsView: View {
     @Bindable var service: LiveTVService
+    #if os(iOS)
+    @AppStorage(IPTVVODPreference.key) private var iptvVODEnabled = false
+    #endif
     /// A sheet (Live TV's own setup) or a subpage of Settings. See `LiveTVSettingsPresentation`.
     var presentation: LiveTVSettingsPresentation = .sheet
     @Environment(\.dismiss) private var dismiss
@@ -572,6 +575,14 @@ struct LiveTVSettingsView: View {
             }
 
 #if os(iOS)
+            Section("IPTV Movies & Series") {
+                Toggle("Enable IPTV VOD", isOn: $iptvVODEnabled)
+                    .onChange(of: iptvVODEnabled) { _, enabled in
+                        IPTVVODPreference.setEnabled(enabled)
+                    }
+                Text("IPTV titles stay separate from your Silo libraries. Turning this off keeps Live TV and your provider connection.")
+                    .font(.footnote).foregroundStyle(Color.siloSecondaryText)
+            }
             if KyroLiveTVNavigationSettingsPolicy.offersStylePicker(
                 unifiedShellActive: KyroUnifiedNavigation.isActive, isSupported: KyroLiveTVNavigation.isSupported) {
                 Section("Navigation") {
