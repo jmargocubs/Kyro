@@ -44,7 +44,9 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         configuration.protocolClasses = [PlaylistURLProtocol.self, PanelURLProtocol.self]
         let epg = epgService ?? EPGService(cache: guideCache, loader: loader, fingerprinter: epgFingerprinter)
         return LiveTVService(defaults: defaults, secretStore: secrets, session: URLSession(configuration: configuration),
-                             epg: epg, channelSnapshotStore: snapshots, shortEPGNow: shortEPGNow)
+                             epg: epg, channelSnapshotStore: snapshots,
+                             channelStoreDirectory: directory.appendingPathComponent("channel-index"),
+                             shortEPGNow: shortEPGNow)
     }
 
     private func addProvider(to service: LiveTVService, name: String = "Provider", guide: Bool = false) throws -> UUID {
@@ -418,6 +420,35 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         XCTAssertGreaterThan(offline.calls, 0, "a due refresh still attempts the network")
         XCTAssertEqual(restarted.programPair(for: restored).current?.title, "Fresh Guide")
         XCTAssertEqual(try Data(contentsOf: v2), preserved, "a failed refresh leaves the verified v2 guide in place")
+    }
+
+    func testChannelStoreRefreshPagingAndOfflineFallback() async throws {
+        let writer = makeService()
+        let providerID = try addProvider(to: writer)
+        let otherProvider = try addProvider(to: writer, name: "Other")
+        await writer.refresh(providerID: providerID)
+        let firstPage = await writer.channelPage(providerID: providerID, limit: 1)
+        let sportsPage = await writer.channelPage(providerID: providerID, category: "Sports")
+        let otherPage = await writer.channelPage(providerID: otherProvider)
+        XCTAssertEqual(firstPage.map(\.name), ["News One"])
+        XCTAssertEqual(sportsPage.map(\.name), ["Sport"])
+        XCTAssertTrue(otherPage.isEmpty)
+        writer.toggleFavorite(try XCTUnwrap(firstPage.first))
+        let favoritePage = await writer.channelPage(providerID: providerID, favoritesOnly: true)
+        XCTAssertEqual(favoritePage.map(\.name), ["News One"])
+
+        PlaylistURLProtocol.reset(body: playlist, status: 503)
+        await writer.refresh(providerID: providerID)
+        let preservedPage = await writer.channelPage(providerID: providerID)
+        XCTAssertEqual(preservedPage.count, 2,
+                       "a failed refresh must not replace the active SQLite generation")
+
+        await snapshots.remove(providerID: providerID)
+        let restarted = makeService()
+        await restarted.restoreCachedState(for: providerID)
+        XCTAssertEqual(restarted.channels.map(\.name), ["News One", "Sport"])
+        XCTAssertTrue(restarted.channels.allSatisfy { $0.streamURL.scheme == "about" },
+                      "offline restoration remains browse-only")
     }
 
     func testSourceChangeDoesNotDisplayAnotherV2GuideAndRemovalDoesNotRecreateIt() async throws {

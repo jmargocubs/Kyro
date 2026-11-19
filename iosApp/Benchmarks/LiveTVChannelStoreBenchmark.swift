@@ -14,6 +14,8 @@ struct LiveTVChannel: Hashable, Identifiable, Sendable {
     var streamID: Int? = nil
 }
 
+enum LiveTVCatalogLimits { static let maximumChannels = 40_000 }
+
 @main
 enum LiveTVChannelStoreBenchmark {
     static let first = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -39,9 +41,9 @@ enum LiveTVChannelStoreBenchmark {
     static func correctness(root: URL) async throws {
         let store = try LiveTVChannelCatalogStore(directory: root.appendingPathComponent("correctness"))
         let original = [channel(0), channel(1)]
-        let originalCount = try await store.stage(original, providerID: first, generation: "old", startingOrdinal: 0)
+        let originalCount = try await LiveTVChannelCatalogImporter.replace(original, providerID: first,
+                                                                          in: store, generation: "old")
         precondition(originalCount == 2)
-        try await store.promote(providerID: first, generation: "old", expectedCount: 2)
         try await store.setFavorite(true, channelID: original[1].id, providerID: first)
         let other = channel(0, provider: second)
         let otherCount = try await store.stage([other], providerID: second, generation: "old", startingOrdinal: 0)
@@ -57,15 +59,17 @@ enum LiveTVChannelStoreBenchmark {
         } catch LiveTVChannelCatalogStore.StoreError.invalidGeneration { }
         let stillOld = await store.page(providerID: first)
         precondition(stillOld.map(\.category) == original.map(\.category))
-        let replacementCount = try await store.stage(replacement, providerID: first,
-                                                     generation: "new", startingOrdinal: 0)
+        let replacementCount = try await LiveTVChannelCatalogImporter.replace(replacement, providerID: first,
+                                                                              in: store, generation: "new")
         precondition(replacementCount == 2)
-        try await store.promote(providerID: first, generation: "new", expectedCount: 2)
         let current = await store.page(providerID: first)
         let favorites = await store.page(providerID: first, favoritesOnly: true)
         let oldProvider = await store.page(providerID: second)
         precondition(current.map(\.category) == ["New Category", "New Category"])
         precondition(favorites.map(\.id) == [original[1].id])
+        try await store.replaceFavorites([original[0].id], providerID: first)
+        let reconciledFavorites = await store.page(providerID: first, favoritesOnly: true)
+        precondition(reconciledFavorites.map(\.id) == [original[0].id])
         precondition(oldProvider.map(\.id) == [other.id])
         let collision = await store.channel(providerID: first, id: other.id)
         let guideMatched = await store.channel(providerID: first, id: original[0].id)
@@ -89,8 +93,11 @@ enum LiveTVChannelStoreBenchmark {
         try await recovered.pruneOrphans()
         let restoredCount = await recovered.count(providerID: first)
         let restoredFavorites = await recovered.page(providerID: first, favoritesOnly: true)
+        let offline = await LiveTVChannelCatalogImporter.restore(providerID: first, from: recovered)
         precondition(restoredCount == 2)
         precondition(restoredFavorites.count == 1)
+        precondition(offline?.map(\.guideID) == replacement.map(\.guideID))
+        precondition(offline?.allSatisfy { $0.streamURL.scheme == "about" } == true)
         await recovered.close()
         print("host_snapshot_provider_favorites_epg,pass")
     }
@@ -98,16 +105,11 @@ enum LiveTVChannelStoreBenchmark {
     static func run(count: Int, root: URL) async throws {
         let directory = root.appendingPathComponent("channels-\(count)")
         let store = try LiveTVChannelCatalogStore(directory: directory)
+        let channels = (0..<count).map { channel($0) }
         let start = ContinuousClock.now
-        var ordinal = 0
-        while ordinal < count {
-            let batch = (ordinal..<min(ordinal + 1024, count)).map { channel($0) }
-            let accepted = try await store.stage(batch, providerID: first,
-                                                 generation: "benchmark", startingOrdinal: ordinal)
-            precondition(accepted == batch.count)
-            ordinal += batch.count
-        }
-        try await store.promote(providerID: first, generation: "benchmark", expectedCount: count)
+        let imported = try await LiveTVChannelCatalogImporter.replace(channels, providerID: first,
+                                                                      in: store, generation: "benchmark")
+        precondition(imported == count)
         let importMS = milliseconds(start)
         let searchStart = ContinuousClock.now
         let search = await store.page(providerID: first, query: "Channel 0001234")
