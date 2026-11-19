@@ -78,14 +78,18 @@ struct TVLiveTVRootView: View {
 
             VStack(alignment: .leading, spacing: 22) {
                 header
+                if let progress = service.importProgress, !progress.isOnboarding, !progress.isTerminal {
+                    TVCompactLiveRefreshLine(progress: progress)
+                }
                 controls
                 content
             }
             .padding(.horizontal, 72)
             .padding(.top, TVTopMenuLayout.contentTopInset)
             .padding(.bottom, 38)
-            .disabled(service.importProgress.map { !$0.isTerminal } ?? false)
-            if let progress = service.importProgress,
+            .disabled(service.importProgress.map { $0.isOnboarding && !$0.isTerminal } ?? false)
+            // Manual and automatic refreshes stay in place; only first-time setup is full screen.
+            if let progress = service.importProgress, progress.isOnboarding,
                progress.providerID == service.selectedProviderID {
                 TVLiveTVImportView(progress: progress, service: service,
                     onClose: { service.clearFinishedImport() },
@@ -432,39 +436,39 @@ private struct TVLiveTVChannelCard: View {
 struct TVLiveTVProviderManagementView: View {
     @Bindable var service: LiveTVService
     @Environment(\.dismiss) private var dismiss
-    @State private var kind: LiveTVProviderKind = .m3u
-    @State private var name = "My Provider"
-    @State private var playlistURL = ""
-    @State private var xmltvURL = ""
-    @State private var serverURL = ""
-    @State private var username = ""
-    @State private var password = ""
-    @State private var formStep = 1
-    @State private var contentSelection = IPTVContentSelection.newProvider(for: .m3u)
-    @State private var isSubmitting = false
     @State private var localError: String?
     @State private var providerToRemove: LiveTVProvider?
     @State private var showsPhoneSetup = false
+    @State private var showsAddProvider = false
+    @State private var savedProviderID: UUID?
     @State private var startWatchingAfterPairing = false
+    @State private var refresher = TVProviderRefreshCoordinator.shared
+    @State private var vod = XtreamVODService.shared
     @FocusState private var focus: TVLiveTVProviderFocus?
+
+    /// Only a first-time setup started from this page takes over the screen.
+    private var onboardingProgress: LiveTVImportProgress? {
+        guard let progress = service.importProgress, progress.isOnboarding,
+              progress.providerID == service.selectedProviderID else { return nil }
+        return progress
+    }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 42) {
+            VStack(alignment: .leading, spacing: 34) {
                 header
+                TVProviderRefreshPanel(coordinator: refresher, service: service, vod: vod) {
+                    restoreFocus(TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: service.providers.map(\.id)))
+                }
                 providerList
-                phoneSetupEntry
-                Divider().overlay(Color.white.opacity(0.18))
-                addProviderForm
             }
             .padding(.horizontal, 120)
             .padding(.vertical, 68)
         }
-        .disabled(service.importProgress != nil)
+        .disabled(onboardingProgress != nil)
         .background(TVKyroAmbientBackdrop())
         .overlay {
-            if let progress = service.importProgress,
-               progress.providerID == service.selectedProviderID {
+            if let progress = onboardingProgress {
                 TVLiveTVImportView(progress: progress, service: service,
                     onClose: { service.clearFinishedImport(); dismiss() },
                     onManage: { service.clearFinishedImport() })
@@ -472,9 +476,26 @@ struct TVLiveTVProviderManagementView: View {
         }
         // Back/Menu always leaves the screen. While a text field is editing, the system keyboard
         // takes Menu first, so typing (and the nearby-iPhone keyboard) is unaffected.
-        .onExitCommand { if service.importProgress == nil { dismiss() } }
+        .onExitCommand { if onboardingProgress == nil { dismiss() } }
         .onAppear {
             if focus == nil { focus = TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: service.providers.map(\.id)) }
+        }
+        .sheet(isPresented: $showsAddProvider, onDismiss: {
+            let saved = savedProviderID
+            savedProviderID = nil
+            restoreFocus(TVLiveTVProviderFocusPlanner.afterAddProvider(savedProviderID: saved))
+            if let saved { Task { await service.startSetup(providerID: saved) } }
+        }) {
+            TVAddProviderSheet(service: service,
+                onSaved: { id in savedProviderID = id; showsAddProvider = false },
+                onCancel: { showsAddProvider = false },
+                onPhoneSetup: {
+                    showsAddProvider = false
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(350))
+                        showsPhoneSetup = true
+                    }
+                })
         }
         .fullScreenCover(isPresented: $showsPhoneSetup, onDismiss: {
             if startWatchingAfterPairing {
@@ -516,6 +537,15 @@ struct TVLiveTVProviderManagementView: View {
                 .focused($focus, equals: .back)
             Text("Live TV Providers").font(.system(size: 46, weight: .bold))
             Spacer()
+            Button { showsPhoneSetup = true } label: {
+                Label("Set up with iPhone", systemImage: "iphone.and.arrow.forward")
+            }
+            .buttonStyle(TVKyroChipStyle())
+            .focused($focus, equals: .phoneSetup)
+            Button { showsAddProvider = true } label: { Label("Add Provider", systemImage: "plus") }
+                .buttonStyle(TVKyroChipStyle(isSelected: true, fontSize: 28, minHeight: 70))
+                .focused($focus, equals: .addProvider)
+                .accessibilityIdentifier("providers.add")
         }
         .focusSection()
     }
@@ -539,7 +569,7 @@ struct TVLiveTVProviderManagementView: View {
             Text("Connected Providers")
                 .font(.system(size: 34, weight: .bold))
             if service.providers.isEmpty {
-                Text("No providers configured. Credentials are stored in the Apple TV keychain.")
+                Text("No providers yet. Choose Add Provider, or Set up with iPhone to send one without typing. Credentials are stored in the Apple TV keychain.")
                     .font(.system(size: 28))
                     .foregroundStyle(Color.siloSecondaryText)
             } else {
@@ -555,7 +585,7 @@ struct TVLiveTVProviderManagementView: View {
                                     .foregroundStyle(KyroTheme.accentInk)
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(provider.name).font(.system(size: 26, weight: .semibold))
-                                    Text("\(provider.kind == .xtream ? "Xtream Codes" : "M3U") · \(provider.liveEnabled ? "\(provider.channelCount) channels" : "Live TV off")")
+                                    Text(TVProviderSummary.line(for: provider))
                                         .font(.system(size: 19))
                                         .foregroundStyle(Color.siloSecondaryText)
                                 }
@@ -570,11 +600,14 @@ struct TVLiveTVProviderManagementView: View {
 
                         Button {
                             service.selectProvider(provider.id)
-                            Task { await service.startSetup(providerID: provider.id) }
-                        } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                            startRefresh(provider.id, scope: .all)
+                        } label: {
+                            Label(refresher.isRunning(providerID: provider.id) ? "Refreshing…" : "Refresh",
+                                  systemImage: "arrow.clockwise")
+                        }
                         .buttonStyle(TVKyroChipStyle())
-                        .disabled(service.isLoading)
                         .focused($focus, equals: .refresh(provider.id))
+                        .accessibilityIdentifier("providers.refresh")
                         .onMoveCommand { upToBack($0, from: .refresh(provider.id)) }
 
                         Button(role: .destructive) { providerToRemove = provider } label: {
@@ -585,13 +618,13 @@ struct TVLiveTVProviderManagementView: View {
                         .onMoveCommand { upToBack($0, from: .remove(provider.id)) }
                     }
                     if provider.kind == .xtream {
-                        TVProviderVODManagementView(provider: provider, service: service)
+                        TVProviderVODManagementView(provider: provider, service: service,
+                            refresher: refresher, onRefresh: { startRefresh(provider.id, scope: $0) })
                     }
                 }
             }
 
-            if service.isLoading { ProgressView("Connecting…") }
-            if let message = localError ?? service.errorMessage {
+            if let message = localError ?? (refresher.isRunning ? nil : service.errorMessage) {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(KyroTheme.live)
                     .font(.system(size: 20, weight: .medium))
@@ -600,22 +633,69 @@ struct TVLiveTVProviderManagementView: View {
         .focusSection()
     }
 
-    /// The recommended way to add a provider: send it from the Kyro iPhone app instead of typing
-    /// long URLs and passwords with the Siri Remote.
-    private var phoneSetupEntry: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Button {
-                showsPhoneSetup = true
-            } label: {
-                Label("Set up with phone", systemImage: "iphone.and.arrow.forward")
-            }
-            .buttonStyle(TVKyroChipStyle(isSelected: true, fontSize: 29, minHeight: 76, horizontalPadding: 32))
-            .focused($focus, equals: .phoneSetup)
-            .onMoveCommand { upToBack($0, from: .phoneSetup) }
-            Text("Send a provider from the Kyro iPhone app. Nothing to type here.")
-                .font(.system(size: 27)).foregroundStyle(Color.siloSecondaryText)
+    /// Every manual refresh entry point on this page goes through one coordinator, so a press
+    /// always produces visible feedback and never starts a second concurrent refresh.
+    private func startRefresh(_ providerID: UUID, scope: TVProviderRefreshScope) {
+        localError = nil
+        switch refresher.refresh(providerID: providerID, scope: scope, liveTV: service, vod: vod) {
+        case .started, .nothingToRefresh: break
+        case .alreadyRunning: localError = "A refresh is already in progress. It will finish before another can start."
         }
-        .focusSection()
+    }
+}
+
+private enum TVAddProviderFocus: Hashable { case type, name, cancel, save, phone }
+
+/// The typed provider form, shown only on request in a sheet so the Providers page leads with
+/// connected providers instead of a permanently expanded form.
+struct TVAddProviderSheet: View {
+    @Bindable var service: LiveTVService
+    let onSaved: (UUID) -> Void
+    let onCancel: () -> Void
+    let onPhoneSetup: () -> Void
+    @State private var kind: LiveTVProviderKind = .m3u
+    @State private var name = "My Provider"
+    @State private var playlistURL = ""
+    @State private var xmltvURL = ""
+    @State private var serverURL = ""
+    @State private var username = ""
+    @State private var password = ""
+    @State private var formStep = 1
+    @State private var contentSelection = IPTVContentSelection.newProvider(for: .m3u)
+    @State private var isSubmitting = false
+    @State private var localError: String?
+    @FocusState private var focus: TVAddProviderFocus?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 30) {
+                HStack(spacing: 24) {
+                    Text("Add Provider").font(.system(size: 46, weight: .bold))
+                    Spacer()
+                    Button { onPhoneSetup() } label: {
+                        Label("Set up with iPhone", systemImage: "iphone.and.arrow.forward")
+                    }
+                    .buttonStyle(TVKyroChipStyle())
+                    .focused($focus, equals: .phone)
+                    Button("Cancel", action: onCancel)
+                        .buttonStyle(TVKyroChipStyle())
+                        .focused($focus, equals: .cancel)
+                        .accessibilityIdentifier("providers.add.cancel")
+                }
+                .focusSection()
+                addProviderForm
+                if let localError {
+                    Label(localError, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(KyroTheme.live).font(.system(size: 22, weight: .medium))
+                }
+            }
+            .padding(.horizontal, 120)
+            .padding(.vertical, 68)
+        }
+        .background(TVKyroAmbientBackdrop())
+        .onAppear { focus = .type }
+        .onExitCommand { if formStep == 2 { formStep = 1 } else { onCancel() } }
+        .accessibilityIdentifier("providers.add.sheet")
     }
 
     private var addProviderForm: some View {
@@ -630,6 +710,7 @@ struct TVLiveTVProviderManagementView: View {
             .pickerStyle(.segmented)
             .font(.system(size: 30, weight: .semibold))
             .frame(minHeight: 76)
+            .focused($focus, equals: .type)
             .accessibilityIdentifier("liveTV.providerType")
 
             TextField("Provider name", text: $name)
@@ -700,9 +781,10 @@ struct TVLiveTVProviderManagementView: View {
             }
             localError = nil
             password = ""
-            Task { await service.startSetup(providerID: id); isSubmitting = false }
-            // Land on the new provider's row instead of a cleared form.
-            restoreFocus(.provider(id))
+            isSubmitting = false
+            // The Providers page starts first-time setup once the sheet has dismissed, then
+            // lands focus on the new provider's row.
+            onSaved(id)
         } catch {
             isSubmitting = false
             localError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -767,6 +849,8 @@ struct TVIPTVContentSelectionView: View {
 private struct TVProviderVODManagementView: View {
     let provider: LiveTVProvider
     @Bindable var service: LiveTVService
+    let refresher: TVProviderRefreshCoordinator
+    let onRefresh: (TVProviderRefreshScope) -> Void
     @State private var vod = XtreamVODService.shared
     @State private var movieCount = 0
     @State private var seriesCount = 0
@@ -819,21 +903,16 @@ private struct TVProviderVODManagementView: View {
             HStack(spacing: 18) {
                 Button("Apply & Refresh Selected") {
                     guard service.setContentSelection(draftSelection, for: provider.id) else { return }
-                    Task {
-                        await service.startSetup(providerID: provider.id)
-                        if draftSelection.movies || draftSelection.series {
-                            await vod.refresh(providerID: provider.id, liveTV: service)
-                        }
-                        await loadCounts()
-                    }
+                    onRefresh(.all)
                 }
                 .buttonStyle(TVKyroChipStyle(isSelected: true))
-                .disabled(!draftSelection.isValid(for: provider.kind) || service.isLoading || vod.activeProviderID != nil)
-                Button("Refresh VOD Catalog") {
-                    Task { await vod.refresh(providerID: provider.id, liveTV: service); await loadCounts() }
+                .disabled(!draftSelection.isValid(for: provider.kind) || refresher.isRunning)
+                // Stays focusable when Movies and Series are off so a press explains what to enable.
+                Button(refresher.isRunning(providerID: provider.id) ? "Refreshing…" : "Refresh Movies & Series") {
+                    onRefresh(.vodOnly)
                 }
                 .buttonStyle(TVKyroChipStyle())
-                .disabled(!provider.vodEnabled || vod.activeProviderID != nil)
+                .accessibilityIdentifier("providers.refreshVOD")
                 Button("Clear VOD Cache") { Task { await vod.clearCache(providerID: provider.id); await loadCounts() } }
                     .buttonStyle(TVKyroChipStyle(isDestructive: true))
                     .disabled(vod.activeProviderID == provider.id)

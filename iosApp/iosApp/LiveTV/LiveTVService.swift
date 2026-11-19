@@ -19,7 +19,15 @@ struct LiveTVImportProgress: Equatable {
     var stage: LiveTVImportStage = .connecting
     var count = LiveTVImportCount(processed: 0, total: nil, accepted: 0)
     var message: String?
+    /// Only first-time setup (typed or iPhone-paired) uses the full-screen setup experience.
+    /// Manual and automatic refreshes of an existing provider use compact in-page progress.
+    var presentation: LiveTVImportPresentation = .compact
     var isTerminal: Bool { stage == .ready || stage == .failed || stage == .cancelled }
+    var isOnboarding: Bool { presentation == .onboarding }
+}
+
+enum LiveTVImportPresentation: Equatable {
+    case onboarding, compact
 }
 
 @MainActor
@@ -463,12 +471,18 @@ final class LiveTVService {
         guard let provider = providers.first(where: { $0.id == providerID }),
               importProgress?.isTerminal != false else { return }
         if provider.liveEnabled {
-            await refresh(providerID: providerID)
+            await refresh(providerID: providerID, presentation: .onboarding)
         } else {
             importProgress = LiveTVImportProgress(providerID: providerID, providerName: provider.name,
                 stage: .ready, count: .init(processed: 0, total: nil, accepted: 0),
-                message: "Live TV was not selected.")
+                message: "Live TV was not selected.", presentation: .onboarding)
         }
+    }
+
+    /// Whether a refresh of this provider's live channels can start right now.
+    func canRefreshLive(providerID: UUID) -> Bool {
+        playlistRefresh == nil && importProgress?.isTerminal != false
+            && providers.first(where: { $0.id == providerID })?.liveEnabled == true
     }
 
     func cancelImport() {
@@ -486,7 +500,7 @@ final class LiveTVService {
         if importProgress?.isTerminal == true { importProgress = nil }
     }
 
-    func refresh(providerID: UUID) async {
+    func refresh(providerID: UUID, presentation: LiveTVImportPresentation = .compact) async {
         guard playlistRefresh == nil, importProgress?.isTerminal != false else { return }
         guard providers.first(where: { $0.id == providerID })?.liveEnabled == true else { return }
         guard providers.contains(where: { $0.id == providerID }),
@@ -502,7 +516,8 @@ final class LiveTVService {
 
         let token = UUID()
         importProgress = LiveTVImportProgress(providerID: providerID,
-            providerName: providers.first(where: { $0.id == providerID })?.name ?? "Provider")
+            providerName: providers.first(where: { $0.id == providerID })?.name ?? "Provider",
+            presentation: presentation)
         let work = Task { [weak self] () throws -> LiveTVCachedCatalog in
             guard let self else { throw CancellationError() }
             return try await self.downloadCatalog(source, providerID: providerID, token: token)

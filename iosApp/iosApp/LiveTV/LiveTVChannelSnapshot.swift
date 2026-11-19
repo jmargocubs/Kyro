@@ -106,8 +106,19 @@ actor LiveTVChannelSnapshotStore {
     nonisolated let directory: URL
 
     init(directory: URL? = nil) {
-        self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        self.directory = directory ?? Self.defaultDirectory()
+    }
+
+    /// Apple TV hardware rejects writes outside Caches; the simulator does not, so this regressed silently.
+    static func defaultDirectory(fileManager: FileManager = .default) -> URL {
+#if os(tvOS)
+        (fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true))
+            .appendingPathComponent("LiveTVChannels", isDirectory: true)
+#else
+        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Silo/LiveTV/Channels", isDirectory: true)
+#endif
     }
 
     func load(providerID: UUID, secrets: LiveTVSnapshotSecrets = LiveTVSnapshotSecrets()) -> LiveTVChannelSnapshot? {

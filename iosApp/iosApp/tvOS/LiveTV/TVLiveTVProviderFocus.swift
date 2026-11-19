@@ -8,6 +8,7 @@ enum TVLiveTVProviderFocus: Hashable {
     case refresh(UUID)
     case remove(UUID)
     case phoneSetup
+    case addProvider
     case save
 }
 
@@ -29,8 +30,13 @@ enum TVLiveTVProviderFocusPlanner {
         switch focus {
         case .provider(let id), .refresh(let id), .remove(let id): id == providerIDs.first
         case .phoneSetup: providerIDs.isEmpty
-        case .back, .save: false
+        case .back, .save, .addProvider: false
         }
+    }
+
+    /// Closing the Add Provider sheet lands on the saved provider, or back on Add Provider after Cancel.
+    static func afterAddProvider(savedProviderID: UUID?) -> TVLiveTVProviderFocus {
+        savedProviderID.map(TVLiveTVProviderFocus.provider) ?? .addProvider
     }
 }
 #endif

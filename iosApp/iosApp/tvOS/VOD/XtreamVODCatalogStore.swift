@@ -7,17 +7,26 @@ actor XtreamVODCatalogStore {
     private var database: OpaquePointer?
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+    /// Apple TV hardware only permits app writes under Caches (and tmp). Application Support works
+    /// in the tvOS Simulator but is rejected on device, which made every Build 93 VOD refresh fail
+    /// before its first request. The catalog is re-downloadable, so purgeable Caches is correct.
+    static func defaultDirectory(fileManager: FileManager = .default) -> URL {
+        (fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true))
+            .appendingPathComponent("IPTVVOD", isDirectory: true)
+    }
+
     init(directory: URL? = nil) throws {
-        let root = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Silo/IPTVVOD", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let root = directory ?? Self.defaultDirectory()
+        do { try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true) }
+        catch { throw XtreamVODError.storage }
         let path = root.appendingPathComponent("catalog.sqlite").path
         guard sqlite3_open_v2(path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            throw XtreamVODError.unavailable
+            throw XtreamVODError.storage
         }
         let openedDatabase = database
         func initialize(_ sql: String) throws {
-            guard sqlite3_exec(openedDatabase, sql, nil, nil, nil) == SQLITE_OK else { throw XtreamVODError.unavailable }
+            guard sqlite3_exec(openedDatabase, sql, nil, nil, nil) == SQLITE_OK else { throw XtreamVODError.storage }
         }
         try initialize("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
         try initialize("""
@@ -43,13 +52,13 @@ actor XtreamVODCatalogStore {
     }
 
     private func execute(_ sql: String) throws {
-        guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else { throw XtreamVODError.unavailable }
+        guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else { throw XtreamVODError.storage }
     }
 
     private func prepare(_ sql: String) throws -> OpaquePointer {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            throw XtreamVODError.unavailable
+            throw XtreamVODError.storage
         }
         return statement
     }
@@ -82,7 +91,7 @@ actor XtreamVODCatalogStore {
                 bind(item.summary, at: 9, in: statement)
                 bind(item.genre, at: 10, in: statement)
                 bind(item.rating, at: 11, in: statement)
-                guard sqlite3_step(statement) == SQLITE_DONE else { throw XtreamVODError.unavailable }
+                guard sqlite3_step(statement) == SQLITE_DONE else { throw XtreamVODError.storage }
             }
             try execute("COMMIT")
         } catch {
@@ -105,14 +114,14 @@ actor XtreamVODCatalogStore {
                 bind(generation, at: 3, in: statement)
                 let result = sqlite3_step(statement)
                 sqlite3_finalize(statement)
-                guard result == SQLITE_DONE else { throw XtreamVODError.unavailable }
+                guard result == SQLITE_DONE else { throw XtreamVODError.storage }
                 let cleanup = try prepare("DELETE FROM vod_items WHERE provider=? AND kind=? AND generation<>?")
                 bind(providerID.uuidString, at: 1, in: cleanup)
                 bind(kind.rawValue, at: 2, in: cleanup)
                 bind(generation, at: 3, in: cleanup)
                 let cleanResult = sqlite3_step(cleanup)
                 sqlite3_finalize(cleanup)
-                guard cleanResult == SQLITE_DONE else { throw XtreamVODError.unavailable }
+                guard cleanResult == SQLITE_DONE else { throw XtreamVODError.storage }
             }
             try execute("COMMIT")
         } catch {

@@ -66,10 +66,33 @@ struct XtreamVODImportProgress: Equatable {
     var seriesResult: XtreamVODCatalogResult = .notSelected
     var message: String?
     var failure: XtreamVODError?
+    /// The pipeline step that failed first, for sanitized diagnostics and the compact status line.
+    var failedStage: XtreamVODPipelineStage?
+}
+
+/// Where in the VOD pipeline a refresh stopped. Logged without URLs or credentials.
+enum XtreamVODPipelineStage: String, Equatable, Sendable {
+    case configuration, storage, authentication, categories, download, parsing, persistence, promotion
+}
+
+/// Why a refresh call did or did not start, so every entry point can give visible feedback.
+enum XtreamVODRefreshStart: Equatable {
+    case started, alreadyRunning, providerMissing, noCatalogsSelected
 }
 
 enum XtreamVODError: Error, LocalizedError, Equatable {
     case invalidResponse, unavailable, authentication, unsupported, responseTooLarge, unsupportedFormat
+    /// The on-device catalog database could not be created or written.
+    case storage
+    /// No HTTP response: offline, DNS, TLS, or timeout.
+    case network
+    /// A non-success HTTP status other than the authentication and unsupported codes.
+    case httpStatus(Int)
+    /// The saved provider has no usable server, username, or password.
+    case configuration
+    /// The provider answered but returned zero catalog records.
+    case emptyCatalog
+
     var errorDescription: String? {
         switch self {
         case .invalidResponse: "The provider returned an invalid Movies or Series catalog. Your previous catalog is unchanged."
@@ -78,6 +101,40 @@ enum XtreamVODError: Error, LocalizedError, Equatable {
         case .unsupported: "This provider does not support the requested VOD catalog endpoint."
         case .responseTooLarge: "The VOD catalog exceeds the supported download limit. Your previous catalog is unchanged."
         case .unsupportedFormat: "This provider video format is not supported by the Apple TV player."
+        case .storage: "Kyro could not open its on-device VOD catalog. Free some Apple TV storage, then retry."
+        case .network: "The provider could not be reached. Check the network connection, then retry."
+        case .httpStatus(let code): "The provider returned HTTP \(code) for the VOD catalog. Retry later."
+        case .configuration: "This provider is missing its server, username, or password. Edit the provider, then retry."
+        case .emptyCatalog: "The provider returned no titles for this catalog."
+        }
+    }
+
+    /// Stable, non-sensitive label for logs and diagnostics.
+    var category: String {
+        switch self {
+        case .invalidResponse: "invalid_response"
+        case .unavailable: "unavailable"
+        case .authentication: "authentication"
+        case .unsupported: "unsupported_endpoint"
+        case .responseTooLarge: "response_too_large"
+        case .unsupportedFormat: "unsupported_format"
+        case .storage: "storage"
+        case .network: "network"
+        case .httpStatus: "http_status"
+        case .configuration: "configuration"
+        case .emptyCatalog: "empty_catalog"
+        }
+    }
+
+    /// Maps the Live TV account-handshake errors onto VOD categories.
+    static func from(_ error: Error) -> XtreamVODError? {
+        if let vod = error as? XtreamVODError { return vod }
+        switch error as? LiveTVError {
+        case .authenticationFailed?, .accountExpired?: return .authentication
+        case .invalidXtreamResponse?: return .invalidResponse
+        case .invalidConfiguration?: return .configuration
+        case .responseTooLarge?: return .responseTooLarge
+        default: return nil
         }
     }
 }
@@ -120,11 +177,45 @@ struct XtreamVODRecord: Decodable, Sendable {
 }
 
 enum XtreamVODParser {
+    /// Accepts the shapes Xtream panels return in practice: a JSON array; an empty body, `null`, or
+    /// `{}` for an empty catalog; an object keyed by ID whose values are records; and arrays that
+    /// contain stray `null` or scalar elements. An account object with `auth: 0` is an
+    /// authentication failure; HTML or other non-JSON bodies are invalid responses.
     static func records(_ data: Data) throws -> [XtreamVODRecord] {
-        guard let records = try? JSONDecoder().decode([XtreamVODRecord].self, from: data) else {
-            throw XtreamVODError.invalidResponse
+        let trimmed = data.drop(while: { $0 == 0x20 || $0 == 0x0A || $0 == 0x0D || $0 == 0x09 || $0 == 0xEF || $0 == 0xBB || $0 == 0xBF })
+        guard let first = trimmed.first else { return [] }
+        if first == UInt8(ascii: "n"), String(decoding: trimmed.prefix(4), as: UTF8.self) == "null" { return [] }
+        if first == UInt8(ascii: "[") {
+            guard let rows = try? JSONDecoder().decode([LossyRecord].self, from: Data(trimmed)) else {
+                throw XtreamVODError.invalidResponse
+            }
+            return rows.compactMap(\.record)
         }
-        return records
+        if first == UInt8(ascii: "{") {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(trimmed)) as? [String: Any] else {
+                throw XtreamVODError.invalidResponse
+            }
+            if object.isEmpty { return [] }
+            if let user = object["user_info"] as? [String: Any] {
+                let auth = (user["auth"] as? NSNumber)?.intValue ?? (user["auth"] as? String).flatMap(Int.init)
+                if auth == 0 { throw XtreamVODError.authentication }
+                return []
+            }
+            let rows = object.keys.sorted { (Int($0) ?? .max, $0) < (Int($1) ?? .max, $1) }
+                .compactMap { object[$0] as? [String: Any] }
+            guard !rows.isEmpty, let encoded = try? JSONSerialization.data(withJSONObject: rows),
+                  let decoded = try? JSONDecoder().decode([LossyRecord].self, from: encoded) else {
+                throw XtreamVODError.invalidResponse
+            }
+            return decoded.compactMap(\.record)
+        }
+        throw XtreamVODError.invalidResponse
+    }
+
+    /// One malformed element must not discard an otherwise valid catalog.
+    private struct LossyRecord: Decodable {
+        let record: XtreamVODRecord?
+        init(from decoder: Decoder) throws { record = try? XtreamVODRecord(from: decoder) }
     }
 
     static func detail(_ data: Data, kind: XtreamVODKind) throws -> XtreamVODDetail {
