@@ -520,7 +520,7 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
         XCTAssertEqual(changed, ["downloads.wifiOnly"])
         XCTAssertEqual(destDefaults.string(forKey: "some.other.preference"), "keep")
         XCTAssertEqual(navigation.preferences.fourthTab, KyroGlobalNavigationPreferences().fourthTab)
-        XCTAssertTrue(downloads.wifiOnly)
+        XCTAssertFalse(downloads.wifiOnly)
     }
 
     func testAChangeMadeAfterARestoreSurvivesUndoOnRealStores() throws {
