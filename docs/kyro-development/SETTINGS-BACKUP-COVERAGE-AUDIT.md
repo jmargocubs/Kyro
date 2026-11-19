@@ -142,3 +142,35 @@ For every registered production preference, use isolated UD/SD or fake API trans
 4. Confirm whether legacy floating navigation style should remain presented in backup when unified navigation is active, and how an unavailable download format should be represented without silently substituting `original`.
 
 **Readiness:** ready for review, **not** for Build 94 implementation or packaging. No tests were run because this change is documentation only; the counts and production-path conclusions are static source audit findings, not runtime verification.
+
+## Build 94 implementation addendum
+
+This section records work after the baseline audit; the original 74/60 and Build 93 16/29 figures above remain the historical baseline. Local backup behavior landed in `ef4236b15e0b635a1724e19ce6f0ffcc677639e1` and the verified tree is `8fbad5dcea4bbba5e62892ad3b3e0f9bfd76e523`. **No Build 94 IPA has been built.**
+
+| Disposition | Preferences / entries |
+|---|---|
+| Baseline fully covered | 16 real user preferences |
+| Baseline partial, now fixed | Download quality: unknown raw values are omitted from new exports rather than replaced by `original`; preview and Undo retain the actual raw previous value |
+| Newly covered from baseline missing list | 7 floating Live TV navigation fields from the editor's actual `kyro.liveTV.navigation.v1` store; profile-selection behavior only; device caption-matching toggle only |
+| Newly discovered local preferences, now covered | Audiobook visibility (`AppNavPreferences`); floating Live TV destination order and hidden-destination set |
+| Removed from new exports | 5 internal Sports supplement flags and 7 dormant global navigation-layout fields. Schema-1 Build 93 files still decode; these 12 old entries are reported as skipped and never written to the wrong store |
+| Currently fully covered | **29 of 29 approved local preferences (100%)**; **29 of 63** in the audit's broader potential-eligibility denominator (46.0%). The other 34 are blocked by server ownership under the approved policy |
+| Intentionally excluded | Credentials, tokens, provider definitions/URLs, privacy consent, diagnostics, caches, session state, device-specific saved handle positions |
+
+The inventory is now **77** unique persisted user preferences/collections. The broad audit denominator grew from 60 to **63** because the baseline audit missed three real local controls: audiobook visibility and the two Live TV destination customizations. It did already include the seven floating navigation fields, profile launch behavior and the caption-matching toggle. Under the approved **do not overwrite server-authoritative preferences** decision, the actionable local denominator is 29, all now registered. The other 34 in the broad denominator are not safe local restore targets. In particular, card/menu presentation, quality, language, spoiler settings, title art and theme music are API-backed, and their local `UserDefaults`/`SharedDefaults` representations are caches or pending-write state. Exporting those caches or restoring via them would be misleading; writing the API would violate the approved server-ownership rule. They remain an explicit blocked gap, not a silent default-value export.
+
+### Catalog-bound group blocker
+
+No optional catalog group was added. `LiveTVProvider.id` is a local UUID; [M3U channel IDs](../../iosApp/iosApp/LiveTV/LiveTVModels.swift) hash that UUID with guide ID/name, and [Xtream IDs](../../iosApp/iosApp/LiveTV/LiveTVService.swift) hash it with a numeric stream ID. A matching numeric stream ID, name, provider type or channel count **does not prove** a matching catalog. A provider UUID alone proves only the same local provider record, not unchanged playlist contents. Category customizations use names within that local provider UUID; Favorites use the generated channel IDs. The iOS source exposes hidden **categories**, not a persisted hidden-channel control, so no hidden-channel preference can be added by assumption. Server-library Favorites are a separate profile-scoped server database collection. The currently available non-secret fields do not provide a verified cross-install provider/catalog identity, and the schema-1 scalar envelope cannot represent bounded per-item add/replace/skip previews with robust Undo. Per the approved rule, mismatches are not imported and no catalog-specific data is exported yet. A future optional group requires an authoritative, non-secret stable identity and explicit transactional/Undo design rather than a newly invented fingerprint.
+
+### Compatibility, runtime and verification
+
+New scalar IDs/groups remain in schema 1 with `minReaderVersion = 1`. Build 93 files import through the existing decoder/checksum checks. Existing supported IDs retain their meaning; the old Sports and global-layout IDs are counted as unknown/skipped, never reinterpreted as the new Live TV editor IDs. New local setters update their observable owners; the existing category notification still refreshes its separate local copy. Device-specific groups now export by default but remain same-idiom-only at restore and are not automatically selected for restore, preserving the accepted review safety behavior. The Review screen displays a skipped count even when no supported setting differs.
+
+Focused production-adapter tests cover export → change → preview → selective restore → persistence → Undo for floating navigation, destination order/visibility, profile launch, audiobook visibility, download format, and the local caption toggle. The production navigation store's persisted CodingKeys are compared with the backup registry so adding a new stored field without a backup disposition fails a test. This is a focused guard, not a claim of automatic discovery of every future Swift setting; new owner stores still need an explicit backup-policy review.
+
+The persisted Calendar filter (`calendar.filter`) remains a product decision from the baseline audit. It is a local UserDefaults choice, not one of the 29 approved settings, and it is not in this backup. Selected day and week are not persisted.
+
+**Test result:** [Cloud Simulator run 44459287403](https://github.com/jmargocubs/Kyro/actions/runs/44459287403) on `8fbad5dcea4bbba5e62892ad3b3e0f9bfd76e523` ran `SiloTests/SettingsBackupLiveRegistryTests`: 25 tests, 0 failures. Two earlier runs failed on assertions, not on restore behavior. Run 44454582684 expected Wi-Fi-only downloads to stay at the destination default after a selected restore of off; `7d29c241` expects the backed-up value. Run 44457060503 rejected every id containing "subtitle"; `8fbad5dc` allows only `subtitleDisplay.matchesSystem` and still forbids server subtitle language, mode, and appearance.
+
+**Readiness:** the local backup changes are implemented and the focused cloud test passed. Build 94 is not packaged and has not had a physical-iPhone regression pass. Do not call it ready to install until that pass is approved.
