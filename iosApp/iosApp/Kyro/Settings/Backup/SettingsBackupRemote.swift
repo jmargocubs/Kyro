@@ -32,6 +32,9 @@ enum SettingsBackupRemoteError: LocalizedError {
     case timeout
     case changedOwner
     case unconfirmedWrite
+    /// A narrower scope (this device, a library or a series) holds a value that hides the
+    /// profile row, so the profile value can't be read, compared or safely replaced.
+    case overridden
 
     var errorDescription: String? {
         switch self {
@@ -42,6 +45,7 @@ enum SettingsBackupRemoteError: LocalizedError {
         case .timeout: "The server did not respond in time. The change was not confirmed."
         case .changedOwner: "The active server or profile changed. Synced settings were not written."
         case .unconfirmedWrite: "The server did not confirm the restored value."
+        case .overridden: "A device, library or series override hides this profile setting, so it was left alone."
         }
     }
 }
@@ -61,6 +65,9 @@ struct SiloSettingsBackupTransport: SettingsBackupRemoteTransport {
     func refreshUI() async {
         _ = await PlayerSettings.shared.refreshFromServer()
         await ThemeMusicPreferences.shared.refresh()
+        await AdvisoryAgePreferenceStore.shared.refresh()
+        await EpisodeSpoilerPreferences.shared.refresh()
+        await SeekIntervalPreferences.shared.refresh()
     }
 
     func owner() async throws -> SettingsBackupRemoteOwner {
@@ -125,6 +132,10 @@ enum RemoteBackupValueKind: Equatable {
     case choice([(value: String, label: String)])
     /// An integer in a contract range. `nullable` lets JSON null ("No limit") be explicit.
     case integer(ClosedRange<Int>, nullable: Bool)
+    /// An integer that must be one of the contract's listed values (the seek intervals).
+    case intChoice([Int])
+    /// A nullable language tag with no fixed list (`catalog.metadata_language`).
+    case metadataLanguage
     /// `player.playback_speed` (0.25…3.0, step 0.05) as whole hundredths: 125 means 1.25×.
     /// A backup holds no floating-point values, so the grid is exact.
     case speedHundredths
@@ -132,10 +143,12 @@ enum RemoteBackupValueKind: Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
         case (.resolution, .resolution), (.languageTag, .languageTag),
-             (.subtitleLanguage, .subtitleLanguage), (.bool, .bool), (.speedHundredths, .speedHundredths):
+             (.subtitleLanguage, .subtitleLanguage), (.bool, .bool), (.speedHundredths, .speedHundredths),
+             (.metadataLanguage, .metadataLanguage):
             return true
         case (.choice(let a), .choice(let b)): return a.map(\.value) == b.map(\.value)
         case (.integer(let a, let x), .integer(let b, let y)): return a == b && x == y
+        case (.intChoice(let a), .intChoice(let b)): return a == b
         default: return false
         }
     }
@@ -152,6 +165,10 @@ enum RemoteBackupDefinition: CaseIterable {
     case introSkip, skipCredits, autoPlayNext, nextUpPrompt
     case playbackSpeed, videoSizing, orientation, seekCache
     case themeMusic, themeMusicLoop
+    // Batch 2: profile-scope scalars.
+    case advisoryAge, hideEpisodeImages, hideEpisodeDescriptions
+    case videoSkipBack, videoSkipForward, audiobookSkipBack, audiobookSkipForward
+    case subtitleMode, forcedSubtitles, metadataLanguage
 
     /// Stable, platform-neutral backup IDs. They must pass `SettingsBackupSafety.isSensitiveName`,
     /// so the seek cache uses `fastSeeking` rather than the word "cache".
@@ -174,16 +191,28 @@ enum RemoteBackupDefinition: CaseIterable {
         case .seekCache: "player.fastSeeking"
         case .themeMusic: "interface.themeMusic"
         case .themeMusicLoop: "interface.themeMusicLoop"
+        case .advisoryAge: "interface.advisoryAge"
+        case .hideEpisodeImages: "interface.hideEpisodeImages"
+        case .hideEpisodeDescriptions: "interface.hideEpisodeDescriptions"
+        case .videoSkipBack: "player.videoSkipBackSeconds"
+        case .videoSkipForward: "player.videoSkipForwardSeconds"
+        case .audiobookSkipBack: "player.audiobookSkipBackSeconds"
+        case .audiobookSkipForward: "player.audiobookSkipForwardSeconds"
+        case .subtitleMode: "subtitles.mode"
+        case .forcedSubtitles: "subtitles.showForced"
+        case .metadataLanguage: "subtitles.metadataLanguage"
         }
     }
 
     var group: SettingsBackupGroup {
         switch self {
         case .resolution, .audioLanguage, .maxBitrate, .bufferingQuality, .hdr, .dolbyVision: .streaming
-        case .subtitleLanguage: .subtitles
+        case .subtitleLanguage, .subtitleMode, .forcedSubtitles, .metadataLanguage: .subtitles
         case .introSkip, .skipCredits, .autoPlayNext, .nextUpPrompt, .playbackSpeed, .videoSizing,
-             .orientation, .seekCache: .player
-        case .themeMusic, .themeMusicLoop: .interface
+             .orientation, .seekCache, .videoSkipBack, .videoSkipForward, .audiobookSkipBack,
+             .audiobookSkipForward: .player
+        case .themeMusic, .themeMusicLoop, .advisoryAge, .hideEpisodeImages,
+             .hideEpisodeDescriptions: .interface
         }
     }
 
@@ -206,6 +235,16 @@ enum RemoteBackupDefinition: CaseIterable {
         case .seekCache: "Seek cache"
         case .themeMusic: "Theme music"
         case .themeMusicLoop: "Loop theme music"
+        case .advisoryAge: "Show advisory age"
+        case .hideEpisodeImages: "Blur unwatched episode images"
+        case .hideEpisodeDescriptions: "Hide unwatched episode descriptions"
+        case .videoSkipBack: "Video skip back"
+        case .videoSkipForward: "Video skip forward"
+        case .audiobookSkipBack: "Audiobook skip back"
+        case .audiobookSkipForward: "Audiobook skip forward"
+        case .subtitleMode: "Subtitle behavior"
+        case .forcedSubtitles: "Show forced subtitles"
+        case .metadataLanguage: "Metadata language"
         }
     }
 
@@ -228,11 +267,28 @@ enum RemoteBackupDefinition: CaseIterable {
         case .seekCache: .playerSeekCacheEnabled
         case .themeMusic: .uiThemeMusicEnabled
         case .themeMusicLoop: .uiThemeMusicLoop
+        case .advisoryAge: .catalogShowAdvisoryAge
+        case .hideEpisodeImages: .catalogHideUnwatchedEpisodeImages
+        case .hideEpisodeDescriptions: .catalogHideUnwatchedEpisodeOverviews
+        case .videoSkipBack: .playerVideoSkipBackSeconds
+        case .videoSkipForward: .playerVideoSkipForwardSeconds
+        case .audiobookSkipBack: .playerAudiobookSkipBackSeconds
+        case .audiobookSkipForward: .playerAudiobookSkipForwardSeconds
+        case .subtitleMode: .playbackSubtitleMode
+        case .forcedSubtitles: .playbackShowForcedSubtitles
+        case .metadataLanguage: .catalogMetadataLanguage
         }
     }
 
+    /// Batch 1 and the audio/resolution settings are per device; subtitle and library-wide
+    /// preferences (and the skip intervals) belong to the profile.
     var scope: SettingScopeIdentity {
-        self == .subtitleLanguage ? .profile : .profileDevice
+        switch self {
+        case .subtitleLanguage, .subtitleMode, .forcedSubtitles, .metadataLanguage, .advisoryAge,
+             .hideEpisodeImages, .hideEpisodeDescriptions, .videoSkipBack, .videoSkipForward,
+             .audiobookSkipBack, .audiobookSkipForward: .profile
+        default: .profileDevice
+        }
     }
     var expectedScope: SettingScope { scope.scope }
 
@@ -241,7 +297,9 @@ enum RemoteBackupDefinition: CaseIterable {
     /// instead of failing the whole backup. A test pins this to `SettingKey.isNewerThanMinimumServer`.
     var requiresCapability: Bool {
         switch self {
-        case .bufferingQuality, .themeMusic, .themeMusicLoop: true
+        case .bufferingQuality, .themeMusic, .themeMusicLoop, .advisoryAge, .hideEpisodeImages,
+             .hideEpisodeDescriptions, .videoSkipBack, .videoSkipForward, .audiobookSkipBack,
+             .audiobookSkipForward: true
         default: false
         }
     }
@@ -254,7 +312,12 @@ enum RemoteBackupDefinition: CaseIterable {
         case .maxBitrate: .integer(100...200_000, nullable: true)
         case .nextUpPrompt: .integer(0...120, nullable: false)
         case .playbackSpeed: .speedHundredths
-        case .hdr, .dolbyVision, .skipCredits, .autoPlayNext, .seekCache, .themeMusic, .themeMusicLoop: .bool
+        case .hdr, .dolbyVision, .skipCredits, .autoPlayNext, .seekCache, .themeMusic, .themeMusicLoop,
+             .advisoryAge, .hideEpisodeImages, .hideEpisodeDescriptions, .forcedSubtitles: .bool
+        case .videoSkipBack, .videoSkipForward, .audiobookSkipBack, .audiobookSkipForward:
+            .intChoice(Self.seekChoices)
+        case .metadataLanguage: .metadataLanguage
+        case .subtitleMode: .choice([("auto", "Auto"), ("always", "Always"), ("off", "Off")])
         // The contract's enum members and shared labels. Tests pin them to the production enums
         // (`BufferingQualityMode`, `IntroSkipMode`, `VideoGravity`, `PlayerOrientationMode`).
         case .bufferingQuality:
@@ -267,6 +330,9 @@ enum RemoteBackupDefinition: CaseIterable {
             .choice([("landscapeLocked", "Landscape locked"), ("rotateFreely", "Rotate freely")])
         }
     }
+
+    /// `SeekIntervalContract.choices`; a test pins the two together.
+    static let seekChoices = [5, 10, 15, 30, 45, 60, 90]
 
     /// The reserved value distinguishes an inherited row from an explicit value.
     static let inherited = "~inherit"
@@ -283,7 +349,7 @@ enum RemoteBackupDefinition: CaseIterable {
 
     var allowsNull: Bool {
         switch kind {
-        case .subtitleLanguage: true
+        case .subtitleLanguage, .metadataLanguage: true
         case .integer(_, let nullable): nullable
         default: false
         }
@@ -297,13 +363,14 @@ enum RemoteBackupDefinition: CaseIterable {
         switch (kind, value) {
         case (.resolution, .string(let raw)): return SiloQualityPresets.resolutionChoices.contains(raw)
         case (.languageTag, .string(let raw)): return Self.isPortableLanguageTag(raw)
-        case (.subtitleLanguage, .string(let raw)):
+        case (.subtitleLanguage, .string(let raw)), (.metadataLanguage, .string(let raw)):
             return !raw.isEmpty && raw.count <= 32
                 && raw.utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0)
                     || (48...57).contains($0) || $0 == 45 }
         case (.bool, .bool): return true
         case (.choice(let options), .string(let raw)): return options.contains { $0.value == raw }
         case (.integer(let range, _), .int(let number)): return range.contains(number)
+        case (.intChoice(let allowed), .int(let number)): return allowed.contains(number)
         case (.speedHundredths, .int(let number)): return (25...300).contains(number) && number % 5 == 0
         default: return false
         }
@@ -320,6 +387,12 @@ enum RemoteBackupDefinition: CaseIterable {
             if row.scope == nil || expectedScope == .profileDevice || row.scope == .account {
                 return .string(Self.inherited)
             }
+            // A profile setting whose winning row is a device, client, library or series
+            // override. That row belongs to someone else's scope; it is never read as the
+            // profile value and never overwritten.
+            if expectedScope == .profile, let other = row.scope, other != .profile {
+                throw SettingsBackupRemoteError.overridden
+            }
             throw SettingsBackupRemoteError.unsupportedValue
         }
         guard row.profileId == nil || !row.profileId!.isEmpty else {
@@ -327,15 +400,16 @@ enum RemoteBackupDefinition: CaseIterable {
         }
         let result: BackupValue
         switch (kind, row.storedValue ?? row.value) {
-        case (.subtitleLanguage, .null): result = .string(Self.null)
+        case (.subtitleLanguage, .null), (.metadataLanguage, .null): result = .string(Self.null)
         // No audio preference on this device means no device override.
         case (.languageTag, .null): result = .string(Self.inherited)
         case (.integer(_, nullable: true), .null): result = .string(Self.null)
         case (.resolution, .string(let raw)), (.languageTag, .string(let raw)),
-             (.subtitleLanguage, .string(let raw)), (.choice, .string(let raw)):
+             (.subtitleLanguage, .string(let raw)), (.metadataLanguage, .string(let raw)),
+             (.choice, .string(let raw)):
             result = .string(raw)
         case (.bool, .bool(let flag)): result = .bool(flag)
-        case (.integer, let wire):
+        case (.integer, let wire), (.intChoice, let wire):
             guard let number = wire.intValue else { throw SettingsBackupRemoteError.unsupportedValue }
             result = .int(number)
         case (.speedHundredths, let wire):
@@ -367,11 +441,14 @@ enum RemoteBackupDefinition: CaseIterable {
     func label(_ value: BackupValue) -> String {
         if case .string(let raw) = value {
             if raw == Self.inherited { return "Use inherited setting" }
-            if raw == Self.null { return self == .maxBitrate ? "No limit" : "No preference" }
+            if raw == Self.null {
+                return self == .maxBitrate ? "No limit" : self == .metadataLanguage ? "Library default" : "No preference"
+            }
         }
         switch (kind, value) {
         case (.resolution, .string(let raw)): return SiloQualityPresets.resolutionLabel(raw)
         case (.languageTag, .string(let raw)): return raw == "x-silo-original" ? "Original language" : raw
+        case (.intChoice, .int(let number)): return "\(number) seconds"
         case (.choice(let options), .string(let raw)): return options.first { $0.value == raw }?.label ?? raw
         case (.integer, .int(let number)):
             if self == .maxBitrate { return Self.bitrateLabel(number) }
@@ -482,21 +559,34 @@ final class SettingsBackupRemoteAdapter {
 
     func refreshUI() async { await transport.refreshUI() }
 
-    func export() async throws -> (scope: SettingsBackupScope, groups: [String: [String: BackupValue]]) {
+    /// `omitted` lists settings left out of the file, each with the precise reason, so the UI can
+    /// say what the backup does not contain.
+    func export() async throws -> (scope: SettingsBackupScope, groups: [String: [String: BackupValue]],
+                                   omitted: [String]) {
         try await timed { try await self.transport.prepare() }
         let owner = try await timed { try await self.transport.owner() }
         let rows = try await read(owner)
         var groups: [String: [String: BackupValue]] = [:]
+        var omitted: [String] = []
         for definition in RemoteBackupDefinition.allCases {
             guard let row = rows[definition.key] else {
                 // A key newer than this server is not part of its settings; anything else missing
                 // means the read was incomplete, and an incomplete backup must not be written.
-                if definition.requiresCapability { continue }
+                if definition.requiresCapability {
+                    omitted.append("\(definition.title) (this server doesn't support it)")
+                    continue
+                }
                 throw SettingsBackupRemoteError.unsupportedValue
             }
-            groups[definition.group.rawValue, default: [:]][definition.id] = try definition.snapshot(row)
+            do {
+                groups[definition.group.rawValue, default: [:]][definition.id] = try definition.snapshot(row)
+            } catch SettingsBackupRemoteError.overridden {
+                // The profile value is hidden by a narrower override. Exporting the override as the
+                // profile value would restore the wrong thing, so the setting is left out.
+                omitted.append("\(definition.title) (hidden by a device, library or series override)")
+            }
         }
-        return (owner.scope, groups)
+        return (owner.scope, groups, omitted)
     }
 
     func preview(_ incoming: IncomingBackup) async -> [RestorePreviewGroup] {
@@ -517,6 +607,12 @@ final class SettingsBackupRemoteAdapter {
                 let value = incoming.groups[group.rawValue]![definition.id]!
                 let row = current[definition.key]
                 let existing = row.flatMap { try? definition.snapshot($0) }
+                var overridden = false
+                if let row, existing == nil {
+                    do { _ = try definition.snapshot(row) }
+                    catch SettingsBackupRemoteError.overridden { overridden = true }
+                    catch {}
+                }
                 let status: RestoreItemStatus
                 if !definition.validate(value) { status = .invalid("This value is not supported.") }
                 else if let reason { status = .unsupported(reason) }
@@ -524,6 +620,9 @@ final class SettingsBackupRemoteAdapter {
                     status = .unsupported("This server doesn't support this setting.")
                 }
                 else if row == nil { status = .unsupported("Kyro could not read the authoritative value.") }
+                else if overridden {
+                    status = .unsupported(SettingsBackupRemoteError.overridden.localizedDescription)
+                }
                 else if existing == nil {
                     status = .unsupported("The server's current value can't be compared or restored safely.")
                 }
@@ -553,7 +652,12 @@ final class SettingsBackupRemoteAdapter {
                       definition.validate(desired), let row = current[definition.key] else {
                     report.skipped.append(definition.id); continue
                 }
-                let previous = try definition.snapshot(row)
+                let previous: BackupValue
+                do { previous = try definition.snapshot(row) }
+                catch SettingsBackupRemoteError.overridden {
+                    // Hidden by a narrower override: leave it alone and say so.
+                    report.skipped.append(definition.id); continue
+                }
                 if previous != desired {
                     changes.append(RemoteBackupChange(id: definition.id, previous: previous, applied: desired))
                 }

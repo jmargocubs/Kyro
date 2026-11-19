@@ -17,6 +17,7 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
     ]
     private var profileRows: [SettingKey: SettingJSONValue] = [:]
     private var unserved: Set<SettingKey> = []
+    private var overrides: [SettingKey: (scope: SettingScope, value: SettingJSONValue)] = [:]
     private var failedKey: SettingKey?
     private var offline = false
     private var delay: Duration?
@@ -29,8 +30,12 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
         if let delay { try await Task.sleep(for: delay) }
         if offline { throw Failure.offline }
         let rows = keys.filter { !unserved.contains($0) }.map { key -> EffectiveSettingValue in
-            let ownScope: SettingScope = key == .playbackSubtitleLanguage ? .profile : .profileDevice
-            if stored[key] == nil, let inherited = profileRows[key] {
+            let ownScope: SettingScope = Self.profileScoped.contains(key) ? .profile : .profileDevice
+            if let hidden = overrides[key] {
+                return EffectiveSettingValue(key: key.rawValue, value: hidden.value, source: .scope(hidden.scope),
+                                             scope: hidden.scope, profileId: destination.request.profileId)
+            }
+            if stored[key] == nil, !Self.profileScoped.contains(key), let inherited = profileRows[key] {
                 return EffectiveSettingValue(key: key.rawValue, value: inherited, source: .scope(.profile),
                                              scope: .profile, profileId: destination.request.profileId)
             }
@@ -66,6 +71,16 @@ private actor FakeBackupRemoteTransport: SettingsBackupRemoteTransport {
     func set(_ key: SettingKey, to value: SettingJSONValue?) { stored[key] = value }
     func setProfileRow(_ key: SettingKey, to value: SettingJSONValue?) { profileRows[key] = value }
     func setUnserved(_ keys: Set<SettingKey>) { unserved = keys }
+    func setOverride(_ key: SettingKey, _ scope: SettingScope?, _ value: SettingJSONValue = .null) {
+        overrides[key] = scope.map { ($0, value) }
+    }
+    /// The keys the contract stores at profile scope; the rest of this fake's keys are per device.
+    static let profileScoped: Set<SettingKey> = [
+        .playbackSubtitleLanguage, .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages,
+        .catalogHideUnwatchedEpisodeOverviews, .playerVideoSkipBackSeconds, .playerVideoSkipForwardSeconds,
+        .playerAudiobookSkipBackSeconds, .playerAudiobookSkipForwardSeconds, .playbackSubtitleMode,
+        .playbackShowForcedSubtitles, .catalogMetadataLanguage,
+    ]
     func clearWrites() { writes = []; writeScopes = [] }
     func value(_ key: SettingKey) -> SettingJSONValue? { stored[key] }
     func fail(_ key: SettingKey?) { failedKey = key }
@@ -147,9 +162,9 @@ final class SettingsBackupUnifiedTests: XCTestCase {
         await transport.moveProfile()
         await model.loadUnifiedImport(data: data)
         let remote = model.preview?.groups.filter { [.streaming, .subtitles].contains($0.group) }
-        // Six streaming settings (including batch 1's bitrate, buffering, HDR, Dolby Vision) and one
-        // subtitle setting are all refused for a different profile.
-        XCTAssertEqual(remote?.flatMap(\.items).count, 7)
+        // Six streaming settings and four subtitle settings (including batch 2's mode, forced
+        // subtitles and metadata language) are all refused for a different profile.
+        XCTAssertEqual(remote?.flatMap(\.items).count, 10)
         XCTAssertTrue(remote?.flatMap(\.items).allSatisfy {
             if case .unsupported = $0.status { return true }; return false
         } ?? false)
@@ -241,6 +256,7 @@ final class SettingsBackupRemoteBatchOneTests: XCTestCase {
         let saved: SettingJSONValue?
         let backup: BackupValue
         let current: SettingJSONValue
+        var scope: SettingScopeIdentity = .profileDevice
     }
 
     private static let inherit = BackupValue.string("~inherit")
@@ -271,6 +287,29 @@ final class SettingsBackupRemoteBatchOneTests: XCTestCase {
         Row(id: "interface.themeMusic", key: .uiThemeMusicEnabled, saved: .bool(false), backup: .bool(false), current: .bool(true)),
         Row(id: "interface.themeMusicLoop", key: .uiThemeMusicLoop, saved: .bool(true), backup: .bool(true), current: .bool(false)),
         Row(id: "interface.themeMusicLoop", key: .uiThemeMusicLoop, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+    ] + SettingsBackupRemoteBatchOneTests.profileRowsTable
+
+    /// Batch 2: the ten profile-scope settings. `saved: nil` is an absent profile row (inherits).
+    private static let profileRowsTable: [Row] = [
+        Row(id: "interface.advisoryAge", key: .catalogShowAdvisoryAge, saved: .bool(true), backup: .bool(true), current: .bool(false), scope: .profile),
+        Row(id: "interface.advisoryAge", key: .catalogShowAdvisoryAge, saved: .bool(false), backup: .bool(false), current: .bool(true), scope: .profile),
+        Row(id: "interface.advisoryAge", key: .catalogShowAdvisoryAge, saved: nil, backup: inherit, current: .bool(true), scope: .profile),
+        Row(id: "interface.hideEpisodeImages", key: .catalogHideUnwatchedEpisodeImages, saved: .bool(true), backup: .bool(true), current: .bool(false), scope: .profile),
+        Row(id: "interface.hideEpisodeImages", key: .catalogHideUnwatchedEpisodeImages, saved: .bool(false), backup: .bool(false), current: .bool(true), scope: .profile),
+        Row(id: "interface.hideEpisodeDescriptions", key: .catalogHideUnwatchedEpisodeOverviews, saved: .bool(true), backup: .bool(true), current: .bool(false), scope: .profile),
+        Row(id: "interface.hideEpisodeDescriptions", key: .catalogHideUnwatchedEpisodeOverviews, saved: .bool(false), backup: .bool(false), current: .bool(true), scope: .profile),
+        Row(id: "player.videoSkipBackSeconds", key: .playerVideoSkipBackSeconds, saved: .int(45), backup: .int(45), current: .int(10), scope: .profile),
+        Row(id: "player.videoSkipForwardSeconds", key: .playerVideoSkipForwardSeconds, saved: .int(5), backup: .int(5), current: .int(30), scope: .profile),
+        Row(id: "player.videoSkipForwardSeconds", key: .playerVideoSkipForwardSeconds, saved: nil, backup: inherit, current: .int(90), scope: .profile),
+        Row(id: "player.audiobookSkipBackSeconds", key: .playerAudiobookSkipBackSeconds, saved: .int(90), backup: .int(90), current: .int(10), scope: .profile),
+        Row(id: "player.audiobookSkipForwardSeconds", key: .playerAudiobookSkipForwardSeconds, saved: .int(60), backup: .int(60), current: .int(30), scope: .profile),
+        Row(id: "subtitles.mode", key: .playbackSubtitleMode, saved: .string("always"), backup: .string("always"), current: .string("auto"), scope: .profile),
+        Row(id: "subtitles.mode", key: .playbackSubtitleMode, saved: .string("off"), backup: .string("off"), current: .string("always"), scope: .profile),
+        Row(id: "subtitles.showForced", key: .playbackShowForcedSubtitles, saved: .bool(false), backup: .bool(false), current: .bool(true), scope: .profile),
+        Row(id: "subtitles.showForced", key: .playbackShowForcedSubtitles, saved: .bool(true), backup: .bool(true), current: .bool(false), scope: .profile),
+        Row(id: "subtitles.metadataLanguage", key: .catalogMetadataLanguage, saved: .string("ja"), backup: .string("ja"), current: .string("en"), scope: .profile),
+        Row(id: "subtitles.metadataLanguage", key: .catalogMetadataLanguage, saved: .null, backup: .string("~null"), current: .string("en"), scope: .profile),
+        Row(id: "subtitles.metadataLanguage", key: .catalogMetadataLanguage, saved: nil, backup: inherit, current: .string("en"), scope: .profile),
     ]
 
     private func document(_ adapter: SettingsBackupRemoteAdapter) async throws -> IncomingBackup {
@@ -279,14 +318,19 @@ final class SettingsBackupRemoteBatchOneTests: XCTestCase {
             groups: exported.groups, scope: exported.scope, app: app, now: Date()))
     }
 
-    func testEveryBatchOneSettingIsCoveredByTheTable() {
+    func testEveryBatchOneAndTwoSettingIsCoveredByTheTable() {
         let batch: Set<RemoteBackupDefinition> = [
             .maxBitrate, .bufferingQuality, .hdr, .dolbyVision, .introSkip, .skipCredits, .autoPlayNext,
             .nextUpPrompt, .playbackSpeed, .videoSizing, .orientation, .seekCache, .themeMusic, .themeMusicLoop,
         ]
-        XCTAssertEqual(Set(rows.map(\.id)), Set(batch.map(\.id)))
-        XCTAssertEqual(Set(RemoteBackupDefinition.allCases).subtracting(batch),
+        let batchTwo: Set<RemoteBackupDefinition> = [
+            .advisoryAge, .hideEpisodeImages, .hideEpisodeDescriptions, .videoSkipBack, .videoSkipForward,
+            .audiobookSkipBack, .audiobookSkipForward, .subtitleMode, .forcedSubtitles, .metadataLanguage,
+        ]
+        XCTAssertEqual(Set(rows.map(\.id)), Set(batch.union(batchTwo).map(\.id)))
+        XCTAssertEqual(Set(RemoteBackupDefinition.allCases).subtracting(batch).subtracting(batchTwo),
                        [.resolution, .audioLanguage, .subtitleLanguage])
+        for definition in batchTwo { XCTAssertEqual(definition.scope, .profile, definition.id) }
         for definition in batch {
             XCTAssertEqual(definition.scope, .profileDevice, definition.id)
             XCTAssertFalse(SettingsBackupSafety.isSensitiveName(definition.id), definition.id)
@@ -337,7 +381,7 @@ final class SettingsBackupRemoteBatchOneTests: XCTestCase {
         for row in rows {
             let transport = FakeBackupRemoteTransport()
             await transport.set(row.key, to: row.saved)
-            if row.saved == nil { await transport.setProfileRow(row.key, to: row.current) }
+            if row.saved == nil && row.scope == .profileDevice { await transport.setProfileRow(row.key, to: row.current) }
             let adapter = SettingsBackupRemoteAdapter(transport: transport, journal: MemoryRemoteBackupJournal())
             let incoming = try await document(adapter)
             let group = String(row.id.split(separator: ".")[0])
@@ -358,7 +402,7 @@ final class SettingsBackupRemoteBatchOneTests: XCTestCase {
             let writes = await transport.writes
             let scopes = await transport.writeScopes
             XCTAssertEqual(writes, [row.key], row.id)
-            XCTAssertEqual(scopes, [.profileDevice], row.id)
+            XCTAssertEqual(scopes, [row.scope], row.id)
 
             let undo = await adapter.undo()
             XCTAssertEqual(undo.applied, [row.id], row.id)
@@ -426,6 +470,81 @@ final class SettingsBackupRemoteBatchOneTests: XCTestCase {
         let bitrate = await transport.value(.playbackMaxBitrateKbps)
         XCTAssertEqual(bitrate, .null)
         XCTAssertNil(journal.record)
+    }
+
+    /// Batch 2 keys are the owners' own profile-scope keys, and the contract lists match production.
+    func testBatchTwoMatchesProfileOwnersAndContracts() {
+        XCTAssertEqual(RemoteBackupDefinition.seekChoices, SeekIntervalContract.choices)
+        for (definition, media, direction) in [
+            (RemoteBackupDefinition.videoSkipBack, SeekMedia.video, SeekDirection.backward),
+            (.videoSkipForward, .video, .forward), (.audiobookSkipBack, .audiobook, .backward),
+            (.audiobookSkipForward, .audiobook, .forward),
+        ] {
+            XCTAssertEqual(definition.key, SeekIntervalContract.key(media, direction))
+        }
+        XCTAssertTrue(SeekIntervalContract.keys.allSatisfy { key in
+            RemoteBackupDefinition.allCases.contains { $0.key == key }
+        })
+        XCTAssertEqual(RemoteBackupDefinition.subtitleMode.key, ProfileSettingKeys.subtitleMode)
+        XCTAssertEqual(RemoteBackupDefinition.forcedSubtitles.key, ProfileSettingKeys.showForcedSubtitles)
+        XCTAssertEqual(RemoteBackupDefinition.metadataLanguage.key, ProfileSettingKeys.metadataLanguage)
+        XCTAssertTrue(ProfileSettingKeys.all.allSatisfy { key in
+            RemoteBackupDefinition.allCases.contains { $0.key == key && $0.scope == .profile }
+        })
+        guard case .choice(let modes) = RemoteBackupDefinition.subtitleMode.kind else { return XCTFail("mode kind") }
+        XCTAssertEqual(modes.map(\.value), SubtitleMode.allCases.map(\.rawValue))
+        XCTAssertEqual(RemoteBackupDefinition.advisoryAge.key, .catalogShowAdvisoryAge)
+        XCTAssertEqual(RemoteBackupDefinition.hideEpisodeImages.key, EpisodeSpoilerContract.keys[0])
+    }
+
+    func testSeekIntervalsAcceptOnlyContractChoices() {
+        for definition in [RemoteBackupDefinition.videoSkipBack, .videoSkipForward, .audiobookSkipBack, .audiobookSkipForward] {
+            for seconds in SeekIntervalContract.choices { XCTAssertTrue(definition.validate(.int(seconds))) }
+            for bad in [0, 1, 7, 20, 89, 91, 120, -10] { XCTAssertFalse(definition.validate(.int(bad)), "\(bad)") }
+            XCTAssertFalse(definition.validate(.string("10")))
+            XCTAssertFalse(definition.validate(.string("~null")))
+        }
+    }
+
+    /// A device, library or series override hides the profile row. It is never exported as the
+    /// profile value and never overwritten.
+    func testOverrideDoesNotObscureOrOverwriteProfileSubtitleSettings() async throws {
+        for hider in [SettingScope.profileDevice, .profileSeries, .profileLibrary] {
+            let transport = FakeBackupRemoteTransport()
+            await transport.set(.playbackSubtitleMode, to: .string("always"))
+            let adapter = SettingsBackupRemoteAdapter(transport: transport, journal: MemoryRemoteBackupJournal())
+            let file = try await document(adapter)
+            await transport.setOverride(.playbackSubtitleMode, hider, .string("off"))
+            let exported = try await adapter.export()
+            XCTAssertNil(exported.groups["subtitles"]?["subtitles.mode"])
+            XCTAssertTrue(exported.omitted.contains { $0.hasPrefix("Subtitle behavior") && $0.contains("override") })
+            let preview = await adapter.preview(file)
+            XCTAssertEqual(preview.flatMap(\.items).first { $0.id == "subtitles.mode" }?.status,
+                           .unsupported(SettingsBackupRemoteError.overridden.localizedDescription))
+            await transport.clearWrites()
+            let report = await adapter.apply(file, selectedIDs: ["subtitles.mode"])
+            XCTAssertEqual(report.skipped, ["subtitles.mode"])
+            XCTAssertTrue(report.failed.isEmpty)
+            let writes = await transport.writes
+            XCTAssertTrue(writes.isEmpty)
+            let profileValue = await transport.value(.playbackSubtitleMode)
+            XCTAssertEqual(profileValue, .string("always"))
+        }
+    }
+
+    func testOlderServerOmitsNewerProfileKeysButKeepsSubtitleSettings() async throws {
+        let old = FakeBackupRemoteTransport()
+        let gated: Set<SettingKey> = [
+            .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages, .catalogHideUnwatchedEpisodeOverviews,
+            .playerVideoSkipBackSeconds, .playerVideoSkipForwardSeconds, .playerAudiobookSkipBackSeconds,
+            .playerAudiobookSkipForwardSeconds,
+        ]
+        await old.setUnserved(gated)
+        let adapter = SettingsBackupRemoteAdapter(transport: old, journal: MemoryRemoteBackupJournal())
+        let exported = try await adapter.export()
+        XCTAssertEqual(exported.groups["subtitles"]?.count, 4)
+        XCTAssertEqual(exported.omitted.count, 7)
+        XCTAssertNil(exported.groups["player"]?["player.videoSkipBackSeconds"])
     }
 
     func testOutOfContractValuesAreRefused() {

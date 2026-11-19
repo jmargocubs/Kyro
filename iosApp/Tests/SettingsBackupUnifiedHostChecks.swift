@@ -27,8 +27,28 @@ enum SettingKey: String, Hashable, Sendable, CaseIterable {
     case playerSeekCacheEnabled = "player.seek_cache_enabled"
     case uiThemeMusicEnabled = "ui.theme_music_enabled"
     case uiThemeMusicLoop = "ui.theme_music_loop"
+    case catalogShowAdvisoryAge = "catalog.show_advisory_age"
+    case catalogHideUnwatchedEpisodeImages = "catalog.hide_unwatched_episode_images"
+    case catalogHideUnwatchedEpisodeOverviews = "catalog.hide_unwatched_episode_overviews"
+    case playerVideoSkipBackSeconds = "player.video_skip_back_seconds"
+    case playerVideoSkipForwardSeconds = "player.video_skip_forward_seconds"
+    case playerAudiobookSkipBackSeconds = "player.audiobook_skip_back_seconds"
+    case playerAudiobookSkipForwardSeconds = "player.audiobook_skip_forward_seconds"
+    case playbackSubtitleMode = "playback.subtitle_mode"
+    case playbackShowForcedSubtitles = "playback.show_forced_subtitles"
+    case catalogMetadataLanguage = "catalog.metadata_language"
+
+    /// Keys the real contract stores at profile scope; everything else here is per device.
+    static let profileScoped: Set<SettingKey> = [
+        .playbackSubtitleLanguage, .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages,
+        .catalogHideUnwatchedEpisodeOverviews, .playerVideoSkipBackSeconds, .playerVideoSkipForwardSeconds,
+        .playerAudiobookSkipBackSeconds, .playerAudiobookSkipForwardSeconds, .playbackSubtitleMode,
+        .playbackShowForcedSubtitles, .catalogMetadataLanguage,
+    ]
 }
-enum SettingScope: Equatable, Sendable { case account, profile, profileDevice }
+enum SettingScope: Equatable, Sendable {
+    case account, profile, profileDevice, profileLibrary, profileSeries
+}
 enum SettingScopeIdentity: Equatable, Sendable {
     case profile, profileDevice
     var scope: SettingScope { self == .profile ? .profile : .profileDevice }
@@ -76,6 +96,8 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
     var profileValues: [SettingKey: SettingJSONValue] = [:]
     /// Keys this fake server does not serve, like a server older than their manifest revision.
     var unserved: Set<SettingKey> = []
+    /// A narrower-scope row (device, library or series) that wins over the profile row.
+    var overrides: [SettingKey: (scope: SettingScope, value: SettingJSONValue)] = [:]
     var failedKey: SettingKey?
     var offline = false
     var delay: Duration?
@@ -92,8 +114,11 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
         if offline { throw Failure.offline }
         var rows: [SettingKey: EffectiveSettingValue] = [:]
         for key in keys where !unserved.contains(key) {
-            let own: SettingScope = key == .playbackSubtitleLanguage ? .profile : .profileDevice
-            if let value = values[key] {
+            let own: SettingScope = SettingKey.profileScoped.contains(key) ? .profile : .profileDevice
+            if let hidden = overrides[key] {
+                rows[key] = EffectiveSettingValue(key: key.rawValue, value: hidden.value, storedValue: nil,
+                                                  scope: hidden.scope, profileId: "profile")
+            } else if let value = values[key] {
                 rows[key] = EffectiveSettingValue(key: key.rawValue, value: value, storedValue: nil,
                                                   scope: own, profileId: "profile")
             } else if let value = profileValues[key] {
@@ -124,7 +149,10 @@ private actor FakeTransport: SettingsBackupRemoteTransport {
     func change(_ key: SettingKey, _ value: SettingJSONValue?) { values[key] = value }
     func setProfileValue(_ key: SettingKey, _ value: SettingJSONValue?) { profileValues[key] = value }
     func setUnserved(_ keys: Set<SettingKey>) { unserved = keys }
-    func clearWrites() { writes = [] }
+    func setOverride(_ key: SettingKey, _ scope: SettingScope?, _ value: SettingJSONValue = .null) {
+        overrides[key] = scope.map { ($0, value) }
+    }
+    func clearWrites() { writes = []; scopes = [] }
     func writtenKeys() -> [SettingKey] { writes }
     func writtenScopes() -> [SettingScopeIdentity] { scopes }
     func fail(_ key: SettingKey?) { failedKey = key }
@@ -189,8 +217,9 @@ enum SettingsBackupUnifiedHostChecks {
 
         await transport.moveProfile()
         await model.loadUnifiedImport(data: file)
-        // Six streaming rows and one subtitle row are all refused for a different profile.
-        precondition(model.preview?.skippedCount == 7)
+        // This file selected the streaming (6) and subtitles (4) groups; all ten are refused for a
+        // different profile.
+        precondition(model.preview?.skippedCount == 10)
         let before = await transport.writeCount()
         await model.applyUnifiedSelected()
         let after = await transport.writeCount()
@@ -283,6 +312,7 @@ private enum RemoteBatchOneChecks {
         let backup: BackupValue
         /// The value the destination holds before restore.
         let current: SettingJSONValue?
+        var scope: SettingScopeIdentity = .profileDevice
     }
 
     static let inherit = BackupValue.string("~inherit")
@@ -311,6 +341,29 @@ private enum RemoteBatchOneChecks {
         Row(id: "interface.themeMusic", key: .uiThemeMusicEnabled, saved: .bool(false), backup: .bool(false), current: .bool(true)),
         Row(id: "interface.themeMusicLoop", key: .uiThemeMusicLoop, saved: .bool(true), backup: .bool(true), current: .bool(false)),
         Row(id: "interface.themeMusicLoop", key: .uiThemeMusicLoop, saved: .bool(false), backup: .bool(false), current: .bool(true)),
+    ] + profileRows
+
+    /// Batch 2: profile-scope scalars. `saved: nil` is an absent profile row, so the value inherits.
+    static let profileRows: [Row] = [
+        Row(id: "interface.advisoryAge", key: .catalogShowAdvisoryAge, saved: .bool(true), backup: .bool(true), current: .bool(false), scope: .profile),
+        Row(id: "interface.advisoryAge", key: .catalogShowAdvisoryAge, saved: .bool(false), backup: .bool(false), current: .bool(true), scope: .profile),
+        Row(id: "interface.advisoryAge", key: .catalogShowAdvisoryAge, saved: nil, backup: inherit, current: .bool(true), scope: .profile),
+        Row(id: "interface.hideEpisodeImages", key: .catalogHideUnwatchedEpisodeImages, saved: .bool(true), backup: .bool(true), current: .bool(false), scope: .profile),
+        Row(id: "interface.hideEpisodeImages", key: .catalogHideUnwatchedEpisodeImages, saved: .bool(false), backup: .bool(false), current: .bool(true), scope: .profile),
+        Row(id: "interface.hideEpisodeDescriptions", key: .catalogHideUnwatchedEpisodeOverviews, saved: .bool(true), backup: .bool(true), current: .bool(false), scope: .profile),
+        Row(id: "interface.hideEpisodeDescriptions", key: .catalogHideUnwatchedEpisodeOverviews, saved: .bool(false), backup: .bool(false), current: .bool(true), scope: .profile),
+        Row(id: "player.videoSkipBackSeconds", key: .playerVideoSkipBackSeconds, saved: .int(45), backup: .int(45), current: .int(10), scope: .profile),
+        Row(id: "player.videoSkipForwardSeconds", key: .playerVideoSkipForwardSeconds, saved: .int(5), backup: .int(5), current: .int(30), scope: .profile),
+        Row(id: "player.videoSkipForwardSeconds", key: .playerVideoSkipForwardSeconds, saved: nil, backup: inherit, current: .int(90), scope: .profile),
+        Row(id: "player.audiobookSkipBackSeconds", key: .playerAudiobookSkipBackSeconds, saved: .int(90), backup: .int(90), current: .int(10), scope: .profile),
+        Row(id: "player.audiobookSkipForwardSeconds", key: .playerAudiobookSkipForwardSeconds, saved: .int(60), backup: .int(60), current: .int(30), scope: .profile),
+        Row(id: "subtitles.mode", key: .playbackSubtitleMode, saved: .string("always"), backup: .string("always"), current: .string("auto"), scope: .profile),
+        Row(id: "subtitles.mode", key: .playbackSubtitleMode, saved: .string("off"), backup: .string("off"), current: .string("always"), scope: .profile),
+        Row(id: "subtitles.showForced", key: .playbackShowForcedSubtitles, saved: .bool(false), backup: .bool(false), current: .bool(true), scope: .profile),
+        Row(id: "subtitles.showForced", key: .playbackShowForcedSubtitles, saved: .bool(true), backup: .bool(true), current: .bool(false), scope: .profile),
+        Row(id: "subtitles.metadataLanguage", key: .catalogMetadataLanguage, saved: .string("ja"), backup: .string("ja"), current: .string("en"), scope: .profile),
+        Row(id: "subtitles.metadataLanguage", key: .catalogMetadataLanguage, saved: .null, backup: .string("~null"), current: .string("en"), scope: .profile),
+        Row(id: "subtitles.metadataLanguage", key: .catalogMetadataLanguage, saved: nil, backup: inherit, current: .string("en"), scope: .profile),
     ]
 
     static let app = SettingsBackupAppInfo(version: "1", build: "97", platform: "iOS", idiom: "phone")
@@ -330,7 +383,8 @@ private enum RemoteBatchOneChecks {
 
         // Every new ID passes the document's sensitive-name filter and is owned by the adapter.
         let newIDs = Set(rows.map(\.id))
-        precondition(newIDs.count == 14 && newIDs.isSubset(of: SettingsBackupRemoteAdapter.settingIDs))
+        precondition(newIDs.count == 24 && newIDs.isSubset(of: SettingsBackupRemoteAdapter.settingIDs))
+        precondition(SettingsBackupRemoteAdapter.settingIDs.count == 27)
         precondition(SettingsBackupRemoteAdapter.settingIDs.allSatisfy { !SettingsBackupSafety.isSensitiveName($0) })
         checks += 1
 
@@ -338,11 +392,15 @@ private enum RemoteBatchOneChecks {
         for row in rows {
             let transport = FakeTransport()
             await transport.change(row.key, row.saved)
-            if row.saved == nil { await transport.setProfileValue(row.key, row.current) }
+            if row.saved == nil && row.scope == .profileDevice { await transport.setProfileValue(row.key, row.current) }
             let adapter = SettingsBackupRemoteAdapter(transport: transport, journal: RemoteMemoryJournal(),
                                                       timeout: .seconds(1))
             let incoming = try await document(adapter)
             let group = row.id.split(separator: ".").first.map(String.init)!
+            if row.scope == .profile && row.saved == nil {
+                // Inherited: exporting must find no profile row, and a different value is set after.
+                precondition(incoming.groups[group]?[row.id] == row.backup, "inherited export \(row.id)")
+            }
             precondition(incoming.groups[group]?[row.id] == row.backup, "export \(row.id) \(row.backup)")
 
             await transport.change(row.key, row.current)
@@ -358,7 +416,7 @@ private enum RemoteBatchOneChecks {
             precondition(restored == row.saved, "restored \(row.id) \(String(describing: restored))")
             let written = await transport.writtenKeys()
             let scopes = await transport.writtenScopes()
-            precondition(written == [row.key] && scopes == [.profileDevice], "scope \(row.id)")
+            precondition(written == [row.key] && scopes == [row.scope], "scope \(row.id)")
 
             let undo = await adapter.undo()
             precondition(undo.applied == [row.id] && undo.failed.isEmpty, "undo \(row.id)")
@@ -380,7 +438,8 @@ private enum RemoteBatchOneChecks {
         let oldAdapter = SettingsBackupRemoteAdapter(transport: old, journal: RemoteMemoryJournal())
         let oldFile = try await document(oldAdapter)
         precondition(oldFile.groups["streaming"]?["streaming.bufferingQuality"] == nil)
-        precondition(oldFile.groups["interface"] == nil)
+        precondition(oldFile.groups["interface"]?["interface.themeMusic"] == nil)
+        precondition(oldFile.groups["interface"]?["interface.themeMusicLoop"] == nil)
         precondition(oldFile.groups["streaming"]?["streaming.hdr"] == inherit)
         let oldPreview = await oldAdapter.preview(fullFile)
         for id in ["streaming.bufferingQuality", "interface.themeMusic", "interface.themeMusicLoop"] {
@@ -513,9 +572,11 @@ private enum RemoteBatchOneChecks {
             precondition(!text.contains(secret), "document leaked \(secret)")
         }
         let decoded = try SettingsBackupCodec.decode(exported)
-        precondition(decoded.groups["player"]?.count == 8 && decoded.groups["interface"]?.count == 2)
-        precondition(decoded.groups["streaming"]?.count == 6)
+        precondition(decoded.groups["player"]?.count == 12 && decoded.groups["interface"]?.count == 5)
+        precondition(decoded.groups["streaming"]?.count == 6 && decoded.groups["subtitles"]?.count == 4)
         checks += 1
+
+        checks += try await batchTwoChecks()
 
         // A schema-1 file may not carry the new synced groups.
         let unsafe = try SettingsBackupCodec.makeDocument(
@@ -528,6 +589,185 @@ private enum RemoteBatchOneChecks {
         checks += 1
 
         return checks
+    }
+
+    static func batchTwoChecks() async throws -> Int {
+        var checks = 0
+        let profileKeys: [SettingKey] = [
+            .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages, .catalogHideUnwatchedEpisodeOverviews,
+            .playerVideoSkipBackSeconds, .playerVideoSkipForwardSeconds, .playerAudiobookSkipBackSeconds,
+            .playerAudiobookSkipForwardSeconds, .playbackSubtitleMode, .playbackShowForcedSubtitles,
+            .catalogMetadataLanguage]
+        // Exactly ten profile-scope settings, every one written at profile scope.
+        precondition(profileKeys.count == 10)
+        precondition(RemoteBackupDefinition.allCases.filter { $0.scope == .profile }.count == 11)
+
+        // Subtitle override isolation: a device/series row hides the profile value. Export leaves
+        // it out with a reason, preview refuses it, and no write ever happens to the profile row.
+        for hider in [SettingScope.profileDevice, .profileSeries, .profileLibrary] {
+            let transport = FakeTransport()
+            await transport.change(.playbackSubtitleMode, .string("always"))
+            let adapter = SettingsBackupRemoteAdapter(transport: transport, journal: RemoteMemoryJournal())
+            let file = try await document(adapter)
+            precondition(file.groups["subtitles"]?["subtitles.mode"] == .string("always"))
+            await transport.setOverride(.playbackSubtitleMode, hider, .string("off"))
+            let exported = try await adapter.export()
+            precondition(exported.groups["subtitles"]?["subtitles.mode"] == nil)
+            precondition(exported.omitted.contains { $0.hasPrefix("Subtitle behavior") && $0.contains("override") })
+            precondition(exported.groups["subtitles"]?["subtitles.showForced"] == inherit)
+            let preview = await adapter.preview(file)
+            precondition(item(preview, "subtitles.mode")?.status
+                == .unsupported(SettingsBackupRemoteError.overridden.localizedDescription))
+            await transport.clearWrites()
+            let report = await adapter.apply(file, selectedIDs: ["subtitles.mode", "subtitles.showForced"])
+            let writes = await transport.writeCount()
+            precondition(writes == 0 && report.skipped == ["subtitles.mode"] && report.failed.isEmpty)
+            let shown = await transport.current(.playbackSubtitleMode)
+            precondition(shown == .string("always"))
+            await transport.setOverride(.playbackSubtitleMode, nil)
+        }
+        checks += 1
+
+        // Skip intervals: only the contract's list is valid, for all four keys.
+        for definition in [RemoteBackupDefinition.videoSkipBack, .videoSkipForward, .audiobookSkipBack, .audiobookSkipForward] {
+            for seconds in [5, 10, 15, 30, 45, 60, 90] { precondition(definition.validate(.int(seconds))) }
+            for bad in [0, 1, 7, 20, 89, 91, 120, -10] { precondition(!definition.validate(.int(bad)), "\(bad)") }
+            precondition(!definition.validate(.bool(true)) && !definition.validate(.string("10")))
+            precondition(!definition.validate(.string("~null")))
+            precondition(definition.validate(inherit))
+            precondition(definition.scope == .profile && definition.requiresCapability)
+        }
+        let strict = FakeTransport()
+        let strictAdapter = SettingsBackupRemoteAdapter(transport: strict, journal: RemoteMemoryJournal())
+        let base = try await document(strictAdapter)
+        var bad = base.groups
+        bad["player"]?["player.videoSkipBackSeconds"] = .int(7)
+        bad["player"]?["player.audiobookSkipForwardSeconds"] = .int(120)
+        bad["subtitles"]?["subtitles.mode"] = .string("sometimes")
+        bad["subtitles"]?["subtitles.showForced"] = .string("on")
+        bad["interface"]?["interface.advisoryAge"] = .string("~null")
+        bad["subtitles"]?["subtitles.metadataLanguage"] = .string("not a language!")
+        let invalid = try SettingsBackupCodec.decode(SettingsBackupCodec.makeUnifiedDocument(
+            groups: bad, scope: base.scope, app: app, now: Date()))
+        let invalidPreview = await strictAdapter.preview(invalid)
+        let badIDs = ["player.videoSkipBackSeconds", "player.audiobookSkipForwardSeconds", "subtitles.mode",
+                      "subtitles.showForced", "interface.advisoryAge", "subtitles.metadataLanguage"]
+        for id in badIDs { precondition(item(invalidPreview, id)?.status == .invalid("This value is not supported."), id) }
+        await strict.clearWrites()
+        _ = await strictAdapter.apply(invalid, selectedIDs: Set(badIDs))
+        let strictWrites = await strict.writeCount()
+        precondition(strictWrites == 0)
+        checks += 1
+
+        // Older servers: seek intervals (rev 9), advisory age (10) and spoilers (17) are omitted
+        // from the export and reported on restore; subtitle mode, forced subtitles and metadata
+        // language (rev 1) still work.
+        let full = FakeTransport()
+        for key in profileKeys { await full.change(key, profileSample(key)) }
+        let fullFile = try await document(SettingsBackupRemoteAdapter(transport: full, journal: RemoteMemoryJournal()))
+        let old = FakeTransport()
+        let gated: Set<SettingKey> = [
+            .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages, .catalogHideUnwatchedEpisodeOverviews,
+            .playerVideoSkipBackSeconds, .playerVideoSkipForwardSeconds, .playerAudiobookSkipBackSeconds,
+            .playerAudiobookSkipForwardSeconds]
+        await old.setUnserved(gated)
+        let oldAdapter = SettingsBackupRemoteAdapter(transport: old, journal: RemoteMemoryJournal())
+        let oldExport = try await oldAdapter.export()
+        precondition(oldExport.groups["subtitles"]?.count == 4)
+        for id in ["interface.advisoryAge", "interface.hideEpisodeImages", "interface.hideEpisodeDescriptions"] {
+            precondition(oldExport.groups["interface"]?[id] == nil, id)
+        }
+        precondition(oldExport.groups["player"]?["player.videoSkipBackSeconds"] == nil)
+        precondition(oldExport.omitted.count == 7)
+        let oldPreview = await oldAdapter.preview(fullFile)
+        for id in ["interface.advisoryAge", "interface.hideEpisodeImages", "interface.hideEpisodeDescriptions",
+                   "player.videoSkipBackSeconds", "player.videoSkipForwardSeconds",
+                   "player.audiobookSkipBackSeconds", "player.audiobookSkipForwardSeconds"] {
+            precondition(item(oldPreview, id)?.status == .unsupported("This server doesn't support this setting."), id)
+        }
+        precondition(item(oldPreview, "subtitles.mode")?.status == .willChange)
+        let oldReport = await oldAdapter.apply(fullFile, selectedIDs: ["interface.advisoryAge", "subtitles.mode"])
+        let oldWritten = await old.writtenKeys()
+        precondition(oldReport.skipped == ["interface.advisoryAge"] && oldWritten == [.playbackSubtitleMode])
+        checks += 1
+
+        // Partial API failure across profile settings: confirmed writes are journalled, the failure
+        // is reported, nothing after it is attempted, and recovery restores the earlier values.
+        let source = FakeTransport()
+        for key in profileKeys { await source.change(key, profileSample(key)) }
+        let journal = RemoteMemoryJournal()
+        let adapter = SettingsBackupRemoteAdapter(transport: source, journal: journal)
+        let file = try await document(adapter)
+        for key in profileKeys { await source.change(key, profileOther(key)) }
+        await source.fail(.playbackShowForcedSubtitles)
+        let ids = ["interface.advisoryAge", "subtitles.mode", "subtitles.showForced", "subtitles.metadataLanguage"]
+        let report = await adapter.apply(file, selectedIDs: Set(ids))
+        precondition(report.failed == ["subtitles.showForced"], "\(report.failed)")
+        precondition(!report.applied.contains("subtitles.showForced") && adapter.needsRecovery)
+        let untouched = await source.current(.playerVideoSkipBackSeconds)
+        precondition(untouched == profileOther(.playerVideoSkipBackSeconds))
+        await source.fail(nil)
+        let recovered = await adapter.undo()
+        precondition(recovered.failed.isEmpty && !adapter.undoAvailable)
+        for key in [SettingKey.catalogShowAdvisoryAge, .playbackSubtitleMode, .catalogMetadataLanguage] {
+            let value = await source.current(key)
+            precondition(value == profileOther(key), key.rawValue)
+        }
+        checks += 1
+
+        // Selective restore: one chosen profile setting changes, its neighbours do not.
+        await source.clearWrites()
+        let selective = await adapter.apply(file, selectedIDs: ["player.videoSkipForwardSeconds"])
+        let selectiveWrites = await source.writtenKeys()
+        let selectiveScopes = await source.writtenScopes()
+        precondition(selective.applied == ["player.videoSkipForwardSeconds"])
+        precondition(selectiveWrites == [.playerVideoSkipForwardSeconds] && selectiveScopes == [.profile])
+        let undoSelective = await adapter.undo()
+        precondition(undoSelective.applied == ["player.videoSkipForwardSeconds"])
+        checks += 1
+
+        // Build 96 schema-2 and schema-1 files still decode and need no batch 2 settings.
+        let legacy2 = try SettingsBackupCodec.makeUnifiedDocument(
+            groups: ["subtitles": ["subtitles.language": .string("zh")]], scope: base.scope, app: app, now: Date())
+        let decoded2 = try SettingsBackupCodec.decode(legacy2)
+        let legacyPreview = await adapter.preview(decoded2)
+        precondition(legacyPreview.flatMap(\.items).count == 1)
+        let legacy1 = try SettingsBackupCodec.makeDocument(
+            groups: ["navigation": ["navigation.fourthTab": .string("sports")]],
+            schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+        let decoded1 = try SettingsBackupCodec.decode(legacy1)
+        precondition(decoded1.schemaVersion == 1)
+        let schema1Unsafe = try SettingsBackupCodec.makeDocument(
+            groups: ["subtitles": ["subtitles.mode": .string("off")]],
+            schemaVersion: 1, minReaderVersion: 1, app: app, now: Date())
+        do { _ = try SettingsBackupCodec.decode(schema1Unsafe); fatalError("schema 1 carried synced mode") }
+        catch SettingsBackupError.unsafeContent {}
+        checks += 1
+        return checks
+    }
+
+    /// A value the saved backup holds, and a different one the destination holds before restore.
+    static func profileSample(_ key: SettingKey) -> SettingJSONValue {
+        switch key {
+        case .playerVideoSkipBackSeconds: .int(45)
+        case .playerVideoSkipForwardSeconds: .int(5)
+        case .playerAudiobookSkipBackSeconds: .int(90)
+        case .playerAudiobookSkipForwardSeconds: .int(60)
+        case .playbackSubtitleMode: .string("always")
+        case .catalogMetadataLanguage: .string("ja")
+        case .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages, .catalogHideUnwatchedEpisodeOverviews: .bool(true)
+        default: .bool(false)
+        }
+    }
+    static func profileOther(_ key: SettingKey) -> SettingJSONValue {
+        switch key {
+        case .playerVideoSkipBackSeconds, .playerAudiobookSkipBackSeconds: .int(10)
+        case .playerVideoSkipForwardSeconds, .playerAudiobookSkipForwardSeconds: .int(30)
+        case .playbackSubtitleMode: .string("off")
+        case .catalogMetadataLanguage: .string("en")
+        case .catalogShowAdvisoryAge, .catalogHideUnwatchedEpisodeImages, .catalogHideUnwatchedEpisodeOverviews: .bool(false)
+        default: .bool(true)
+        }
     }
 }
 

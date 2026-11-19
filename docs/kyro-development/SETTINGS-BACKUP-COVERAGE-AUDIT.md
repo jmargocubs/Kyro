@@ -286,3 +286,51 @@ All 14 are written at `profile_device`, the same scope the owning screens write 
 | 5 — catalog-bound composites (2) | Card presentation; primary menu + shortcuts | Atomic composite objects; menu entries contain library IDs that must resolve against the destination catalog |
 
 Provider/catalog-bound items outside the 64 (Live TV Favorites, pinned/hidden categories, server Favorites, browse state, library order) remain excluded until a stable non-secret identity exists, as described above. Physical-iPhone validation of any API-backed setting is still outstanding.
+
+## API batch 2: profile-scope scalar settings (2026-11-19)
+
+**Outcome:** all 10 profile-scope scalars now export, preview, restore selectively, confirm with a fresh server read and Undo in the same schema-2 `.kyrosettings` file. Coverage of the 64 candidates rises from **47/64 to 57/64**. Registered settings rise from 48 to **58**: 31 device-local and 27 API-backed (14 profile-device from batch 1, the three Build 96 settings, and these 10).
+
+Every setting is written and read at `profile` scope through the same authenticated, owner-pinned `putValue`/`deleteValue`/batched effective-read path as batch 1. None writes a `PlayerSettings`, `ProfilePreferences` or store cache.
+
+| Backup ID | Group | Contract key | Revision | Backup value |
+|---|---|---|---|---|
+| `interface.advisoryAge` | Interface | `catalog.show_advisory_age` | 10 | bool, `~inherit` |
+| `interface.hideEpisodeImages` | Interface | `catalog.hide_unwatched_episode_images` | 17 | bool, `~inherit` |
+| `interface.hideEpisodeDescriptions` | Interface | `catalog.hide_unwatched_episode_overviews` | 17 | bool, `~inherit` |
+| `player.videoSkipBackSeconds` | Player | `player.video_skip_back_seconds` | 9 | one of 5, 10, 15, 30, 45, 60, 90; `~inherit` |
+| `player.videoSkipForwardSeconds` | Player | `player.video_skip_forward_seconds` | 9 | same list |
+| `player.audiobookSkipBackSeconds` | Player | `player.audiobook_skip_back_seconds` | 9 | same list |
+| `player.audiobookSkipForwardSeconds` | Player | `player.audiobook_skip_forward_seconds` | 9 | same list |
+| `subtitles.mode` | Subtitles | `playback.subtitle_mode` | 1 | `auto`/`always`/`off`, `~inherit` |
+| `subtitles.showForced` | Subtitles | `playback.show_forced_subtitles` | 1 | bool, `~inherit` |
+| `subtitles.metadataLanguage` | Subtitles | `catalog.metadata_language` | 1 | language tag, `~null` (Library default), `~inherit` |
+
+An absent profile row is `~inherit` and restoring it deletes only that profile row; an explicit `false` or JSON null is kept distinct from it. Settings whose key is newer than `SettingKey.minimumServerRevision` (seek intervals, advisory age, spoiler toggles) are omitted from an older server's export, listed as not included, and reported as unsupported on restore; subtitle mode, forced subtitles and metadata language (revision 1) always work. The existing test that equates `requiresCapability` with `isNewerThanMinimumServer` covers all ten.
+
+### Override isolation
+
+The effective API returns whichever row wins. For a profile-scope setting, a winning device, client, library or series row is someone else's scope. The adapter now raises a distinct `overridden` outcome: export leaves the setting out and lists "hidden by a device, library or series override"; preview marks it unsupported with the same reason; restore skips it (not "failed") and writes nothing. The effective batch read carries no series context, so in practice a series override cannot reach the backup, and a device or library override is caught if present. Audio language, subtitle sync and subtitle appearance keep their own scope rules. Per-series subtitle overrides are never read or written. One limit remains: while an override hides a profile value, Kyro cannot show or restore that profile value at all, because no scope-targeted read exists in the transport.
+
+A defect found and fixed during this work: one overridden or unreadable setting used to mark every selected synced setting as failed. It now skips only that setting.
+
+### Other changes
+
+* Export reports each omitted synced setting and its reason; the post-export banner turns to a warning and lists them.
+* After a synced restore or Undo, the advisory-age, episode-spoiler and seek-interval stores refresh from the server alongside player settings and theme music.
+* Schema stays 2, `minReaderVersion` 1. Schema-1 files and Build 96 / batch 1 schema-2 files import unchanged; schema-1 files still cannot carry synced groups.
+
+### Validation
+
+* **macOS host checks:** **67 unified checks and 6 codec checks passed** (`swiftc -D KYRO_STANDALONE_TESTS`, production codec/adapter/model, controlled fake API). New this batch: 18 table rows (both directions for each of the four booleans, explicit null and inherited metadata language, inherited advisory age and skip interval, every interval and mode) running export → change → preview → restore at `profile` scope → confirmed read → Undo; override isolation for device, series and library overrides; valid and invalid intervals for all four keys (rejecting 0, 1, 7, 20, 89, 91, 120, -10, strings and bools); invalid mode, forced, advisory and language values never written; older server; partial failure with recovery; selective restore; Build 96 and schema-1 compatibility. Profile mismatch with zero writes is covered by the existing check, now for 10 synced settings.
+* **iOS XCTest:** the updated `SettingsBackupRemoteBatchOneTests` (override isolation, older server, interval validation, pins to `SeekIntervalContract`, `ProfileSettingKeys`, `SubtitleMode`, `EpisodeSpoilerContract`) and `SettingsBackupUnifiedTests` **compiled** with `xcodebuild build-for-testing` for `generic/platform=iOS`. They were **not executed**. No Simulator, IPA or tvOS change.
+
+### Remaining: 7 of the 64
+
+| Batch | Settings | Blocker |
+|---|---|---|
+| 3 | Subtitle appearance record; "appearance only on this device"; subtitle sync offset | Structured object value and a scope that moves between `profile` and `profile_device` |
+| 4 | Cellular quality pair; title art | Two keys written atomically (iPhone/iPad only); apply-to-all scope choice |
+| 5 | Card presentation; primary menu + shortcuts | Composite objects; menu contains library IDs needing destination-catalog matching |
+
+Physical-iPhone validation of any API-backed setting is still outstanding.

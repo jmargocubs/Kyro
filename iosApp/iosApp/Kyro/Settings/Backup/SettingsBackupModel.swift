@@ -22,6 +22,8 @@ final class SettingsBackupModel {
     private(set) var needsRecovery = false
     private(set) var restoreDate: Date?
     private(set) var isBusy = false
+    /// Synced settings the last export left out, each with its reason.
+    private(set) var exportOmissions: [String] = []
 
     @ObservationIgnored private let registry: SettingsBackupRegistry
     @ObservationIgnored private let applier: SettingsBackupApplier
@@ -77,6 +79,7 @@ final class SettingsBackupModel {
     /// A remote failure aborts export; a local-only file must not masquerade as complete.
     func exportUnifiedDocument() async -> Data? {
         guard !isBusy else { return nil }
+        exportOmissions = []
         guard let remote else { return exportDocument() }
         isBusy = true
         defer { isBusy = false }
@@ -89,9 +92,11 @@ final class SettingsBackupModel {
                 groups = try SettingsBackupCodec.decode(local).groups
             }
             var scope: SettingsBackupScope?
+            var omitted: [String] = []
             if exportSelection.contains(where: \.isServerSynced) {
                 let synced = try await remote.export()
                 scope = synced.scope
+                omitted = synced.omitted
                 for (group, values) in synced.groups {
                     if let selection = SettingsBackupGroup(rawValue: group), exportSelection.contains(selection) {
                         groups[group] = values
@@ -101,6 +106,7 @@ final class SettingsBackupModel {
             let data = try SettingsBackupCodec.makeUnifiedDocument(groups: groups, scope: scope,
                                                                     app: app, now: now())
             banner = nil
+            exportOmissions = omitted
             return data
         } catch {
             banner = Banner(kind: .failure, text: "The backup was not created: \(error.localizedDescription)")
@@ -125,8 +131,11 @@ final class SettingsBackupModel {
     }
 
     func didExport(success: Bool, message: String? = nil) {
+        let omitted = exportOmissions.isEmpty ? ""
+            : " Not included: \(exportOmissions.joined(separator: "; "))."
         banner = success
-            ? Banner(kind: .success, text: "Settings exported. The file has no sign-in details, server addresses or Live TV providers.")
+            ? Banner(kind: exportOmissions.isEmpty ? .success : .warning,
+                     text: "Settings exported. The file has no sign-in details, server addresses or Live TV providers.\(omitted)")
             : Banner(kind: .failure, text: message ?? "The export wasn't saved.")
     }
 
