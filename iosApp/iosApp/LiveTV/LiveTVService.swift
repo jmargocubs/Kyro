@@ -180,9 +180,9 @@ final class LiveTVService {
         } else {
             let configuration = URLSessionConfiguration.ephemeral
             configuration.timeoutIntervalForRequest = 15
-            // A 40,000-channel playlist or Xtream list is 8–20 MB; 20 s total failed it on slower
-            // connections. A stalled transfer still fails after 15 s without data.
-            configuration.timeoutIntervalForResource = 60
+            // 100,000-channel catalogs may be much larger than the original 40,000-channel feed.
+            // The transfer itself is bounded by LiveTVBoundedDownload.
+            configuration.timeoutIntervalForResource = 180
             configuration.urlCache = nil
             self.session = URLSession(configuration: configuration)
         }
@@ -334,6 +334,18 @@ final class LiveTVService {
             serverURL: cleanServer, username: cleanUsername, password: password
         )
         return try store(configuration, name: cleanName, kind: .xtream)
+    }
+
+    func setVODEnabled(_ enabled: Bool, for providerID: UUID) {
+        guard let index = providers.firstIndex(where: { $0.id == providerID && $0.kind == .xtream }) else { return }
+        providers[index].vodEnabled = enabled
+        persistProviders()
+    }
+
+    func xtreamVODConfiguration(for providerID: UUID) -> LiveTVSourceConfiguration? {
+        guard providers.contains(where: { $0.id == providerID && $0.kind == .xtream && $0.vodEnabled }),
+              let source = loadSourceConfiguration(providerID: providerID), source.kind == .xtream else { return nil }
+        return source
     }
 
     private func store(_ configuration: LiveTVSourceConfiguration, name: String, kind: LiveTVProviderKind) throws -> UUID {
@@ -532,7 +544,10 @@ final class LiveTVService {
         let importCount: LiveTVImportCount
         if source.kind == .m3u, let playlistURL = source.playlistURL {
             updateImportStage(.downloading, token: token)
-            let playlistData = try await fetch(playlistURL, maximumBytes: Self.maximumPlaylistBytes)
+            guard let url = URL(string: playlistURL), Self.isWebURL(playlistURL) else { throw LiveTVError.invalidConfiguration }
+            let file = try await fetchCatalogFile(url)
+            defer { try? FileManager.default.removeItem(at: file) }
+            let playlistData = try Data(contentsOf: file, options: .mappedIfSafe)
             try Task.checkCancellation()
             updateImportStage(.importing, token: token)
             let channelLimit = Self.maximumChannels
@@ -674,7 +689,9 @@ final class LiveTVService {
         }
 
         let streamsURL = try XtreamURLBuilder.apiURL(server: server, username: username, password: password, action: "get_live_streams")
-        let streamsData = try await fetch(streamsURL, maximumBytes: Self.maximumPlaylistBytes)
+        let streamsFile = try await fetchCatalogFile(streamsURL)
+        defer { try? FileManager.default.removeItem(at: streamsFile) }
+        let streamsData = try Data(contentsOf: streamsFile, options: .mappedIfSafe)
         try Task.checkCancellation()
         updateImportStage(.importing, token: token)
         let maxChannels = Self.maximumChannels
@@ -1496,6 +1513,19 @@ final class LiveTVService {
             throw LiveTVError.invalidConfiguration
         }
         return try await fetch(url, maximumBytes: maximumBytes)
+    }
+
+    private func fetchCatalogFile(_ url: URL) async throws -> URL {
+        let session = self.session
+        let maximumBytes = Self.maximumPlaylistBytes
+        let work = Task.detached(priority: .utility) {
+            try await LiveTVBoundedDownload.fetch(url, session: session, maximumBytes: maximumBytes)
+        }
+        return try await withTaskCancellationHandler {
+            try await work.value
+        } onCancel: {
+            work.cancel()
+        }
     }
 
     private func fetch(_ url: URL, maximumBytes: Int) async throws -> Data {

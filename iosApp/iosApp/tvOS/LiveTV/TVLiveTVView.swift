@@ -501,7 +501,10 @@ struct TVLiveTVProviderManagementView: View {
                 guard let provider = providerToRemove else { return }
                 providerToRemove = nil
                 let remaining = service.providers.map(\.id).filter { $0 != provider.id }
-                Task { await service.removeProvider(provider.id) }
+                Task {
+                    await service.removeProvider(provider.id)
+                    await XtreamVODService.shared.remove(providerID: provider.id)
+                }
                 restoreFocus(TVLiveTVProviderFocusPlanner.afterRemoval(remainingProviderIDs: remaining))
             }
             Button("Cancel", role: .cancel) {
@@ -581,6 +584,16 @@ struct TVLiveTVProviderManagementView: View {
                         .disabled(service.isLoading)
                         .focused($focus, equals: .refresh(provider.id))
                         .onMoveCommand { upToBack($0, from: .refresh(provider.id)) }
+
+                        if provider.kind == .xtream {
+                            Button(provider.vodEnabled ? "Disable VOD" : "Enable VOD") {
+                                let enabled = !provider.vodEnabled
+                                service.setVODEnabled(enabled, for: provider.id)
+                                if enabled { Task { await XtreamVODService.shared.refresh(providerID: provider.id, liveTV: service) } }
+                            }
+                            .buttonStyle(TVKyroChipStyle(isSelected: provider.vodEnabled))
+                            .onMoveCommand { upToBack($0, from: .refresh(provider.id)) }
+                        }
 
                         Button(role: .destructive) { providerToRemove = provider } label: {
                             Label("Remove", systemImage: "trash")

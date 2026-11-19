@@ -68,20 +68,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme SiloTV \
+          KYRO_BENCH_CHANNELS=100000 xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme SiloTV \
             -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
             -derivedDataPath "$RUNNER_TEMP/kyro-derived" \
             -jobs 2 -parallel-testing-enabled NO -collect-test-diagnostics never \
             -only-testing:SiloTVTests/KyroTVFocusTests \
             -only-testing:SiloTVTests/KyroTVLiveTVTests \
             -only-testing:SiloTVTests/LiveTVImportProgressTests \
+            -only-testing:SiloTVTests/XtreamVODTests \
             -only-testing:SiloTVTests/KyroTVPairingTransferTests/testPairedProviderUsesTheSameMeasuredImportProgress \
             -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testImportProgressCompletesOnlyAfterGuideAndCountsAcceptedChannels \
             -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testNetworkFailureAndRetryPreservePreviousChannels \
             -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testXtreamImportCountsDecodedStreamRecords \
             -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testCancellationStopsHeldDownloadAndAllowsRetry \
             -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testOversizedDownloadFailsWithoutReplacingWorkingProvider \
-            -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test40kImportKeepsEveryChannelAndStopsAtTheCap \
+            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testTransferCapStopsUnknownLengthResponse \
+            -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test40kImportKeepsEveryChannelBelowTheNewCap \
+            -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test60kAnd100kCountsAndCap \
+            -only-testing:SiloTVTests/LiveTVCatalogBenchmarkTests/testCatalogPipelineBenchmark \
             -only-testing:SiloTVTests/TVMenuEntryFocusStateTests \
             -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test40kSearchAndEventMatching \
             -resultBundlePath "$RUNNER_TEMP/tvos-focus.xcresult" \

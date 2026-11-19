@@ -407,12 +407,26 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         await service.refresh(providerID: providerID)
         let previousChannels = service.channels.map(\.id)
         let previousRefresh = service.providers.first?.lastRefreshed
-        PlaylistURLProtocol.reset(data: Data(repeating: 65, count: LiveTVCatalogLimits.maximumPlaylistBytes + 1))
+        PlaylistURLProtocol.reset(body: playlist, declaredLength: LiveTVCatalogLimits.maximumPlaylistBytes + 1)
         await service.refresh(providerID: providerID)
         XCTAssertEqual(service.importProgress?.stage, .failed)
         XCTAssertEqual(service.importProgress?.message, LiveTVError.responseTooLarge.localizedDescription)
         XCTAssertEqual(service.channels.map(\.id), previousChannels)
         XCTAssertEqual(service.providers.first?.lastRefreshed, previousRefresh)
+    }
+
+    func testTransferCapStopsUnknownLengthResponse() async throws {
+        PlaylistURLProtocol.reset(data: Data(repeating: 65, count: 2_049))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PlaylistURLProtocol.self]
+        do {
+            let file = try await LiveTVBoundedDownload.fetch(URL(string: "https://playlist.test/large.m3u")!,
+                                                             session: URLSession(configuration: configuration), maximumBytes: 2_048)
+            try? FileManager.default.removeItem(at: file)
+            XCTFail("The transfer must stop at its byte cap")
+        } catch LiveTVError.responseTooLarge {
+            // The server did not advertise a length; the transfer was stopped while reading.
+        }
     }
 
     func testOfflineStartupShowsCachedChannelsAndGuideAndKeepsThemWhenRefreshFails() async throws {
@@ -1151,20 +1165,22 @@ private final class PlaylistURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var body = Data()
     private static var status = 200
+    private static var declaredLength: Int?
     private static var isHeld = false
     private static var requestCount = 0
     private static var waiting: [PlaylistURLProtocol] = []
 
     static var requests: Int { lock.withLock { requestCount } }
 
-    static func reset(body: String, status: Int = 200, held: Bool = false) {
-        reset(data: Data(body.utf8), status: status, held: held)
+    static func reset(body: String, status: Int = 200, held: Bool = false, declaredLength: Int? = nil) {
+        reset(data: Data(body.utf8), status: status, held: held, declaredLength: declaredLength)
     }
 
-    static func reset(data: Data, status: Int = 200, held: Bool = false) {
+    static func reset(data: Data, status: Int = 200, held: Bool = false, declaredLength: Int? = nil) {
         lock.withLock {
             self.body = data
             self.status = status
+            self.declaredLength = declaredLength
             isHeld = held
             requestCount = 0
             waiting = []
@@ -1197,9 +1213,10 @@ private final class PlaylistURLProtocol: URLProtocol {
     }
 
     private func respond() {
-        let (body, status) = Self.lock.withLock { (Self.body, Self.status) }
+        let (body, status, length) = Self.lock.withLock { (Self.body, Self.status, Self.declaredLength) }
         guard let url = request.url,
-              let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil) else { return }
+              let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1",
+                                             headerFields: length.map { ["Content-Length": String($0)] }) else { return }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body)
         client?.urlProtocolDidFinishLoading(self)

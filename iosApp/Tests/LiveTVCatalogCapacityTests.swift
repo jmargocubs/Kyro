@@ -53,21 +53,34 @@ final class LiveTVCatalogCapacityTests: XCTestCase {
         XCTAssertEqual(legacyCap.channels.map(\.id), parsed.channels.map(\.id), "same identities as the 20,000 cap")
     }
 
-    func test40kImportKeepsEveryChannelAndStopsAtTheCap() throws {
+    func test40kImportKeepsEveryChannelBelowTheNewCap() throws {
         let parsed = try LiveTVM3UParser.parseResult(data: KyroSyntheticCatalog.playlist(count: 40_000), providerID: providerID)
         XCTAssertEqual(parsed.channels.count, 40_000)
         XCTAssertFalse(parsed.hitChannelLimit, "an exact-cap playlist is not truncated")
         XCTAssertEqual(Set(parsed.channels.map(\.id)).count, 40_000)
         XCTAssertEqual(parsed.channels.last?.name, KyroSyntheticCatalog.name(39_999), "the tail, where event groups sit, is kept")
 
-        let over = try LiveTVM3UParser.parseResult(data: KyroSyntheticCatalog.playlist(count: 40_001), providerID: providerID)
-        XCTAssertEqual(over.channels.count, LiveTVCatalogLimits.maximumChannels)
-        XCTAssertTrue(over.hitChannelLimit)
-        XCTAssertEqual(over.count.accepted, 40_000)
-        XCTAssertEqual(over.count.processed, 40_001)
-        XCTAssertEqual(over.count.total, 40_001)
+        let more = try LiveTVM3UParser.parseResult(data: KyroSyntheticCatalog.playlist(count: 40_001), providerID: providerID)
+        XCTAssertEqual(more.channels.count, 40_001)
+        XCTAssertFalse(more.hitChannelLimit)
+    }
+
+    func test60kAnd100kCountsAndCap() throws {
+        for amount in [60_000, 100_000] {
+            let parsed = try LiveTVM3UParser.parseResult(data: KyroSyntheticCatalog.playlist(count: amount), providerID: providerID)
+            XCTAssertEqual(parsed.channels.count, amount)
+            XCTAssertEqual(parsed.count.total, amount)
+            XCTAssertEqual(parsed.count.processed, amount)
+            XCTAssertEqual(parsed.count.accepted, amount)
+            XCTAssertFalse(parsed.hitChannelLimit)
+        }
+        let over = try LiveTVM3UParser.parseResult(data: KyroSyntheticCatalog.playlist(count: 100_001), providerID: providerID)
+        XCTAssertEqual(over.channels.count, 100_000)
+        XCTAssertEqual(over.count.processed, 100_001)
+        XCTAssertEqual(over.count.total, 100_001)
+        XCTAssertEqual(over.count.accepted, 100_000)
         XCTAssertEqual(over.count.limited, 1)
-        XCTAssertEqual(over.count.rejected, 1)
+        XCTAssertTrue(over.hitChannelLimit)
     }
 
     func test40kCategoryMembership() throws {
@@ -151,7 +164,7 @@ final class LiveTVCatalogCapacityTests: XCTestCase {
 
 // MARK: - Benchmarks (opt-in)
 
-/// Run with `KYRO_BENCH_CHANNELS=40000` (or 20000). Prints `KYRO-BENCH` lines; no stream URL,
+/// Run with `KYRO_BENCH_CHANNELS=100000`. Prints `KYRO-BENCH` lines; no stream URL,
 /// credential or playlist content is printed.
 final class LiveTVCatalogBenchmarkTests: XCTestCase {
     private let providerID = UUID()

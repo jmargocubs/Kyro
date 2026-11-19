@@ -9,10 +9,11 @@ struct LiveTVProvider: Codable, Hashable, Identifiable, Sendable {
     var lastRefreshed: Date?
     var kind: LiveTVProviderKind = .m3u
     var allowedOutputFormats: [String] = []
+    var vodEnabled = false
     /// Nil means the provider predates persisted import completeness metadata.
     var catalogWasTruncated: Bool?
 
-    private enum CodingKeys: String, CodingKey { case id, name, channelCount, lastRefreshed, kind, allowedOutputFormats, catalogWasTruncated }
+    private enum CodingKeys: String, CodingKey { case id, name, channelCount, lastRefreshed, kind, allowedOutputFormats, catalogWasTruncated, vodEnabled }
 
     init(id: UUID, name: String, channelCount: Int, lastRefreshed: Date?, kind: LiveTVProviderKind = .m3u, allowedOutputFormats: [String] = [], catalogWasTruncated: Bool? = nil) {
         self.id = id
@@ -32,6 +33,7 @@ struct LiveTVProvider: Codable, Hashable, Identifiable, Sendable {
         lastRefreshed = try values.decodeIfPresent(Date.self, forKey: .lastRefreshed)
         kind = try values.decodeIfPresent(LiveTVProviderKind.self, forKey: .kind) ?? .m3u
         allowedOutputFormats = Self.normalizedOutputFormats((try? values.decode([String].self, forKey: .allowedOutputFormats)) ?? [])
+        vodEnabled = try values.decodeIfPresent(Bool.self, forKey: .vodEnabled) ?? false
         catalogWasTruncated = try values.decodeIfPresent(Bool.self, forKey: .catalogWasTruncated)
     }
 
@@ -395,7 +397,7 @@ enum LiveTVError: LocalizedError, Equatable {
         switch self {
         case .invalidConfiguration: "Enter a valid HTTP or HTTPS playlist URL."
         case .keychainUnavailable: "The provider configuration could not be saved securely."
-        case .responseTooLarge: "The download exceeds its size limit. Live TV playlists are limited to 40 MiB."
+        case .responseTooLarge: "The download exceeds its size limit. Live TV playlists are limited to 120 MiB."
         case .providerRejected: "The provider could not be reached. Check the playlist address and try again."
         case .noChannels: "No valid channels were found in this playlist."
         case .invalidPlaylist: "The playlist format could not be read."
@@ -1321,11 +1323,10 @@ struct LiveTVImportCount: Sendable, Equatable {
 
 /// Live TV catalog capacity, shared by import, the channel snapshot and Sports Hub matching.
 enum LiveTVCatalogLimits {
-    /// Build 38 raised the cap from 20,000 to 40,000 channels.
-    static let maximumChannels = 40_000
-    /// M3U and Xtream stream-list downloads. 40,000 Xtream records run about 16–20 MB, past the
-    /// old 16 MiB cap, so the cap rose with the channel limit.
-    static let maximumPlaylistBytes = 40 * 1024 * 1024
+    /// Build 92's target, subject to hosted 100,000-channel performance gates.
+    static let maximumChannels = 100_000
+    /// Transfer-time cap for M3U and Xtream live catalogs; independent of VOD limits.
+    static let maximumPlaylistBytes = 120 * 1024 * 1024
 }
 
 enum LiveTVM3UParser {

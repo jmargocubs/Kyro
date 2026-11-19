@@ -27,8 +27,70 @@ struct TVLibraryTypeTabView: View {
     let onTopMenuFocusRequest: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var vodSource = "all"
+
+    private var vodKind: XtreamVODKind? {
+        switch type {
+        case .movies: .movie
+        case .series: .series
+        default: nil
+        }
+    }
+
+    private var vodProviders: [LiveTVProvider] {
+        guard vodKind != nil, scopesMixedLibraries else { return [] }
+        return LiveTVService.shared.providers.filter { $0.kind == .xtream && $0.vodEnabled }
+    }
 
     var body: some View {
+        Group {
+            if let kind = vodKind, !vodProviders.isEmpty {
+                VStack(spacing: 0) {
+                    sourcePicker
+                    if vodSource == "silo", activeLibrary != nil {
+                        siloBody
+                    } else if let provider = vodProviders.first(where: { $0.id.uuidString == vodSource }) {
+                        TVXtreamVODView(provider: provider, kind: kind, focusRequest: focusRequest,
+                                        isTopMenuFocused: isTopMenuFocused, onMoveUp: onTopMenuFocusRequest)
+                    } else if activeLibrary != nil {
+                        TVXtreamVODRail(providers: vodProviders, kind: kind)
+                        siloBody
+                    } else if let provider = vodProviders.first {
+                        TVXtreamVODView(provider: provider, kind: kind, focusRequest: focusRequest,
+                                        isTopMenuFocused: isTopMenuFocused, onMoveUp: onTopMenuFocusRequest)
+                    }
+                }
+            } else {
+                siloBody
+            }
+        }
+    }
+
+    private var sourcePicker: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 14) {
+                if activeLibrary != nil {
+                    sourceButton("All", id: "all")
+                    sourceButton("Silo", id: "silo")
+                }
+                ForEach(vodProviders) { provider in
+                    sourceButton(provider.name, id: provider.id.uuidString)
+                }
+            }
+            .padding(.horizontal, 72)
+        }
+        .frame(height: 78)
+        .padding(.top, TVTopMenuLayout.contentTopInset)
+        .focusSection()
+    }
+
+    private func sourceButton(_ title: String, id: String) -> some View {
+        Button(title) { vodSource = id }
+            .buttonStyle(TVKyroChipStyle(isSelected: vodSource == id))
+            .onMoveCommand { if $0 == .up { onTopMenuFocusRequest?() } }
+    }
+
+    private var siloBody: some View {
         Group {
             if let activeLibrary {
                 ZStack(alignment: .top) {

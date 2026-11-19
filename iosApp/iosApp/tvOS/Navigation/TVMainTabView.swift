@@ -1009,10 +1009,16 @@ struct TVMainTabView: View {
     /// fixed outside this list, which keeps their focus anchors stable while
     /// the user rearranges content tabs.
     private var visibleRoots: [TVRootDestination] {
-        let roots = TVPrimaryMenuProjection.roots(
+        var roots = TVPrimaryMenuProjection.roots(
             for: uiCustomization.resolvedPrimaryMenuItems(),
             libraries: libraries
         )
+        if LiveTVService.shared.providers.contains(where: { $0.kind == .xtream && $0.vodEnabled }) {
+            for type in [TVLibraryTabType.movies, .series] {
+                let destination = TVRootDestination.libraryType(type)
+                if !roots.contains(destination) { roots.append(destination) }
+            }
+        }
         return roots
     }
 
