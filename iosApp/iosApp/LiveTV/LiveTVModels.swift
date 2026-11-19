@@ -10,10 +10,12 @@ struct LiveTVProvider: Codable, Hashable, Identifiable, Sendable {
     var kind: LiveTVProviderKind = .m3u
     var allowedOutputFormats: [String] = []
     var vodEnabled = false
+    var vodMoviesEnabled = false
+    var vodSeriesEnabled = false
     /// Nil means the provider predates persisted import completeness metadata.
     var catalogWasTruncated: Bool?
 
-    private enum CodingKeys: String, CodingKey { case id, name, channelCount, lastRefreshed, kind, allowedOutputFormats, catalogWasTruncated, vodEnabled }
+    private enum CodingKeys: String, CodingKey { case id, name, channelCount, lastRefreshed, kind, allowedOutputFormats, catalogWasTruncated, vodEnabled, vodMoviesEnabled, vodSeriesEnabled }
 
     init(id: UUID, name: String, channelCount: Int, lastRefreshed: Date?, kind: LiveTVProviderKind = .m3u, allowedOutputFormats: [String] = [], catalogWasTruncated: Bool? = nil) {
         self.id = id
@@ -34,6 +36,8 @@ struct LiveTVProvider: Codable, Hashable, Identifiable, Sendable {
         kind = try values.decodeIfPresent(LiveTVProviderKind.self, forKey: .kind) ?? .m3u
         allowedOutputFormats = Self.normalizedOutputFormats((try? values.decode([String].self, forKey: .allowedOutputFormats)) ?? [])
         vodEnabled = try values.decodeIfPresent(Bool.self, forKey: .vodEnabled) ?? false
+        vodMoviesEnabled = try values.decodeIfPresent(Bool.self, forKey: .vodMoviesEnabled) ?? vodEnabled
+        vodSeriesEnabled = try values.decodeIfPresent(Bool.self, forKey: .vodSeriesEnabled) ?? vodEnabled
         catalogWasTruncated = try values.decodeIfPresent(Bool.self, forKey: .catalogWasTruncated)
     }
 

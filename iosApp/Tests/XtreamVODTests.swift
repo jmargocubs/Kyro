@@ -50,6 +50,60 @@ final class XtreamVODTests: XCTestCase {
         return id
     }
 
+    func testVODIsOptInAndKindsCanBeEnabledIndependently() async throws {
+        let id = try live.saveXtreamConfiguration(name: "Opt in", serverURL: "https://vod.test",
+                                                   username: "viewer", password: "fake-secret")
+        let initial = try XCTUnwrap(live.providers.first { $0.id == id })
+        XCTAssertFalse(initial.vodEnabled)
+        XCTAssertFalse(initial.vodMoviesEnabled)
+        XCTAssertFalse(initial.vodSeriesEnabled)
+        XCTAssertNil(live.xtreamVODConfiguration(for: id))
+        live.setVODEnabled(true, kind: "movie", for: id)
+        XCTAssertNotNil(live.xtreamVODConfiguration(for: id))
+        XCTAssertTrue(live.providers.first { $0.id == id }?.vodMoviesEnabled == true)
+        XCTAssertFalse(live.providers.first { $0.id == id }?.vodSeriesEnabled == true)
+        await vod.refresh(providerID: id, liveTV: live)
+        XCTAssertEqual(vod.progress?.stage, .ready)
+        let movieCount = await vod.count(providerID: id, kind: .movie)
+        let seriesCount = await vod.count(providerID: id, kind: .series)
+        XCTAssertEqual(movieCount, 2)
+        XCTAssertEqual(seriesCount, 0)
+        XCTAssertNotNil(vod.refreshedAt(providerID: id))
+        await vod.clearCache(providerID: id)
+        let clearedCount = await vod.count(providerID: id, kind: .movie)
+        XCTAssertEqual(clearedCount, 0)
+        XCTAssertNil(vod.refreshedAt(providerID: id))
+        XCTAssertNotNil(live.xtreamVODConfiguration(for: id), "cache clearing must retain credentials")
+    }
+
+    func testSetupDoesNotCompleteBeforeEnabledVODFinishes() {
+        XCTAssertFalse(TVProviderSetupState.isComplete(live: .guide, vodEnabled: false, vod: nil))
+        XCTAssertTrue(TVProviderSetupState.isComplete(live: .ready, vodEnabled: false, vod: nil))
+        XCTAssertFalse(TVProviderSetupState.isComplete(live: .ready, vodEnabled: true, vod: nil))
+        XCTAssertFalse(TVProviderSetupState.isComplete(live: .ready, vodEnabled: true, vod: .downloading(.movie)))
+        XCTAssertFalse(TVProviderSetupState.isComplete(live: .ready, vodEnabled: true, vod: .importing(.series)))
+        XCTAssertTrue(TVProviderSetupState.isComplete(live: .ready, vodEnabled: true, vod: .ready))
+        XCTAssertTrue(TVProviderSetupState.isComplete(live: .ready, vodEnabled: true, vod: .failed))
+    }
+
+    func testUnsupportedAndAuthenticationFailuresAreDistinct() async throws {
+        let id = try add("Provider")
+        VODURLProtocol.mode = .unsupported
+        await vod.refresh(providerID: id, liveTV: live)
+        XCTAssertEqual(vod.progress?.failure, .unsupported)
+        VODURLProtocol.mode = .authentication
+        await vod.refresh(providerID: id, liveTV: live)
+        XCTAssertEqual(vod.progress?.failure, .authentication)
+    }
+
+    func testBuild92ProviderMigrationPreservesOptIn() throws {
+        let id = UUID()
+        let oldEnabled = "{\"id\":\"\(id.uuidString)\",\"name\":\"Previous\",\"channelCount\":4,\"kind\":\"xtream\",\"vodEnabled\":true}"
+        let provider = try JSONDecoder().decode(LiveTVProvider.self, from: Data(oldEnabled.utf8))
+        XCTAssertTrue(provider.vodMoviesEnabled)
+        XCTAssertTrue(provider.vodSeriesEnabled)
+    }
+
     func testProviderScopedImportCountsLazyEpisodesAndPlaybackURL() async throws {
         let first = try add("One")
         await vod.refresh(providerID: first, liveTV: live)
@@ -153,7 +207,7 @@ final class XtreamVODTests: XCTestCase {
 }
 
 private final class VODURLProtocol: URLProtocol {
-    enum Mode { case normal, badSeries }
+    enum Mode: Equatable { case normal, badSeries, unsupported, authentication }
     static var mode: Mode = .normal
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "vod.test" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -171,8 +225,9 @@ private final class VODURLProtocol: URLProtocol {
         case "get_vod_info": body = #"{"info":{"plot":"A movie","duration_secs":3600}}"#
         default: body = "{}"
         }
+        let statusCode = Self.mode == .authentication ? 401 : (Self.mode == .unsupported && action == "get_vod_streams" ? 404 : 200)
         guard let url = request.url,
-              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil) else { return }
+              let response = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: "HTTP/1.1", headerFields: nil) else { return }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)

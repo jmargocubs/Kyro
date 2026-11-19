@@ -7,23 +7,32 @@ import CoreImage.CIFilterBuiltins
 /// none appear in the QR.
 struct TVLiveTVPairingView: View {
     @Bindable var service: LiveTVService
+    let onStartWatching: () -> Void
     @State private var receiver: TVLiveTVPairingReceiver
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focus: Focus?
 
     private enum Focus: Hashable { case cancel, retry, allow, decline, done }
 
-    init(service: LiveTVService) {
+    init(service: LiveTVService, onStartWatching: @escaping () -> Void = {}) {
         self.service = service
+        self.onStartWatching = onStartWatching
         _receiver = State(initialValue: TVLiveTVPairingReceiver(service: service))
     }
 
     var body: some View {
         ZStack {
             TVKyroAmbientBackdrop()
-            content
-                .padding(.horizontal, 120)
-                .padding(.vertical, 70)
+            if case .completed(let name) = receiver.status,
+               let progress = service.importProgress, progress.providerName == name {
+                TVLiveTVImportView(progress: progress, service: service,
+                    onClose: { service.clearFinishedImport(); onStartWatching(); dismiss() },
+                    onManage: { service.clearFinishedImport(); dismiss() })
+            } else {
+                content
+                    .padding(.horizontal, 120)
+                    .padding(.vertical, 70)
+            }
         }
         .onExitCommand {
             receiver.stop()
@@ -31,11 +40,6 @@ struct TVLiveTVPairingView: View {
         }
         .task { receiver.start() }
         .onDisappear { receiver.stop() }
-        .onChange(of: service.importProgress?.stage) {
-            if service.importProgress?.stage == .ready {
-                Task { try? await Task.sleep(for: .seconds(1)); dismiss() }
-            }
-        }
     }
 
     @ViewBuilder
@@ -46,13 +50,8 @@ struct TVLiveTVPairingView: View {
         case .saving:
             message(title: "Saving provider…", detail: nil, symbol: "lock.shield", showsDone: false)
         case .completed(let name):
-            if let progress = service.importProgress, progress.providerName == name {
-                TVLiveTVImportView(progress: progress, onCancel: { service.cancelImport() },
-                    onRetry: { Task { await service.refresh(providerID: progress.providerID) } })
-            } else {
-                message(title: "Added \(name)", detail: "Preparing provider import…",
-                        symbol: "checkmark.circle.fill", showsDone: true)
-            }
+            message(title: "Added \(name)", detail: "Preparing provider import…",
+                    symbol: "checkmark.circle.fill", showsDone: false)
         case .failed(let failure):
             failureView(failure)
         case .unavailable:

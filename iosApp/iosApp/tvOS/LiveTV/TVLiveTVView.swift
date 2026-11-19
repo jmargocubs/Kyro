@@ -85,10 +85,11 @@ struct TVLiveTVRootView: View {
             .padding(.top, TVTopMenuLayout.contentTopInset)
             .padding(.bottom, 38)
             .disabled(service.importProgress.map { !$0.isTerminal } ?? false)
-            if let progress = service.importProgress, !progress.isTerminal,
+            if let progress = service.importProgress,
                progress.providerID == service.selectedProviderID {
-                TVLiveTVImportView(progress: progress,
-                    onCancel: { service.cancelImport() }, onRetry: nil)
+                TVLiveTVImportView(progress: progress, service: service,
+                    onClose: { service.clearFinishedImport() },
+                    onManage: { service.clearFinishedImport(); showsProviders = true })
             }
         }
         .modifier(LiveTVChannelCover(
@@ -132,14 +133,6 @@ struct TVLiveTVRootView: View {
             selectedCategory = nil
             updateSearch()
             updateCategoryCounts()
-        }
-        .onChange(of: service.importProgress?.stage) {
-            if service.importProgress?.stage == .ready, !showsProviders {
-                Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    if !showsProviders { service.clearFinishedImport() }
-                }
-            }
         }
     }
 
@@ -449,6 +442,7 @@ struct TVLiveTVProviderManagementView: View {
     @State private var localError: String?
     @State private var providerToRemove: LiveTVProvider?
     @State private var showsPhoneSetup = false
+    @State private var startWatchingAfterPairing = false
     @FocusState private var focus: TVLiveTVProviderFocus?
 
     var body: some View {
@@ -463,14 +457,14 @@ struct TVLiveTVProviderManagementView: View {
             .padding(.horizontal, 120)
             .padding(.vertical, 68)
         }
-        .disabled(service.importProgress.map { !$0.isTerminal } ?? false)
+        .disabled(service.importProgress != nil)
         .background(TVKyroAmbientBackdrop())
         .overlay {
             if let progress = service.importProgress,
                progress.providerID == service.selectedProviderID {
-                TVLiveTVImportView(progress: progress,
-                    onCancel: { service.cancelImport() },
-                    onRetry: { Task { await service.refresh(providerID: progress.providerID) } })
+                TVLiveTVImportView(progress: progress, service: service,
+                    onClose: { service.clearFinishedImport(); dismiss() },
+                    onManage: { service.clearFinishedImport() })
             }
         }
         // Back/Menu always leaves the screen. While a text field is editing, the system keyboard
@@ -479,19 +473,14 @@ struct TVLiveTVProviderManagementView: View {
         .onAppear {
             if focus == nil { focus = TVLiveTVProviderFocusPlanner.initialFocus(providerIDs: service.providers.map(\.id)) }
         }
-        .onDisappear {
-            if !showsPhoneSetup { service.clearFinishedImport() }
-        }
-        .onChange(of: service.importProgress?.stage) {
-            if service.importProgress?.stage == .ready, !showsPhoneSetup {
-                Task { try? await Task.sleep(for: .seconds(1)); dismiss() }
-            }
-        }
-        .onChange(of: showsPhoneSetup) {
-            if !showsPhoneSetup, service.importProgress?.stage == .ready { dismiss() }
-        }
-        .fullScreenCover(isPresented: $showsPhoneSetup, onDismiss: { restoreFocus(.phoneSetup) }) {
-            TVLiveTVPairingView(service: service)
+        .fullScreenCover(isPresented: $showsPhoneSetup, onDismiss: {
+            if startWatchingAfterPairing {
+                startWatchingAfterPairing = false
+                dismiss()
+            } else { restoreFocus(.phoneSetup) }
+        }) {
+            TVLiveTVPairingView(service: service,
+                onStartWatching: { startWatchingAfterPairing = true })
         }
         .confirmationDialog(
             "Remove \(providerToRemove?.name ?? "provider")?",
@@ -585,22 +574,15 @@ struct TVLiveTVProviderManagementView: View {
                         .focused($focus, equals: .refresh(provider.id))
                         .onMoveCommand { upToBack($0, from: .refresh(provider.id)) }
 
-                        if provider.kind == .xtream {
-                            Button(provider.vodEnabled ? "Disable VOD" : "Enable VOD") {
-                                let enabled = !provider.vodEnabled
-                                service.setVODEnabled(enabled, for: provider.id)
-                                if enabled { Task { await XtreamVODService.shared.refresh(providerID: provider.id, liveTV: service) } }
-                            }
-                            .buttonStyle(TVKyroChipStyle(isSelected: provider.vodEnabled))
-                            .onMoveCommand { upToBack($0, from: .refresh(provider.id)) }
-                        }
-
                         Button(role: .destructive) { providerToRemove = provider } label: {
                             Label("Remove", systemImage: "trash")
                         }
                         .buttonStyle(TVKyroChipStyle(isDestructive: true))
                         .focused($focus, equals: .remove(provider.id))
                         .onMoveCommand { upToBack($0, from: .remove(provider.id)) }
+                    }
+                    if provider.kind == .xtream {
+                        TVProviderVODManagementView(provider: provider, service: service)
                     }
                 }
             }
@@ -711,6 +693,73 @@ struct TVLiveTVProviderManagementView: View {
     }
 }
 
+private struct TVProviderVODManagementView: View {
+    let provider: LiveTVProvider
+    @Bindable var service: LiveTVService
+    @State private var vod = XtreamVODService.shared
+    @State private var movieCount = 0
+    @State private var seriesCount = 0
+
+    private var currentProgress: XtreamVODImportProgress? {
+        vod.progress?.providerID == provider.id ? vod.progress : nil
+    }
+
+    private var capability: String {
+        guard provider.vodEnabled else { return "Not checked — VOD is disabled" }
+        guard let progress = currentProgress else {
+            return vod.refreshedAt(providerID: provider.id) == nil ? "Not checked — refresh to discover" : "Previously loaded"
+        }
+        switch progress.stage {
+        case .ready: return movieCount + seriesCount > 0 ? "Catalog available" : "Provider returned empty catalogs"
+        case .failed:
+            if progress.failure == .unsupported { return "Unsupported VOD endpoint" }
+            if progress.failure == .authentication { return "Authentication failed" }
+            return "Failed — \(progress.message ?? "check connection and retry")"
+        case .cancelled: return "Cancelled"
+        default: return "Checking provider capabilities and catalogs…"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 17) {
+            Text("Movies & Series · \(provider.name)")
+                .font(.system(size: 29, weight: .bold))
+            Text("Movies: \(provider.vodMoviesEnabled ? "Enabled" : "Disabled") · \(movieCount.formatted()) cached")
+            Text("Series: \(provider.vodSeriesEnabled ? "Enabled" : "Disabled") · \(seriesCount.formatted()) cached")
+            Text("VOD capability: \(capability)")
+            Text("Last successful refresh: \(vod.refreshedAt(providerID: provider.id)?.formatted(date: .abbreviated, time: .shortened) ?? "Never")")
+            HStack(spacing: 18) {
+                Button(provider.vodMoviesEnabled ? "Disable Movies" : "Enable Movies") {
+                    service.setVODEnabled(!provider.vodMoviesEnabled, kind: "movie", for: provider.id)
+                }.buttonStyle(TVKyroChipStyle(isSelected: provider.vodMoviesEnabled))
+                Button(provider.vodSeriesEnabled ? "Disable Series" : "Enable Series") {
+                    service.setVODEnabled(!provider.vodSeriesEnabled, kind: "series", for: provider.id)
+                }.buttonStyle(TVKyroChipStyle(isSelected: provider.vodSeriesEnabled))
+                Button("Refresh VOD Catalog") {
+                    Task { await vod.refresh(providerID: provider.id, liveTV: service); await loadCounts() }
+                }
+                .buttonStyle(TVKyroChipStyle())
+                .disabled(!provider.vodEnabled || vod.activeProviderID != nil)
+                Button("Clear VOD Cache") { Task { await vod.clearCache(providerID: provider.id); await loadCounts() } }
+                    .buttonStyle(TVKyroChipStyle(isDestructive: true))
+                    .disabled(vod.activeProviderID == provider.id)
+            }
+            Text("Enabling a catalog does not download it. Choose Refresh VOD Catalog to load it.")
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .font(.system(size: 22))
+        .padding(30)
+        .background(Color.siloSurface.opacity(0.75), in: RoundedRectangle(cornerRadius: 20))
+        .task(id: vod.revision) { await loadCounts() }
+        .focusSection()
+    }
+
+    private func loadCounts() async {
+        movieCount = await vod.count(providerID: provider.id, kind: .movie)
+        seriesCount = await vod.count(providerID: provider.id, kind: .series)
+    }
+}
+
 private struct TVLiveTVProviderFieldStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -722,84 +771,230 @@ private struct TVLiveTVProviderFieldStyle: ViewModifier {
     }
 }
 
-/// Stage-specific progress: the bar is determinate only while the catalog's source records
-/// have an exact denominator. The accepted-channel count never includes rejected records.
+/// Stable, full-screen setup surface shared by typed and phone-paired providers.
+/// Only source-record stages use a determinate bar; no overall percentage is invented.
+enum TVProviderSetupState {
+    static func isComplete(live: LiveTVImportStage, vodEnabled: Bool,
+                           vod: XtreamVODImportStage?) -> Bool {
+        guard live == .ready else { return false }
+        guard vodEnabled else { return true }
+        return vod == .ready || vod == .failed || vod == .cancelled
+    }
+}
+
 struct TVLiveTVImportView: View {
     let progress: LiveTVImportProgress
-    let onCancel: () -> Void
-    let onRetry: (() -> Void)?
+    @Bindable var service: LiveTVService
+    let onClose: () -> Void
+    let onManage: () -> Void
+    @State private var vod = XtreamVODService.shared
+    @State private var vodAttempted = false
+    @State private var vodBlocked = false
+    @State private var browseKind: XtreamVODKind?
+    @FocusState private var primaryFocused: Bool
 
-    private var title: String {
-        switch progress.stage {
-        case .ready: "Live TV is ready"
-        case .failed: "Couldn’t set up Live TV"
-        case .cancelled: "Setup cancelled"
-        default: "Setting Up Live TV"
-        }
+    private var provider: LiveTVProvider? { service.providers.first { $0.id == progress.providerID } }
+    private var vodEnabled: Bool { provider?.kind == .xtream && provider?.vodEnabled == true }
+    private var vodProgress: XtreamVODImportProgress? {
+        guard vodAttempted, vod.progress?.providerID == progress.providerID else { return nil }
+        return vod.progress
     }
+    private var complete: Bool {
+        TVProviderSetupState.isComplete(live: progress.stage, vodEnabled: vodEnabled, vod: vodProgress?.stage)
+    }
+    private var failed: Bool { progress.stage == .failed || progress.stage == .cancelled }
 
     private var stageTitle: String {
+        if progress.stage == .ready, vodEnabled, let stage = vodProgress?.stage {
+            switch stage {
+            case .connecting: return "Discovering VOD capabilities"
+            case .downloading(.movie): return "Loading Movies"
+            case .importing(.movie): return "Importing Movies"
+            case .downloading(.series): return "Loading Series"
+            case .importing(.series): return "Importing Series"
+            case .ready: return "Setup complete"
+            case .failed: return "VOD catalog failed"
+            case .cancelled: return "VOD catalog cancelled"
+            }
+        }
         switch progress.stage {
-        case .connecting: "Connecting to provider"
-        case .downloading: "Downloading channel catalog"
-        case .importing: "Importing live channels"
-        case .categories: "Preparing channel categories"
-        case .guide: "Preparing TV Guide"
-        case .saving: "Saving provider setup"
-        case .ready: "Ready"
-        case .failed: "Import failed"
-        case .cancelled: "Import cancelled"
+        case .connecting: return "Connecting to provider"
+        case .downloading: return "Downloading channel catalog"
+        case .importing: return "Importing Live TV"
+        case .categories: return "Preparing channel categories"
+        case .guide: return "Preparing TV Guide"
+        case .saving: return "Saving and finalizing"
+        case .ready: return vodBlocked ? "Another VOD refresh is in progress" : vodEnabled ? "Discovering VOD capabilities" : "Setup complete"
+        case .failed: return "Setup failed"
+        case .cancelled: return "Setup cancelled"
         }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 26) {
-            Text(title).font(.system(size: 58, weight: .heavy))
-            Text(progress.providerName).font(.system(size: 36, weight: .semibold))
-                .foregroundStyle(Color.siloSecondaryText)
-            HStack(spacing: 16) {
-                Text(stageTitle).font(.system(size: 32, weight: .bold))
-                if progress.stage == .importing, let fraction = progress.count.fraction {
-                    Text("\(Int((fraction * 100).rounded(.down)))%")
-                        .font(.system(size: 32, weight: .bold).monospacedDigit())
+        ZStack {
+            TVKyroAmbientBackdrop()
+            LinearGradient(colors: [KyroTheme.accentInk.opacity(0.12), .clear, .black.opacity(0.24)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 34) {
+                Text("KYRO  /  PROVIDER SETUP")
+                    .font(.system(size: 24, weight: .bold)).tracking(5)
+                    .foregroundStyle(KyroTheme.accentInk)
+                Text(complete ? (vodProgress?.stage == .failed ? "Live TV Is Ready — VOD Needs Attention" : "Your Entertainment Is Ready")
+                              : failed ? "Setup Needs Attention" : "Setting Up Your Entertainment")
+                    .font(.system(size: 62, weight: .heavy))
+                Text(progress.providerName)
+                    .font(.system(size: 32, weight: .semibold)).foregroundStyle(Color.siloSecondaryText)
+                HStack(spacing: 18) {
+                    Image(systemName: complete ? "checkmark.circle.fill" : failed ? "exclamationmark.triangle.fill" : "arrow.down.circle")
+                        .foregroundStyle(KyroTheme.accentInk)
+                    Text(stageTitle).font(.system(size: 36, weight: .bold))
+                    if progress.stage == .importing, let fraction = progress.count.fraction {
+                        Text("\(Int((fraction * 100).rounded(.down)))%")
+                            .font(.system(size: 32, weight: .bold).monospacedDigit())
+                    }
                 }
-            }
-            if progress.stage == .importing, let fraction = progress.count.fraction {
-                ProgressView(value: fraction).tint(KyroTheme.accentInk)
-            } else if !progress.isTerminal {
-                ProgressView().tint(KyroTheme.accentInk)
-            }
-            Text("\(progress.count.accepted.formatted()) channels \(progress.stage == .ready ? "imported" : "accepted")")
-                .font(.system(size: 29, weight: .semibold).monospacedDigit())
-            if progress.count.processed > 0 || progress.count.total != nil {
-                Text(recordLine).font(.system(size: 24).monospacedDigit())
-                    .foregroundStyle(Color.siloSecondaryText)
-            }
-            if progress.count.rejected > 0 {
-                Text(skippedLine)
-                    .font(.system(size: 23)).foregroundStyle(Color.siloSecondaryText)
-            }
-            if let message = progress.message {
-                Text(message).font(.system(size: 27)).fixedSize(horizontal: false, vertical: true)
-            }
-            if progress.stage == .failed || progress.stage == .cancelled {
-                if let onRetry {
-                    Button("Retry Import", action: onRetry).buttonStyle(TVKyroChipStyle(isSelected: true))
+                .frame(height: 56)
+                Group {
+                    if progress.stage == .importing, let fraction = progress.count.fraction {
+                        ProgressView(value: fraction)
+                    } else if !complete && !failed {
+                        ProgressView()
+                    } else {
+                        ProgressView(value: complete ? 1 : 0)
+                    }
                 }
-            } else if [.connecting, .downloading, .importing, .categories].contains(progress.stage) {
-                Button("Cancel Import", action: onCancel).buttonStyle(TVKyroChipStyle())
+                .tint(KyroTheme.accentInk)
+                .scaleEffect(x: 1, y: 2.5, anchor: .center)
+                .frame(height: 24)
+                HStack(spacing: 24) {
+                    catalogCard("Live TV", count: progress.count.accepted, status: liveStatus,
+                                detail: recordLine)
+                    catalogCard("Movies", count: vodProgress?.movies.accepted, status: vodStatus(.movie),
+                                detail: vodRecordLine(.movie))
+                    catalogCard("Series", count: vodProgress?.series.accepted, status: vodStatus(.series),
+                                detail: vodRecordLine(.series))
+                }
+                if let message = progress.message, failed || complete {
+                    Text(message).font(.system(size: 25))
+                        .foregroundStyle(message.contains("could not") || failed ? KyroTheme.live : Color.siloSecondaryText)
+                } else if let message = vodProgress?.message, vodProgress?.stage == .failed {
+                    Text(message).font(.system(size: 25)).foregroundStyle(KyroTheme.live)
+                } else if progress.count.rejected > 0 {
+                    Text(skippedLine).font(.system(size: 22)).foregroundStyle(Color.siloSecondaryText)
+                }
+                actions
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 100).padding(.top, 64)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .task(id: progress.stage == .ready) {
+            guard progress.stage == .ready, vodEnabled, !vodAttempted else { return }
+            guard vod.activeProviderID == nil else { vodBlocked = true; return }
+            vodBlocked = false
+            vodAttempted = true
+            await vod.refresh(providerID: progress.providerID, liveTV: service)
+        }
+        .fullScreenCover(isPresented: Binding(get: { browseKind != nil }, set: { if !$0 { browseKind = nil } })) {
+            if let kind = browseKind, let provider {
+                TVXtreamVODView(provider: provider, kind: kind, focusRequest: 0,
+                                isTopMenuFocused: false, onMoveUp: nil)
             }
         }
-        .padding(76)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(TVKyroAmbientBackdrop())
-        .focusable(progress.stage == .guide || progress.stage == .saving || progress.stage == .ready)
+        .animation(.easeInOut(duration: 0.25), value: progress.stage)
+        .animation(.easeInOut(duration: 0.25), value: vodProgress?.stage)
+        .onChange(of: complete) { if complete { primaryFocused = true } }
+        .onChange(of: failed) { if failed { primaryFocused = true } }
+        .onChange(of: progress.stage) {
+            if progress.stage == .connecting { vodAttempted = false; vodBlocked = false }
+        }
         .accessibilityIdentifier("liveTV.importProgress")
+    }
+
+    private var liveStatus: String {
+        if failed { return "Failed" }
+        return progress.stage == .ready ? "Ready" : "Loading"
+    }
+
+    private func vodStatus(_ kind: XtreamVODKind) -> String {
+        guard provider?.kind == .xtream else { return "Unsupported" }
+        guard vodEnabled && (kind == .movie ? provider?.vodMoviesEnabled : provider?.vodSeriesEnabled) == true else { return "Disabled" }
+        guard let state = vodProgress else { return "Waiting" }
+        switch state.stage {
+        case .failed, .cancelled:
+            if state.failure == .unsupported { return "Unsupported" }
+            if state.failure == .authentication { return "Authentication failed" }
+            return "Failed"
+        case .ready:
+            let count = kind == .movie ? state.movies.accepted : state.series.accepted
+            return count > 0 ? "Ready" : "Empty"
+        default: return "Loading"
+        }
+    }
+
+    private func vodRecordLine(_ kind: XtreamVODKind) -> String {
+        guard let state = vodProgress else { return vodEnabled ? "Catalog not loaded yet" : "Enable in Live TV Providers" }
+        let count = kind == .movie ? state.movies : state.series
+        guard count.total > 0 else { return "\(count.accepted.formatted()) available" }
+        let percentage = Int(((count.fraction ?? 0) * 100).rounded(.down))
+        return "\(count.processed.formatted()) / \(count.total.formatted()) source records · \(percentage)%"
+    }
+
+    private func catalogCard(_ title: String, count: Int?, status: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title).font(.system(size: 27, weight: .bold))
+            Text(count.map { $0.formatted() } ?? "—")
+                .font(.system(size: 49, weight: .heavy).monospacedDigit())
+            Text(status).font(.system(size: 25, weight: .semibold)).foregroundStyle(KyroTheme.accentInk)
+            Text(detail).font(.system(size: 20)).foregroundStyle(Color.siloSecondaryText)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, minHeight: 192, alignment: .leading)
+        .padding(24)
+        .background(Color.siloSurface.opacity(0.9), in: RoundedRectangle(cornerRadius: 22))
+    }
+
+    @ViewBuilder private var actions: some View {
+        HStack(spacing: 20) {
+            if complete || failed {
+                Button(complete ? "Start Watching" : "Back to Providers", action: onClose)
+                    .buttonStyle(TVKyroChipStyle(isSelected: true, fontSize: 28, minHeight: 70))
+                    .focused($primaryFocused)
+                if vodStatus(.movie) == "Ready" {
+                    Button("Browse Movies") { browseKind = .movie }.buttonStyle(TVKyroChipStyle())
+                }
+                if vodStatus(.series) == "Ready" {
+                    Button("Browse Series") { browseKind = .series }.buttonStyle(TVKyroChipStyle())
+                }
+                Button("Manage Provider", action: onManage).buttonStyle(TVKyroChipStyle())
+                if failed {
+                    Button("Retry") { Task { await service.refresh(providerID: progress.providerID) } }
+                        .buttonStyle(TVKyroChipStyle())
+                } else if vodProgress?.stage == .failed || vodProgress?.stage == .cancelled {
+                    Button("Retry VOD") { Task { await vod.refresh(providerID: progress.providerID, liveTV: service) } }
+                        .buttonStyle(TVKyroChipStyle())
+                }
+            } else if [.connecting, .downloading, .importing, .categories].contains(progress.stage) {
+                Button("Cancel Import") { service.cancelImport() }.buttonStyle(TVKyroChipStyle())
+            } else if vodBlocked {
+                Button("Retry VOD") {
+                    guard vod.activeProviderID == nil else { return }
+                    vodBlocked = false
+                    vodAttempted = true
+                    Task { await vod.refresh(providerID: progress.providerID, liveTV: service) }
+                }.buttonStyle(TVKyroChipStyle())
+            } else if vodEnabled, progress.stage == .ready {
+                Button("Cancel VOD Import") { vod.cancel() }.buttonStyle(TVKyroChipStyle())
+            }
+        }
+        .focusSection()
+        .onAppear { if complete || failed { primaryFocused = true } }
     }
 
     private var recordLine: String {
         if let total = progress.count.total {
-            return "\(progress.count.processed.formatted()) / \(total.formatted()) source records processed"
+            let percent = progress.count.fraction.map { " · \(Int(($0 * 100).rounded(.down)))%" } ?? ""
+            return "\(progress.count.processed.formatted()) / \(total.formatted()) source records\(percent)"
         }
         return "\(progress.count.processed.formatted()) source records processed"
     }

@@ -59,14 +59,17 @@ struct XtreamVODImportProgress: Equatable {
     var movies = XtreamVODImportCount(processed: 0, total: 0, accepted: 0, malformed: 0, duplicate: 0)
     var series = XtreamVODImportCount(processed: 0, total: 0, accepted: 0, malformed: 0, duplicate: 0)
     var message: String?
+    var failure: XtreamVODError?
 }
 
-enum XtreamVODError: Error, LocalizedError {
-    case invalidResponse, unavailable, responseTooLarge, unsupportedFormat
+enum XtreamVODError: Error, LocalizedError, Equatable {
+    case invalidResponse, unavailable, authentication, unsupported, responseTooLarge, unsupportedFormat
     var errorDescription: String? {
         switch self {
         case .invalidResponse: "The provider returned an invalid Movies or Series catalog. Your previous catalog is unchanged."
         case .unavailable: "The VOD provider is unavailable. Check the connection or credentials and retry."
+        case .authentication: "VOD authentication failed. Check the provider credentials and retry."
+        case .unsupported: "This provider does not support the requested VOD catalog endpoint."
         case .responseTooLarge: "The VOD catalog exceeds the supported download limit. Your previous catalog is unchanged."
         case .unsupportedFormat: "This provider video format is not supported by the Apple TV player."
         }

@@ -339,6 +339,16 @@ final class LiveTVService {
     func setVODEnabled(_ enabled: Bool, for providerID: UUID) {
         guard let index = providers.firstIndex(where: { $0.id == providerID && $0.kind == .xtream }) else { return }
         providers[index].vodEnabled = enabled
+        providers[index].vodMoviesEnabled = enabled
+        providers[index].vodSeriesEnabled = enabled
+        persistProviders()
+    }
+
+    func setVODEnabled(_ enabled: Bool, kind: String, for providerID: UUID) {
+        guard let index = providers.firstIndex(where: { $0.id == providerID && $0.kind == .xtream }) else { return }
+        if kind == "movie" { providers[index].vodMoviesEnabled = enabled }
+        if kind == "series" { providers[index].vodSeriesEnabled = enabled }
+        providers[index].vodEnabled = providers[index].vodMoviesEnabled || providers[index].vodSeriesEnabled
         persistProviders()
     }
 

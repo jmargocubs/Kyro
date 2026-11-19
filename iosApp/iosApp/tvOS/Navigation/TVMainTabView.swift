@@ -1013,8 +1013,11 @@ struct TVMainTabView: View {
             for: uiCustomization.resolvedPrimaryMenuItems(),
             libraries: libraries
         )
-        if LiveTVService.shared.providers.contains(where: { $0.kind == .xtream && $0.vodEnabled }) {
-            for type in [TVLibraryTabType.movies, .series] {
+        for type in [TVLibraryTabType.movies, .series] {
+            let hasSource = LiveTVService.shared.providers.contains {
+                $0.kind == .xtream && (type == .movies ? $0.vodMoviesEnabled : $0.vodSeriesEnabled)
+            }
+            if hasSource {
                 let destination = TVRootDestination.libraryType(type)
                 if !roots.contains(destination) { roots.append(destination) }
             }

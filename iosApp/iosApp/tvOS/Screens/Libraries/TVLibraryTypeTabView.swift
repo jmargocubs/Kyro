@@ -38,8 +38,10 @@ struct TVLibraryTypeTabView: View {
     }
 
     private var vodProviders: [LiveTVProvider] {
-        guard vodKind != nil, scopesMixedLibraries else { return [] }
-        return LiveTVService.shared.providers.filter { $0.kind == .xtream && $0.vodEnabled }
+        guard let vodKind, scopesMixedLibraries else { return [] }
+        return LiveTVService.shared.providers.filter {
+            $0.kind == .xtream && (vodKind == .movie ? $0.vodMoviesEnabled : $0.vodSeriesEnabled)
+        }
     }
 
     var body: some View {
@@ -55,9 +57,8 @@ struct TVLibraryTypeTabView: View {
                     } else if activeLibrary != nil {
                         TVXtreamVODRail(providers: vodProviders, kind: kind)
                         siloBody
-                    } else if let provider = vodProviders.first {
-                        TVXtreamVODView(provider: provider, kind: kind, focusRequest: focusRequest,
-                                        isTopMenuFocused: isTopMenuFocused, onMoveUp: onTopMenuFocusRequest)
+                    } else {
+                        TVXtreamVODRail(providers: vodProviders, kind: kind)
                     }
                 }
             } else {
@@ -69,8 +70,8 @@ struct TVLibraryTypeTabView: View {
     private var sourcePicker: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 14) {
+                sourceButton("All", id: "all")
                 if activeLibrary != nil {
-                    sourceButton("All", id: "all")
                     sourceButton("Silo", id: "silo")
                 }
                 ForEach(vodProviders) { provider in

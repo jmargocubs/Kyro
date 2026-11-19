@@ -10,9 +10,10 @@ enum XtreamVODHTTP {
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do { (bytes, response) = try await session.bytes(for: request) }
         catch { if Task.isCancelled { throw CancellationError() }; throw XtreamVODError.unavailable }
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw XtreamVODError.unavailable
-        }
+        guard let http = response as? HTTPURLResponse else { throw XtreamVODError.unavailable }
+        if http.statusCode == 401 || http.statusCode == 403 { throw XtreamVODError.authentication }
+        if http.statusCode == 404 || http.statusCode == 405 { throw XtreamVODError.unsupported }
+        guard (200..<300).contains(http.statusCode) else { throw XtreamVODError.unavailable }
         guard http.expectedContentLength <= 0 || http.expectedContentLength <= maximumBytes else {
             throw XtreamVODError.responseTooLarge
         }
@@ -61,6 +62,7 @@ final class XtreamVODService {
     private let defaults: UserDefaults
     private var work: Task<Void, Never>?
     private var cachedDetails: [String: (Date, XtreamVODDetail)] = [:]
+    private(set) var lastSuccessfulRefresh: [UUID: Date] = [:]
 
     init(store: XtreamVODCatalogStore? = try? XtreamVODCatalogStore(),
          session: URLSession = .shared, defaults: UserDefaults = .standard) {
@@ -71,12 +73,14 @@ final class XtreamVODService {
 
     func refresh(providerID: UUID, liveTV: LiveTVService? = nil) async {
         let liveTV = liveTV ?? .shared
-        guard work == nil, let source = liveTV.xtreamVODConfiguration(for: providerID), store != nil else { return }
+        guard work == nil, let source = liveTV.xtreamVODConfiguration(for: providerID), store != nil,
+              let provider = liveTV.providers.first(where: { $0.id == providerID }) else { return }
+        let enabledKinds = XtreamVODKind.allCases.filter { $0 == .movie ? provider.vodMoviesEnabled : provider.vodSeriesEnabled }
         activeProviderID = providerID
         progress = XtreamVODImportProgress(providerID: providerID)
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.performRefresh(providerID: providerID, source: source)
+            await self.performRefresh(providerID: providerID, source: source, enabledKinds: enabledKinds)
         }
         work = task
         await task.value
@@ -85,7 +89,7 @@ final class XtreamVODService {
 
     func cancel() { work?.cancel() }
 
-    private func performRefresh(providerID: UUID, source: LiveTVSourceConfiguration) async {
+    private func performRefresh(providerID: UUID, source: LiveTVSourceConfiguration, enabledKinds: [XtreamVODKind]) async {
         guard let store, let server = source.serverURL, let user = source.username, let password = source.password else { return }
         let secrets = LiveTVSnapshotSecrets(source: source)
         func safe(_ raw: String?, limit: Int) -> String? {
@@ -98,7 +102,7 @@ final class XtreamVODService {
             let authURL = try XtreamURLBuilder.apiURL(server: server, username: user, password: password)
             let authData = try await XtreamVODHTTP.fetch(authURL, session: session, maximumBytes: 1 * 1024 * 1024)
             try XtreamResponseParser.account(from: authData)
-            for kind in XtreamVODKind.allCases {
+            for kind in enabledKinds {
                 try Task.checkCancellation()
                 progress?.stage = .downloading(kind)
                 let categories = await categoryNames(kind: kind, server: server, user: user, password: password)
@@ -154,6 +158,9 @@ final class XtreamVODService {
             try Task.checkCancellation()
             try await store.promoteAll(providerID: providerID, generations: staged)
             revision &+= 1
+            let refreshed = Date()
+            lastSuccessfulRefresh[providerID] = refreshed
+            defaults.set(refreshed, forKey: "kyro.iptvvod.lastRefresh.\(providerID.uuidString)")
             let importedMovies = progress?.movies.accepted ?? 0
             let importedSeries = progress?.series.accepted ?? 0
             progress?.stage = .ready
@@ -161,6 +168,7 @@ final class XtreamVODService {
         } catch {
             for (kind, generation) in staged { await store.discard(providerID: providerID, kind: kind, generation: generation) }
             progress?.stage = error is CancellationError ? .cancelled : .failed
+            progress?.failure = error as? XtreamVODError
             progress?.message = error is CancellationError ? "VOD import cancelled. Previous catalogs are unchanged."
                 : (error as? LocalizedError)?.errorDescription ?? "VOD import failed. Previous catalogs are unchanged."
         }
@@ -198,6 +206,20 @@ final class XtreamVODService {
 
     func count(providerID: UUID, kind: XtreamVODKind) async -> Int {
         await store?.count(providerID: providerID, kind: kind) ?? 0
+    }
+
+    func refreshedAt(providerID: UUID) -> Date? {
+        lastSuccessfulRefresh[providerID] ?? defaults.object(forKey: "kyro.iptvvod.lastRefresh.\(providerID.uuidString)") as? Date
+    }
+
+    /// Clearing cached VOD never deletes a provider or its keychain credentials.
+    func clearCache(providerID: UUID) async {
+        guard activeProviderID != providerID else { return }
+        await store?.remove(providerID: providerID)
+        defaults.removeObject(forKey: "kyro.iptvvod.lastRefresh.\(providerID.uuidString)")
+        lastSuccessfulRefresh[providerID] = nil
+        cachedDetails = cachedDetails.filter { !$0.key.hasPrefix(providerID.uuidString) }
+        revision &+= 1
     }
 
     func personalItems(providerID: UUID, kind: XtreamVODKind, favorites: Bool) async -> [XtreamVODItem] {
@@ -293,6 +315,8 @@ final class XtreamVODService {
             activeProviderID = nil
         }
         await store?.remove(providerID: providerID)
+        defaults.removeObject(forKey: "kyro.iptvvod.lastRefresh.\(providerID.uuidString)")
+        lastSuccessfulRefresh[providerID] = nil
         cachedDetails = cachedDetails.filter { !$0.key.hasPrefix(providerID.uuidString) }
         revision &+= 1
     }
