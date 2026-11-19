@@ -70,8 +70,8 @@ struct SettingsBackupPasteView: View {
                         .accessibilityIdentifier("settingsBackup.pasteCancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Review") { review() }
-                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Review") { Task { await review() } }
+                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isBusy)
                         .accessibilityIdentifier("settingsBackup.pasteReview")
                 }
             }
@@ -96,8 +96,8 @@ struct SettingsBackupPasteView: View {
         problem = nil
     }
 
-    private func review() {
-        if let message = model.loadImport(text: text) {
+    private func review() async {
+        if let message = await model.loadUnifiedImport(text: text) {
             problem = message
         } else {
             dismiss()

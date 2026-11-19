@@ -1586,6 +1586,10 @@ final class PlayerSettings {
         await flusher.flushNow()
     }
 
+    /// Backup must never race a queued device-setting write with an authoritative read or restore.
+    @MainActor
+    var hasUnsettledSettingsWrites: Bool { flusher.hasPendingWrites }
+
     /// Encode the appearance as the contract's object type.
     ///
     /// `playback.subtitle_appearance` is a JSON object on the wire, not the

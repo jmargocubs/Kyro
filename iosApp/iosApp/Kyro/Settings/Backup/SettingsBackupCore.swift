@@ -97,12 +97,14 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
     case advancedAudioVideo
     case subtitleDisplay
     case navigationLayout
+    case streaming
+    case subtitles
 
     var id: String { rawValue }
 
     var isDeviceSpecific: Bool {
         switch self {
-        case .general, .calendar, .navigation, .liveTVCategories, .guideLayout, .sports, .downloads: false
+        case .general, .calendar, .navigation, .liveTVCategories, .guideLayout, .sports, .downloads, .streaming, .subtitles: false
         case .playbackOptions, .pictureInPicture, .advancedAudioVideo, .subtitleDisplay, .navigationLayout: true
         }
     }
@@ -121,6 +123,8 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .advancedAudioVideo: "Advanced audio & video"
         case .subtitleDisplay: "Subtitle display"
         case .navigationLayout: "Navigation layout & appearance"
+        case .streaming: "Streaming"
+        case .subtitles: "Subtitles"
         }
     }
 
@@ -138,6 +142,8 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .advancedAudioVideo: "Deinterlacing and TrueHD Atmos."
         case .subtitleDisplay: "Use this device's caption appearance."
         case .navigationLayout: "Floating navigation style and behavior."
+        case .streaming: "Server-synced playback quality."
+        case .subtitles: "Profile subtitle preferences."
         }
     }
 
@@ -268,6 +274,19 @@ struct SettingsBackupAppInfo: Equatable, Sendable {
     var idiom: String
 }
 
+/// Non-secret, one-way identifiers used only to refuse writes to a different destination.
+/// No URL, account name, token or raw profile identifier is stored in the document.
+struct SettingsBackupScope: Codable, Equatable, Sendable {
+    let serverFingerprint: String
+    let profileFingerprint: String
+
+    var isValid: Bool {
+        [serverFingerprint, profileFingerprint].allSatisfy {
+            $0.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+        }
+    }
+}
+
 /// A decoded, validated backup. Nothing in it has been applied.
 struct IncomingBackup: Equatable {
     let schemaVersion: Int
@@ -276,13 +295,14 @@ struct IncomingBackup: Equatable {
     /// Group name → key → value, exactly as read. Names Kyro does not know are kept so the preview
     /// can count what it skipped.
     let groups: [String: [String: BackupValue]]
+    let scope: SettingsBackupScope?
 
     var isNewerThanSupported: Bool { schemaVersion > SettingsBackupCodec.currentSchemaVersion }
 }
 
 enum SettingsBackupCodec {
     static let format = "kyro.settings-backup"
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
     /// The oldest reader that understands every file this build writes.
     static let minReaderVersion = 1
     static let fileExtension = SettingsBackupFileType.fileExtension
@@ -302,6 +322,7 @@ enum SettingsBackupCodec {
 
     private struct Payload: Codable {
         var groups: [String: [String: BackupValue]]
+        var scope: SettingsBackupScope?
     }
 
     private struct Envelope: Codable {
@@ -333,7 +354,7 @@ enum SettingsBackupCodec {
         }
         guard !groups.isEmpty else { throw SettingsBackupError.nothingToExport }
         return try makeDocument(
-            groups: groups, schemaVersion: currentSchemaVersion, minReaderVersion: minReaderVersion, app: app, now: now)
+            groups: groups, schemaVersion: 1, minReaderVersion: 1, app: app, now: now)
     }
 
     /// Writes a document with a correct integrity hash. `encode` is the only production caller; tests
@@ -345,7 +366,7 @@ enum SettingsBackupCodec {
         app: SettingsBackupAppInfo,
         now: Date
     ) throws -> Data {
-        let payload = Payload(groups: groups)
+        let payload = Payload(groups: groups, scope: nil)
         let envelope = Envelope(
             format: format,
             schemaVersion: schemaVersion,
@@ -354,6 +375,27 @@ enum SettingsBackupCodec {
             app: AppInfoDTO(version: app.version, build: app.build, platform: app.platform, idiom: app.idiom),
             payloadSha256: try hash(of: payload),
             payload: payload
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(envelope)
+    }
+
+    /// Schema 2 adds scoped remote values to the same document as the local groups. The scope
+    /// participates in the payload hash; schema-1 files keep their original canonical bytes.
+    static func makeUnifiedDocument(
+        groups: [String: [String: BackupValue]], scope: SettingsBackupScope?,
+        app: SettingsBackupAppInfo, now: Date
+    ) throws -> Data {
+        guard !groups.isEmpty else { throw SettingsBackupError.nothingToExport }
+        try validateContent(groups)
+        guard scope?.isValid ?? true else { throw SettingsBackupError.unsafeContent }
+        let payload = Payload(groups: groups, scope: scope)
+        let envelope = Envelope(
+            format: format, schemaVersion: 2, minReaderVersion: 1,
+            createdAt: ISO8601DateFormatter().string(from: now),
+            app: AppInfoDTO(version: app.version, build: app.build, platform: app.platform, idiom: app.idiom),
+            payloadSha256: try hash(of: payload), payload: payload
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -396,6 +438,14 @@ enum SettingsBackupCodec {
         do { envelope = try decoder.decode(Envelope.self, from: data) } catch { throw SettingsBackupError.malformed }
 
         try validateContent(envelope.payload.groups)
+        guard envelope.payload.scope?.isValid ?? true else { throw SettingsBackupError.unsafeContent }
+        if header.schemaVersion == 1, envelope.payload.scope != nil { throw SettingsBackupError.unsafeContent }
+        if envelope.payload.groups.keys.contains(SettingsBackupGroup.streaming.rawValue)
+            || envelope.payload.groups.keys.contains(SettingsBackupGroup.subtitles.rawValue) {
+            guard header.schemaVersion >= 2, envelope.payload.scope != nil else {
+                throw SettingsBackupError.unsafeContent
+            }
+        }
 
         guard envelope.payloadSha256.lowercased() == (try hash(of: envelope.payload)) else {
             throw SettingsBackupError.integrityMismatch
@@ -407,7 +457,7 @@ enum SettingsBackupCodec {
             app: envelope.app.map {
                 SettingsBackupAppInfo(version: $0.version, build: $0.build, platform: $0.platform, idiom: $0.idiom)
             },
-            groups: envelope.payload.groups
+            groups: envelope.payload.groups, scope: envelope.payload.scope
         )
     }
 

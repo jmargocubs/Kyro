@@ -21,15 +21,20 @@ final class SettingsBackupModel {
     private(set) var undoAvailable = false
     private(set) var needsRecovery = false
     private(set) var restoreDate: Date?
+    private(set) var isBusy = false
 
     @ObservationIgnored private let registry: SettingsBackupRegistry
     @ObservationIgnored private let applier: SettingsBackupApplier
     @ObservationIgnored private let app: SettingsBackupAppInfo
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let notifications: NotificationCenter
+    @ObservationIgnored private let remote: SettingsBackupRemoteAdapter?
+    @ObservationIgnored private var incomingBackup: IncomingBackup?
 
     var availablePortableGroups: [SettingsBackupGroup] {
-        SettingsBackupGroup.portable.filter { !registry.settings(in: $0).isEmpty }
+        SettingsBackupGroup.portable.filter {
+            !registry.settings(in: $0).isEmpty || (remote != nil && ($0 == .streaming || $0 == .subtitles))
+        }
     }
 
     var availableDeviceGroups: [SettingsBackupGroup] {
@@ -41,7 +46,8 @@ final class SettingsBackupModel {
         journal: RestoreJournalStoring,
         app: SettingsBackupAppInfo,
         now: @escaping () -> Date = Date.init,
-        notifications: NotificationCenter = .default
+        notifications: NotificationCenter = .default,
+        remote: SettingsBackupRemoteAdapter? = nil
     ) {
         self.notifications = notifications
         self.registry = registry
@@ -49,6 +55,8 @@ final class SettingsBackupModel {
         self.applier = SettingsBackupApplier(registry: registry, journal: journal, now: now)
         self.app = app
         self.now = now
+        self.remote = remote
+        if remote != nil { self.exportSelection.formUnion([.streaming, .subtitles]) }
         refreshRestorePointState()
     }
 
@@ -61,6 +69,41 @@ final class SettingsBackupModel {
             return data
         } catch {
             banner = Banner(kind: .failure, text: error.localizedDescription)
+            return nil
+        }
+    }
+
+    /// The production export reads the two remote owners before creating one schema-2 file.
+    /// A remote failure aborts export; a local-only file must not masquerade as complete.
+    func exportUnifiedDocument() async -> Data? {
+        guard !isBusy else { return nil }
+        guard let remote else { return exportDocument() }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let localSelection = Set(exportSelection.filter { !registry.settings(in: $0).isEmpty })
+            var groups: [String: [String: BackupValue]] = [:]
+            if !localSelection.isEmpty {
+                let local = try SettingsBackupExporter.export(registry: registry, groups: localSelection,
+                                                              app: app, now: now())
+                groups = try SettingsBackupCodec.decode(local).groups
+            }
+            var scope: SettingsBackupScope?
+            if exportSelection.contains(.streaming) || exportSelection.contains(.subtitles) {
+                let synced = try await remote.export()
+                scope = synced.scope
+                for (group, values) in synced.groups {
+                    if let selection = SettingsBackupGroup(rawValue: group), exportSelection.contains(selection) {
+                        groups[group] = values
+                    }
+                }
+            }
+            let data = try SettingsBackupCodec.makeUnifiedDocument(groups: groups, scope: scope,
+                                                                    app: app, now: now())
+            banner = nil
+            return data
+        } catch {
+            banner = Banner(kind: .failure, text: "The backup was not created: \(error.localizedDescription)")
             return nil
         }
     }
@@ -98,7 +141,7 @@ final class SettingsBackupModel {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let data = try await Task.detached(priority: .userInitiated) { try Self.readBackupFile(at: url) }.value
-            loadImport(data: data)
+            await loadUnifiedImport(data: data)
         } catch let error as SettingsBackupError {
             reject(error)
         } catch {
@@ -136,6 +179,46 @@ final class SettingsBackupModel {
         }
     }
 
+    func loadUnifiedImport(data: Data) async {
+        guard !isBusy else { return }
+        guard let remote else { loadImport(data: data); return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let incoming = try SettingsBackupCodec.decode(data)
+            let localGroups = incoming.groups.filter {
+                $0.key != SettingsBackupGroup.streaming.rawValue
+                    && $0.key != SettingsBackupGroup.subtitles.rawValue
+            }
+            let local = IncomingBackup(schemaVersion: incoming.schemaVersion, createdAt: incoming.createdAt,
+                                       app: incoming.app, groups: localGroups, scope: incoming.scope)
+            let localPreview = SettingsBackupPlanner.preview(local, registry: registry)
+            let remoteGroups = await remote.preview(incoming)
+            let unknownStreaming = incoming.groups[SettingsBackupGroup.streaming.rawValue]?.keys
+                .filter { $0 != "streaming.resolution" }.count ?? 0
+            let unknownSubtitles = incoming.groups[SettingsBackupGroup.subtitles.rawValue]?.keys
+                .filter { $0 != "subtitles.language" }.count ?? 0
+            let result = RestorePreview(
+                createdAt: incoming.createdAt, app: incoming.app,
+                groups: localPreview.groups + remoteGroups,
+                unrecognizedGroups: localPreview.unrecognizedGroups,
+                unrecognizedSettings: localPreview.unrecognizedSettings + unknownStreaming + unknownSubtitles,
+                isNewerThanSupported: localPreview.isNewerThanSupported)
+            incomingBackup = incoming
+            acceptPreview(result)
+        } catch let error as SettingsBackupError { reject(error) }
+        catch { reject(.malformed) }
+    }
+
+    func loadUnifiedImport(text: String) async -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.utf8.count <= SettingsBackupSafety.maxFileBytes else {
+            return Self.pastedTextMessage(.tooLarge)
+        }
+        await loadUnifiedImport(data: Data(trimmed.utf8))
+        return preview == nil ? banner?.text ?? Self.pastedTextMessage(.malformed) : nil
+    }
+
     /// Loads a backup pasted as text, through the same decoder, size limit, integrity check and
     /// preview as a file. Returns nil when the preview is ready, or the reason the text was refused.
     /// A refusal is returned rather than shown as a banner, so the paste screen can show it in place.
@@ -156,6 +239,11 @@ final class SettingsBackupModel {
     private func loadPreview(_ data: Data) throws {
         let incoming = try SettingsBackupCodec.decode(data)
         let result = SettingsBackupPlanner.preview(incoming, registry: registry)
+        incomingBackup = incoming
+        acceptPreview(result)
+    }
+
+    private func acceptPreview(_ result: RestorePreview) {
         preview = result
         importSelection = Set(result.groups.filter { $0.canRestore && !$0.group.isDeviceSpecific }.map(\.group))
         selectedSettingIDs = Set(result.groups.filter { importSelection.contains($0.group) }
@@ -180,6 +268,7 @@ final class SettingsBackupModel {
 
     private func reject(_ error: SettingsBackupError) {
         preview = nil
+        incomingBackup = nil
         importSelection = []
         selectedSettingIDs = []
         banner = Banner(kind: .failure, text: error.localizedDescription)
@@ -188,6 +277,7 @@ final class SettingsBackupModel {
     /// Drops the loaded backup. Nothing was written, so there is nothing to undo.
     func cancelImport() {
         preview = nil
+        incomingBackup = nil
         importSelection = []
         selectedSettingIDs = []
     }
@@ -247,6 +337,84 @@ final class SettingsBackupModel {
         refreshRestorePointState()
     }
 
+    func applyUnifiedSelected() async {
+        guard let remote, let incomingBackup, let preview, !isBusy else {
+            applySelected(); return
+        }
+        isBusy = true
+        defer { isBusy = false; refreshRestorePointState() }
+        let remoteIDs = selectedSettingIDs.intersection(["streaming.resolution", "subtitles.language"])
+        let remoteReport = await remote.apply(incomingBackup, selectedIDs: remoteIDs)
+        let skippedText = remoteReport.skipped.isEmpty ? "" : " \(remoteReport.skipped.count) synced settings were skipped."
+        if !remoteReport.failed.isEmpty {
+            banner = Banner(kind: .failure, text: "Restored \(remoteReport.applied.count) synced settings; "
+                + "\(remoteReport.failed.count) failed. Local settings were not changed.\(skippedText) Roll back confirmed changes before another import.")
+            lastRestoredCount = nil
+            self.preview = nil
+            self.incomingBackup = nil
+            notifications.post(name: .kyroSettingsDidRestore, object: nil)
+            return
+        }
+        let localIDs = selectedSettingIDs.subtracting(remoteIDs)
+        let localGroups = importSelection.subtracting([.streaming, .subtitles])
+        let localOutcome = localIDs.isEmpty ? RestoreOutcome.nothingToApply
+            : applier.apply(preview: preview, selectedGroups: localGroups, selectedIDs: localIDs)
+        switch localOutcome {
+        case .nothingToApply:
+            let count = remoteReport.applied.count
+            lastRestoredCount = count == 0 ? nil : count
+            banner = Banner(kind: count == 0 ? .warning : .success,
+                            text: (count == 0 ? "Nothing needed to change." : "Restored \(count) synced settings. You can undo this.") + skippedText)
+        case .applied(let changes, _):
+            let count = changes.count + remoteReport.applied.count
+            lastRestoredCount = count
+            banner = Banner(kind: .success, text: "Restored \(count) settings. You can undo this.\(skippedText)")
+        case .failed(_, let reason, let rollback):
+            lastRestoredCount = nil
+            banner = Banner(kind: .failure, text: "\(reason) \(remoteReport.applied.count) synced settings remain restored. "
+                + (rollback.isComplete ? "Local changes were rolled back." : "Some local changes could not be rolled back.") + skippedText)
+        }
+        self.preview = nil
+        self.incomingBackup = nil
+        importSelection = []
+        selectedSettingIDs = []
+        notifications.post(name: .kyroSettingsDidRestore, object: nil)
+        if !remoteReport.applied.isEmpty { await remote.refreshUI() }
+    }
+
+    func undoUnified() async {
+        guard let remote, !isBusy else { undo(); return }
+        isBusy = true
+        defer { isBusy = false; refreshRestorePointState() }
+        let remoteReport = await remote.undo()
+        let localReport = applier.undo()
+        if remoteReport.failed.isEmpty {
+            banner = undoBanner(localReport, verb: "Undid")
+            if !remoteReport.applied.isEmpty {
+                banner = Banner(kind: banner?.kind ?? .success,
+                                text: "Undid \(remoteReport.applied.count) synced settings. \(banner?.text ?? "")")
+            }
+            if !remoteReport.skipped.isEmpty {
+                banner = Banner(kind: .warning, text: "\(banner?.text ?? "") Left \(remoteReport.skipped.count) synced settings unchanged because they changed since restore.")
+            }
+        } else {
+            banner = Banner(kind: .failure, text: "Could not undo \(remoteReport.failed.count) synced settings. "
+                + "Check that this is the same server and profile, then try again.")
+        }
+        notifications.post(name: .kyroSettingsDidRestore, object: nil)
+        if !remoteReport.applied.isEmpty { await remote.refreshUI() }
+    }
+
+    func recoverUnified() async {
+        guard let remote else { recoverInterruptedRestore(); return }
+        let remoteReport = await remote.undo()
+        let localReport = applier.recoverInterruptedRestore()
+        banner = remoteReport.failed.isEmpty ? undoBanner(localReport, verb: "Rolled back")
+            : Banner(kind: .failure, text: "Some synced settings could not be rolled back. Reconnect to the same server and profile and try again.")
+        refreshRestorePointState()
+        notifications.post(name: .kyroSettingsDidRestore, object: nil)
+    }
+
     func undo() {
         let report = applier.undo()
         banner = undoBanner(report, verb: "Undid")
@@ -262,8 +430,8 @@ final class SettingsBackupModel {
     }
 
     func refreshRestorePointState() {
-        undoAvailable = applier.undoAvailable
-        needsRecovery = applier.needsRecovery
+        undoAvailable = applier.undoAvailable || (remote?.undoAvailable ?? false)
+        needsRecovery = applier.needsRecovery || (remote?.needsRecovery ?? false)
         restoreDate = undoAvailable ? applier.restorePointDate : nil
     }
 

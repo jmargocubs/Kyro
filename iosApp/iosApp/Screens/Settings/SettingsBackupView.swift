@@ -29,7 +29,9 @@ struct SettingsBackupView: View {
             app: SettingsBackupAppInfo(
                 version: info?["CFBundleShortVersionString"] as? String ?? "",
                 build: info?["CFBundleVersion"] as? String ?? "",
-                platform: "iOS", idiom: SettingsBackupLiveRegistry.currentIdiom)))
+                platform: "iOS", idiom: SettingsBackupLiveRegistry.currentIdiom),
+            remote: SettingsBackupRemoteAdapter(
+                transport: SiloSettingsBackupTransport(), journal: FileRemoteBackupJournal.standard())))
     }
 
     var body: some View {
@@ -43,7 +45,8 @@ struct SettingsBackupView: View {
             }
             if model.needsRecovery {
                 Section {
-                    Button("Roll Back Interrupted Restore") { model.recoverInterruptedRestore() }
+                    Button("Roll Back Interrupted Restore") { Task { await model.recoverUnified() } }
+                        .disabled(model.isBusy)
                 } footer: {
                     Text("A restore didn't finish. Roll it back before importing another backup.")
                 }
@@ -51,7 +54,7 @@ struct SettingsBackupView: View {
             }
             backupSection
             restoreSection
-            if model.undoAvailable { undoSection }
+            if model.undoAvailable && !model.needsRecovery { undoSection }
         }
         .settingsListChrome()
         .navigationTitle("Backup & Restore")
@@ -69,7 +72,7 @@ struct SettingsBackupView: View {
         .sheet(isPresented: $showsPaste) { SettingsBackupPasteView(model: model) }
         .navigationDestination(isPresented: $showsReview) { SettingsBackupReviewScreen(model: model) }
         .confirmationDialog("Undo last restore?", isPresented: $confirmsUndo, titleVisibility: .visible) {
-            Button("Undo Last Restore") { model.undo() }
+            Button("Undo Last Restore") { Task { await model.undoUnified() } }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Earlier values will be restored. Settings you changed since the restore will stay as they are.")
@@ -86,32 +89,38 @@ struct SettingsBackupView: View {
     private var backupSection: some View {
         Section {
             Button {
-                if let data = model.exportDocument() {
-                    exportDocument = SettingsBackupFileDocument(data: data)
-                    showsExporter = true
+                Task {
+                    if let data = await model.exportUnifiedDocument() {
+                        exportDocument = SettingsBackupFileDocument(data: data)
+                        showsExporter = true
+                    }
                 }
             } label: {
                 Label("Create Backup", systemImage: "square.and.arrow.up")
             }
-            .disabled(model.exportSelection.isEmpty)
+            .disabled(model.exportSelection.isEmpty || model.isBusy)
             .accessibilityIdentifier("settingsBackup.export")
 
             DisclosureGroup("Choose what to include", isExpanded: $showsOptions) {
                 ForEach(model.availablePortableGroups) { group in exportToggle(group) }
+                Text("Synced settings require the same verified server and profile on the destination. They are read from the server; an offline export fails rather than using cached values.")
+                    .font(.footnote).foregroundStyle(Color.siloSecondaryText)
                 Text("Device-specific settings")
                     .font(.footnote.weight(.semibold)).foregroundStyle(Color.siloSecondaryText)
                 ForEach(model.availableDeviceGroups) { group in exportToggle(group) }
                 Text("Device-specific settings restore only to the same kind of device.")
                     .font(.footnote).foregroundStyle(Color.siloSecondaryText)
                 Button {
-                    if let text = model.exportText() {
-                        UIPasteboard.general.string = text
-                        model.didCopyExport()
+                    Task {
+                        if let data = await model.exportUnifiedDocument() {
+                            UIPasteboard.general.string = String(decoding: data, as: UTF8.self)
+                            model.didCopyExport()
+                        }
                     }
                 } label: {
                     Label("Copy Settings as Text", systemImage: "doc.on.doc")
                 }
-                .disabled(model.exportSelection.isEmpty)
+                .disabled(model.exportSelection.isEmpty || model.isBusy)
                 .accessibilityIdentifier("settingsBackup.copyText")
             }
             .accessibilityIdentifier("settingsBackup.options")
@@ -143,12 +152,12 @@ struct SettingsBackupView: View {
             Button { presentFilePicker() } label: {
                 Label("Choose Backup File", systemImage: "square.and.arrow.down")
             }
-            .disabled(model.needsRecovery)
+            .disabled(model.needsRecovery || model.isBusy)
             .accessibilityIdentifier("settingsBackup.import")
             Button { showsPaste = true } label: {
                 Label("Paste Backup Text", systemImage: "doc.on.clipboard")
             }
-            .disabled(model.needsRecovery)
+            .disabled(model.needsRecovery || model.isBusy)
             .font(.subheadline)
             .accessibilityIdentifier("settingsBackup.paste")
         } header: {
@@ -179,6 +188,7 @@ struct SettingsBackupView: View {
             Button { confirmsUndo = true } label: {
                 Label("Undo Last Restore", systemImage: "arrow.uturn.backward")
             }
+            .disabled(model.isBusy)
             .accessibilityIdentifier("settingsBackup.undo")
         } footer: {
             Text("Puts back values from the last restore. Settings changed since then stay as they are.")
@@ -203,6 +213,7 @@ private struct SettingsBackupReviewScreen: View {
                     Text("\(count) setting\(count == 1 ? "" : "s") updated.")
                     if model.undoAvailable {
                         Button("Undo Last Restore") { confirmsUndo = true }
+                            .disabled(model.isBusy)
                             .accessibilityIdentifier("settingsBackup.successUndo")
                     }
                     Button("Done") { dismiss() }
@@ -285,7 +296,7 @@ private struct SettingsBackupReviewScreen: View {
                         Button("Restore \(model.selectedChangeCount) Setting\(model.selectedChangeCount == 1 ? "" : "s")") {
                             confirmsRestore = true
                         }
-                        .disabled(model.selectedChangeCount == 0)
+                        .disabled(model.selectedChangeCount == 0 || model.isBusy)
                         .accessibilityIdentifier("settingsBackup.apply")
                     }
                 }
@@ -303,13 +314,13 @@ private struct SettingsBackupReviewScreen: View {
         .siloToolbarColorSchemeDark()
         .confirmationDialog("Restore \(model.selectedChangeCount) setting\(model.selectedChangeCount == 1 ? "" : "s")?",
                             isPresented: $confirmsRestore, titleVisibility: .visible) {
-            Button("Restore Settings") { model.applySelected() }
+            Button("Restore Settings") { Task { await model.applyUnifiedSelected() } }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Only selected settings will change. You can undo this afterwards when a restore point is available.")
         }
         .confirmationDialog("Undo last restore?", isPresented: $confirmsUndo, titleVisibility: .visible) {
-            Button("Undo Last Restore") { model.undo(); dismiss() }
+            Button("Undo Last Restore") { Task { await model.undoUnified(); dismiss() } }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Earlier values will be restored. Settings you changed since the restore will stay as they are.")

@@ -175,3 +175,54 @@ The Calendar filter is now one of the 30 local preferences. It was the open prod
 **Test result:** [Cloud Simulator run 44462658968](https://github.com/jmargocubs/Kyro/actions/runs/44462658968) on `92029107dc5db9f43f1176c41eff21a0b015f94e` ran `SiloTests/SettingsBackupLiveRegistryTests`: 26 tests, 0 failures. That run includes the Calendar filter plus the previous local preferences, Build 93 legacy skips, and the server-setting exclusions. The earlier 25-test pass on `8fbad5dc` did not include the Calendar filter.
 
 **Readiness:** Build 94 is ready for the separate unsigned IPA workflow as version 1.0.0 build 94, an unverified pre-release. It is not stable until a physical-iPhone acceptance pass. No IPA has been built in this change.
+
+## Unified-backup follow-up (2026-11-19)
+
+The physical-iPhone acceptance pass found a product-blocking gap: a Build 94 backup restored the fourth navigation tab, but **did not restore playback resolution or subtitle language** after those were changed to 480p and Chinese. The earlier readiness statement above is historical; Build 94 is **not** ready as a complete-settings-backup beta.
+
+The current registry still has 30 entries, all local. `SettingsBackupLiveRegistry.standard()` explicitly excludes server-authoritative values. Its synchronous `BackupSetting.read` and `write` closures feed a synchronous exporter, preview planner, applier, and Undo journal. That design cannot safely incorporate the authenticated, asynchronous settings API by reading `PlayerSettings` caches or by enqueueing its setters: preview would not know the authoritative value, and immediate read-back could report success before a server write persisted.
+
+The current source confirms these owners for the three-setting reproduction:
+
+| Preference | Authoritative path | Build 94 backup status |
+|---|---|---|
+| Fourth tab | `KyroGlobalNavigationStore.preferences.fourthTab`, device-local | Registered as `navigation.fourthTab`; export/restore/Undo supported |
+| Streaming resolution | `playback.preferred_quality`, `profile_device` settings API; `PlayerSettings` is a local observable/cache and write coordinator | Not registered; export omits it |
+| Subtitle language | `playback.subtitle_language`, `profile` settings API through `ProfileSettingsWriter` | Not registered; export omits it |
+
+The **64** figure is the potential-eligibility denominator from the Build 94 addendum, **not** 64 confirmed-safe portable settings. It consists of 30 registered local preferences plus 34 API-backed candidates. The full inventory remains 77 persisted user preferences/collections, including entries that require an identity decision or are intentionally excluded. The table above and the original inventory identify the production owner; neither constitutes completion of the 34 server-backed adapters.
+
+Implementation must retain one `.kyrosettings` file and one review screen, but move export, preview, apply, and Undo to an asynchronous typed-adapter pipeline. Each API adapter must capture the authenticated server/profile identity, check capabilities and scope, read the canonical value (including inherited-versus-explicit provenance), write through `SiloAPI.putValue` or `deleteValue`, and confirm with a fresh API read. A failed or offline read must mark that setting unavailable, **not** substitute a cache. The journal must retain enough scope and identity to refuse Undo against a different profile or server. Schema 1 must remain decodable; new scoped records need a versioned envelope with integrity and unknown-field handling. Catalog/provider-bound customizations remain excluded until a stable, non-secret identity and a safe merge/Undo policy are established.
+
+No implementation or cloud test result for this follow-up is claimed by this audit. The iPhone reproduction remains failing until a later code change and a new physical-device acceptance pass prove otherwise. No IPA should be built for this follow-up without the separate device-workflow approval.
+
+## Schema-2 implementation status (2026-11-19)
+
+The paragraph immediately above describes the **pre-implementation** state. The implementation in this worktree adds one asynchronous production export/import path, retaining the existing local registry and schema-1 decoder. The iOS UI now uses that path. A schema-2 document carries all selected local groups and two API-backed groups in one payload. The SHA-256 integrity check covers the scope metadata. The metadata is a SHA-256 fingerprint of the server's verified deployment ID and selected profile ID, not their raw values, URLs, credentials or tokens. The authenticated API remains the authority and refuses requests after an owner switch. A destination mismatch skips remote values while allowing safe local values to be reviewed separately.
+
+### Disposition of the 64 potential candidates
+
+| Class | Count | Disposition |
+|---|---:|---|
+| Device-local, portable | 14 | Registered through the existing production stores; selected by default for export |
+| Device-local, same-idiom | 16 | Registered through the existing production stores; export selected by default, restore opt-in and restricted to phone/pad match |
+| API-backed, now implemented | 2 | `playback.preferred_quality` at `profile_device`, and `playback.subtitle_language` at `profile`; require a verified server and matching profile for restore |
+| Other API-backed candidates | 32 | **Not implemented.** Do not call these backed up, restored or proven ineligible merely because their adapters are absent |
+
+Thus **32/64 candidates are confirmed supported in this implementation**, including **16 cross-device-portable choices** (14 local plus the two scoped API choices) and 16 same-idiom local choices. The *final* eligible total among the 64 remains undetermined until the other 32 receive their own API/scope/validation review. The 77-row historical inventory above remains the source-by-source inventory; it includes seven decision items and seven intentional exclusions outside the 64 denominator.
+
+The 32 unsupported API candidates are classified by authoritative owner and risk, rather than silently exported from caches:
+
+| Owner / risk | Candidates still unsupported |
+|---|---|
+| Profile-scope scalar API | Advisory age; both unwatched-episode spoiler controls; four video/audiobook seek intervals; subtitle behavior; forced subtitles; metadata language |
+| Profile-device scalar API | Maximum bitrate; buffering quality mode; audio language; HDR; Dolby Vision; seek cache; auto-play next; Next Up timing; intro mode; skip credits; video gravity; playback speed; orientation; subtitle sync offset; theme music and its loop flag |
+| Composite, policy- or catalog-sensitive API/scope | Card presentation; primary menu and shortcuts (library IDs); title art's profile-versus-device scope; cellular quality pair; subtitle appearance record; subtitle appearance's device-only scope transition |
+
+This grouping accounts for the remaining 32 candidate rows from the original inventory. Provider-bound pins, hidden categories and Live TV Favorites, catalog-bound Favorites and browse state, server connection definitions, credentials, diagnostics consent, transient navigation, and unsupported contract-only keys are **outside** the 64. They remain excluded for the identity, privacy, or non-preference reasons stated in the inventory. No provider/catalog identity is guessed from names or local UUIDs.
+
+The two remote adapters read batched effective values with the existing authenticated settings API, preserve an inherited versus explicit value, validate the scalar type, write with `putValue` or `deleteValue` at the editor's scope, and confirm a fresh authoritative read. The quality adapter flushes queued device writes before reading; it refuses to export while those writes remain unsettled. Preview never substitutes `PlayerSettings` or `ProfilePrefsEditor` caches when offline. Restore journals the remote previous values and fingerprints before the first write, reports a partial result if a later write or confirmation fails, and offers recovery/Undo against only the same server/profile. Local values still use the existing synchronous store adapters inside the asynchronous orchestration. The Review screen retains explicit confirmation and per-setting selection.
+
+**Validation in this worktree:** macOS host checks executed the production codec and remote adapter/model against controlled API fakes: 6 codec checks and 10 unified-flow checks passed (including the three-setting round trip, Undo, mismatch, offline, timeout, cancellation, selective restore, partial failure and secret exclusion). The iOS `Silo` scheme and test target **compiled** with `xcodebuild build-for-testing` for a generic iOS Simulator destination; no Simulator was booted and no XCTest cases or cloud workflow were run. Compilation is not an executed iOS test pass. No IPA was built.
+
+**Remaining risk:** 32 API-backed candidates have no adapters, open Settings views may require further refresh testing, the server deployment ID is self-asserted (the authenticated connection still authorizes every API call), and the remote journal is recoverable rather than transaction-atomic across network and local stores. The iPhone 480p/Chinese/Fourth-tab scenario is covered by a controlled host test but **has not been rerun on a physical iPhone**. This implementation is not a complete 64-setting backup and is not beta-ready.
