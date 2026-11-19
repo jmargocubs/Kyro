@@ -53,6 +53,22 @@ iPhone 16 Plus running unsigned IPAs installed through Feather.
 - Use `-jobs 2` and one Xcode build at a time. Never modify production
   authentication to support testing.
 
+## IPA Builds: GitHub Actions Only
+
+Kyro tvOS and iOS IPAs are compiled, archived, and packaged only on GitHub Actions.
+Never run `xcodebuild archive`, `-exportArchive`, or manual IPA zipping locally, and
+never use a local archive as a fallback when a hosted run is slow or fails.
+
+- Dispatch `Cloud unsigned IPA (free runner)` (`cloud-unsigned-ipa.yml`, which lives on
+  the default branch `kyro/m1-rebrand`) with `gh workflow run cloud-unsigned-ipa.yml
+  --ref kyro/m1-rebrand -f platform=tvos -f ref=kyro/tvos -f expected_sha=<full sha>
+  -f build_number=<n> -f marketing_version=1.0.0 -f use_cache=true`. Push the commit first.
+- `Publish approved IPA and update catalog` runs automatically after a successful build
+  and can be recovered with `-f source_run_id=<run id>`.
+- If a hosted run fails, read its logs (`gh run view <id> --log-failed`) and fix the
+  cause. Do not rebuild locally.
+- Local work stays lightweight: editing, Git, static checks, and focused host tests.
+
 ## Coding Style & Naming Conventions
 
 Use Swift 5 and SwiftUI naming conventions. Types use `PascalCase`; functions and properties use `camelCase`. Keep platform-specific code under the existing `iOS`, `tvOS`, or `macOS` folders and update `project.yml` instead of hand-editing generated `.xcodeproj` files. Preserve existing Apple bundle IDs and keychain groups during this migration for TestFlight continuity.
