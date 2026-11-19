@@ -145,7 +145,7 @@ For every registered production preference, use isolated UD/SD or fake API trans
 
 ## Build 94 implementation addendum
 
-This section records work after the baseline audit; the original 74/60 and Build 93 16/29 figures above remain the historical baseline. Local backup behavior landed in `ef4236b15e0b635a1724e19ce6f0ffcc677639e1` and the verified tree is `8fbad5dcea4bbba5e62892ad3b3e0f9bfd76e523`. **No Build 94 IPA has been built.**
+This section records work after the baseline audit; the original 74/60 and Build 93 16/29 figures above remain the historical baseline. Local backup behavior landed in `ef4236b15e0b635a1724e19ce6f0ffcc677639e1`. The Calendar filter and the other 29 local preferences were verified together at `92029107dc5db9f43f1176c41eff21a0b015f94e`. **No Build 94 IPA has been built.**
 
 | Disposition | Preferences / entries |
 |---|---|
@@ -172,6 +172,6 @@ Focused production-adapter tests cover export → change → preview → selecti
 
 The Calendar filter is now one of the 30 local preferences. It was the open product decision in the previous addendum. The selected day and week remain transient and are excluded. The previous 29 local preferences are unchanged.
 
-**Test result:** [Cloud Simulator run 44459287403](https://github.com/jmargocubs/Kyro/actions/runs/44459287403) on `8fbad5dcea4bbba5e62892ad3b3e0f9bfd76e523` ran `SiloTests/SettingsBackupLiveRegistryTests`: 25 tests, 0 failures. That run is the pre-Calendar baseline. The Calendar filter needs its own focused run before Build 94 is handed to packaging.
+**Test result:** [Cloud Simulator run 44462658968](https://github.com/jmargocubs/Kyro/actions/runs/44462658968) on `92029107dc5db9f43f1176c41eff21a0b015f94e` ran `SiloTests/SettingsBackupLiveRegistryTests`: 26 tests, 0 failures. That run includes the Calendar filter plus the previous local preferences, Build 93 legacy skips, and the server-setting exclusions. The earlier 25-test pass on `8fbad5dc` did not include the Calendar filter.
 
-**Readiness:** Calendar coverage is implemented and waiting on that focused cloud run. Build 94 is not packaged. Do not call it stable until a physical-iPhone acceptance pass.
+**Readiness:** Build 94 is ready for the separate unsigned IPA workflow as version 1.0.0 build 94, an unverified pre-release. It is not stable until a physical-iPhone acceptance pass. No IPA has been built in this change.
