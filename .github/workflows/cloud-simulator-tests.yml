@@ -53,34 +53,70 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Ordinary Release builds must not expand KYRO_FOCUS_DIAGNOSTICS.
-          ordinary=$(xcodebuild -project iosApp/Silo.xcodeproj -scheme SiloTV \
-            -configuration Release -showBuildSettings \
-            CURRENT_PROJECT_VERSION=102 \
-            2>/dev/null | awk -F' = ' '/SWIFT_ACTIVE_COMPILATION_CONDITIONS/ {print $2; exit}')
-          echo "Ordinary Release SWIFT_ACTIVE_COMPILATION_CONDITIONS=$ordinary"
+          # Source of truth: numbered KYRO_FOCUS_DIAGNOSTICS_<N> keys in project.yml.
+          # Explicitly authorized builds must expand the flag; ordinary builds must not.
+          authorized=()
+          while IFS= read -r build; do
+            [ -n "$build" ] && authorized+=("$build")
+          done < <(
+            sed -n 's/^[[:space:]]*KYRO_FOCUS_DIAGNOSTICS_\([0-9][0-9]*\):[[:space:]]*KYRO_FOCUS_DIAGNOSTICS[[:space:]]*$/\1/p' \
+              iosApp/project.yml | sort -n
+          )
+          if [ "${#authorized[@]}" -eq 0 ]; then
+            echo "::error::no KYRO_FOCUS_DIAGNOSTICS_<N> entries found in iosApp/project.yml"
+            exit 1
+          fi
+          echo "Authorized diagnostic builds from project.yml: ${authorized[*]}"
+
+          show_conditions() {
+            local build="$1"
+            xcodebuild -project iosApp/Silo.xcodeproj -scheme SiloTV \
+              -configuration Release -showBuildSettings \
+              "CURRENT_PROJECT_VERSION=${build}" \
+              2>/dev/null | awk -F' = ' '/SWIFT_ACTIVE_COMPILATION_CONDITIONS/ {print $2; exit}'
+          }
+
+          last_idx=$((${#authorized[@]} - 1))
+          newest_authorized="${authorized[$last_idx]}"
+          ordinary_build=$((newest_authorized + 1))
+          ordinary=$(show_conditions "$ordinary_build")
+          echo "Ordinary Release build ${ordinary_build} SWIFT_ACTIVE_COMPILATION_CONDITIONS=$ordinary"
           case "$ordinary" in
-            *KYRO_FOCUS_DIAGNOSTICS*) echo "::error::diagnostic flag leaked into ordinary Release build 102"; exit 1 ;;
+            *KYRO_FOCUS_DIAGNOSTICS*)
+              echo "::error::diagnostic flag leaked into ordinary Release build ${ordinary_build}"
+              exit 1
+              ;;
           esac
-          diagnostic=$(xcodebuild -project iosApp/Silo.xcodeproj -scheme SiloTV \
-            -configuration Release -showBuildSettings \
-            CURRENT_PROJECT_VERSION=101 \
-            2>/dev/null | awk -F' = ' '/SWIFT_ACTIVE_COMPILATION_CONDITIONS/ {print $2; exit}')
-          echo "Diagnostic Release SWIFT_ACTIVE_COMPILATION_CONDITIONS=$diagnostic"
-          case "$diagnostic" in
-            *KYRO_FOCUS_DIAGNOSTICS*) echo "OK: build 101 enables KYRO_FOCUS_DIAGNOSTICS" ;;
-            *) echo "::error::build 101 did not enable KYRO_FOCUS_DIAGNOSTICS"; exit 1 ;;
-          esac
-      - name: Compile Release tvOS with diagnostic flag (build 101)
+          echo "OK: ordinary Release build ${ordinary_build} leaves KYRO_FOCUS_DIAGNOSTICS unset"
+
+          for build in "${authorized[@]}"; do
+            diagnostic=$(show_conditions "$build")
+            echo "Diagnostic Release build ${build} SWIFT_ACTIVE_COMPILATION_CONDITIONS=$diagnostic"
+            case "$diagnostic" in
+              *KYRO_FOCUS_DIAGNOSTICS*)
+                echo "OK: authorized build ${build} enables KYRO_FOCUS_DIAGNOSTICS"
+                ;;
+              *)
+                echo "::error::authorized build ${build} did not enable KYRO_FOCUS_DIAGNOSTICS"
+                exit 1
+                ;;
+            esac
+          done
+
+          # Expose the newest authorized build for the Release compile step.
+          echo "DIAG_BUILD=${newest_authorized}" >> "$GITHUB_ENV"
+      - name: Compile Release tvOS with diagnostic flag
         shell: bash
         run: |
           set -euo pipefail
+          diag_build="${DIAG_BUILD:?DIAG_BUILD was not set by the gating step}"
+          echo "Compiling authorized diagnostic Release build ${diag_build}"
           xcodebuild build -project iosApp/Silo.xcodeproj -scheme SiloTV \
             -destination 'generic/platform=tvOS' \
             -configuration Release \
             -derivedDataPath "$RUNNER_TEMP/kyro-derived-diag" \
             -jobs 2 -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
-            CURRENT_PROJECT_VERSION=101 MARKETING_VERSION=1.0.0 \
+            "CURRENT_PROJECT_VERSION=${diag_build}" MARKETING_VERSION=1.0.0 \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee "$RUNNER_TEMP/tvos-diag-build.log"
       - name: Upload release diagnostic logs
