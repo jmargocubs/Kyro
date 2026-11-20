@@ -518,7 +518,6 @@ struct LibraryCollectionsView: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @Environment(AppRouter.self) private var router
-    @Environment(\.libraryPageScrollControls) private var pageScrollControls
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.verticalSizeClass) private var vSize
 
@@ -539,29 +538,30 @@ struct LibraryCollectionsView: View {
     }
 
     var body: some View {
-        Group {
+        // One scroll container for every state: an empty or failed Collections tab still leads
+        // with the page controls, so Recommended and Library stay one tap away.
+        LibraryPageScrollContainer(showsIndicators: false) {
             if !viewModel.isEmpty {
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: SiloTheme.padding) {
-                        if let pageScrollControls { pageScrollControls }
-                        ForEach(viewModel.sections) { section in
-                            sectionView(section)
-                        }
+                VStack(alignment: .leading, spacing: SiloTheme.padding) {
+                    ForEach(viewModel.sections) { section in
+                        sectionView(section)
                     }
-                    .padding(SiloTheme.padding)
-                    .padding(.bottom, SiloTheme.largePadding)
                 }
-                .reportsPageChromeScroll()
+                // Only the sections are inset; the page controls above keep the page's margins.
+                .padding(.horizontal, SiloTheme.padding)
+                .padding(.bottom, SiloTheme.largePadding)
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadCollections(libraryId: libraryId) } })
+                    .frame(maxWidth: .infinity, minHeight: 320)
             } else if viewModel.isLoading {
-                Color.clear
+                Color.clear.frame(height: 0)
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up.fill",
                     title: "No collections yet",
                     subtitle: "Create library collections in the web app to feature curated shelves here."
                 )
+                .frame(minHeight: 320)
             }
         }
         .siloPageBackground()

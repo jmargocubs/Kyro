@@ -1,39 +1,32 @@
 #if os(iOS)
 import SwiftUI
 
-/// The IPTV provider's catalog inside the shared Movies/Series page. `LibrariesTabView` draws the
-/// header, source selector and Recommended / Library / Collections bar; this view supplies only
-/// the selected tab's content, built from the same parts as Silo's tabs: `PosterShelf` rails of
-/// `MediaCard`s for Recommended, `PosterGridLayout` and `MediaCard` for Library, and selector-
-/// style rows for Collections (the provider's categories).
+/// The IPTV provider's catalog inside the shared Movies/Series page. `LibrariesTabView` supplies
+/// the source selector and Recommended / Library / Collections bar; this view supplies only the
+/// selected tab's content, in the same `LibraryPageScrollContainer` as Silo's tabs and built from
+/// the same parts: `PosterShelf` rails of `MediaCard`s for Recommended, `PosterGridLayout` and
+/// `MediaCard` for Library, and selector-style rows for Collections (the provider's categories).
+/// Only data loading (`KyroIPTVBrowseModel`) and the detail and playback adapters
+/// (`KyroIPTVDetailRequest`, `KyroIPTVVODDetailView`) are the provider's own.
 struct KyroIPTVLibraryContent: View {
     let provider: LiveTVProvider
     @Bindable var model: KyroIPTVBrowseModel
 
     private let service = XtreamVODService.shared
-    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     var body: some View {
         Group {
             if !model.hasLoadedOverview {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        if let pageScrollControls { pageScrollControls }
-                        PosterRowsSkeleton().padding(.top, SiloTheme.padding)
-                    }
+                LibraryPageScrollContainer {
+                    PosterRowsSkeleton()
                 }
-                    .scrollDisabled(true)
             } else if !model.hasCatalog {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        if let pageScrollControls { pageScrollControls }
-                        KyroIPTVCatalogStatusView(provider: provider, emphasis: .page)
-                            .padding(SiloTheme.padding)
-                            .frame(maxWidth: 520)
-                            .frame(maxWidth: .infinity)
-                    }
+                LibraryPageScrollContainer {
+                    KyroIPTVCatalogStatusView(provider: provider, emphasis: .page)
+                        .padding(.horizontal, SiloTheme.padding)
+                        .frame(maxWidth: 520)
+                        .frame(maxWidth: .infinity)
                 }
-                .reportsPageChromeScroll()
             } else {
                 switch model.tab {
                 case .recommended:
@@ -59,12 +52,10 @@ struct KyroIPTVLibraryContent: View {
 private struct KyroIPTVRecommendedView: View {
     let provider: LiveTVProvider
     let model: KyroIPTVBrowseModel
-    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        LibraryPageScrollContainer(showsIndicators: false) {
             LazyVStack(spacing: SiloTheme.largePadding) {
-                if let pageScrollControls { pageScrollControls }
                 KyroIPTVImportBanner(providerID: provider.id)
                 if !model.continueWatching.isEmpty {
                     PosterShelf(title: "Continue Watching", items: model.continueWatching) { item in
@@ -82,7 +73,6 @@ private struct KyroIPTVRecommendedView: View {
             .padding(.bottom, SiloTheme.largePadding)
         }
         .siloScrollEdgeEffect()
-        .reportsPageChromeScroll()
     }
 }
 
@@ -91,12 +81,10 @@ private struct KyroIPTVRecommendedView: View {
 private struct KyroIPTVLibraryGridView: View {
     let provider: LiveTVProvider
     @Bindable var model: KyroIPTVBrowseModel
-    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     var body: some View {
-        ScrollView {
+        LibraryPageScrollContainer {
             VStack(spacing: SiloTheme.padding) {
-                if let pageScrollControls { pageScrollControls }
                 KyroIPTVImportBanner(providerID: provider.id)
                 searchField
                 controlBar
@@ -119,7 +107,6 @@ private struct KyroIPTVLibraryGridView: View {
                 }
             }
         }
-        .reportsPageChromeScroll()
         .scrollDismissesKeyboard(.immediately)
         .task(id: model.gridIdentity) {
             // Type-ahead waits for a pause; the category or a cleared search loads at once.
@@ -280,12 +267,10 @@ private struct KyroIndexedItems: RandomAccessCollection {
 /// collection narrows a library, without adding a navigation destination.
 private struct KyroIPTVCollectionsView: View {
     let model: KyroIPTVBrowseModel
-    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     var body: some View {
-        ScrollView {
+        LibraryPageScrollContainer {
             LazyVStack(spacing: 8) {
-                if let pageScrollControls { pageScrollControls }
                 ForEach(model.categories) { summary in
                     Button {
                         model.showCategory(summary.name)
@@ -329,40 +314,34 @@ private struct KyroIPTVCollectionsView: View {
             .padding(.horizontal, SiloTheme.padding)
             .padding(.bottom, SiloTheme.largePadding)
         }
-        .reportsPageChromeScroll()
     }
 }
 
 // MARK: - Card
 
-/// Silo's `MediaCard` for a provider title. The card is drawn inside a view-destination
-/// `NavigationLink` (as Build 98 did, which device testing showed pushes and pops correctly), so
-/// no route is registered inside tab content.
+/// Silo's `MediaCard` for a provider title. `MediaCard` is the button: its action opens the title
+/// in the app's detail card through the router, exactly as a Silo poster opens its title (see
+/// `KyroIPTVDetailRequest` for why a `NavigationLink` around the card never fired).
 struct KyroIPTVPosterCard: View {
     let item: XtreamVODItem
     let providerName: String
     var cardWidthOverride: CGFloat? = nil
     var rowTitles: [String]? = nil
 
+    @Environment(AppRouter.self) private var router
+
     var body: some View {
-        NavigationLink {
-            KyroIPTVVODDetailView(item: item, providerName: providerName)
-        } label: {
-            MediaCard(
-                title: item.title,
-                posterUrl: item.poster ?? "",
-                mediaType: item.kind == .movie ? "movie" : "series",
-                year: XtreamVODTitle.year(in: item.title),
-                action: {},
-                cardWidthOverride: cardWidthOverride,
-                rowTitles: rowTitles
-            )
-            // Keep hit testing enabled for the NavigationLink's label subtree. Disabling
-            // hit testing here also disables the enclosing link on iOS, making every
-            // poster look tappable but preventing the detail route from activating.
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(item.title)
+        MediaCard(
+            title: item.title,
+            posterUrl: item.poster ?? "",
+            mediaType: item.kind == .movie ? "movie" : "series",
+            year: XtreamVODTitle.year(in: item.title),
+            action: {
+                router.presentIPTVDetail(KyroIPTVDetailRequest(item: item, providerName: providerName))
+            },
+            cardWidthOverride: cardWidthOverride,
+            rowTitles: rowTitles
+        )
     }
 }
 

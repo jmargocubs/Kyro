@@ -3874,6 +3874,14 @@ private struct ItemDetailSheet: View {
                 tmdbId: request.tmdbId,
                 onClose: router.dismissItemDetail
             )
+        } else if let iptv = presentation.iptv {
+            // An IPTV poster's title, in the same card as a Silo title. Its page plays through
+            // Silo's player with an `ExternalPlaybackRequest`.
+            KyroIPTVVODDetailView(
+                item: iptv.item,
+                providerName: iptv.providerName,
+                onClose: router.dismissItemDetail
+            )
         } else {
             ItemDetailView(
                 contentId: presentation.contentId,

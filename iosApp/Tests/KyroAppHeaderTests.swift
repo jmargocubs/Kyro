@@ -69,15 +69,6 @@ final class KyroAppHeaderTests: XCTestCase {
 
     // MARK: Glass and runway
 
-    func testTheHeaderDrawsGlassExceptWhereTheLibraryPanelAlreadyDoes() {
-        XCTAssertTrue(KyroShellHeader.headerDrawsGlass(for: .home))
-        XCTAssertTrue(KyroShellHeader.headerDrawsGlass(for: .forYou))
-        XCTAssertTrue(KyroShellHeader.headerDrawsGlass(for: .sports))
-        XCTAssertTrue(KyroShellHeader.headerDrawsGlass(for: .liveTV))
-        XCTAssertFalse(KyroShellHeader.headerDrawsGlass(for: .movies))
-        XCTAssertFalse(KyroShellHeader.headerDrawsGlass(for: .series))
-    }
-
     /// Home's own runway was the icon row plus 8 above and 8 below. Pages keep that exact footprint,
     /// so moving the header to the shell moves nothing on Home.
     func testTheRunwayIsTheHeaderTheHomePageAlreadyHad() {

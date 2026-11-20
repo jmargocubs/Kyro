@@ -38,9 +38,59 @@ private struct LibraryPageScrollControlsKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
+    /// The source selector and Recommended / Library / Collections bar of the Movies or Series page
+    /// this view is in. Read only by `LibraryPageScrollContainer`.
     var libraryPageScrollControls: AnyView? {
         get { self[LibraryPageScrollControlsKey.self] }
         set { self[LibraryPageScrollControlsKey.self] = newValue }
+    }
+}
+
+/// The one scroll container of a Movies or Series page. Every tab of both sources (Silo's
+/// Recommended, Library and Collections, and the IPTV provider's) draws in it, in every state
+/// (loading, empty, error, loaded), so the source selector and the Recommended / Library /
+/// Collections bar always lead the tab's content and scroll away with it. Nothing on the page is
+/// pinned; under the unified shell `LibrariesTabView` reserves the Kyro header's height once, as
+/// a top safe-area inset that this scroll view's content starts below and scrolls under.
+///
+/// Outside a library page (no controls in the environment) it is a plain vertical scroll view.
+struct LibraryPageScrollContainer<Content: View>: View {
+    var showsIndicators = true
+    @ViewBuilder let content: () -> Content
+
+    @Environment(\.libraryPageScrollControls) private var controls
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: showsIndicators) {
+            VStack(spacing: 0) {
+                if let controls { controls }
+                content()
+                    // A container nested in this content never repeats the page controls.
+                    .environment(\.libraryPageScrollControls, nil)
+            }
+        }
+        .reportsPageChromeScroll()
+    }
+}
+
+/// A tab's loading, empty or error state. On a Movies or Series page it sits under the page
+/// controls in `LibraryPageScrollContainer`, so a state never hides the controls (an empty
+/// Collections tab left no way back to Recommended); elsewhere it fills the screen as before.
+struct LibraryPageStatus<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    @Environment(\.libraryPageScrollControls) private var controls
+
+    var body: some View {
+        if controls != nil {
+            LibraryPageScrollContainer {
+                content()
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: 320)
+            }
+        } else {
+            content()
+        }
     }
 }
 
@@ -275,8 +325,8 @@ struct LibrariesTabView: View {
     let alternateSource: LibraryAlternateSource?
 
     @State private var libraries: [Library] = []
-    /// The alternate source's content stays mounted once shown.
-    @State private var hasShownAlternate = false
+    /// Which source is shown and which alternate source's page stays mounted.
+    @State private var sourceState = LibraryPageSourceState()
     @State private var selectedLibraryId: Int?
     @State private var selectedTab: LibraryPageTab = .recommended
     @State private var selectedVideoScope: LibraryVideoScope = .movie
@@ -284,9 +334,6 @@ struct LibrariesTabView: View {
     @State private var error: ErrorState?
     @State private var showPicker = false
     @State private var navPrefs = AppNavPreferences.shared
-    /// Feeds the glass strip behind the hoisted top chrome. Tab content reads
-    /// it from the environment so each tab's ScrollView can report its offset.
-    @State private var chromeScrollState = PageChromeScrollState()
 
     /// Persist the last-selected library per authored root so visiting Series
     /// cannot replace the Movies or aggregate selection. Fixed-library roots
@@ -344,8 +391,12 @@ struct LibrariesTabView: View {
 
     /// The alternate source is on screen: chosen, or the only catalog this page has.
     private var showsAlternate: Bool {
-        guard let alternateSource else { return false }
-        return alternateSource.isSelected || (activeLibrary == nil && !(isLoading && libraries.isEmpty))
+        LibraryPageSourceState.showsAlternate(
+            isOffered: alternateSource != nil,
+            isSelected: alternateSource?.isSelected == true,
+            hasActiveLibrary: activeLibrary != nil,
+            isLoadingLibraries: isLoading && libraries.isEmpty
+        )
     }
 
     var body: some View {
@@ -364,10 +415,16 @@ struct LibrariesTabView: View {
                 )
             }
         }
+        // Under the unified shell the Kyro header floats over this page (an overlay, not a safe-area
+        // inset). Reserve its height once, for every state, as a top safe-area inset: scroll content
+        // starts below the header and scrolls under it, and nothing else on the page is pinned.
+        .safeAreaPadding(.top, hostedHeader?.runway ?? 0)
         .siloPageBackground()
         #if !os(macOS)
         .rootPageNavigationBar()
         #endif
+        .onChange(of: alternateSource?.id, initial: true) { _, _ in updateSourceState() }
+        .onChange(of: showsAlternate) { _, _ in updateSourceState() }
         .task(id: libraryRootScopeID(
             category: category,
             fixedLibraryId: fixedLibraryId,
@@ -412,10 +469,15 @@ struct LibrariesTabView: View {
         }
     }
 
+    private func updateSourceState() {
+        sourceState.update(offeredAlternateID: alternateSource?.id, showsAlternate: showsAlternate)
+    }
+
     @ViewBuilder
     private func loadedContent(activeLibrary: Library?) -> some View {
-        // Source and tab controls are injected into each tab's primary scroll
-        // content, so they move with the posters rather than occupying a pinned inset.
+        // Each tab of each source draws in `LibraryPageScrollContainer`, which leads its content
+        // with these controls, so they scroll with the posters. They carry no glass of their own:
+        // only the shell's Kyro header is pinned, and it draws the scroll glass.
         ZStack {
             if let activeLibrary {
                 tabContent(activeLibrary: activeLibrary)
@@ -424,21 +486,18 @@ struct LibrariesTabView: View {
                     .id("\(activeLibrary.id):\(videoScope(for: activeLibrary)?.rawValue ?? "all")")
                     .modifier(LibrarySourceVisibility(isVisible: !showsAlternate))
             }
-            if let alternateSource, showsAlternate || hasShownAlternate {
+            if let alternateSource, showsAlternate || sourceState.mountsAlternate(alternateSource.id) {
                 alternateSource.content()
+                    // Another provider is another page: nothing built for the previous provider
+                    // (scroll position, grid state, search field) carries over.
+                    .id(alternateSource.id)
                     .modifier(LibrarySourceVisibility(isVisible: showsAlternate))
             }
         }
-            .onChange(of: showsAlternate, initial: true) { _, shows in
-                if shows { hasShownAlternate = true }
-            }
-            .environment(hostedHeader?.state ?? chromeScrollState)
-            .environment(\.libraryPageScrollControls, AnyView(
-                topChrome(activeLibrary: activeLibrary)
-                    .pageChromeBacking(scrollState: hostedHeader?.state ?? chromeScrollState,
-                                       outset: EdgeInsets(top: 0, leading: -8, bottom: -8, trailing: -8))
-                    .background(PageChromeGlass(scrollState: hostedHeader?.state ?? chromeScrollState))
-            ))
+            // Feeds the shell header's scroll glass. Off the shell nothing on this page is pinned,
+            // so no page reads a scroll state.
+            .environment(hostedHeader?.state)
+            .environment(\.libraryPageScrollControls, AnyView(topChrome(activeLibrary: activeLibrary)))
     }
 
     @ViewBuilder
@@ -491,8 +550,8 @@ struct LibrariesTabView: View {
         let label = selectorLabel(activeLibrary: activeLibrary)
         return VStack(alignment: .leading, spacing: 0) {
             if hostedHeader != nil {
-                // The global shell header is independently pinned. All page controls
-                // start at the top of the scroll content beneath its safe area.
+                // The shell's Kyro header is the only pinned chrome. The selector is the first
+                // row of the scroll content, starting just below the header's reserved inset.
                 HStack(spacing: 12) {
                     LibrarySelectorButton(
                         title: label.title,
@@ -529,7 +588,9 @@ struct LibrariesTabView: View {
                 LibraryVideoScopePicker(selection: $selectedVideoScope)
             }
             LibraryPageTabSelector(selectedTab: pageTabBinding, scrolls: scrollsTabs)
-                .padding(.bottom, SiloTheme.padding)
+                // With the selector's own vertical inset, one standard gap above every tab's first
+                // row. Tabs add no gap of their own above it.
+                .padding(.bottom, SiloTheme.smallPadding)
         }
     }
 

@@ -64,14 +64,6 @@ enum XtreamVODDiagnostics {
     }
 }
 
-struct XtreamVODWatchState: Codable, Equatable {
-    var position: Double = 0
-    var duration: Double = 0
-    var updatedAt = Date()
-    var favorite = false
-    var completed = false
-}
-
 @MainActor
 @Observable
 final class XtreamVODService {

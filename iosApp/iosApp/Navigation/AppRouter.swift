@@ -174,6 +174,11 @@ final class AppRouter {
         /// Set when the card opens on a request detail (a TMDB title) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let request: RequestRoot?
+        #if os(iOS)
+        /// Set when an IPTV poster opens a provider title (`presentIPTVDetail`); `contentId` is
+        /// then only a page identity.
+        let iptv: KyroIPTVDetailRequest?
+        #endif
         /// Presented as large as the window instead of as a page sheet: a
         /// window-sized sheet on iPad, a full-screen cover on iPhone, where
         /// iOS 27.1 caps sheets well short of the iPhone Duo's open display.
@@ -191,6 +196,9 @@ final class AppRouter {
             self.libraryId = libraryId
             self.resumeContext = resumeContext
             self.request = nil
+            #if os(iOS)
+            self.iptv = nil
+            #endif
         }
 
         init(request: RequestRoot) {
@@ -198,7 +206,20 @@ final class AppRouter {
             self.libraryId = nil
             self.resumeContext = nil
             self.request = request
+            #if os(iOS)
+            self.iptv = nil
+            #endif
         }
+
+        #if os(iOS)
+        init(iptv: KyroIPTVDetailRequest) {
+            self.contentId = iptv.pageIdentity
+            self.libraryId = nil
+            self.resumeContext = nil
+            self.request = nil
+            self.iptv = iptv
+        }
+        #endif
     }
 
     #if os(iOS)
@@ -243,7 +264,7 @@ final class AppRouter {
     @ObservationIgnored private var itemDetailSeriesSelection: SeriesDetailContext?
 
     /// Opens or restores the detail card in the presentation the window calls
-    /// for now. Request details stay sheets: their page has no split layout.
+    /// for now. Request and IPTV details stay sheets: their pages have no split layout.
     private func openItemDetail(_ presentation: ItemDetailPresentation?) {
         if presentation?.id != presentedItemDetail?.id {
             itemDetailSeriesSelection = nil
@@ -256,7 +277,7 @@ final class AppRouter {
     }
 
     private func fillsWindow(_ presentation: ItemDetailPresentation) -> Bool {
-        presentsItemDetailFullWindow && presentation.request == nil
+        presentsItemDetailFullWindow && presentation.request == nil && presentation.iptv == nil
     }
 
     /// Moves an open detail to the presentation the window now calls for,
@@ -750,6 +771,17 @@ final class AppRouter {
         navigate(to: .itemDetail(contentId: contentId, libraryId: libraryId, seriesContext: resumeContext))
         #endif
     }
+
+    #if os(iOS)
+    /// Opens a provider (IPTV) title in the detail card a Silo title opens in: the same sheet,
+    /// pull-down dismissal and Close button, with the provider's own detail page as its root. A
+    /// poster tap replaces any open card, as `presentItemDetail` does from a page.
+    func presentIPTVDetail(_ request: KyroIPTVDetailRequest) {
+        recordScreenBreadcrumb(target: "iptvDetail", action: "present")
+        itemDetailPath = NavigationPath()
+        openItemDetail(ItemDetailPresentation(iptv: request))
+    }
+    #endif
 
     func presentContinueWatchingDetail(for item: SectionItem, libraryId: Int? = nil) {
         if let context = SeriesDetailContext(item: item) {

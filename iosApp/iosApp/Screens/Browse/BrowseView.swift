@@ -12,7 +12,6 @@ struct BrowseView: View {
     @State private var showFilters = false
     @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
-    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     @ViewBuilder
     var body: some View {
@@ -28,7 +27,9 @@ struct BrowseView: View {
     private var rootContent: some View {
         Group {
             if viewModel.items.isEmpty, let error = viewModel.error {
-                ErrorView(state: error, onRetry: { Task { await viewModel.loadItems(reset: true) } })
+                LibraryPageStatus {
+                    ErrorView(state: error, onRetry: { Task { await viewModel.loadItems(reset: true) } })
+                }
             } else if viewModel.items.isEmpty, viewModel.hasLoaded, !viewModel.isLoading {
                 emptyContent
             } else {
@@ -64,9 +65,8 @@ struct BrowseView: View {
     // MARK: - Content
 
     private var emptyContent: some View {
-        ScrollView {
+        LibraryPageScrollContainer {
             VStack(spacing: SiloTheme.padding) {
-                if let pageScrollControls { pageScrollControls }
                 if showsSearchShortcut {
                     searchBar
                 }
@@ -83,7 +83,6 @@ struct BrowseView: View {
             }
             .frame(maxWidth: .infinity)
         }
-        .reportsPageChromeScroll()
         .environment(\.browseLibraryId, libraryId)
     }
 
@@ -120,9 +119,8 @@ struct BrowseView: View {
     }
 
     private var scrollContent: some View {
-        ScrollView {
+        LibraryPageScrollContainer {
             VStack(spacing: SiloTheme.padding) {
-                if let pageScrollControls { pageScrollControls }
                 if showsSearchShortcut {
                     searchBar
                 }
@@ -146,7 +144,6 @@ struct BrowseView: View {
                 .padding(.horizontal, SiloTheme.padding)
             }
         }
-        .reportsPageChromeScroll()
         .environment(\.browseLibraryId, libraryId)
     }
 
@@ -462,18 +459,19 @@ struct LibraryRecommendedView: View {
 
     @State private var viewModel = LibraryRecommendedViewModel()
     @Environment(AppRouter.self) private var router
-    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     var body: some View {
         ZStack(alignment: .top) {
-            Group {
+            // One scroll container for every state, so the page controls stay at the top of the
+            // tab while it loads, fails or is empty.
+            LibraryPageScrollContainer(showsIndicators: false) {
                 if !viewModel.sections.isEmpty {
                     content
                 } else if let error = viewModel.error {
                     ErrorView(state: error, onRetry: { Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) } })
+                        .frame(maxWidth: .infinity, minHeight: 320)
                 } else if viewModel.isLoading {
                     PosterRowsSkeleton()
-                        .padding(.top, SiloTheme.padding)
                 } else if viewModel.scopeIncomplete {
                     scopeNotice
                 } else {
@@ -482,8 +480,11 @@ struct LibraryRecommendedView: View {
                         title: "No recommendations yet",
                         subtitle: "This library does not have any recommended rows right now."
                     )
+                    .frame(minHeight: 320)
                 }
             }
+            .siloScrollEdgeEffect()
+            .environment(\.browseLibraryId, libraryId)
 
             if ConnectionMonitor.shared.isOffline, !viewModel.sections.isEmpty {
                 ServerUnreachablePill()
@@ -503,30 +504,24 @@ struct LibraryRecommendedView: View {
     }
 
     private var content: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: SiloTheme.largePadding) {
-                if let pageScrollControls { pageScrollControls }
-                if viewModel.scopeIncomplete { scopeNotice }
-                ForEach(viewModel.sections) { section in
-                    SectionRow(
-                        section: section,
-                        onItemTap: { destinationContentId, item in
-                            router.navigate(
-                                to: .itemDetail(
-                                    destinationContentId: destinationContentId,
-                                    sectionItem: item,
-                                    libraryId: libraryId
-                                )
+        LazyVStack(spacing: SiloTheme.largePadding) {
+            if viewModel.scopeIncomplete { scopeNotice }
+            ForEach(viewModel.sections) { section in
+                SectionRow(
+                    section: section,
+                    onItemTap: { destinationContentId, item in
+                        router.navigate(
+                            to: .itemDetail(
+                                destinationContentId: destinationContentId,
+                                sectionItem: item,
+                                libraryId: libraryId
                             )
-                        }
-                    )
-                }
+                        )
+                    }
+                )
             }
-            .padding(.bottom, SiloTheme.largePadding)
         }
-        .siloScrollEdgeEffect()
-        .reportsPageChromeScroll()
-        .environment(\.browseLibraryId, libraryId)
+        .padding(.bottom, SiloTheme.largePadding)
     }
 
     private var scopeNotice: some View {

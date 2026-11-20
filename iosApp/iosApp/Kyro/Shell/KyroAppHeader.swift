@@ -51,16 +51,6 @@ enum KyroShellHeader {
         secondaryTitle == nil ? context : nil
     }
 
-    /// Movies and Series draw their own scrolling glass panel behind the selector and page chips,
-    /// so the header avoids stacking a second glass node over it. The constant translucent
-    /// backdrop still protects the wordmark and actions on every destination.
-    static func headerDrawsGlass(for destination: KyroGlobalDestination) -> Bool {
-        switch destination {
-        case .movies, .series: false
-        case .home, .sports, .forYou, .favorites, .liveTV: true
-        }
-    }
-
     /// The profile menu's For You. It selects the For You tab when that is the fourth tab, and
     /// otherwise pushes For You onto the app's stack like a More destination, so Back returns to
     /// the tab the user came from.
@@ -141,9 +131,9 @@ struct KyroAppHeader: View {
             Color.siloPageCanvas.opacity(0.78)
                 .ignoresSafeArea(edges: .top)
                 .allowsHitTesting(false)
-            if KyroShellHeader.headerDrawsGlass(for: destination) {
-                PageChromeGlass(scrollState: state)
-            }
+            // The header is the only pinned chrome on every tab, Movies and Series included (their
+            // source selector and page chips scroll with the posters), so it always draws the glass.
+            PageChromeGlass(scrollState: state)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("kyroAppHeader")

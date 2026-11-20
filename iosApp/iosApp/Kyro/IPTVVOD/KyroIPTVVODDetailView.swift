@@ -5,11 +5,16 @@ import SwiftUI
 /// and series pages (and offline downloads): `PhoneDetailPageSurface`, `PhoneDetailHero`,
 /// `PhonePrimaryPillButton`, `PhoneLabeledActionRow` and `PhoneSectionHeader`.
 ///
+/// It is the root of the app's detail card (`AppRouter.presentIPTVDetail`), the card Silo titles
+/// open in, and draws the same floating Close button and scroll glass as Silo's detail page.
+///
 /// Playback opens Silo's `PlayerView` with an `ExternalPlaybackRequest`, so IPTV titles get the
 /// same player chrome, PiP and transport as Silo titles.
 struct KyroIPTVVODDetailView: View {
     let item: XtreamVODItem
     let providerName: String
+    /// Closes the detail card. Nil draws no Close button.
+    var onClose: (() -> Void)? = nil
 
     private let service = XtreamVODService.shared
     @State private var detail: XtreamVODDetail?
@@ -17,6 +22,7 @@ struct KyroIPTVVODDetailView: View {
     @State private var playbackError: String?
     @State private var playback: ExternalPlaybackRequest?
     @State private var selectedSeason: Int?
+    @State private var scrollState = PhoneDetailScrollState()
 
     var body: some View {
         PhoneDetailPageSurface(
@@ -36,11 +42,23 @@ struct KyroIPTVVODDetailView: View {
             }
             .ignoresSafeArea(edges: .top)
             .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
+            .phoneDetailScrollTracking(scrollState)
         }
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .siloNavigationBarBackgroundHidden()
-        .siloToolbarColorSchemeDark()
+        // Like Silo's detail card: no navigation bar, so the artwork reaches the card's top edge,
+        // and floating controls instead.
+        .toolbar(.hidden, for: .navigationBar)
+        .overlay(alignment: .top) {
+            PhoneDetailTopChrome(
+                title: item.title,
+                isScrollGlassEnabled: true,
+                scrollState: scrollState,
+                leadingSystemName: onClose == nil ? nil : "xmark",
+                leadingAccessibilityLabel: onClose == nil ? nil : "Close details",
+                onLeadingTap: { onClose?() },
+                trailingSystemName: nil,
+                onTrailingTap: nil
+            )
+        }
         .task(id: item.id) {
             do {
                 let loaded = try await service.detail(for: item)
@@ -114,12 +132,12 @@ struct KyroIPTVVODDetailView: View {
                 let state = service.watchState(for: item)
                 PhonePrimaryPillButton(
                     icon: "play.fill",
-                    title: Self.isResumable(state) ? "Resume" : "Play",
+                    title: KyroIPTVPlaybackPlan.isResumable(state) ? "Resume" : "Play",
                     action: { play(episode: nil, fromStart: false) },
                     fullWidth: true,
-                    progress: Self.isResumable(state) && state.duration > 0 ? state.position / state.duration : nil
+                    progress: KyroIPTVPlaybackPlan.progress(for: state)
                 )
-                if Self.isResumable(state) {
+                if KyroIPTVPlaybackPlan.isResumable(state) {
                     PhoneLabeledActionRow {
                         PhoneLabeledAction(icon: "gobackward", label: "Start Over", isToggle: false) {
                             play(episode: nil, fromStart: true)
@@ -130,10 +148,10 @@ struct KyroIPTVVODDetailView: View {
                 let state = service.watchState(for: item, episode: episode)
                 PhonePrimaryPillButton(
                     icon: "play.fill",
-                    title: "\(Self.isResumable(state) ? "Resume" : "Play") S\(episode.season) E\(episode.number)",
+                    title: "\(KyroIPTVPlaybackPlan.isResumable(state) ? "Resume" : "Play") S\(episode.season) E\(episode.number)",
                     action: { play(episode: episode, fromStart: false) },
                     fullWidth: true,
-                    progress: Self.isResumable(state) && state.duration > 0 ? state.position / state.duration : nil
+                    progress: KyroIPTVPlaybackPlan.progress(for: state)
                 )
             } else if detail == nil, detailFailed == nil {
                 ProgressView().tint(.siloOnSurface).frame(minHeight: 52)
@@ -225,8 +243,8 @@ struct KyroIPTVVODDetailView: View {
                             .foregroundColor(.siloOnSurface.opacity(0.6))
                             .lineLimit(2)
                     }
-                    if Self.isResumable(state), state.duration > 0 {
-                        ProgressView(value: min(1, state.position / state.duration))
+                    if let progress = KyroIPTVPlaybackPlan.progress(for: state) {
+                        ProgressView(value: progress)
                             .tint(.white)
                             .frame(maxWidth: 120)
                     }
@@ -245,20 +263,9 @@ struct KyroIPTVVODDetailView: View {
 
     // MARK: Playback
 
-    private static func isResumable(_ state: XtreamVODWatchState) -> Bool {
-        !state.completed && state.position > 15
-    }
-
     /// The most recently watched unfinished episode, else the first unwatched one.
     private func resumeEpisode(in detail: XtreamVODDetail) -> XtreamVODEpisode? {
-        let states = detail.episodes.map { ($0, service.watchState(for: item, episode: $0)) }
-        if let resume = states.filter({ Self.isResumable($0.1) }).max(by: { $0.1.updatedAt < $1.1.updatedAt }) {
-            return resume.0
-        }
-        if let lastDone = states.lastIndex(where: { $0.1.completed }), lastDone + 1 < states.count {
-            return states[lastDone + 1].0
-        }
-        return nil
+        KyroIPTVPlaybackPlan.resumeEpisode(in: detail.episodes) { service.watchState(for: item, episode: $0) }
     }
 
     private func play(episode: XtreamVODEpisode?, fromStart: Bool) {
@@ -270,8 +277,8 @@ struct KyroIPTVVODDetailView: View {
             playbackError = (error as? LocalizedError)?.errorDescription ?? "This title cannot be played."
             return
         }
-        let state = service.watchState(for: item, episode: episode)
-        let start = !fromStart && Self.isResumable(state) ? state.position : 0
+        let start = KyroIPTVPlaybackPlan.startPosition(for: service.watchState(for: item, episode: episode),
+                                                       fromStart: fromStart)
         // Xtream accounts commonly allow one stream at a time. Live TV (including an inline
         // Sports player or its Picture in Picture window) would hold that connection and the
         // provider would refuse this one, so release it first.
@@ -281,8 +288,8 @@ struct KyroIPTVVODDetailView: View {
         let item = item
         playback = ExternalPlaybackRequest(
             url: url,
-            title: episode.map { "\(item.title) · S\($0.season) E\($0.number)" } ?? item.title,
-            sourceLabel: "IPTV · \(providerName)",
+            title: KyroIPTVPlaybackPlan.title(for: item, episode: episode),
+            sourceLabel: KyroIPTVPlaybackPlan.sourceLabel(providerName: providerName),
             startPosition: start,
             probe: { await XtreamVODStreamProbe.probe(url) },
             onFinish: { position, duration, ended in
