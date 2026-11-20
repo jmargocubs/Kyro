@@ -208,7 +208,9 @@ final class TVFocusReportServer: ObservableObject {
         connections.removeValue(forKey: id)?.cancel()
     }
 
-    private func expireSession() {
+    /// Ends the sharing window early. Internal so hosted export tests can exercise HTTP 410
+    /// without waiting for the two-minute timer; not part of the public app surface.
+    func expireSession() {
         guard !expired else { return }
         expired = true
         code = ""
