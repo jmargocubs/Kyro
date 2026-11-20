@@ -358,11 +358,8 @@ struct TVLiveTVRootView: View {
                       priority: .userInitiated)
         .focusSection()
         .focusScope(controlsScope)
-        // The page's one directional boundary: Up from the row hands focus to the top menu.
-        .onMoveCommand {
-            TVFocusDiagnostics.value("handler", "LiveTV", "controlRowMove", $0)
-            if $0 == .up { onTopMenuFocusRequest() }
-        }
+        // No directional handler: Up from the row reaches the top menu's
+        // focus section natively, for clicks and swipes alike.
     }
 
     /// The content region: the second native focus section. It always fills the width below the
@@ -708,7 +705,8 @@ struct TVLiveTVRootView: View {
     }
 }
 
-/// A status page that is itself a quiet focus target, with a faint ring when focused.
+/// A status page that is itself a focus target, with the Kyro focus ring when
+/// focused. The ring must be clearly visible: a faint one read as lost focus.
 private struct TVLiveTVStatusPlaceholder<Content: View>: View {
     @ViewBuilder let content: Content
 
@@ -730,7 +728,8 @@ private struct TVLiveTVStatusPlaceholderRing<Content: View>: View {
             .padding(24)
             .overlay {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(Color.white.opacity(isFocused ? 0.28 : 0), lineWidth: 3)
+                    .strokeBorder(TVKyroFocus.ring, lineWidth: TVKyroFocus.ringWidth)
+                    .opacity(isFocused ? 1 : 0)
             }
     }
 }
@@ -1504,7 +1503,7 @@ struct TVLiveTVImportView: View {
         .fullScreenCover(isPresented: Binding(get: { browseKind != nil }, set: { if !$0 { browseKind = nil } })) {
             if let kind = browseKind, let provider {
                 TVXtreamVODView(provider: provider, kind: kind, focusRequest: 0,
-                                isTopMenuFocused: false, onMoveUp: nil, topInset: TVScreenLayout.sectionSpacing,
+                                isTopMenuFocused: false, topInset: TVScreenLayout.sectionSpacing,
                                 horizontalInset: 0)
             }
         }
@@ -1719,14 +1718,13 @@ struct TVLiveTVGuideView: View {
                     guideGrid(metrics)
                 }
                 .onChange(of: rowIDs) { _, _ in
-                    // Initial/filter layout only. Never scroll on a focus move:
-                    // Up must preserve the timeline's horizontal position.
-                    guard !focusHistory.isInGrid, let channelID = entryTarget?.channelID else { return }
-                    var transaction = Transaction(animation: nil)
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
-                        scrollProxy.scrollTo(channelID, anchor: .topLeading)
-                    }
+                    revealEntryRow(scrollProxy, onlyIfNotLaidOut: false)
+                }
+                // The entry target is computed by the rows' tasks, often after
+                // `rowIDs` changed; reveal it then too, so the remembered
+                // channel's lazy row is mounted before the user presses Down.
+                .onChange(of: entryTarget?.channelID) { _, _ in
+                    revealEntryRow(scrollProxy, onlyIfNotLaidOut: true)
                 }
             }
             .padding(.horizontal, metrics.horizontalInset)
@@ -1837,10 +1835,12 @@ struct TVLiveTVGuideView: View {
                 prepareEntryTarget()
             }
         }
-        // Never let geometry choose an arbitrary future cell while the lazy
-        // entry row is still being laid out. No input or correction is queued.
-        .disabled(!focusHistory.allowsGridEntry(entryTarget, laidOutRows: laidOutRows))
-        .defaultFocus($focus, focusHistory.gridDefault(entry: entryTarget), priority: .userInitiated)
+        // Never let geometry choose an arbitrary cell: entry is always a named
+        // channel tile. While the preferred row is still being laid out, the
+        // first laid-out row stands in, so an early Down is never dropped.
+        .disabled(!focusHistory.allowsGridEntry(entryTarget, rowIDs: rowIDs, laidOutRows: laidOutRows))
+        .defaultFocus($focus, focusHistory.entry(entryTarget, rowIDs: rowIDs, laidOutRows: laidOutRows),
+                      priority: .userInitiated)
         .focusScope(gridScope)
         .focusSection()
         .overlay {
@@ -1861,6 +1861,18 @@ struct TVLiveTVGuideView: View {
     }
 
     // MARK: Focus
+
+    /// Initial/filter layout only. Never scroll on a focus move: Up must
+    /// preserve the timeline's horizontal position.
+    private func revealEntryRow(_ scrollProxy: ScrollViewProxy, onlyIfNotLaidOut: Bool) {
+        guard !focusHistory.isInGrid, let channelID = entryTarget?.channelID else { return }
+        if onlyIfNotLaidOut, laidOutRows.contains(channelID) { return }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            scrollProxy.scrollTo(channelID, anchor: .topLeading)
+        }
+    }
 
     /// Prepare the native grid region's preference while the toolbar owns focus.
     /// No direction handlers or focus writes: the engine chooses it on entry.

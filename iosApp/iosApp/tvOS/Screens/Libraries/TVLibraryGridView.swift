@@ -30,9 +30,6 @@ struct TVLibraryGridView: View {
     /// Deferred focus claims are dropped while the top menu is focused so async
     /// page work never yanks focus back into Browse.
     let isTopMenuFocused: Bool
-    /// Boundary hand-up from the control row to the root top menu. Nil for
-    /// pushed grid routes where the root menu is not visible.
-    let onTopMenuFocusRequest: (() -> Void)?
 
     @State private var modelSlot = LazyModel<TVLibraryGridViewModel>()
     @State private var selectedPrefix: String? = nil
@@ -55,8 +52,7 @@ struct TVLibraryGridView: View {
         showsAlphabetRail: Bool = true,
         topContentInset: CGFloat = SiloTheme.smallPadding,
         focusRequest: Int = 0,
-        isTopMenuFocused: Bool = false,
-        onTopMenuFocusRequest: (() -> Void)? = nil
+        isTopMenuFocused: Bool = false
     ) {
         self.libraryId = libraryId
         self.libraryName = libraryName
@@ -69,7 +65,6 @@ struct TVLibraryGridView: View {
         self.topContentInset = topContentInset
         self.focusRequest = focusRequest
         self.isTopMenuFocused = isTopMenuFocused
-        self.onTopMenuFocusRequest = onTopMenuFocusRequest
         _selectedPrefix = State(initialValue: initialFilter.namePrefix)
     }
 
@@ -174,8 +169,6 @@ struct TVLibraryGridView: View {
                     sortDirection: viewModel.filter.sort.directionLabel(for: viewModel.filter.effectiveOrder),
                     filterCount: viewModel.filter.activeFacetCount,
                     focusRequest: controlFocusRequest,
-                    onMoveUp: onTopMenuFocusRequest,
-                    onMoveDown: claimGridFocus,
                     onSort: { openPanel = .sort },
                     onFilter: { openPanel = .filter },
                     onShuffle: canShuffle ? {

@@ -7,10 +7,11 @@ import SwiftUI
 /// Live TV loads a fictional playlist and guide through an in-process URL protocol, and Movies
 /// reads a fictional catalog staged for a fixture provider.
 ///
-/// The stand-in menu follows the shell's ownership contract (docs/tvos-focus.md): it is disabled
-/// while content owns focus, and only the page's Up boundary hands focus back to it. A test that
-/// sees focus land on a "Menu …" button without an Up at the page's top row has caught a jump to
-/// the top menu.
+/// The stand-in menu follows the shell's ownership contract (docs/tvos-focus.md): it is one
+/// always-enabled focus section whose `.userInitiated` default focus is the selected item, and no
+/// page installs a directional handler to reach it. Up from a page's top row reaches it natively.
+/// A test that sees focus land on a "Menu …" button without an Up at the page's top row has caught
+/// a jump to the top menu.
 ///
 /// `-kyroTVFocusHarnessNoEdgeToEdge` turns `tvEdgeToEdgeScroll` into a no-op, so the same run can
 /// compare focus with and without the Build 99 scroll geometry.
@@ -58,10 +59,12 @@ private struct TVFocusHarnessShell: View {
     @State private var service = TVFocusHarnessFixture.makeLiveTVService()
     @State private var vodProvider = TVFocusHarnessFixture.vodProvider
     @State private var contentFocusRequest = 1
-    @State private var menuSuppressed = true
     @FocusState private var menuFocus: String?
 
     private let menuItems = ["Home", "Live TV", "Movies"]
+    /// The stand-in's selected item: where Up from any page lands.
+    private let selectedMenuItem = "Live TV"
+    private var menuOwnsFocus: Bool { menuFocus != nil }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -71,10 +74,6 @@ private struct TVFocusHarnessShell: View {
             menu
         }
         .ignoresSafeArea(edges: [.top, .horizontal])
-        .onChange(of: menuFocus) { _, focused in
-            // Focus left the menu by a native move into the page: disable the menu again.
-            if focused == nil, !menuSuppressed { menuSuppressed = true }
-        }
     }
 
     @ViewBuilder
@@ -82,14 +81,14 @@ private struct TVFocusHarnessShell: View {
         switch page {
         case .livetv:
             TVLiveTVRootView(service: service, profileID: "focus-harness",
-                             focusRequest: contentFocusRequest, isTopMenuFocused: !menuSuppressed,
+                             focusRequest: contentFocusRequest, isTopMenuFocused: menuOwnsFocus,
                              onTopMenuFocusRequest: focusMenu)
         case .movies:
             TVXtreamVODView(provider: vodProvider, kind: .movie, focusRequest: contentFocusRequest,
-                            isTopMenuFocused: !menuSuppressed, onMoveUp: focusMenu)
+                            isTopMenuFocused: menuOwnsFocus)
         case .sports:
             TVSportsHubView(service: service, focusRequest: contentFocusRequest,
-                            isTopMenuFocused: !menuSuppressed, onTopMenuFocusRequest: focusMenu)
+                            isTopMenuFocused: menuOwnsFocus)
         }
     }
 
@@ -97,7 +96,6 @@ private struct TVFocusHarnessShell: View {
         HStack(spacing: 8) {
             ForEach(menuItems, id: \.self) { item in
                 Button("Menu \(item)") {
-                    menuSuppressed = true
                     contentFocusRequest += 1
                 }
                 .focused($menuFocus, equals: item)
@@ -106,18 +104,13 @@ private struct TVFocusHarnessShell: View {
         .frame(height: SiloTheme.Skyline.barHeight)
         .padding(.top, SiloTheme.Skyline.barTopInset)
         .frame(maxWidth: .infinity)
+        .defaultFocus($menuFocus, selectedMenuItem, priority: .userInitiated)
         .focusSection()
-        .disabled(menuSuppressed)
-        .onMoveCommand { direction in
-            guard direction == .down else { return }
-            menuSuppressed = true
-            contentFocusRequest += 1
-        }
     }
 
+    /// Back from a page's top level: one explicit claim, no deferral.
     private func focusMenu() {
-        menuSuppressed = false
-        DispatchQueue.main.async { menuFocus = "Live TV" }
+        menuFocus = selectedMenuItem
     }
 }
 

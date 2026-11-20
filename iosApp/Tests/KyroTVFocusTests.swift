@@ -392,6 +392,85 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertEqual(TVLiveTVPairingView.clock(-1), "0:00")
     }
 
+    // MARK: Build 103: top bar contract
+
+    func testTopBarStaysInTheFocusGraphWhileContentOwnsFocus() {
+        // Up from any page's top row must be a native move, for clicks and
+        // touch-surface swipes alike, so content focus never disables the bar.
+        XCTAssertFalse(tvTopMenuIsInert(panelEntered: false))
+        XCTAssertTrue(tvTopMenuIsInert(panelEntered: true), "only an entered panel makes the bar inert")
+    }
+
+    func testMenuOwnershipFollowsRealFocusNotAnOptimisticFlag() {
+        XCTAssertFalse(tvMenuOwnsFocus(barFocused: false, panelEntered: false),
+                       "a page may claim as soon as the bar does not hold focus")
+        XCTAssertTrue(tvMenuOwnsFocus(barFocused: true, panelEntered: false))
+        XCTAssertTrue(tvMenuOwnsFocus(barFocused: false, panelEntered: true))
+    }
+
+    func testVisibleRootsChangeRearmsTheOwnerThatReallyHadFocus() {
+        XCTAssertEqual(tvVisibleRootsFocusRearm(menuOwnedFocus: true, isShowingRoot: true, selectedRootWasRemoved: false), .topMenu)
+        XCTAssertEqual(tvVisibleRootsFocusRearm(menuOwnedFocus: false, isShowingRoot: true, selectedRootWasRemoved: true), .content)
+        XCTAssertEqual(tvVisibleRootsFocusRearm(menuOwnedFocus: false, isShowingRoot: true, selectedRootWasRemoved: false), .none)
+        XCTAssertEqual(tvVisibleRootsFocusRearm(menuOwnedFocus: true, isShowingRoot: false, selectedRootWasRemoved: true), .none)
+    }
+
+    // MARK: Build 103: one owner per press
+
+    func testRowEntryRetryNeverPullsFocusBackAfterAMove() {
+        func retry(focused: String?, last: String?, owner lost: Bool = false) -> Bool {
+            tvMediaRowShouldRetryEntryClaim(generationMatches: true, rowLostOwnership: lost,
+                                            targetStillPresent: true, focusedItemId: focused,
+                                            lastFocusedItemId: last, targetId: "first")
+        }
+        XCTAssertTrue(retry(focused: nil, last: "first"), "the claim has not landed yet: retry")
+        XCTAssertFalse(retry(focused: "first", last: "first"), "landed: stop")
+        XCTAssertFalse(retry(focused: "third", last: "third"), "the user moved Right: never snap back")
+        XCTAssertFalse(retry(focused: nil, last: "third"), "a move happened, then focus left: stop")
+        XCTAssertFalse(retry(focused: nil, last: "first", owner: true), "focus left the row: stop")
+        XCTAssertFalse(tvMediaRowShouldRetryEntryClaim(generationMatches: false, rowLostOwnership: false,
+                                                       targetStillPresent: true, focusedItemId: nil,
+                                                       lastFocusedItemId: "first", targetId: "first"))
+    }
+
+    // MARK: Build 103: Settings
+
+    func testSettingsResetsToGeneralOnlyOnFirstAppearance() {
+        XCTAssertTrue(tvSettingsShouldResetFocusOnAppear(hasEnteredBefore: false))
+        XCTAssertFalse(tvSettingsShouldResetFocusOnAppear(hasEnteredBefore: true),
+                       "Back from the inspector or Manage Servers keeps the user's place")
+    }
+
+    func testSettingsRailStaysFocusableWhileEnteringAPane() {
+        XCTAssertFalse(tvSettingsRailIsInert(isModalPresented: false, isRestoringPickerRow: false),
+                       "the focused category must not disable itself, and Left must work at once")
+        XCTAssertTrue(tvSettingsRailIsInert(isModalPresented: true, isRestoringPickerRow: false))
+        XCTAssertTrue(tvSettingsRailIsInert(isModalPresented: false, isRestoringPickerRow: true))
+    }
+
+    // MARK: Build 103: Guide entry never drops Down
+
+    func testGuideEntryFallsBackToALaidOutRowWhileTheRememberedRowMounts() {
+        let history = TVLiveTVGuideFocusHistory()
+        let rows = ["news", "sports", "movies"]
+        let remembered = TVLiveTVGuideFocus.channel("movies")
+        XCTAssertEqual(history.entry(remembered, rowIDs: rows, laidOutRows: ["news", "sports"]), .channel("news"))
+        XCTAssertTrue(history.allowsGridEntry(remembered, rowIDs: rows, laidOutRows: ["news", "sports"]),
+                      "Down is accepted instead of dropped")
+        XCTAssertEqual(history.entry(remembered, rowIDs: rows, laidOutRows: ["movies"]), remembered)
+        XCTAssertFalse(history.allowsGridEntry(remembered, rowIDs: rows, laidOutRows: []),
+                       "nothing is laid out yet: there is no target to land on")
+    }
+
+    func testGuideEntryKeepsTheRememberedChannelAfterBack() {
+        var history = TVLiveTVGuideFocusHistory()
+        history.observe(.program(channelID: "sports", programID: "now"))
+        XCTAssertTrue(history.returnToHeader())
+        history.observe(.category)
+        XCTAssertEqual(history.entry(.channel("news"), rowIDs: ["news", "sports"], laidOutRows: ["news", "sports"]),
+                       .channel("sports"))
+    }
+
     // MARK: Focus treatment
 
     func testFocusLiftIsSmallAndRespectsReduceMotion() {

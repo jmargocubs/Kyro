@@ -176,7 +176,6 @@ struct FavoritesView: View {
     let usesTVTopMenu: Bool
     var focusRequest: Int
     var isTopMenuFocused: Bool
-    var onTopMenuFocusRequest: (() -> Void)?
 
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
@@ -211,14 +210,12 @@ struct FavoritesView: View {
         showsNavigationTitle: Bool = true,
         usesTVTopMenu: Bool = false,
         focusRequest: Int = 0,
-        isTopMenuFocused: Bool = false,
-        onTopMenuFocusRequest: (() -> Void)? = nil
+        isTopMenuFocused: Bool = false
     ) {
         self.showsNavigationTitle = showsNavigationTitle
         self.usesTVTopMenu = usesTVTopMenu
         self.focusRequest = focusRequest
         self.isTopMenuFocused = isTopMenuFocused
-        self.onTopMenuFocusRequest = onTopMenuFocusRequest
     }
 
     #if os(iOS)
@@ -275,8 +272,7 @@ struct FavoritesView: View {
                     .tvPageFocusOwner(
                         focusRequest: focusRequest,
                         isTopMenuFocused: isTopMenuFocused,
-                        accessibilityLabel: "Loading favorites",
-                        onMoveUp: onTopMenuFocusRequest
+                        accessibilityLabel: "Loading favorites"
                     )
                 #endif
             } else {
@@ -289,8 +285,7 @@ struct FavoritesView: View {
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "No favorites",
-                    onMoveUp: onTopMenuFocusRequest
+                    accessibilityLabel: "No favorites"
                 )
                 #endif
             }
@@ -407,11 +402,6 @@ struct FavoritesView: View {
             Spacer(minLength: 0)
         }
         .focusSection()
-        .onMoveCommand { direction in
-            if direction == .up {
-                onTopMenuFocusRequest?()
-            }
-        }
     }
 
     private var selectedSectionEmptyState: some View {

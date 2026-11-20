@@ -82,7 +82,9 @@ struct TVGeneralSettingsPane: View {
                     }
                 }
                 .focused(detailFocus, equals: .generalAdvisoryAge)
-                .disabled(advisoryAgePreference.isSaving)
+                // Not disabled while saving: the row is focused when pressed,
+                // and a disabled row loses focus. The store ignores repeat
+                // presses while a save is in flight.
 
                 TVSettingsFooter("Show a suggested minimum viewer age, such as Common Sense Media’s, on movie and show details. This does not change what the profile may watch.")
                 if let writeError = advisoryAgePreference.writeError {
@@ -111,11 +113,14 @@ struct TVGeneralSettingsPane: View {
             )
 
             if preferences.cardPresentationUsesFamilyOverride {
+                // Busy saves are ignored in the action instead of disabling
+                // the focused row.
                 Button("Use Profile Default") {
+                    guard !preferences.isSaving else { return }
                     preferences.resetCardPresentationToInherited()
                 }
                 .buttonStyle(TVSettingsPaneRowStyle())
-                .disabled(preferences.isSaving || !preferences.allowsEditing)
+                .disabled(!preferences.allowsEditing)
             }
 
             TVSettingsFooter("Start with Balanced, Compact, Cinema, or Artwork Only, then fine-tune size and captions. These choices sync with other TV-family devices on this profile.")
@@ -259,10 +264,11 @@ struct TVGeneralSettingsPane: View {
 
     private var familySettingsButton: some View {
         Button("Use Synced TV Settings") {
+            guard !preferences.isSaving else { return }
             preferences.useFamilySettings()
         }
         .buttonStyle(TVSettingsPaneRowStyle())
-        .disabled(preferences.isSaving || !preferences.allowsEditing)
+        .disabled(!preferences.allowsEditing)
     }
 
     @ViewBuilder
@@ -520,7 +526,9 @@ private struct TVMenuCustomizationSheet: View {
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.bordered)
-            .disabled(index == 0)
+            // Stays enabled at the edge: moving a row to the top would
+            // otherwise disable the focused arrow. `move` ignores it there.
+            .opacity(index == 0 ? 0.45 : 1)
             .accessibilityLabel("Move \(item.title) earlier")
 
             Button {
@@ -530,7 +538,7 @@ private struct TVMenuCustomizationSheet: View {
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.bordered)
-            .disabled(index == visibleItems.count - 1)
+            .opacity(index == visibleItems.count - 1 ? 0.45 : 1)
             .accessibilityLabel("Move \(item.title) later")
 
             if !item.isHome {

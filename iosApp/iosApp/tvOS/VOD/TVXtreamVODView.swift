@@ -53,7 +53,6 @@ struct TVXtreamVODView: View {
     let kind: XtreamVODKind
     let focusRequest: Int
     let isTopMenuFocused: Bool
-    let onMoveUp: (() -> Void)?
     /// Space above the header. The tab page sits under the top menu; the Live TV full-screen
     /// cover has no menu above it.
     var topInset: CGFloat = TVTopMenuLayout.contentTopInset
@@ -137,7 +136,7 @@ struct TVXtreamVODView: View {
         return parts.joined(separator: " · ")
     }
 
-    /// The page's single top row. Up from any control here returns to the top menu.
+    /// The page's single top row. Up from any control reaches the top menu natively.
     private var controls: some View {
         HStack(spacing: 18) {
             TextField("Search \(kind.title.lowercased())", text: $query)
@@ -148,28 +147,22 @@ struct TVXtreamVODView: View {
                 .frame(width: 440, height: 58)
                 .background(Color.siloSurface, in: RoundedRectangle(cornerRadius: 12))
                 .focused($focused, equals: .search)
-                .onMoveCommand(perform: handleTopRowMove)
             ForEach(XtreamVODBrowseMode.allCases, id: \.self) { option in
                 Button(option.title) { mode = option }
                     .buttonStyle(TVKyroChipStyle(isSelected: mode == option))
                     .focused($focused, equals: .mode(option))
-                    .onMoveCommand(perform: handleTopRowMove)
             }
             Spacer(minLength: 0)
             if isLoading { ProgressView() }
-            Button("Refresh Catalog") { Task { await vod.refresh(providerID: provider.id) } }
+            // Stays enabled while importing: a disabled button loses focus, and
+            // `refresh` already returns `.alreadyRunning` for a repeat press.
+            Button(vod.activeProviderID != nil ? "Refreshing Catalog" : "Refresh Catalog") {
+                Task { await vod.refresh(providerID: provider.id) }
+            }
                 .buttonStyle(TVKyroChipStyle())
-                .disabled(vod.activeProviderID != nil)
                 .focused($focused, equals: .refresh)
-                .onMoveCommand(perform: handleTopRowMove)
         }
         .focusSection()
-    }
-
-    private func handleTopRowMove(_ direction: MoveCommandDirection) {
-        TVFocusDiagnostics.value("handler", "IPTV-VOD", "topRowMove", direction)
-        // The intentional page-to-menu boundary. Every other move stays native.
-        if direction == .up { onMoveUp?() }
     }
 
     // MARK: - Grid

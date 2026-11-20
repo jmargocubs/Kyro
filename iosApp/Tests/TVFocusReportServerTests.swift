@@ -104,6 +104,79 @@ final class TVFocusReportServerTests: XCTestCase {
         XCTAssertFalse(String(decoding: response.0, as: UTF8.self).contains("must-not-leak"))
     }
 
+    // MARK: Build 103: export after Stop, Start fresh, and backgrounding
+
+    func testShareAfterStopCaptureServesTheStoppedCapture() async throws {
+        inspector.setEnabled(true)
+        inspector.record("test", "inspector", "before-stop")
+        inspector.setEnabled(false)
+        XCTAssertFalse(inspector.enabled)
+        server.start()
+        let json = try await downloadReport()
+        let details = try XCTUnwrap(json["events"] as? [[String: Any]]).compactMap { $0["detail"] as? String }
+        XCTAssertTrue(details.contains("before-stop"), "a stopped capture stays exportable")
+        XCTAssertTrue(details.contains("capture-stop"))
+        XCTAssertEqual(json["state"] as? String, "stopped")
+    }
+
+    func testStartFreshCaptureKeepsThePreviousCaptureShareable() async throws {
+        inspector.setEnabled(true)
+        inspector.record("test", "inspector", "earlier-failure")
+        inspector.setEnabled(false)
+        inspector.setEnabled(true) // Start fresh capture.
+        XCTAssertGreaterThan(inspector.exportableEventCount(.previous), 0)
+        server.start(.previous)
+        let json = try await downloadReport()
+        let details = try XCTUnwrap(json["events"] as? [[String: Any]]).compactMap { $0["detail"] as? String }
+        XCTAssertTrue(details.contains("earlier-failure"), "a fresh start never destroys the replaced capture")
+    }
+
+    func testSavedCaptureSurvivesARelaunchAndExportsWithoutCapturing() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TVFocusInspectorRelaunch-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = TVRemoteFocusInspector(store: TVFocusCaptureStore(directory: directory))
+        first.setEnabled(true)
+        first.record("test", "inspector", "before-relaunch")
+        first.setEnabled(false)
+        // A second instance over the same directory stands in for the next launch.
+        let relaunched = TVRemoteFocusInspector(store: TVFocusCaptureStore(directory: directory))
+        XCTAssertFalse(relaunched.enabled)
+        XCTAssertTrue(relaunched.hasExportableCapture)
+        let data = try XCTUnwrap(relaunched.report(.latest))
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("before-relaunch"))
+        XCTAssertFalse(relaunched.enabled, "exporting never starts or resets a capture")
+    }
+
+    func testBackgroundingStopsCaptureAndSharingButKeepsTheCapture() async throws {
+        inspector.setEnabled(true)
+        inspector.record("test", "inspector", "kept-across-background")
+        server.start()
+        _ = try await readyAddress()
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        for _ in 0..<20 where inspector.enabled || !server.address.isEmpty {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertFalse(inspector.enabled)
+        XCTAssertTrue(server.address.isEmpty, "sharing is foreground-only")
+        let data = try XCTUnwrap(inspector.report(.latest))
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("kept-across-background"))
+    }
+
+    private func downloadReport() async throws -> [String: Any] {
+        let base = try await readyAddress()
+        var authentication = URLRequest(url: URL(string: base + "/authenticate")!)
+        authentication.httpMethod = "POST"
+        authentication.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        authentication.httpBody = Data("code=\(server.code)".utf8)
+        let confirmation = try await URLSession.shared.data(for: authentication)
+        let html = String(decoding: confirmation.0, as: UTF8.self)
+        let path = try XCTUnwrap(html.range(of: #"/download/[a-f0-9-]+"#, options: .regularExpression))
+        let download = try await URLSession.shared.data(from: URL(string: base + String(html[path]))!)
+        XCTAssertEqual((download.1 as? HTTPURLResponse)?.statusCode, 200)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: download.0) as? [String: Any])
+    }
+
     private func readyAddress() async throws -> String {
         for _ in 0..<100 {
             if !server.address.isEmpty { return server.address }

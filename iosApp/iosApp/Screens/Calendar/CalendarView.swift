@@ -9,7 +9,6 @@ struct CalendarView: View {
     /// the filter bar so the screen never opens with a dead remote.
     var focusRequest: Int = 0
     var isTopMenuFocused: Bool = false
-    var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = CalendarViewModel()
     @Environment(AppRouter.self) private var router
@@ -195,8 +194,7 @@ struct CalendarView: View {
                     CalendarFilterBar(
                         selected: viewModel.filter,
                         onSelect: { viewModel.select(filter: $0) },
-                        focusRequest: entryFocusRequest,
-                        onMoveUp: onTopMenuFocusRequest
+                        focusRequest: entryFocusRequest
                     )
                     .padding(.horizontal, SiloTheme.safePadding)
 
@@ -258,12 +256,15 @@ struct CalendarView: View {
     }
 
     /// Holds the shelf area's height while a week loads. Focusable on tvOS
-    /// so focus moving down from the week strip has somewhere to land.
+    /// so focus moving down from the week strip has somewhere to land, and
+    /// visibly so: a spinner and the focus ring show where focus went.
     private var loadingState: some View {
         Color.clear
             .frame(minHeight: 320)
             #if os(tvOS)
-            .focusable()
+            .overlay { ProgressView() }
+            .tvReadableRowFocus(cornerRadius: 24)
+            .accessibilityLabel("Loading this week")
             #endif
     }
 

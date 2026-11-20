@@ -1,5 +1,6 @@
 #if os(tvOS) && (DEBUG || KYRO_FOCUS_DIAGNOSTICS)
 import SwiftUI
+import UIKit
 import Network
 import Darwin
 
@@ -23,12 +24,41 @@ final class TVFocusReportServer: ObservableObject {
     private var downloadToken = ""
     private var expired = false
 
-    func start() {
+    /// What the share is serving, shown on the inspector page and the overlay.
+    @Published private(set) var sharedSlot: TVFocusCaptureSlot?
+    private var overlay: UIWindow?
+    private var overlayDismiss: Task<Void, Never>?
+    private var backgroundObserver: NSObjectProtocol?
+
+    init() {
+        // Sharing is foreground-only. Capture stopping no longer stops a share
+        // (the snapshot is frozen), so the server observes backgrounding itself.
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stop(); self?.dismissOverlay() }
+        }
+    }
+
+    /// Shares a frozen copy of `slot`. Works while recording, after Stop
+    /// capture, and after a relaunch (from the saved copy). Never starts or
+    /// resets a capture. `presentsOverlay` shows the code in a window that
+    /// cannot take focus, for the focus-independent export gesture.
+    func start(_ slot: TVFocusCaptureSlot = .latest, presentsOverlay: Bool = false) {
         stop()
-        guard TVRemoteFocusInspector.shared.enabled else { status = "Enable capture first"; return }
+        if presentsOverlay { presentOverlay() }
+        defer { if presentsOverlay && address.isEmpty && listener == nil { scheduleOverlayDismiss() } }
+        let report: Data?
+        do { report = try TVRemoteFocusInspector.shared.report(slot) } catch { report = nil }
+        guard let report, !report.isEmpty else {
+            status = slot == .latest ? "No capture saved yet. Start a capture, reproduce the problem, then share."
+                                     : "No previous capture saved."
+            return
+        }
         guard let ip = Self.lanAddress() else { status = "No private IPv4 LAN address. Join a trusted Wi-Fi/Ethernet network."; return }
         do {
-            snapshot = try TVRemoteFocusInspector.shared.report()
+            snapshot = report
+            sharedSlot = slot
             authorized = false
             downloaded = false
             expired = false
@@ -48,7 +78,7 @@ final class TVFocusReportServer: ObservableObject {
                         if let port = server?.port { self.address = "http://\(ip):\(port.rawValue)" }
                         self.status = "Ready for one download; expires in 2 minutes"
                     case .failed:
-                        self.stop(); self.status = "Network export failed. Check Local Network permission and LAN."
+                        self.stop(); self.status = "Network export failed. Check Local Network permission and LAN."; self.scheduleOverlayDismiss()
                     default: break
                     }
                 }
@@ -79,6 +109,7 @@ final class TVFocusReportServer: ObservableObject {
         connections.values.forEach { $0.cancel() }; connections.removeAll()
         downloadingConnections.removeAll()
         snapshot = Data(); code = ""; address = ""; status = "Not sharing"
+        sharedSlot = nil
         authorized = false
         downloaded = false
         downloadToken = ""
@@ -199,6 +230,7 @@ final class TVFocusReportServer: ObservableObject {
                 self.close(id)
                 if download { self.stop(); self.status = error == nil ? "Report sent; sharing stopped" : "Transfer failed; sharing stopped" }
                 else if stopAfter { self.stop(); self.status = "Sharing stopped after five incorrect attempts" }
+                if download || stopAfter { self.scheduleOverlayDismiss() }
             }
         })
     }
@@ -225,7 +257,43 @@ final class TVFocusReportServer: ObservableObject {
             guard !Task.isCancelled, let self, self.generation == session else { return }
             self.stop()
             self.status = "Sharing expired"
+            self.scheduleOverlayDismiss()
         }
+    }
+
+    // MARK: Focus-independent overlay
+
+    private func presentOverlay() {
+        overlayDismiss?.cancel(); overlayDismiss = nil
+        if let overlay { overlay.isHidden = false; return }
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }) else { return }
+        let window = TVShareOverlayWindow(windowScene: scene)
+        window.windowLevel = .alert + 100
+        window.isUserInteractionEnabled = false
+        window.backgroundColor = .clear
+        let host = UIHostingController(rootView: TVFocusShareOverlay())
+        host.view.backgroundColor = .clear
+        window.rootViewController = host
+        window.isHidden = false // Never makeKeyAndVisible: it must not take focus or input.
+        overlay = window
+    }
+
+    /// Leaves the final status readable, then removes the overlay.
+    private func scheduleOverlayDismiss() {
+        guard overlay != nil else { return }
+        overlayDismiss?.cancel()
+        overlayDismiss = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled, let self, self.listener == nil else { return }
+            self.dismissOverlay()
+        }
+    }
+
+    func dismissOverlay() {
+        overlayDismiss?.cancel(); overlayDismiss = nil
+        overlay?.isHidden = true
+        overlay = nil
     }
 
     private static func errorPage(_ message: String) -> String {
@@ -257,6 +325,9 @@ final class TVFocusReportServer: ObservableObject {
     }
 }
 
+/// Share is listed first and is never disabled, so it is the page's entry
+/// focus and is reachable even when capture is stopped. Rows appear and
+/// disappear only below the focused control.
 struct TVFocusInspectorSettings: View {
     @ObservedObject private var inspector = TVRemoteFocusInspector.shared
     @ObservedObject private var export = TVFocusReportServer.shared
@@ -264,27 +335,79 @@ struct TVFocusInspectorSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("REMOTE & FOCUS INSPECTOR — DIAGNOSTIC BUILD").font(.headline)
-            Button(inspector.enabled ? "Stop capture" : "Start fresh capture") { inspector.setEnabled(!inspector.enabled) }
-            Button(inspector.overlayVisible ? "Hide inspector (keep recording)" : "Show inspector") { inspector.toggleOverlay() }
-            Button("Share frozen report on trusted LAN (2 minutes)") { export.start() }
-                .disabled(!inspector.enabled)
-            if !export.address.isEmpty {
-                HStack(spacing: 28) {
-                    QRCodeView(content: export.address, size: 220)
-                        .padding(12).background(Color.white)
-                    VStack(alignment: .leading) {
-                        Text(export.address)
-                        Text("One-time code: \(export.code)").font(.title3.monospacedDigit())
-                        Text("iPhone: scan QR, enter code, download JSON.\nHTTP is not encrypted. Trusted LAN only.\nQR contains only the local address, not the code.")
-                    }
+            Text(captureSummary).font(.callout)
+            Button("Share latest capture on trusted LAN (2 minutes)") { export.start(.latest) }
+            Button(inspector.enabled ? "Stop capture (keeps it for sharing)" : "Start fresh capture") {
+                inspector.setEnabled(!inspector.enabled)
+            }
+            if inspector.enabled {
+                Button(inspector.overlayVisible ? "Hide overlay (capture keeps recording)" : "Show overlay") {
+                    inspector.toggleOverlay()
                 }
+            }
+            if inspector.exportableEventCount(.previous) > 0 {
+                Button("Share previous capture (\(inspector.exportableEventCount(.previous)) events)") { export.start(.previous) }
+            }
+            if !export.address.isEmpty {
+                TVFocusShareDetails(export: export)
                 Button("Stop sharing now") { export.stop() }
             }
             Text(export.status).font(.caption)
-            Text("Capture is off by default; 512 events maximum. Backgrounding stops capture and sharing. Unknown causes remain unknown.").font(.caption)
+            Text("Capture is off by default; 512 events maximum. Stopping, backgrounding or relaunching keeps the latest capture saved and shareable. Starting a fresh capture keeps the one it replaces as the previous capture. To share without navigating, hold Play/Pause for 3 seconds anywhere outside playback and sheets.").font(.caption)
         }
         .buttonStyle(TVSettingsPaneRowStyle())
         .onDisappear { export.stop() }
     }
+
+    private var captureSummary: String {
+        let count = inspector.exportableEventCount(.latest)
+        if inspector.enabled { return "Capture: recording — \(count) events" }
+        if count > 0 { return "Capture: stopped — \(count) events saved and ready to share" }
+        return "Capture: none saved yet"
+    }
+}
+
+private struct TVFocusShareDetails: View {
+    @ObservedObject var export: TVFocusReportServer
+
+    var body: some View {
+        HStack(spacing: 28) {
+            QRCodeView(content: export.address, size: 220)
+                .padding(12).background(Color.white)
+            VStack(alignment: .leading) {
+                Text(export.sharedSlot == .previous ? "Sharing the previous capture" : "Sharing the latest capture")
+                Text(export.address)
+                Text("One-time code: \(export.code)").font(.title3.monospacedDigit())
+                Text("iPhone: scan QR, enter code, download JSON.\nHTTP is not encrypted. Trusted LAN only.\nQR contains only the local address, not the code.")
+            }
+        }
+    }
+}
+
+/// Shown in a window that cannot take focus or input, for the Play/Pause
+/// hold export. It only reads the server's published state.
+struct TVFocusShareOverlay: View {
+    @ObservedObject private var export = TVFocusReportServer.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("KYRO FOCUS REPORT").font(.headline)
+            if !export.address.isEmpty { TVFocusShareDetails(export: export) }
+            Text(export.status).font(.callout)
+        }
+        .foregroundStyle(.white)
+        .padding(28)
+        .background(Color.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 18))
+        .padding(.top, 80)
+        .padding(.leading, 80)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+private final class TVShareOverlayWindow: UIWindow {
+    override var canBecomeFocused: Bool { false }
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }
 }
 #endif

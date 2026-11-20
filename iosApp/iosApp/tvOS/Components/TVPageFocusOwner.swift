@@ -12,9 +12,9 @@ import SwiftUI
 /// Any placeholder that can be a whole page's content therefore has to hold
 /// focus itself.
 ///
-/// This is the native focus graph model from `docs/tvos-focus.md`: one real
-/// focus target, seeded by the shell's content hand-down token, with Up handed
-/// back to the top menu at the page boundary.
+/// This is the native focus graph model from `docs/tvos-focus.md`: one real,
+/// visible focus target, seeded by the shell's content hand-down token. Up
+/// reaches the top menu natively; there is no directional handler.
 struct TVPageFocusOwner: ViewModifier {
     /// The shell's content focus hand-down token (`contentFocusRequest`).
     let focusRequest: Int
@@ -23,10 +23,9 @@ struct TVPageFocusOwner: ViewModifier {
     /// the menu is the common case.
     let isTopMenuFocused: Bool
     let accessibilityLabel: String
-    /// Up at the page's top boundary returns focus to the top menu.
-    let onMoveUp: (() -> Void)?
 
     @FocusState private var isFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
@@ -34,15 +33,19 @@ struct TVPageFocusOwner: ViewModifier {
             .focusable(true)
             .focused($isFocused)
             .tvObserveFocus("Placeholder", value: isFocused)
-            // The placeholder is not actionable, so the system focus effect
-            // would only draw a halo around static text.
+            // The system halo would wrap the whole page. Draw the Kyro ring
+            // instead so the user can always see where focus is: an invisible
+            // focus target reads as a remote that stopped responding.
             .focusEffectDisabled()
-            .accessibilityLabel(accessibilityLabel)
-            .onMoveCommand { direction in
-                TVFocusDiagnostics.value("handler", "Placeholder", "move", direction)
-                guard direction == .up else { return }
-                onMoveUp?()
+            .overlay {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .strokeBorder(TVKyroFocus.ring, lineWidth: TVKyroFocus.ringWidth)
+                    .padding(8)
+                    .opacity(isFocused ? 1 : 0)
+                    .animation(reduceMotion ? nil : .easeOut(duration: TVKyroFocus.duration), value: isFocused)
+                    .allowsHitTesting(false)
             }
+            .accessibilityLabel(accessibilityLabel)
             // Runs on appear as well as on each new request, which is the
             // path that matters most: the usual way into this state is a load
             // finishing empty, which swaps the placeholder in without the
@@ -66,15 +69,13 @@ extension View {
     func tvPageFocusOwner(
         focusRequest: Int,
         isTopMenuFocused: Bool,
-        accessibilityLabel: String,
-        onMoveUp: (() -> Void)?
+        accessibilityLabel: String
     ) -> some View {
         modifier(
             TVPageFocusOwner(
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
-                accessibilityLabel: accessibilityLabel,
-                onMoveUp: onMoveUp
+                accessibilityLabel: accessibilityLabel
             )
         )
     }

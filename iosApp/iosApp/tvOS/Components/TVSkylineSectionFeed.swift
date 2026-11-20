@@ -24,8 +24,6 @@ struct TVSkylineSectionFeed: View {
     /// Whether the top menu currently holds focus. A late content load must
     /// not steal focus while the user is up in the menu.
     var isTopMenuFocused: Bool = false
-    /// Up at the first page hands focus to the top bar.
-    let onTopMenuFocusRequest: (() -> Void)?
     /// Open a content item (detail).
     let onItemTap: (_ destinationContentId: String, _ item: SectionItem) -> Void
     /// Optional Home-only action. Library feeds leave this nil.
@@ -57,7 +55,6 @@ struct TVSkylineSectionFeed: View {
         focusRequest: Int = 0,
         detailReturnFocusRequest: Int = 0,
         isTopMenuFocused: Bool = false,
-        onTopMenuFocusRequest: (() -> Void)?,
         onItemTap: @escaping (String, SectionItem) -> Void,
         onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil,
         onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
@@ -67,7 +64,6 @@ struct TVSkylineSectionFeed: View {
         self.focusRequest = focusRequest
         self.detailReturnFocusRequest = detailReturnFocusRequest
         self.isTopMenuFocused = isTopMenuFocused
-        self.onTopMenuFocusRequest = onTopMenuFocusRequest
         self.onItemTap = onItemTap
         self.onRemoveFromContinueWatching = onRemoveFromContinueWatching
         self.onSetWatched = onSetWatched
@@ -205,10 +201,8 @@ struct TVSkylineSectionFeed: View {
             defaultFocusPriority: isTopMenuFocused ? .userInitiated : .automatic,
             focusRequest: isFirstRow ? contentFocusToken : 0,
             detailReturnFocusRequest: detailReturnFocusRequest,
-            // This is the sole directional interception: Up from the first
-            // content row crosses the intentional page-to-tab-bar boundary.
-            // Every other vertical move remains native.
-            onMoveUp: isFirstRow ? onTopMenuFocusRequest : nil,
+            // No directional interception: Up from the first row reaches
+            // the top bar (or a pushed page's chrome) natively.
             onItemFocus: { item in
                 focusRestorationOwnerSectionId = section.id
                 previewFocusedItem(item, in: section)

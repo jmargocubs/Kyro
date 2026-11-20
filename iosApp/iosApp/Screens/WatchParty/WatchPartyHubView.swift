@@ -28,7 +28,7 @@ struct WatchPartyHubView: View {
                     // without an owner Menu cannot leave a slow request.
                     ProgressView().tint(Color.siloSecondaryText)
                         .tvPageFocusOwner(focusRequest: 0, isTopMenuFocused: false,
-                                          accessibilityLabel: "Starting your party", onMoveUp: nil)
+                                          accessibilityLabel: "Starting your party")
                     #else
                     ProgressView().tint(Color.siloSecondaryText)
                         .accessibilityLabel("Starting your party")

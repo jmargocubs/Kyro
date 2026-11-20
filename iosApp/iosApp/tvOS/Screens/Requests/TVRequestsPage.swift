@@ -92,22 +92,17 @@ struct TVRequestsPage: View {
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Loading requests",
-                    onMoveUp: onTopMenuFocusRequest
+                    accessibilityLabel: "Loading requests"
                 )
         } else if let error = loadError {
+            // Up from Retry reaches the top bar natively.
             ErrorView(state: error, onRetry: { Task { await retry() } })
-                // Boundary only: Up from the error reaches the top bar.
-                .onMoveCommand { direction in
-                    if direction == .up { onTopMenuFocusRequest?() }
-                }
         } else {
             EmptyStateView(icon: emptyIcon, title: emptyTitle, subtitle: emptySubtitle)
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: emptyTitle,
-                    onMoveUp: onTopMenuFocusRequest
+                    accessibilityLabel: emptyTitle
                 )
         }
     }
@@ -275,12 +270,6 @@ struct TVRequestsPage: View {
             .scrollClipDisabled()
         }
         .focusSection()
-        // The page's single directional interception: Up from the first
-        // row crosses to the top bar. Attached to every row so a row
-        // becoming first never changes the focused subtree's structure.
-        .onMoveCommand { direction in
-            if direction == .up, isFirstRow { onTopMenuFocusRequest?() }
-        }
     }
 
     @ViewBuilder

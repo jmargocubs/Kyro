@@ -27,7 +27,6 @@ struct TVLibraryTypeTabView: View {
     var vodProvider: LiveTVProvider? = nil
     var focusRequest: Int = 0
     var isTopMenuFocused: Bool = false
-    let onTopMenuFocusRequest: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -49,7 +48,7 @@ struct TVLibraryTypeTabView: View {
         case .provider(_, let kind):
             if let vodProvider {
                 TVXtreamVODView(provider: vodProvider, kind: kind, focusRequest: focusRequest,
-                                isTopMenuFocused: isTopMenuFocused, onMoveUp: onTopMenuFocusRequest)
+                                isTopMenuFocused: isTopMenuFocused)
                     .id("\(vodProvider.id)-\(kind.rawValue)")
             }
         case .silo:
@@ -84,8 +83,7 @@ struct TVLibraryTypeTabView: View {
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "No \(type.title.lowercased()) libraries",
-                    onMoveUp: onTopMenuFocusRequest
+                    accessibilityLabel: "No \(type.title.lowercased()) libraries"
                 )
             }
         }
@@ -120,16 +118,14 @@ struct TVLibraryTypeTabView: View {
                 library: library,
                 mediaScope: mediaScope,
                 focusRequest: focusRequest,
-                isTopMenuFocused: isTopMenuFocused,
-                onMoveUp: onTopMenuFocusRequest
+                isTopMenuFocused: isTopMenuFocused
             )
         case .collections:
             TVLibraryCollectionsView(
                 library: library,
                 mediaScope: mediaScope,
                 focusRequest: focusRequest,
-                isTopMenuFocused: isTopMenuFocused,
-                onMoveUp: onTopMenuFocusRequest
+                isTopMenuFocused: isTopMenuFocused
             )
         case .browse:
             TVLibraryGridView(
@@ -142,8 +138,7 @@ struct TVLibraryTypeTabView: View {
                 showsAlphabetRail: true,
                 topContentInset: SiloTheme.Skyline.libraryContentTopInset,
                 focusRequest: focusRequest,
-                isTopMenuFocused: isTopMenuFocused,
-                onTopMenuFocusRequest: onTopMenuFocusRequest
+                isTopMenuFocused: isTopMenuFocused
             )
         }
     }

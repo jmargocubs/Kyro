@@ -30,6 +30,16 @@ enum TVFocusDiagnostics {
     }
 }
 
+extension TVFocusDiagnostics {
+    /// Installs the focus-independent export gesture (hold Play/Pause) in
+    /// diagnostic builds. Compiles to nothing in ordinary Release builds.
+    @MainActor static func installExportGesture() {
+        #if DEBUG || KYRO_FOCUS_DIAGNOSTICS
+        TVDiagnosticExportGesture.shared.install()
+        #endif
+    }
+}
+
 extension View {
     @ViewBuilder func tvObserveFocus<T: Hashable>(_ component: StaticString, value: T) -> some View {
         #if DEBUG || KYRO_FOCUS_DIAGNOSTICS
@@ -50,7 +60,18 @@ final class TVRemoteFocusInspector: ObservableObject {
     static let shared = TVRemoteFocusInspector()
     @Published private(set) var enabled = false
     @Published private(set) var overlayVisible = true
+    /// Events held in memory for the current or most recently stopped capture.
+    @Published private(set) var capturedEventCount = 0
+    /// Event counts of the saved captures, read at launch and after each save.
+    @Published private(set) var savedLatestEventCount = 0
+    @Published private(set) var savedPreviousEventCount = 0
     private(set) var buffer = TVFocusDiagnosticBuffer()
+    /// True once this process has recorded a capture. Until then, `latest`
+    /// exports the copy saved by an earlier launch.
+    private var hasSessionCapture = false
+    private let store: TVFocusCaptureStore?
+    private let persistQueue = DispatchQueue(label: "kyro.focus-diagnostics.persist", qos: .utility)
+    private var lifecycleObservers: [NSObjectProtocol] = []
     private var salt = SymmetricKey(size: .bits256)
     private var observers: [NSObjectProtocol] = []
     private var inputs: [TVPassiveRemoteObserver] = []
@@ -68,11 +89,56 @@ final class TVRemoteFocusInspector: ObservableObject {
     private var transition = "none"
     private var cause = "unknown"
 
+    /// Saves every this-many events while recording, so a crash or a forced
+    /// quit loses at most this many.
+    static let persistInterval = 50
+
+    init(store: TVFocusCaptureStore? = .standard()) {
+        self.store = store
+        savedLatestEventCount = store?.load(.latest)?.events.count ?? 0
+        savedPreviousEventCount = store?.load(.previous)?.events.count ?? 0
+        // Saving on resign-active covers the TV button, the app switcher and
+        // sleep before the process can be suspended or killed.
+        for name in [UIApplication.willResignActiveNotification, UIApplication.didEnterBackgroundNotification] {
+            lifecycleObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if note.name == UIApplication.didEnterBackgroundNotification {
+                        // Backgrounding stops recording (privacy) but keeps the
+                        // capture in memory and on disk, still shareable.
+                        self.setEnabled(false)
+                    } else if self.enabled {
+                        self.persist(synchronously: true)
+                    }
+                }
+            })
+        }
+    }
+
+    var hasExportableCapture: Bool { exportableEventCount(.latest) > 0 || savedPreviousEventCount > 0 }
+
+    func exportableEventCount(_ slot: TVFocusCaptureSlot) -> Int {
+        switch slot {
+        case .latest: return hasSessionCapture ? capturedEventCount : savedLatestEventCount
+        case .previous: return savedPreviousEventCount
+        }
+    }
+
     func setEnabled(_ active: Bool) {
         guard active != enabled else { return }
-        enabled = active
         if active {
+            // Keep the capture this fresh start replaces. Without this, "Start
+            // fresh capture" erased the only copy of an earlier failure.
+            if hasSessionCapture, !buffer.events.isEmpty {
+                writeArchive(state: .stopped, to: .previous, synchronously: true)
+            } else {
+                try? store?.rotateLatestToPrevious()
+            }
+            savedPreviousEventCount = store?.load(.previous)?.events.count ?? savedPreviousEventCount
+            enabled = true
+            hasSessionCapture = true
             buffer = TVFocusDiagnosticBuffer()
+            capturedEventCount = 0
             salt = SymmetricKey(size: .bits256)
             itemIDs.removeAllObjects()
             nextID = 0
@@ -82,25 +148,30 @@ final class TVRemoteFocusInspector: ObservableObject {
             observe(UIFocusSystem.didUpdateNotification) { [weak self] in self?.focusChanged($0, failed: false) }
             observe(UIFocusSystem.movementDidFailNotification) { [weak self] in self?.focusChanged($0, failed: true) }
             observe(UIWindow.didBecomeKeyNotification) { [weak self] _ in self?.attachInput() }
-            observe(UIApplication.didEnterBackgroundNotification) { [weak self] _ in self?.setEnabled(false) }
             attachInput()
             showOverlay()
             timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.render() }
             }
             record("state", "inspector", "capture-start; identifiers stable only within this capture")
+            persist(synchronously: true)
         } else {
+            record("state", "inspector", "capture-stop")
+            enabled = false
             observers.forEach(NotificationCenter.default.removeObserver)
             observers.removeAll()
             inputs.forEach { $0.view?.removeGestureRecognizer($0) }
             inputs.removeAll()
             timer?.invalidate(); timer = nil
             overlay?.isHidden = true; overlay = nil; label = nil
-            TVFocusReportServer.shared.stop()
+            // The buffer is kept: a stopped capture stays shareable, and is
+            // saved so it also survives backgrounding and relaunch.
+            persist(synchronously: true)
         }
     }
 
     func toggleOverlay() {
+        guard enabled else { return }
         overlayVisible.toggle()
         overlay?.isHidden = !overlayVisible
     }
@@ -114,6 +185,8 @@ final class TVRemoteFocusInspector: ObservableObject {
         if kind == "request" { request = "\(component).\(detail)" }
         if kind == "remote" { lastInput = detail }
         buffer.append(kind: kind, component: component, detail: detail)
+        capturedEventCount = buffer.events.count
+        if enabled, buffer.appendedCount % Self.persistInterval == 0 { persist(synchronously: false) }
     }
 
     /// Hash associated values with an unexported per-capture key. No titles, identifiers,
@@ -137,19 +210,33 @@ final class TVRemoteFocusInspector: ObservableObject {
         return "\(role)#\(token)"
     }
 
-    func report() throws -> Data {
-        struct Report: Encodable {
-            let schema = 1
-            let build: String
-            let limitations = "Temporal associations are inferred, not causation. Focus heading is not raw remote input. Binding observations are not engine confirmation. Failed movement is not proof of fallback. Capture excludes events while disabled/backgrounded. No media text or network credentials collected."
-            let dropped: Int
-            let events: [TVFocusDiagnosticBuffer.Event]
+    /// The frozen report for one slot, or nil when that slot holds nothing.
+    func report(_ slot: TVFocusCaptureSlot = .latest) throws -> Data? {
+        switch slot {
+        case .latest where hasSessionCapture:
+            return try archive(state: enabled ? .recording : .stopped).encoded()
+        case .latest, .previous:
+            guard let saved = store?.load(slot), !saved.events.isEmpty else { return nil }
+            return try saved.encoded()
         }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(Report(build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
-                                         dropped: buffer.dropped, events: buffer.events))
+    }
+
+    private func archive(state: TVFocusCaptureArchive.State) -> TVFocusCaptureArchive {
+        TVFocusCaptureArchive(build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
+                              state: state, savedAt: Date(), buffer: buffer)
+    }
+
+    private func persist(synchronously: Bool) {
+        guard hasSessionCapture else { return }
+        writeArchive(state: enabled ? .recording : .stopped, to: .latest, synchronously: synchronously)
+        savedLatestEventCount = buffer.events.count
+    }
+
+    private func writeArchive(state: TVFocusCaptureArchive.State, to slot: TVFocusCaptureSlot, synchronously: Bool) {
+        guard let store else { return }
+        let snapshot = archive(state: state)
+        let write = { _ = try? store.save(snapshot.encoded(), to: slot) }
+        if synchronously { persistQueue.sync(execute: write) } else { persistQueue.async(execute: write) }
     }
 
     private func observe(_ name: Notification.Name, action: @escaping @MainActor (Notification) -> Void) {
@@ -228,7 +315,65 @@ final class TVRemoteFocusInspector: ObservableObject {
     }
 
     private func render() {
-        label?.text = " KYRO FOCUS DIAGNOSTICS — observation only\n Screen/component: \(screen)\n Remote observed: \(lastInput)\n Engine: \(previous) → \(current)\n Binding (separate observation): \(binding)\n Last request: \(request)\n Transition: \(transition)\n Association: \(cause)\n Events: \(buffer.events.count)/512; dropped: \(buffer.dropped)"
+        label?.text = " KYRO FOCUS DIAGNOSTICS — observation only\n Screen/component: \(screen)\n Remote observed: \(lastInput)\n Engine: \(previous) → \(current)\n Binding (separate observation): \(binding)\n Last request: \(request)\n Transition: \(transition)\n Association: \(cause)\n Events: \(buffer.events.count)/512; dropped: \(buffer.dropped)\n Share without navigating: hold Play/Pause 3 s (outside playback)"
+    }
+}
+
+/// Focus-independent export. Holding Play/Pause for `holdDuration` outside
+/// playback freezes the latest capture and starts the same authenticated,
+/// two-minute, LAN-only share the inspector page uses. The QR code and code
+/// appear in a window that can never take focus, so nothing has to be
+/// navigated. It is an explicit gesture: nothing is shared automatically.
+///
+/// The recognizer never cancels or delays presses, so a short Play/Pause
+/// still reaches cards and players unchanged. It declines to begin while any
+/// view controller is presented (players, sheets), so it never competes with
+/// playback controls. Play/Pause is not a system-reserved press.
+@MainActor
+final class TVDiagnosticExportGesture: NSObject, UIGestureRecognizerDelegate {
+    static let shared = TVDiagnosticExportGesture()
+    static let holdDuration: TimeInterval = 3
+    private var recognizers: [UILongPressGestureRecognizer] = []
+    private var observer: NSObjectProtocol?
+
+    func install() {
+        attach()
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(forName: UIWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.attach() }
+        }
+    }
+
+    private func attach() {
+        recognizers.removeAll { $0.view == nil }
+        let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+        for window in windows where window.isKeyWindow && !recognizers.contains(where: { $0.view === window }) {
+            let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(handle(_:)))
+            recognizer.allowedPressTypes = [NSNumber(value: UIPress.PressType.playPause.rawValue)]
+            recognizer.allowedTouchTypes = []
+            recognizer.minimumPressDuration = Self.holdDuration
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+            recognizer.delegate = self
+            window.addGestureRecognizer(recognizer)
+            recognizers.append(recognizer)
+        }
+    }
+
+    @objc private func handle(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began else { return }
+        TVFocusReportServer.shared.start(.latest, presentsOverlay: true)
+    }
+
+    nonisolated func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                                       shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+    nonisolated func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        MainActor.assumeIsolated {
+            guard let window = gestureRecognizer.view as? UIWindow else { return false }
+            return window.rootViewController?.presentedViewController == nil
+        }
     }
 }
 

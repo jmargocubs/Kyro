@@ -152,8 +152,10 @@ struct TVTopMenuBar: View {
     let roots: [TVRootDestination]
     let selectedRoot: TVRootDestination
     let currentProfile: UserProfile?
+    /// Mirrors whether a bar element really holds focus. The bar sets it from
+    /// its own `@FocusState`; the shell clears it early only for an explicit
+    /// hand-off to content (selection, panel exit) so the page may claim.
     @Binding var isMenuFocused: Bool
-    let isFocusSuppressed: Bool
     let focusRequest: Int
     /// Bumped when the shell has determined the bar's `@FocusState` is stale —
     /// the engine dropped focus without the bar observing it, so no suppression
@@ -193,17 +195,11 @@ struct TVTopMenuBar: View {
     /// host opens its panel if needed and hands focus in (§5.3). Takes the
     /// element so the host routes to the right panel.
     let onEnterPanel: (TVTopMenuPanel) -> Void
-    /// D-pad down on a bar element with no panel (Home, Calendar, Search):
-    /// the host hands focus to the page's first (left-most) item instead of
-    /// letting the engine pick whichever card sits geometrically under the
-    /// centered tab.
-    let onEnterContent: () -> Void
     /// Press on the profile avatar opens the profile panel and enters it
     /// immediately; dwell only previews it.
     let onProfilePressed: () -> Void
     /// Focus left the bar through normal focus movement into page content.
-    /// The shell uses this to disable the bar again so later content-row
-    /// Up presses can't geometrically jump back to the menu.
+    /// The bar stays enabled: Up from a page's top row reaches it natively.
     let onContentFocusHandoff: () -> Void
     var onExit: (() -> Void)? = nil
 
@@ -257,10 +253,16 @@ struct TVTopMenuBar: View {
         // Reduce Motion snaps the bar dim/restore as focus enters/leaves
         // the content zone (§5.1; §4.2 acceptance: no drift animations).
         .animation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.normalDuration), value: isMenuFocused)
+        // Native focus contract (docs/tvos-focus.md, "Top Menu Ownership"):
+        // the bar is one focus section that stays enabled while content has
+        // focus, so Up from any page's top row — click or swipe — reaches it
+        // without a page handler. Entering the section from below always
+        // lands on the selected tab, not the tab under the focused card.
+        // Only an entered panel makes the bar inert.
+        .defaultFocus($focusedItem, .root(selectedRoot), priority: .userInitiated)
         .focusSection()
-        .disabled(isFocusSuppressed || panelEntersFocus)
+        .disabled(tvTopMenuIsInert(panelEntered: panelEntersFocus))
         .tvObserveFocus("TopMenu", value: focusedItem)
-        .onChange(of: isFocusSuppressed) { _, value in TVFocusDiagnostics.value("state", "TopMenu", "suppressed", value) }
         .onChange(of: panelEntersFocus) { _, value in TVFocusDiagnostics.value("state", "TopMenu", "panelEntered", value) }
         // Menu handling must not be conditionally wrapped around the focused
         // tab buttons. Toggling an `onExitCommand` ancestor when `openPanel`
@@ -272,15 +274,6 @@ struct TVTopMenuBar: View {
             )
             .frame(width: 0, height: 0)
         )
-        .onChange(of: isFocusSuppressed) { _, newValue in
-            if newValue {
-                TVFocusDiagnostics.record("request", "TopMenu", "clearOnSuppression")
-                focusedItem = nil
-                // Focus left the bar for content; a later return to any tab
-                // should dwell-open normally, so drop any close-suppression.
-                dwellSuppressedElement = nil
-            }
-        }
         .onChange(of: focusResetRequest) { _, _ in
             // Clear the re-pin flags first: the bar has no focus to defend
             // here, and letting the nil write below take the re-pin branch
@@ -293,20 +286,14 @@ struct TVTopMenuBar: View {
         }
         .onChange(of: focusRequest) { _, _ in
             let target = focusRequestTarget.map { String(describing: $0) } ?? "nil"
-            Self.logger.debug("topMenu.focusRequest request=\(focusRequest, privacy: .public) suppressed=\(isFocusSuppressed, privacy: .public) target=\(target, privacy: .public)")
+            Self.logger.debug("topMenu.focusRequest request=\(focusRequest, privacy: .public) target=\(target, privacy: .public)")
             requestMenuFocus()
         }
+        // No `focusedItem = nil` on content hand-off: resigning focus first
+        // left a frame with nothing focused. The page's own focus claim moves
+        // focus out of the bar in one step; until it lands, the tab keeps it.
         .onChange(of: isMenuFocused) { _, newValue in
-            // Don't release the bar's own focus when the *panel* is what's
-            // taking it (panelHasFocus): the panel claims focus through its
-            // own @FocusState and the system clears ours. Nulling here first
-            // leaves a frame with nothing focused, which tvOS repairs to the
-            // Home tab — the flash / focus reset. Content hand-off still nulls
-            // via the isFocusSuppressed handler above.
-            if !newValue && !panelEntersFocus {
-                TVFocusDiagnostics.record("request", "TopMenu", "contentHandoffClear")
-                focusedItem = nil
-            }
+            if !newValue { dwellSuppressedElement = nil }
         }
         .onChange(of: panelEntersFocus) { _, entered in
             if entered { isMenuFocused = false }
@@ -325,18 +312,6 @@ struct TVTopMenuBar: View {
             // `panelEntersFocus`).
             if panelEntersFocus {
                 isMenuFocused = false
-                dwellTask?.cancel()
-                return
-            }
-            // A suppressed bar must never take focus back. The shell suppresses
-            // before handing focus down, and the watchdog's reset arrives while
-            // suppression is already true with a passive preview still open —
-            // exactly the `spuriousFromOpenPreview` shape — so an ungated re-pin
-            // would undo the repair and re-strand the remote. Drop the re-pin
-            // flag with it so it can't fire on a later legitimate nil write.
-            if isFocusSuppressed {
-                isMenuFocused = false
-                refocusAfterClose = false
                 dwellTask?.cancel()
                 return
             }
@@ -483,8 +458,7 @@ struct TVTopMenuBar: View {
         // this focused button (which dropped focus).
         .modifier(TVTopMenuDownHandler(
             canOpenPanel: rootPanel(root) != nil,
-            onDown: { onEnterPanel(.root(root)) },
-            onDownToContent: onEnterContent
+            onDown: { onEnterPanel(.root(root)) }
         ))
         // Panel-bearing tabs publish their bounds so the shell can center the
         // anchored dropdown under them (§5.3); other tabs have no panel.
@@ -541,13 +515,12 @@ struct TVTopMenuBar: View {
         }
     }
 
-    private func requestMenuFocus(attempt: Int = 0) {
-        TVFocusDiagnostics.value("scheduled", "TopMenu", "requestMenuFocusAttempt", attempt)
-        guard !isFocusSuppressed else {
-            TVFocusDiagnostics.record("state", "TopMenu", "requestBlockedBySuppression")
-            Self.logger.debug("topMenu.requestMenuFocus blocked suppressed=true")
-            return
-        }
+    /// One explicit claim per request (Back from content, panel close, pop to
+    /// root). The bar is enabled, so the write lands directly; there is no
+    /// timed retry. A request for the element that already has focus is a
+    /// no-op instead of a nil-and-reclaim bounce.
+    private func requestMenuFocus() {
+        let target: TVTopMenuFocus
         switch focusRequestTarget {
         // A non-nil target means focus is returning from an explicit panel
         // close (focusTopMenuIfVisible(focusing:) is only called that way).
@@ -556,30 +529,21 @@ struct TVTopMenuBar: View {
         // leaves dwell enabled — resting on a tab there should preview it.
         case .root(let root):
             dwellSuppressedElement = .root(root)
-            TVFocusDiagnostics.value("request", "TopMenu", "explicitRoot", TVTopMenuFocus.root(root))
-            focusedItem = .root(root)
+            target = .root(root)
         case .profile:
             dwellSuppressedElement = .profile
-            TVFocusDiagnostics.record("request", "TopMenu", "explicitProfile")
-            focusedItem = .profile
+            target = .profile
         case .none:
-            TVFocusDiagnostics.value("request", "TopMenu", "selectedRoot", TVTopMenuFocus.root(selectedRoot))
-            focusedItem = .root(selectedRoot)
+            target = .root(selectedRoot)
         }
-        let item = focusedItem.map { String(describing: $0) } ?? "nil"
-        Self.logger.debug("topMenu.requestMenuFocus focusedItem=\(item, privacy: .public)")
-
-        // A quick Siri Remote swipe can make the focus engine finish its row
-        // repair after this write. Re-assert only if the bar still owns the
-        // handoff and the claim was actually dropped; once focus lands—or the
-        // user moves away—the retry cancels itself and never fights navigation.
-        guard attempt < 2 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            guard !isFocusSuppressed,
-                  isMenuFocused,
-                  focusedItem == nil else { return }
-            requestMenuFocus(attempt: attempt + 1)
+        guard focusedItem != target else {
+            TVFocusDiagnostics.value("state", "TopMenu", "requestAlreadyFocused", target)
+            isMenuFocused = !panelEntersFocus
+            return
         }
+        TVFocusDiagnostics.value("request", "TopMenu", "explicit", target)
+        focusedItem = target
+        Self.logger.debug("topMenu.requestMenuFocus target=\(String(describing: target), privacy: .public)")
     }
 
     // MARK: - Search
@@ -599,21 +563,15 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .search)
-        // The inverse boundary keeps Search usable in the scrolling fallback;
-        // in the centered layout the native focus graph resolves this first.
-        // Down hands focus to the page's first item, matching the tabs.
+        // The inverse boundary keeps Search usable in the scrolling fallback,
+        // where the roots sit in a separate scroll region. Down is native: the
+        // page's entry section declares where it lands.
         .onMoveCommand { direction in
+            guard direction == .right else { return }
             TVFocusDiagnostics.value("handler", "TopMenu", "searchMove", direction)
-            switch direction {
-            case .right:
-                guard let firstRoot = roots.first else { return }
-                TVFocusDiagnostics.value("request", "TopMenu", "searchRightToRoot", TVTopMenuFocus.root(firstRoot))
-                focusedItem = .root(firstRoot)
-            case .down:
-                onEnterContent()
-            default:
-                break
-            }
+            guard let firstRoot = roots.first else { return }
+            TVFocusDiagnostics.value("request", "TopMenu", "searchRightToRoot", TVTopMenuFocus.root(firstRoot))
+            focusedItem = .root(firstRoot)
         }
         .accessibilityLabel("Search")
     }
@@ -633,10 +591,6 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .settings)
-        .onMoveCommand { direction in
-            TVFocusDiagnostics.value("handler", "TopMenu", "settingsMove", direction)
-            if direction == .down { onEnterContent() }
-        }
         .accessibilityLabel("Settings")
     }
 
@@ -673,8 +627,7 @@ struct TVTopMenuBar: View {
         .focused($focusedItem, equals: .profile)
         .modifier(TVTopMenuDownHandler(
             canOpenPanel: true,
-            onDown: { onEnterPanel(.profile) },
-            onDownToContent: onEnterContent
+            onDown: { onEnterPanel(.profile) }
         ))
         .modifier(TVTopMenuAnchorPublisher(panel: .profile))
         .accessibilityLabel("Profile")
@@ -682,8 +635,7 @@ struct TVTopMenuBar: View {
     }
 
     private var shouldCaptureExitPress: Bool {
-        !isFocusSuppressed
-            && focusedItem != nil
+        focusedItem != nil
             && !panelEntersFocus
             && (openPanel != nil || isFocusedAwayFromHome || onExit != nil)
     }
@@ -901,26 +853,32 @@ struct TVSkylinePanelHeader: View {
 /// (`canOpenPanel`), never on whether the panel is open. The live open/enter
 /// decision is in the closure.
 ///
-/// Elements without a panel route Down to `onDownToContent`, so the shell
-/// hands focus to the page's first item instead of the engine landing on
-/// whichever card is geometrically nearest the centered tab.
+/// Elements without a panel get no handler at all: Down is a native move
+/// into the page, whose entry section declares its target with
+/// `.userInitiated` default focus while the bar owns focus. `canOpenPanel` is
+/// invariant per element, so the attachment never changes on a focused view.
 private struct TVTopMenuDownHandler: ViewModifier {
     let canOpenPanel: Bool
     let onDown: () -> Void
-    let onDownToContent: () -> Void
 
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content.onMoveCommand { direction in
-            TVFocusDiagnostics.value("handler", "TopMenuDownBoundary", "move", direction)
-            guard direction == .down else { return }
-            if canOpenPanel {
+        if canOpenPanel {
+            content.onMoveCommand { direction in
+                TVFocusDiagnostics.value("handler", "TopMenuDownBoundary", "move", direction)
+                guard direction == .down else { return }
                 onDown()
-            } else {
-                onDownToContent()
             }
+        } else {
+            content
         }
     }
 }
+
+/// The bar is inert only while an entered panel owns focus. Content focus
+/// never disables it; that made Up depend on a per-page `onMoveCommand`,
+/// which touch-surface swipes do not reliably deliver.
+func tvTopMenuIsInert(panelEntered: Bool) -> Bool { panelEntered }
 
 /// The scrolling overflow layout puts its roots in a separate focus region
 /// from the fixed Search button. This boundary reconnects the two regions

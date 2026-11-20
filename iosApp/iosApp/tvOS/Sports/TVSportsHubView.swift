@@ -17,7 +17,6 @@ struct TVSportsHubView: View {
     @Bindable var service: LiveTVService
     let focusRequest: Int
     let isTopMenuFocused: Bool
-    let onTopMenuFocusRequest: () -> Void
 
     @State private var store = TVSportsStores.hub
     @State private var mode: TVSportsMode = .live
@@ -109,18 +108,19 @@ struct TVSportsHubView: View {
                     .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
             }
+            // Never disabled: a disabled button loses focus, and polling runs a
+            // refresh every 10-60 s. `refresh()` ignores repeat presses. Up
+            // reaches the top menu natively from anywhere in the header.
             Button {
                 Task { await store.refresh() }
             } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                Label(store.isRefreshing ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise")
+                    .opacity(store.isRefreshing ? 0.6 : 1)
             }
+            .accessibilityLabel("Refresh")
+            .accessibilityValue(store.isRefreshing ? "Refreshing" : "")
             .buttonStyle(TVKyroChipStyle())
             .focused($focus, equals: .refresh)
-            .disabled(store.isRefreshing)
-            .onMoveCommand {
-                TVFocusDiagnostics.value("handler", "Sports", "headerMove", $0)
-                if $0 == .up { onTopMenuFocusRequest() }
-            }
         }
     }
 

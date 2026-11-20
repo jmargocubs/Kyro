@@ -274,7 +274,7 @@ struct TVSportsEventDetailView: View {
                 }
                 .font(.system(size: 26, weight: .semibold))
                 .foregroundStyle(Color.siloOnSurface)
-                .focusable()
+                .tvReadableRowFocus()
             }
         } else {
             loadStateRow
@@ -305,7 +305,7 @@ struct TVSportsEventDetailView: View {
                     }
                     .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(Color.siloOnSurface)
-                    .focusable()
+                    .tvReadableRowFocus()
                 }
             }
         }
@@ -324,7 +324,7 @@ struct TVSportsEventDetailView: View {
                 }
                 .foregroundStyle(Color.siloOnSurface)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .focusable()
+                .tvReadableRowFocus()
             }
         }
     }
@@ -370,15 +370,15 @@ struct TVSportsEventDetailView: View {
         switch details.phase {
         case .loading, .idle:
             HStack(spacing: 14) { ProgressView(); Text("Loading event details…") }
-                .font(.system(size: 24)).foregroundStyle(Color.siloSecondaryText).focusable()
+                .font(.system(size: 24)).foregroundStyle(Color.siloSecondaryText).tvReadableRowFocus()
         case .failed(let error):
-            Text(error.userMessage).font(.system(size: 24)).foregroundStyle(Color.siloSecondaryText).focusable()
+            Text(error.userMessage).font(.system(size: 24)).foregroundStyle(Color.siloSecondaryText).tvReadableRowFocus()
         case .loaded:
             if loaded?.hasStatistics == false, tab != .overview, tab != .news {
                 Text("Statistics are not published for this event yet.")
-                    .font(.system(size: 24)).foregroundStyle(Color.siloSecondaryText).focusable()
+                    .font(.system(size: 24)).foregroundStyle(Color.siloSecondaryText).tvReadableRowFocus()
             } else if tab == .news, (loaded?.news ?? []).isEmpty {
-                Text("No news for this event.").font(.system(size: 24)).foregroundStyle(Color.siloSecondaryText).focusable()
+                Text("No news for this event.").font(.system(size: 24)).foregroundStyle(Color.siloSecondaryText).tvReadableRowFocus()
             }
         }
     }
@@ -390,7 +390,7 @@ struct TVSportsEventDetailView: View {
             Text(value).font(.system(size: 26, weight: .medium)).foregroundStyle(Color.siloOnSurface)
             Spacer()
         }
-        .focusable()
+        .tvReadableRowFocus()
     }
 
     /// One local match pass per opened event: no network, and not repeated by focus changes.

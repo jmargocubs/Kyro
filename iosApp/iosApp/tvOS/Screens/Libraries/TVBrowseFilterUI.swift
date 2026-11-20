@@ -16,8 +16,6 @@ struct TVBrowseControlRow: View {
     let sortDirection: String
     let filterCount: Int
     var focusRequest: Int = 0
-    var onMoveUp: (() -> Void)? = nil
-    var onMoveDown: (() -> Void)? = nil
     let onSort: () -> Void
     let onFilter: () -> Void
     /// Shuffles the whole library; nil where Shuffle isn't offered.
@@ -39,7 +37,6 @@ struct TVBrowseControlRow: View {
             }
             .buttonStyle(TVBrowseControlPillStyle())
             .focused($focusedControl, equals: .sort)
-            .onMoveCommand(perform: handleMove)
 
             Button(action: onFilter) {
                 HStack(spacing: 10) {
@@ -56,7 +53,6 @@ struct TVBrowseControlRow: View {
             }
             .buttonStyle(TVBrowseControlPillStyle(active: filterCount > 0))
             .focused($focusedControl, equals: .filter)
-            .onMoveCommand(perform: handleMove)
 
             if let onShuffle {
                 // Stays enabled while starting: a disabled button loses
@@ -70,7 +66,6 @@ struct TVBrowseControlRow: View {
                 }
                 .buttonStyle(TVBrowseControlPillStyle())
                 .focused($focusedControl, equals: .shuffle)
-                .onMoveCommand(perform: handleMove)
             }
 
             Spacer(minLength: 0)
@@ -85,17 +80,6 @@ struct TVBrowseControlRow: View {
         guard request > 0, request != lastAppliedFocusRequest else { return }
         lastAppliedFocusRequest = request
         focusedControl = .sort
-    }
-
-    private func handleMove(_ direction: MoveCommandDirection) {
-        switch direction {
-        case .up:
-            onMoveUp?()
-        case .down:
-            onMoveDown?()
-        default:
-            break
-        }
     }
 }
 
@@ -594,6 +578,7 @@ private struct TVBrowseControlPillBody: View {
                 )
             )
             .scaleEffect(isFocused ? 1.04 : 1)
+            .tvDisabledAppearance()
             .animation(.easeOut(duration: 0.12), value: isFocused)
     }
 }
@@ -618,6 +603,7 @@ private struct TVBrowsePanelRowBody: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(isFocused ? Color.siloOnSurface : Color.clear)
             )
+            .tvDisabledAppearance()
             .animation(.easeOut(duration: 0.12), value: isFocused)
     }
 }

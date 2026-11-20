@@ -37,8 +37,19 @@ actionable item can be a real focus target.
   control draws its own focus appearance, and keep that appearance visually
   consistent with the platform (scale, lift, highlight).
 - Keep the focused subtree mounted and structurally stable while moving focus.
-- Attach `onMoveCommand` only at intentional boundaries, such as "Up from the
-  first card returns to the top menu." Do not intercept normal in-zone movement.
+- Attach `onMoveCommand` only where the focus engine has no native route, such
+  as a composite control or an entered panel whose surroundings are disabled.
+  Never use it for a route the engine can take: Siri Remote and iPhone Remote
+  touch-surface swipes move focus without reliably delivering move commands,
+  so a route that exists only in a handler fails for swipes. Up from a page's
+  top row to the top menu is a native move, not a handler.
+- Never disable a control while it can hold focus. A disabled button loses
+  focus and the engine moves it to a neighbour. Keep busy controls enabled,
+  ignore repeat presses in the action, and show the busy state in the label.
+- Every focus target must look focused. Bare `.focusable()` draws nothing on
+  tvOS; use `tvReadableRowFocus()` for read-only rows and give placeholders a
+  ring. Every custom `ButtonStyle` must show a disabled state
+  (`tvDisabledAppearance()`).
 - Move focus geometry with layout (`padding`, `frame`, alignment), not
   `.offset`, because tvOS resolves focus from layout frames.
 - Focus can only reach views that are loaded. A `LazyHStack` unloads cards
@@ -113,15 +124,15 @@ A page that renders no focusable view leaves the focus engine with nothing
 focused. The remote stops responding, and Menu/Back never reaches the shell's
 `onExitCommand` either, because exit commands travel up the *focused* responder
 chain. The page reads as hard-frozen and force quit is the only way out. The
-top bar cannot save it: the shell disables the bar while it hands focus to
-content, so a disabled bar and a placeholder page leave zero focus targets in
-the window.
+top bar stays in the focus graph (Build 103), but Back still needs a focused
+responder on the page.
 
 Empty states, error states, and loading skeletons are the usual offenders —
 they are inert by nature, so it is easy to ship one that is the whole content
 of a page. Apply `tvPageFocusOwner` to any placeholder that can be a page's
-entire content. It makes the placeholder a real focus target, routes Up back to
-the top menu, and seeds itself from the shell's content hand-down token.
+entire content. It makes the placeholder a real, visibly focused target and
+seeds itself from the shell's content hand-down token. Up reaches the top menu
+natively.
 
 `TVFocusWatchdogModifier` is the backstop, not the fix. Its first repair re-arms
 page content, which cannot land on a page with no focus target, so a repeated
@@ -138,7 +149,11 @@ Give both pane entry targets `defaultFocus` with `.userInitiated` priority.
 Do not downgrade the rail's selected-category target while the detail pane
 owns focus: doing so lets Left choose a different category by geometry.
 The outer focus scope still chooses the active pane for entry and modal
-restoration. Remember the rail's current control separately from the selected
+restoration. Never disable the rail during an ordinary pane entry: the focused
+category would disable itself, and Left would be dropped. Only a modal, or a
+closing picker whose row has not been restored yet, removes the rail. Settings
+resets to General only on its first appearance; returning from a page pushed
+from Settings keeps the user's place. Remember the rail's current control separately from the selected
 category so cancelling Sign Out restores Sign Out, while Left from the details
 still restores the category. Back returns to the category, then exits Settings
 to Home.
@@ -168,8 +183,9 @@ it. `TVLiveTVBrowseFocusPlanner` holds the rules; the view applies them.
 - The content region always fills the width below the row and always contains a
   focus target. Status and loading pages without a button are focusable
   placeholders, so empty Favorites still accepts Down, Up and Back.
-- The only directional handler is the row's Up boundary to the top menu. Do not
-  add per-chip `onMoveCommand` handlers or a Down interceptor.
+- The page has no directional handler. Up from the control row reaches the top
+  menu natively. Do not add per-chip `onMoveCommand` handlers or a Down
+  interceptor.
 - Back goes up one level: a category's channels → the category grid (restoring
   that card and the scroll anchor) → the control row, on the selected section →
   the top menu. One `onExitCommand` on the page decides by the focused target.
@@ -179,6 +195,27 @@ it. `TVLiveTVBrowseFocusPlanner` holds the rules; the view applies them.
   selecting the Categories chip never pulls focus out of the row.
 
 ## Top Menu Ownership
+
+The bar is one native focus section that stays enabled while page content
+has focus (Build 103). It declares
+`.defaultFocus($focusedItem, .root(selectedRoot), priority: .userInitiated)`,
+so Up from any page's top row, by click or swipe, lands on the selected tab
+without a page handler. Down from a tab without a panel is native too: the
+page's entry section declares its target with `.userInitiated` default focus
+while the bar owns focus. Only panel-bearing tabs keep a Down handler, which
+enters the panel. The bar is inert only while an entered panel owns focus.
+
+`isTopMenuFocused` mirrors the bar's real `@FocusState`; nothing sets it
+optimistically. Explicit hand-offs (tab selection, panel exit to content)
+clear it early so the page may claim, but never resign the tab's focus first:
+the page's claim moves focus out of the bar in one step. `requestMenuFocus` is
+one claim with no timed retry, and a request for the element that already has
+focus does nothing.
+
+Before Build 103 the bar was disabled whenever content had focus, and each
+page reached it through its own Up `onMoveCommand`. Pages and states without
+one (error states, Sports while refreshing, Sports event detail, the alphabet
+rail) had no route up, and swipes skipped every handler.
 
 The top menu has three conceptual states:
 

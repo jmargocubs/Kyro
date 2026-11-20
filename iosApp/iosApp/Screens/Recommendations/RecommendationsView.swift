@@ -10,7 +10,6 @@ struct RecommendationsView: View {
     /// tvOS: the custom top menu owns focus, so deferred content focus
     /// claims must not yank focus away from it.
     var isTopMenuFocused: Bool = false
-    var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel: RecommendationsViewModel
     #if !os(tvOS)
@@ -42,12 +41,10 @@ struct RecommendationsView: View {
     init(
         focusRequest: Int = 0,
         isTopMenuFocused: Bool = false,
-        onTopMenuFocusRequest: (() -> Void)? = nil,
         viewModel: RecommendationsViewModel? = nil
     ) {
         self.focusRequest = focusRequest
         self.isTopMenuFocused = isTopMenuFocused
-        self.onTopMenuFocusRequest = onTopMenuFocusRequest
         _viewModel = State(initialValue: viewModel ?? RecommendationsViewModel())
     }
 
@@ -137,7 +134,6 @@ struct RecommendationsView: View {
                 sections: viewModel.sections,
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
-                onTopMenuFocusRequest: onTopMenuFocusRequest,
                 onItemTap: { destinationContentId, item in
                     router.navigate(
                         to: .itemDetail(
@@ -161,8 +157,7 @@ struct RecommendationsView: View {
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Loading recommendations",
-                    onMoveUp: onTopMenuFocusRequest
+                    accessibilityLabel: "Loading recommendations"
                 )
         } else {
             EmptyStateView(
@@ -173,8 +168,7 @@ struct RecommendationsView: View {
             .tvPageFocusOwner(
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
-                accessibilityLabel: "No recommendations yet",
-                onMoveUp: onTopMenuFocusRequest
+                accessibilityLabel: "No recommendations yet"
             )
         }
     }

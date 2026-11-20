@@ -352,7 +352,6 @@ struct WatchPartyMediaPicker: View {
                     sections: shelves,
                     focusRequest: feedFocusRequest,
                     isTopMenuFocused: chromeHasFocus,
-                    onTopMenuFocusRequest: { chromeFocus = .search },
                     onItemTap: { _, item in openSection(item) }
                 )
             }
@@ -886,7 +885,7 @@ private struct WatchPartyEpisodePicker: View {
                         // seasons arrive; without an owner Menu cannot leave.
                         ProgressView().tint(Color.siloSecondaryText).frame(maxWidth: .infinity)
                             .tvPageFocusOwner(focusRequest: 0, isTopMenuFocused: false,
-                                              accessibilityLabel: "Loading episodes", onMoveUp: nil)
+                                              accessibilityLabel: "Loading episodes")
                     } else if isLoading && episodes.isEmpty {
                         ProgressView().tint(Color.siloSecondaryText).frame(maxWidth: .infinity)
                     } else if episodes.isEmpty {

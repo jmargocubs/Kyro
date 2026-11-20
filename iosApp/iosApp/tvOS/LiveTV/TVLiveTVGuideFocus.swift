@@ -197,6 +197,26 @@ struct TVLiveTVGuideFocusHistory: Equatable {
         return laidOutRows.contains(channelID)
     }
 
+    /// Where Down from the toolbar enters the grid. The preferred channel when
+    /// its lazy row is laid out; otherwise the first laid-out row in guide
+    /// order. A specific target, never geometry, and never a dropped press:
+    /// the old gate disabled the whole grid until the preferred row mounted,
+    /// and a remembered channel far down could leave Down dead indefinitely.
+    func entry(_ entry: TVLiveTVGuideFocus?, rowIDs: [String], laidOutRows: Set<String>) -> TVLiveTVGuideFocus? {
+        if isInGrid { return grid }
+        let preferred = gridDefault(entry: entry)
+        if let channelID = preferred?.channelID, laidOutRows.contains(channelID) { return preferred }
+        if let fallback = rowIDs.first(where: laidOutRows.contains) { return .channel(fallback) }
+        return preferred
+    }
+
+    /// The grid is excluded only while no entry target is laid out at all.
+    func allowsGridEntry(_ entry: TVLiveTVGuideFocus?, rowIDs: [String], laidOutRows: Set<String>) -> Bool {
+        if isInGrid { return true }
+        guard let channelID = self.entry(entry, rowIDs: rowIDs, laidOutRows: laidOutRows)?.channelID else { return false }
+        return laidOutRows.contains(channelID)
+    }
+
     mutating func reconcile(rowIDs: [String]) {
         guard TVLiveTVGuideFocusPlanner.mustRelocate(grid, rowIDs: rowIDs) else { return }
         grid = nil

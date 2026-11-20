@@ -27,6 +27,9 @@ struct TVSettingsView: View {
     @State private var pendingPickerFocus: TVSettingsDetailFocus?
     @State private var isRestoringDetailFocus = false
     @State private var isRestoringRailFocus = false
+    /// Settings enters through General once per visit. Returning from a page
+    /// pushed from Settings (inspector, Manage Servers) keeps the user's place.
+    @State private var hasEnteredSettings = false
     @State private var preferredFocusOwner: FocusOwner = .rail
     @State private var preferredRailFocus: RailItem = .category(.general)
     @State private var preferredDetailFocus: TVSettingsDetailFocus = .top
@@ -87,7 +90,11 @@ struct TVSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSignOutConfirm)
-        .onAppear(perform: focusGeneralOnEntry)
+        .onAppear {
+            guard tvSettingsShouldResetFocusOnAppear(hasEnteredBefore: hasEnteredSettings) else { return }
+            hasEnteredSettings = true
+            focusGeneralOnEntry()
+        }
         .task {
             await viewModel.loadSettings()
             await diagnosticsModel.load(profile: viewModel.activeProfile)
@@ -159,7 +166,11 @@ struct TVSettingsView: View {
             rail
                 .padding(.vertical, 24)
                 .frame(width: 490)
-                .disabled(isModalPresented || isRestoringDetailFocus)
+                // Disabled only while a modal owns focus, or until a closing
+                // picker's row is restored. Never during ordinary entry: the
+                // focused category button must not disable itself.
+                .disabled(tvSettingsRailIsInert(isModalPresented: isModalPresented,
+                                                isRestoringPickerRow: pendingPickerFocus != nil))
                 .defaultFocus(
                     $railFocus,
                     preferredFocusOwner == .detail ? .category(selectedCategory) : preferredRailFocus,
@@ -172,7 +183,7 @@ struct TVSettingsView: View {
 
             detailPane
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .disabled(isModalPresented || isRestoringRailFocus)
+                .disabled(isModalPresented)
                 .defaultFocus(
                     $detailFocus,
                     preferredDetailFocus,
@@ -307,8 +318,10 @@ struct TVSettingsView: View {
         detailFocus = initialFocus
     }
 
-    /// Re-asserts `target` once the pane or overlay change has committed,
-    /// holding `isRestoringDetailFocus` while the focus engine settles.
+    /// Re-asserts `target` once the pane or overlay change has committed.
+    /// `isRestoringDetailFocus` only tells the focus observers to ignore the
+    /// transient reports of this one hand-off; it disables nothing and holds
+    /// no timer, so Left and Back work immediately.
     private func restoreDetailFocus(to target: TVSettingsDetailFocus) {
         isRestoringDetailFocus = true
         Task { @MainActor in
@@ -316,7 +329,7 @@ struct TVSettingsView: View {
             resetFocus(in: settingsFocusScope)
             resetFocus(in: detailFocusScope)
             detailFocus = target
-            try? await Task.sleep(for: .milliseconds(120))
+            await Task.yield()
             isRestoringDetailFocus = false
         }
     }
@@ -333,7 +346,7 @@ struct TVSettingsView: View {
     }
 
     private func returnFocusToRail() {
-        guard !isModalPresented, !isRestoringDetailFocus else { return }
+        guard !isModalPresented else { return }
         preferredFocusOwner = .rail
         preferredRailFocus = .category(selectedCategory)
         detailFocus = nil
@@ -357,7 +370,7 @@ struct TVSettingsView: View {
             await Task.yield()
             resetFocus(in: railFocusScope)
             railFocus = .signOut
-            try? await Task.sleep(for: .milliseconds(120))
+            await Task.yield()
             isRestoringRailFocus = false
         }
     }
@@ -442,8 +455,8 @@ struct TVSettingsView: View {
             detailFocus = nil
             await Task.yield()
             detailFocus = target
-            try? await Task.sleep(for: .milliseconds(120))
             pendingPickerFocus = nil
+            await Task.yield()
             isRestoringDetailFocus = false
         }
     }
@@ -755,3 +768,13 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
 
 }
 #endif
+
+/// Settings resets to General only on its first appearance in a visit.
+func tvSettingsShouldResetFocusOnAppear(hasEnteredBefore: Bool) -> Bool { !hasEnteredBefore }
+
+/// The rail is removed from the focus graph only while a modal owns focus or
+/// a closing picker's row has not been restored yet. Entering the detail pane
+/// never disables it.
+func tvSettingsRailIsInert(isModalPresented: Bool, isRestoringPickerRow: Bool) -> Bool {
+    isModalPresented || isRestoringPickerRow
+}

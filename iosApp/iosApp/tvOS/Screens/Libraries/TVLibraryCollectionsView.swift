@@ -13,8 +13,6 @@ struct TVLibraryCollectionsView: View {
     /// Whether the top menu currently holds focus; deferred entry claims
     /// are dropped while the user is up in the menu.
     var isTopMenuFocused: Bool = false
-    /// Boundary hand-up toward the pill row for the first visual grid row.
-    let onMoveUp: (() -> Void)?
 
     @State private var collectionSections: [LibraryCollectionSection] = []
     @State private var isLoadingCollections = true
@@ -112,7 +110,6 @@ struct TVLibraryCollectionsView: View {
                                     prefersDefaultFocus: isFirstOverall,
                                     defaultFocusNamespace: collectionsFocusNamespace,
                                     focusRequest: isFirstOverall ? contentFocusToken : 0,
-                                    onMoveUp: isInFirstVisualRow ? onMoveUp : nil,
                                     action: {
                                         router.navigate(to: .libraryCollection(
                                             libraryId: library.id,
@@ -151,8 +148,7 @@ struct TVLibraryCollectionsView: View {
         .tvPageFocusOwner(
             focusRequest: focusRequest,
             isTopMenuFocused: isTopMenuFocused,
-            accessibilityLabel: isLoadingCollections ? "Loading collections" : "No collections yet",
-            onMoveUp: onMoveUp
+            accessibilityLabel: isLoadingCollections ? "Loading collections" : "No collections yet"
         )
     }
 
@@ -202,28 +198,9 @@ struct TVLibraryCollectionsView: View {
 
 // MARK: - Collection card
 
-/// Attaches an Up-move handler only when one is supplied, so lower grid rows
-/// do not intercept the command the focus engine needs to move upward.
-private struct TVCollectionCardMoveUpHandler: ViewModifier {
-    let onMoveUp: (() -> Void)?
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if let onMoveUp {
-            content.onMoveCommand { direction in
-                if direction == .up {
-                    onMoveUp()
-                }
-            }
-        } else {
-            content
-        }
-    }
-}
-
 /// Grid wrapper around `TVCollectionPosterCard` (§6.3) that carries the
-/// Collections pill's focus machinery: the programmatic entry kick, the
-/// first-row hand-up to the pill row, and the recycle guard. The visual
+/// Collections pill's focus machinery: the programmatic entry kick and the
+/// recycle guard. Up from the first row is a native move. The visual
 /// is the shared poster card; this struct owns only focus plumbing.
 private struct TVCollectionCard: View {
     let collection: LibraryCollection
@@ -234,10 +211,6 @@ private struct TVCollectionCard: View {
     /// `prefersDefaultFocus` alone doesn't fire when the scope isn't being
     /// entered by the engine.
     var focusRequest: Int = 0
-    /// Supplied to every card in the first visual grid row: Up returns focus
-    /// to the pill row. Lower rows omit it so native grid movement still walks
-    /// through every intervening collection row.
-    var onMoveUp: (() -> Void)? = nil
     let action: () -> Void
 
     /// Drives the programmatic entry kick through the poster card's external
@@ -261,7 +234,6 @@ private struct TVCollectionCard: View {
         )
         .onAppear { applyFocusRequest(focusRequest) }
         .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
-        .modifier(TVCollectionCardMoveUpHandler(onMoveUp: onMoveUp))
     }
 
     private func applyFocusRequest(_ request: Int) {

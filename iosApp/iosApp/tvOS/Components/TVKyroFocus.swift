@@ -1,6 +1,55 @@
 #if os(tvOS)
 import SwiftUI
 
+/// A disabled control cannot take focus on tvOS, so it must also look
+/// unavailable: otherwise a row that Down skips reads as a broken remote.
+/// Every custom tvOS button style applies this; `TVKyroChipStyle` uses the
+/// same 0.45 opacity.
+struct TVDisabledAppearance: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    func body(content: Content) -> some View {
+        content.opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
+extension View {
+    func tvDisabledAppearance() -> some View { modifier(TVDisabledAppearance()) }
+
+    /// A read-only row that takes focus so the remote can scroll through it
+    /// (statistics, news, loading text). Bare `.focusable()` draws nothing on
+    /// tvOS, which reads as a remote that stopped responding. The ring sits
+    /// outside the row's bounds, so layout does not change.
+    func tvReadableRowFocus(cornerRadius: CGFloat = 14) -> some View {
+        modifier(TVReadableRowFocus(cornerRadius: cornerRadius))
+    }
+}
+
+struct TVReadableRowFocus: ViewModifier {
+    let cornerRadius: CGFloat
+    @FocusState private var isFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.white.opacity(isFocused ? 0.10 : 0))
+                    .padding(-10)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(TVKyroFocus.ring, lineWidth: TVKyroFocus.ringWidth)
+                    .padding(-10)
+                    .opacity(isFocused ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            .animation(reduceMotion ? nil : .easeOut(duration: TVKyroFocus.duration), value: isFocused)
+            .focusable()
+            .focused($isFocused)
+            .focusEffectDisabled()
+    }
+}
+
 /// Kyro's Siri Remote focus treatment for Live TV, the guide, Sports and provider screens.
 ///
 /// Focus is shown by shape and size as well as color: a thick bright-cyan ring with a dark inner

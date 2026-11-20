@@ -223,6 +223,20 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     /// `TVSportsMode`), so this walk does not depend on live sports data: only the game cards below
     /// them come from the network, and an empty "No live events" page is normal. Where focus enters
     /// the page does depend on that data, so the test first moves to a known chip, All.
+    /// Build 103: the Sports page has no directional handler at all. Up from wherever focus
+    /// enters reaches the always-enabled top menu natively, including while a refresh runs.
+    func testSportsUpReachesTheTopMenuWithoutAPageHandler() {
+        let app = launch(.sports)
+        XCTAssertTrue(app.buttons["All"].waitForExistence(timeout: 20), "Sports page is showing")
+        XCTAssertTrue(waitFor(app, timeout: 20) { $0 != "<none>" }, "Sports takes focus")
+        var path = [focusedLabel(app)]
+        let menu = upUntilMenu(app, path: &path, maxPresses: 6)
+        log("sports up to menu", path)
+        XCTAssertEqual(menu, "Menu Live TV", "Up lands on the menu's selected item, got \(path)")
+        path.append(press(.down, app, "sports menu down"))
+        XCTAssertFalse(path.last?.hasPrefix("Menu ") ?? true, "Down from the menu re-enters the page")
+    }
+
     func testSportsChipRowsMoveOneChipAtATimeAndStopAtTheirEnds() {
         let app = launch(.sports)
         XCTAssertTrue(app.buttons["All"].waitForExistence(timeout: 20), "Sports page is showing")
@@ -349,8 +363,8 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         return condition()
     }
 
-    private func upUntilMenu(_ app: XCUIApplication, path: inout [String]) -> String {
-        for _ in 0..<4 {
+    private func upUntilMenu(_ app: XCUIApplication, path: inout [String], maxPresses: Int = 4) -> String {
+        for _ in 0..<maxPresses {
             let label = press(.up, app, "up to menu")
             path.append(label)
             if label.hasPrefix("Menu ") { return label }

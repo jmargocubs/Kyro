@@ -202,6 +202,7 @@ private struct TVSettingsRailRowBody: View {
                 radius: 18,
                 y: 8
             )
+            .tvDisabledAppearance()
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 
@@ -267,6 +268,7 @@ private struct TVSettingsPaneRowBody: View {
                 y: 8
             )
             .focusEffectDisabled()
+            .tvDisabledAppearance()
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 

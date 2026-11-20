@@ -10,8 +10,8 @@ focus preference, navigation guard, delay, or restoration rule is intentionally 
 
 The inspector is compiled under `DEBUG || KYRO_FOCUS_DIAGNOSTICS`. On this
 diagnostic branch the `SiloTV` target in `iosApp/project.yml` uses a build-number
-lookup: `KYRO_FOCUS_DIAGNOSTICS_101` and `KYRO_FOCUS_DIAGNOSTICS_102` are defined.
-Cloud unsigned IPA stamps of build 101 or 102 therefore enable the inspector in
+lookup: `KYRO_FOCUS_DIAGNOSTICS_101`, `_102` and `_103` are defined.
+Cloud unsigned IPA stamps of build 101, 102 or 103 therefore enable the inspector in
 Release; other Release build numbers do not opt in. Never reuse those diagnostic
 build numbers for a production archive. Global `DEBUG` is not enabled, so unrelated
 debug behavior and the old private-API overlay stay out.
@@ -73,10 +73,15 @@ presses. A binding observation is not confirmation of engine focus. Screens are
 the last instrumented component with a nonempty binding; uninstrumented sheets
 and system UI can leave that label stale. Engine and binding IDs are separate.
 
-Storage is in memory: latest **512** events, monotonically increasing sequence,
+Build 103 storage: the ring is held in memory and saved as sanitized JSON in
+Application Support (`KyroFocusDiagnostics/latest-capture.json` and
+`previous-capture.json`) on start, every 50 events, resign-active, Stop and
+backgrounding. Builds 101 and 102 kept it in memory only.
+Ring: latest **512** events, monotonically increasing sequence,
 UTC timestamp, monotonic uptime, dropped-event count and capped field lengths.
 Weak engine identities have a hard 2,048-entry cap. Overlay refresh is limited to
-5 Hz. No file logging, analytics upload, private APIs or polling of focus is added.
+5 Hz. No analytics upload, private APIs or polling of focus is added. The only
+files written are the two sanitized capture archives above.
 Dynamic values are session-keyed HMAC tokens; only fixed enum case names and
 booleans remain readable. No raw media/provider/profile names, credentials,
 URLs, tokens, search text, accessibility labels or descriptions enter the report.
@@ -88,10 +93,12 @@ Engine IDs and HMAC tokens are only meaningful within one capture.
    its bundle ID, app groups or signing identity.
 2. Open **Settings → Server → About → Remote & Focus Inspector (diagnostic)**.
 3. Select **Start fresh capture**, then return to the screen under investigation.
-4. **Hide inspector (keep recording)** removes only the noninteractive overlay.
-   **Stop capture** detaches observers and stops sharing. Capture is off at launch
-   and stops on backgrounding; it does not persist a preference across launches.
-5. A fresh capture clears the prior buffer. Export before starting another.
+4. **Hide overlay (capture keeps recording)** removes only the noninteractive
+   overlay. **Stop capture (keeps it for sharing)** detaches observers; the
+   capture stays shareable. Capture is off at launch and stops on backgrounding;
+   the last capture is saved and shareable after relaunch.
+5. Build 103: a fresh capture keeps the one it replaces as the **previous
+   capture**, shareable from the inspector page. Builds 101 and 102 erased it.
 
 The overlay uses its own non-key, noninteractive window with no focusable controls,
 not a view inserted in the app's navigation graph. Only the explicit diagnostic
@@ -125,8 +132,14 @@ intended movement separately; do not include credentials or media titles.
 
 1. Keep Apple TV and iPhone on the same **trusted private IPv4 LAN** (Wi-Fi or
    Ethernet; guest isolation/VPN may prevent access). Keep Kyro foregrounded.
-2. In the inspector page choose **Share frozen report on trusted LAN (2 minutes)**.
-   This freezes a sanitized JSON snapshot; subsequent focus events do not change it.
+2. In the inspector page choose **Share latest capture on trusted LAN (2 minutes)**.
+   It is the page's first button and is never disabled; it works while
+   recording, after Stop, and after a relaunch. This freezes a sanitized JSON
+   snapshot; subsequent focus events do not change it.
+   **Without navigating (Build 103):** hold **Play/Pause for 3 seconds** anywhere
+   outside playback, sheets and covers (including the Guide). The QR code and
+   one-time code appear in a window that cannot take focus. Nothing is shared
+   until you hold the button; a short press is unaffected.
 3. Scan the displayed QR with iPhone Camera and open in Safari. The QR holds only
    the LAN HTTP address: no report, authorization code, credential or file URL.
    Alternatively type the displayed address into Safari.
@@ -134,7 +147,8 @@ intended movement separately; do not include credentials or media titles.
    zeros. Tap **Download JSON**. In Safari Downloads, open
    `Kyro-TV-focus-diagnostic.json`, then Share → Save to Files or attach it here.
 5. Sharing stops after one authorized transfer, two minutes, five incorrect codes,
-   leaving the export page, stopping capture, or backgrounding. **Stop sharing now**
+   leaving the export page, or backgrounding. Stopping capture no longer stops a
+   share: the shared snapshot is already frozen. **Stop sharing now**
    cancels immediately. Download failure requires a new explicit sharing session.
 
 The listener binds only an `en*` private IPv4 address and rejects public clients.

@@ -16,7 +16,6 @@ struct HomeView: View {
     /// claims are dropped while the user is up in the menu so late data
     /// loads never yank focus.
     var isTopMenuFocused: Bool = false
-    var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
     #if !os(tvOS)
@@ -79,7 +78,6 @@ struct HomeView: View {
                     focusRequest: homeFocusRequest,
                     detailReturnFocusRequest: detailReturnFocusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    onTopMenuFocusRequest: onTopMenuFocusRequest,
                     onItemTap: navigateToDetail,
                     onRemoveFromContinueWatching: dismissContinueWatching,
                     onSetWatched: setWatched
@@ -96,8 +94,7 @@ struct HomeView: View {
                     .tvPageFocusOwner(
                         focusRequest: homeFocusRequest,
                         isTopMenuFocused: isTopMenuFocused,
-                        accessibilityLabel: "Loading home",
-                        onMoveUp: onTopMenuFocusRequest
+                        accessibilityLabel: "Loading home"
                     )
             } else {
                 EmptyStateView(
@@ -108,8 +105,7 @@ struct HomeView: View {
                 .tvPageFocusOwner(
                     focusRequest: homeFocusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Nothing to watch yet",
-                    onMoveUp: onTopMenuFocusRequest
+                    accessibilityLabel: "Nothing to watch yet"
                 )
             }
         }

@@ -186,12 +186,12 @@ struct MediaRow: View {
         }
     }
 
-    /// Write the claim, then verify it actually stuck and re-assert if not.
-    /// A single write races two things that both win by coming later: the
-    /// engine's remembered-focus repair after the top bar resigns, and the
-    /// layout that mounts the requested card after scrolling. @FocusState
-    /// reflects actual focus, so a rejected write reads back as a different
-    /// value. Restoration ownership cancels retries when focus leaves the row.
+    /// Write the claim, then re-assert only while it has not landed anywhere
+    /// in this row: the requested card may mount a layout pass after the
+    /// scroll. Once any card in the row has focus — the target, or another
+    /// card the user moved to — the retry stops, so it can never pull focus
+    /// back from a later move. Restoration ownership cancels it when focus
+    /// leaves the row.
     private func claimRequestedItemFocus(
         _ targetItem: SectionItem,
         generation: Int,
@@ -206,10 +206,14 @@ struct MediaRow: View {
         // Allow a bounded window for lazy layout and the engine's entry repair.
         guard attempt < 8 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            guard generation == focusRestorationGeneration,
-                  focusRestorationOwner?.wrappedValue != false,
-                  items.contains(where: { $0.contentId == targetItem.contentId }),
-                  focusedItemId != targetItem.contentId else { return }
+            guard tvMediaRowShouldRetryEntryClaim(
+                      generationMatches: generation == focusRestorationGeneration,
+                      rowLostOwnership: focusRestorationOwner?.wrappedValue == false,
+                      targetStillPresent: items.contains(where: { $0.contentId == targetItem.contentId }),
+                      focusedItemId: focusedItemId,
+                      lastFocusedItemId: lastFocusedItemId,
+                      targetId: targetItem.contentId
+                  ) else { return }
             Self.focusLogger.debug("mediaRow.reclaimFocus attempt=\(attempt + 1, privacy: .public)")
             claimRequestedItemFocus(
                 targetItem,
@@ -757,3 +761,21 @@ private extension View {
     }
 }
 #endif
+
+/// The entry claim retries only while no card in the row holds focus and the
+/// user has not moved since the claim. A retry that re-asserted whenever
+/// focus differed from the target snapped focus back after a quick Right.
+func tvMediaRowShouldRetryEntryClaim(
+    generationMatches: Bool,
+    rowLostOwnership: Bool,
+    targetStillPresent: Bool,
+    focusedItemId: String?,
+    lastFocusedItemId: String?,
+    targetId: String
+) -> Bool {
+    generationMatches
+        && !rowLostOwnership
+        && targetStillPresent
+        && focusedItemId == nil
+        && lastFocusedItemId == targetId
+}

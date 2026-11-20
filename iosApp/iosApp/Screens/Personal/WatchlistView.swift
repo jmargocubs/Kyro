@@ -6,7 +6,6 @@ struct WatchlistView: View {
     let usesTVTopMenu: Bool
     var focusRequest: Int
     var isTopMenuFocused: Bool
-    var onTopMenuFocusRequest: (() -> Void)?
 
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
@@ -41,14 +40,12 @@ struct WatchlistView: View {
         showsNavigationTitle: Bool = true,
         usesTVTopMenu: Bool = false,
         focusRequest: Int = 0,
-        isTopMenuFocused: Bool = false,
-        onTopMenuFocusRequest: (() -> Void)? = nil
+        isTopMenuFocused: Bool = false
     ) {
         self.showsNavigationTitle = showsNavigationTitle
         self.usesTVTopMenu = usesTVTopMenu
         self.focusRequest = focusRequest
         self.isTopMenuFocused = isTopMenuFocused
-        self.onTopMenuFocusRequest = onTopMenuFocusRequest
     }
 
     var body: some View {
@@ -64,8 +61,7 @@ struct WatchlistView: View {
                     .tvPageFocusOwner(
                         focusRequest: focusRequest,
                         isTopMenuFocused: isTopMenuFocused,
-                        accessibilityLabel: "Loading watchlist",
-                        onMoveUp: onTopMenuFocusRequest
+                        accessibilityLabel: "Loading watchlist"
                     )
                 #endif
             } else {
@@ -78,8 +74,7 @@ struct WatchlistView: View {
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Watchlist is empty",
-                    onMoveUp: onTopMenuFocusRequest
+                    accessibilityLabel: "Watchlist is empty"
                 )
                 #endif
             }
@@ -193,11 +188,6 @@ struct WatchlistView: View {
                             }
                         )
                         .frame(maxWidth: .infinity)
-                        .onMoveCommand { direction in
-                            if direction == .up, index < columns.count {
-                                onTopMenuFocusRequest?()
-                            }
-                        }
                     }
                 }
                 .focusSection()
