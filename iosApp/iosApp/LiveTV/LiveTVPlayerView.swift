@@ -591,7 +591,7 @@ struct LiveTVPlayerView: View {
             #endif
         }
         .sheet(isPresented: $isShowingChannelPicker) {
-            LiveTVChannelPickerView(channels: channels, selectedChannelID: channel.id) { selected in
+            LiveTVChannelPickerView(channels: channels, selectedChannelID: channel.id, service: service) { selected in
                 if let service {
                     guard service.playFromPlayerPicker(selected) else { return }
                 } else {
@@ -724,16 +724,20 @@ private struct LiveTVChannelPickerView: View {
     @Environment(\.dismiss) private var dismiss
     let channels: [LiveTVChannel]
     let selectedChannelID: String
+    let service: LiveTVService?
     let onSelect: (LiveTVChannel) -> Void
     @State private var query = ""
     @State private var search = LiveTVChannelSearchModel()
+    #if os(iOS)
+    @State private var paged = LiveTVPagedChannelModel()
+    #endif
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(search.orderedCategories, id: \.self) { category in
+                ForEach(orderedCategories, id: \.self) { category in
                     Section(category) {
-                        ForEach(search.groups[category] ?? []) { candidate in
+                        ForEach(groups[category] ?? []) { candidate in
                             Button {
                                 onSelect(candidate)
                             } label: {
@@ -747,6 +751,7 @@ private struct LiveTVChannelPickerView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .onAppear { loadMoreIfNeeded(candidate) }
                         }
                     }
                 }
@@ -762,7 +767,35 @@ private struct LiveTVChannelPickerView: View {
     }
 
     private func updateSearch() {
+        #if os(iOS)
+        if let service {
+            paged.reset(service: service, providerID: service.selectedProviderID,
+                        catalogRevision: service.channelCatalogRevision, query: query,
+                        category: nil, favoritesOnly: false)
+            return
+        }
+        #endif
         search.update(channels: channels, query: query, category: nil, favoritesOnly: false, favoriteIDs: [])
+    }
+
+    private var groups: [String: [LiveTVChannel]] {
+        #if os(iOS)
+        if service != nil { return paged.groups }
+        #endif
+        return search.groups
+    }
+
+    private var orderedCategories: [String] {
+        #if os(iOS)
+        if service != nil { return paged.orderedCategories }
+        #endif
+        return search.orderedCategories
+    }
+
+    private func loadMoreIfNeeded(_ channel: LiveTVChannel) {
+        #if os(iOS)
+        if let service { paged.loadPageIfNeeded(around: channel, service: service) }
+        #endif
     }
 }
 

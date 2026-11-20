@@ -61,7 +61,7 @@ struct LiveTVBrowsingContext: Codable, Equatable, Sendable {
     /// still loading. Validating against an empty or foreign catalog would discard a saved
     /// category and row that are still valid.
     func validatedWhenReady(selectedProviderID: UUID?, catalogIsLoaded: Bool,
-                            categories: [String], channels: [LiveTVChannel]) -> Self? {
+                            categories: [String], channels: [LiveTVChannel]?) -> Self? {
         guard providerID == selectedProviderID, catalogIsLoaded else { return nil }
         return validated(categories: categories, channels: channels)
     }
@@ -82,11 +82,11 @@ struct LiveTVBrowsingContext: Codable, Equatable, Sendable {
     }
 
     /// Remove stale selections before applying the snapshot to a refreshed or changed catalog.
-    func validated(categories: [String], channels: [LiveTVChannel]) -> Self {
-        let channelIDs = Set(channels.map(\.id))
+    func validated(categories: [String], channels: [LiveTVChannel]?) -> Self {
+        let channelIDs = channels.map { Set($0.map(\.id)) }
         let validCategory = category.flatMap { categories.contains($0) ? $0 : nil }
         let validChannelID = channelID.flatMap {
-            LiveTVRecentChannel.belongs($0, to: providerID) && channelIDs.contains($0) ? $0 : nil
+            LiveTVRecentChannel.belongs($0, to: providerID) && (channelIDs?.contains($0) ?? true) ? $0 : nil
         }
         return Self(providerID: providerID, category: validCategory, favoritesOnly: favoritesOnly,
                     searchQuery: searchQuery, channelID: validChannelID, offsetX: offsetX, offsetY: offsetY,

@@ -120,14 +120,15 @@ struct EPGSQLiteProgramSearch: Sendable {
     /// Playlist ordinals of mapped channels whose listings are read from the file (not overlaid).
     private let storedOrdinals: [String: Int]
 
-    private init?(identity: Identity, guide: EPGIndex, channels: [LiveTVChannel]) {
+    private init?(identity: Identity, guide: EPGIndex, channels: [EPGProgramChannel]) {
         guard let sqlite = guide.sqlite?.guide else { return nil }
         self.identity = identity
         self.guide = guide
         self.sqlite = sqlite
         // First playlist channel per guide channel wins, as in the in-memory index.
         var slots: [String: Slot] = [:]
-        for (ordinal, channel) in channels.enumerated() {
+        for channel in channels {
+            let ordinal = channel.ordinal
             if ordinal.isMultiple(of: 256), Task.isCancelled { return nil }
             guard let key = guide.channelKey(guideID: channel.guideID, name: channel.name),
                   slots[key] == nil else { continue }
@@ -143,7 +144,7 @@ struct EPGSQLiteProgramSearch: Sendable {
     }
 
     /// Builds off the caller's actor. Nil when cancelled or for a guide that is not SQLite-backed.
-    static func prepare(identity: Identity, guide: EPGIndex, channels: [LiveTVChannel]) async -> Self? {
+    static func prepare(identity: Identity, guide: EPGIndex, channels: [EPGProgramChannel]) async -> Self? {
         let worker: Task<Self?, Never> = Task.detached(priority: .utility) {
             guard !Task.isCancelled else { return nil }
             return Self(identity: identity, guide: guide, channels: channels)
@@ -151,6 +152,14 @@ struct EPGSQLiteProgramSearch: Sendable {
         return await withTaskCancellationHandler(operation: { await worker.value }, onCancel: {
             worker.cancel()
         })
+    }
+
+    static func prepare(identity: Identity, guide: EPGIndex, channels: [LiveTVChannel]) async -> Self? {
+        let associations = channels.enumerated().map {
+            EPGProgramChannel(id: $0.element.id, guideID: $0.element.guideID,
+                              name: $0.element.name, ordinal: $0.offset)
+        }
+        return await prepare(identity: identity, guide: guide, channels: associations)
     }
 
     var mappedChannelCount: Int { slots.count }

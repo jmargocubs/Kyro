@@ -97,9 +97,40 @@ struct UnifiedSearchIPTVCatalogSnapshot: Sendable {
     let isLoading: Bool
     let errorMessage: String?
     let channels: [LiveTVChannel]
+    var channelCount: Int = 0
 
     var identity: LiveTVChannelSearchIndex.Identity? {
         providerID.map { LiveTVChannelSearchIndex.Identity(providerID: $0, catalogRevision: catalogRevision) }
+    }
+}
+
+struct UnifiedSearchLiveTVSource {
+    let search: @MainActor @Sendable (_ query: String, _ providerID: UUID, _ revision: Int) async
+        -> (channels: [LiveTVChannel], total: Int)?
+    let resolve: @MainActor @Sendable (_ channelID: String, _ providerID: UUID, _ revision: Int) async
+        -> LiveTVChannel?
+    let programAssociations: @MainActor @Sendable (_ providerID: UUID, _ revision: Int) async
+        -> [EPGProgramChannel]?
+
+    @MainActor static func live(service: LiveTVService) -> Self {
+        Self(search: { query, providerID, revision in
+            guard service.selectedProviderID == providerID, service.channelCatalogRevision == revision else { return nil }
+            async let page = service.channelPage(providerID: providerID, query: query, limit: 200)
+            async let count = service.channelCount(providerID: providerID, query: query)
+            let result = await (page, count)
+            guard service.selectedProviderID == providerID, service.channelCatalogRevision == revision else { return nil }
+            return (channels: result.0, total: result.1)
+        }, resolve: { channelID, providerID, revision in
+            guard service.selectedProviderID == providerID, service.channelCatalogRevision == revision else { return nil }
+            let channel = await service.channel(providerID: providerID, id: channelID)
+            guard service.selectedProviderID == providerID, service.channelCatalogRevision == revision else { return nil }
+            return channel
+        }, programAssociations: { providerID, revision in
+            guard service.selectedProviderID == providerID, service.channelCatalogRevision == revision else { return nil }
+            let result = await service.programSearchAssociations(providerID: providerID)
+            guard service.selectedProviderID == providerID, service.channelCatalogRevision == revision else { return nil }
+            return result
+        })
     }
 }
 
@@ -214,7 +245,8 @@ extension LiveTVService {
             hasProvider: !providers.isEmpty,
             isLoading: isLoading,
             errorMessage: errorMessage,
-            channels: channels
+            channels: channels,
+            channelCount: selectedChannelCount
         )
     }
 
@@ -246,6 +278,7 @@ final class UnifiedSearchCoordinator {
 
     @ObservationIgnored private let indexStore: LiveTVChannelSearchIndexStore
     @ObservationIgnored private let catalogSnapshot: @MainActor () -> UnifiedSearchIPTVCatalogSnapshot
+    @ObservationIgnored private let liveTVSource: UnifiedSearchLiveTVSource?
     @ObservationIgnored private let siloIdentityProvider: @MainActor () -> UnifiedSiloIdentity?
     @ObservationIgnored private let debounceDuration: Duration
     @ObservationIgnored private let waitForDebounce: @MainActor (Duration) async -> Void
@@ -278,6 +311,7 @@ final class UnifiedSearchCoordinator {
         catalogSnapshot: @escaping @MainActor () -> UnifiedSearchIPTVCatalogSnapshot = {
             LiveTVService.shared.unifiedSearchCatalogSnapshot()
         },
+        liveTVSource: UnifiedSearchLiveTVSource? = nil,
         siloIdentityProvider: @escaping @MainActor () -> UnifiedSiloIdentity? = {
             UnifiedSiloIdentity(SessionOwner.current())
         },
@@ -290,6 +324,7 @@ final class UnifiedSearchCoordinator {
         self.silo = silo
         self.indexStore = indexStore
         self.catalogSnapshot = catalogSnapshot
+        self.liveTVSource = liveTVSource
         self.siloIdentityProvider = siloIdentityProvider
         self.programs = programs
         self.debounceDuration = debounceDuration
@@ -422,6 +457,12 @@ final class UnifiedSearchCoordinator {
         let snapshot = catalogSnapshot()
         guard let identity = snapshot.identity, identity == observedCatalogIdentity,
               let providerID = snapshot.providerID else { return nil }
+        if let liveTVSource {
+            let resolved = await liveTVSource.resolve(result.id, providerID, identity.catalogRevision)
+            guard !Task.isCancelled, catalogSnapshot().identity == identity,
+                  liveTVResults.contains(where: { $0.id == result.id }) else { return nil }
+            return resolved
+        }
         let channels = snapshot.channels
         let worker = Task.detached(priority: .userInitiated) { () -> LiveTVChannel? in
             for (offset, channel) in channels.enumerated() {
@@ -529,8 +570,22 @@ final class UnifiedSearchCoordinator {
         let catalog = catalogSnapshot()
         guard let key = programSourceKey(catalog), key.identity == published, key.isReady,
               let guide = programGuide(catalog)?.guide else { return nil }
-        let channels = catalog.channels
         let providerID = published.providerID
+        if let liveTVSource {
+            guard let channel = await liveTVSource.resolve(result.channelID, providerID,
+                                                           published.catalogRevision),
+                  guide.channelKey(guideID: channel.guideID, name: channel.name) == result.channelKey else { return nil }
+            let window = DateInterval(start: result.start, end: max(result.end, result.start.addingTimeInterval(1)))
+            let program = await Task.detached(priority: .userInitiated) {
+                guide.matchingPrograms(channelKey: result.channelKey, overlapping: window)
+                    .first(where: { $0.id == result.programID })
+            }.value
+            guard !Task.isCancelled, programSourceKey(catalogSnapshot()) == key,
+                  publishedProgramIdentity == published,
+                  programResults.contains(where: { $0.id == result.id }), let program else { return nil }
+            return (channel, program)
+        }
+        let channels = catalog.channels
         let worker = Task.detached(priority: .userInitiated) { () -> (channel: LiveTVChannel, program: EPGProgram)? in
             var found: LiveTVChannel?
             for (offset, channel) in channels.enumerated() {
@@ -643,12 +698,23 @@ final class UnifiedSearchCoordinator {
             updateLiveTVAvailability(snapshot)
             return
         }
-        guard !snapshot.channels.isEmpty else {
+        guard snapshot.channelCount > 0 || !snapshot.channels.isEmpty else {
             updateLiveTVAvailability(snapshot)
             return
         }
 
         liveTVState = UnifiedSearchSourceStatus(phase: .loading)
+        if let liveTVSource {
+            guard let found = await liveTVSource.search(query, providerID, expected.catalogRevision),
+                  !Task.isCancelled, queryToken == queryGeneration, liveToken == liveTVGeneration,
+                  catalogSnapshot().identity == expected else { return }
+            liveTVResults = found.channels.enumerated().map { ordinal, channel in
+                UnifiedLiveTVSearchResult(id: channel.id, name: channel.name, category: channel.category,
+                                          ordinal: ordinal, logoURL: Self.safeLogoURL(channel.logoURL))
+            }
+            liveTVState = UnifiedSearchSourceStatus(phase: .loaded, resultCount: found.total)
+            return
+        }
         guard await installIndex(for: snapshot, identity: expected),
               !Task.isCancelled, queryToken == queryGeneration,
               liveToken == liveTVGeneration else { return }
@@ -752,9 +818,9 @@ final class UnifiedSearchCoordinator {
         if !snapshot.hasProvider {
             liveTVState = UnifiedSearchSourceStatus(phase: .unavailable,
                                                    message: "No Live TV provider is configured.")
-        } else if let error = snapshot.errorMessage, snapshot.channels.isEmpty {
+        } else if let error = snapshot.errorMessage, snapshot.channelCount == 0 && snapshot.channels.isEmpty {
             liveTVState = UnifiedSearchSourceStatus(phase: .failed, message: error)
-        } else if snapshot.isLoading && snapshot.channels.isEmpty {
+        } else if snapshot.isLoading && snapshot.channelCount == 0 && snapshot.channels.isEmpty {
             liveTVState = UnifiedSearchSourceStatus(phase: .loading)
         } else {
             liveTVState = UnifiedSearchSourceStatus(phase: .loaded, resultCount: 0)
@@ -790,7 +856,8 @@ final class UnifiedSearchCoordinator {
                             guideGeneration: guide.guideGeneration),
             hasGuide: guide.guide != nil, isGuideLoading: guide.guide == nil && guide.isGuideLoading,
             isGuideStale: guide.isGuideStale,
-            isSQLiteBacked: guide.guide?.isSQLiteBacked ?? false, hasChannels: !catalog.channels.isEmpty)
+                            isSQLiteBacked: guide.guide?.isSQLiteBacked ?? false,
+                            hasChannels: catalog.channelCount > 0 || !catalog.channels.isEmpty)
     }
 
     /// Cancels program work and drops its results; any late completion fails its token check.
@@ -847,7 +914,15 @@ final class UnifiedSearchCoordinator {
         }
 
         programState = UnifiedSearchSourceStatus(phase: .loading)
-        let input = EPGProgramSearchIndexStore.Input(identity: key.identity, guide: guide, channels: catalog.channels)
+        let input: EPGProgramSearchIndexStore.Input
+        if let liveTVSource {
+            guard let associations = await liveTVSource.programAssociations(
+                key.identity.providerID, key.identity.catalogRevision
+            ) else { return }
+            input = .init(identity: key.identity, guide: guide, associations: associations)
+        } else {
+            input = .init(identity: key.identity, guide: guide, channels: catalog.channels)
+        }
         let outcome = await programs.store.search(query: query, input: input)
         guard !Task.isCancelled, queryToken == queryGeneration, programToken == programGeneration else { return }
         let current = catalogSnapshot()
@@ -880,6 +955,26 @@ final class UnifiedSearchCoordinator {
         // Attach logos from the same catalog snapshot off-main. Only safe metadata crosses back.
         let providerID = key.identity.providerID
         let searchedAt = Date()
+        if let liveTVSource {
+            var resolved: [UnifiedProgramSearchResult] = []
+            resolved.reserveCapacity(matches.count)
+            for match in matches {
+                guard let channel = await liveTVSource.resolve(match.channelID, providerID,
+                                                               key.identity.catalogRevision) else { continue }
+                resolved.append(UnifiedProgramSearchResult(
+                    id: "\(match.channelID)|\(match.programID)", programID: match.programID,
+                    channelID: match.channelID, channelKey: match.channelKey, channelName: match.channelName,
+                    channelOrdinal: match.channelOrdinal, logoURL: Self.safeLogoURL(channel.logoURL),
+                    title: match.title, subtitle: match.subtitle, start: match.start, end: match.end,
+                    wasLiveAtSearch: match.start <= searchedAt && searchedAt < match.end))
+            }
+            guard !Task.isCancelled, queryToken == queryGeneration, programToken == programGeneration,
+                  programSourceKey(catalogSnapshot()) == key else { return }
+            programResults = resolved
+            publishedProgramIdentity = key.identity
+            programState = UnifiedSearchSourceStatus(phase: .loaded, resultCount: resolved.count)
+            return
+        }
         let worker = Task.detached(priority: .userInitiated) { () -> [UnifiedProgramSearchResult]? in
             var logos: [String: URL?] = [:]
             logos.reserveCapacity(matches.count)

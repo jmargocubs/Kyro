@@ -92,9 +92,21 @@ enum LiveTVChannelStoreBenchmark {
         let collision = await store.channel(providerID: first, id: other.id)
         let guideMatched = await store.channel(providerID: first, id: original[0].id)
         let guideIDs = await store.channelIDs(providerID: first, guideID: "epg-1")
+        let ordered = await store.channels(providerID: first,
+                                           ids: [original[1].id, other.id, original[0].id])
+        let secondOffset = await store.offset(providerID: first, channelID: original[1].id,
+                                              category: "New Category")
+        let epgAssociations = await store.epgAssociationValues(providerID: first)
+        let programAssociations = await store.programAssociations(providerID: first)
+        let containsSecond = await store.contains(providerID: first, id: original[1].id)
         precondition(collision == nil)
         precondition(guideMatched?.guideID == "epg-1")
         precondition(guideIDs == [original[0].id])
+        precondition(containsSecond)
+        precondition(ordered.map(\.id) == [original[1].id, original[0].id])
+        precondition(secondOffset == 1)
+        precondition(epgAssociations?.names == replacement.map(\.name))
+        precondition(programAssociations.map(\.id) == replacement.map(\.id))
         let cancelledImport = Task { () -> Bool in
             withUnsafeCurrentTask { $0?.cancel() }
             do {
@@ -175,7 +187,16 @@ enum LiveTVChannelStoreBenchmark {
         precondition(categories.count == 40 && categories.reduce(0) { $0 + $1.count } == count)
         let last = channel(count - 1)
         let resolved = await store.channel(providerID: first, id: last.id)
+        let containsLast = await store.contains(providerID: first, id: last.id)
         precondition(resolved?.guideID == last.guideID && resolved?.streamURL == last.streamURL)
+        precondition(containsLast)
+        let deepOffset = await store.offset(providerID: first, channelID: last.id)
+        let deepCategoryOffset = await store.offset(providerID: first, channelID: last.id,
+                                                    category: last.category)
+        precondition(deepOffset == count - 1 && deepCategoryOffset == count / 40 - 1)
+        let resolvedIDs = await store.channels(providerID: first,
+                                               ids: [last.id, channel(0).id], limit: 2)
+        precondition(resolvedIDs.map(\.id) == [last.id, channel(0).id])
         try await store.setFavorite(true, channelID: last.id, providerID: first)
         let favorites = await store.page(providerID: first, favoritesOnly: true)
         let favoriteCount = await store.count(providerID: first, query: "", category: nil, favoritesOnly: true)
@@ -183,15 +204,21 @@ enum LiveTVChannelStoreBenchmark {
         precondition(favorites.map(\.id) == [last.id] && favoriteCount == 1)
         precondition(summaries.count == 40 && summaries.reduce(0) { $0 + $1.channelCount } == count
                      && summaries.reduce(0) { $0 + $1.favoriteCount } == 1)
-        var compatibilityCatalog = await store.offlineCatalog(providerID: first, maximumChannels: count)
-        precondition(compatibilityCatalog?.count == count)
-        let materializedRSS = residentRSSMB()
-        compatibilityCatalog = nil
+        // These compact projections are the largest remaining association payloads. They omit
+        // stream/artwork URLs and full channel values; measure them explicitly instead of
+        // recreating the compatibility catalog that production no longer retains.
+        var epgAssociations = await store.epgAssociationValues(providerID: first)
+        var programAssociations = await store.programAssociations(providerID: first)
+        precondition(epgAssociations?.names.count == count && programAssociations.count == count)
+        let compactAssociationRSS = residentRSSMB()
+        epgAssociations = nil
+        programAssociations = []
+        let retainedAfterAssociationsRSS = residentRSSMB()
         await store.close()
         let retainedRSS = residentRSSMB()
         let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("channels.sqlite").path)
         let bytes = (attributes[.size] as? NSNumber)?.intValue ?? -1
-        print("\(count),\(importMS),\(searchMS),\(broadSearchMS),\(categoryMS),\(deepCategoryMS),\(guideMS),\(keysetMS),\(epgMS),\(bytes),\(streamingImportPeakRSS),\(peakRSSMB()),\(materializedRSS),\(retainedRSS)")
+        print("\(count),\(importMS),\(searchMS),\(broadSearchMS),\(categoryMS),\(deepCategoryMS),\(guideMS),\(keysetMS),\(epgMS),\(bytes),\(streamingImportPeakRSS),\(peakRSSMB()),\(compactAssociationRSS),\(retainedAfterAssociationsRSS),\(retainedRSS)")
     }
 
     static func main() async throws {
@@ -201,7 +228,7 @@ enum LiveTVChannelStoreBenchmark {
         }
         let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         try await correctness(root: root)
-        print("count,import_ms,search_ms,broad_search_ms,category_ms,deep_category_ms,guide_page_ms,keyset_page_ms,epg_lookup_ms,sqlite_bytes,streaming_import_peak_rss_mb,process_peak_rss_mb,materialized_catalog_rss_mb,retained_after_release_rss_mb")
+        print("count,import_ms,search_ms,broad_search_ms,category_ms,deep_category_ms,guide_page_ms,keyset_page_ms,epg_lookup_ms,sqlite_bytes,streaming_import_peak_rss_mb,process_peak_rss_mb,compact_association_rss_mb,retained_after_associations_rss_mb,retained_after_close_rss_mb")
         let counts: [Int]
         if CommandLine.arguments.count == 3 {
             guard let count = Int(CommandLine.arguments[2]), count > 0 else {

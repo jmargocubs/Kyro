@@ -95,6 +95,15 @@ final class KyroSportsEventChannelMatchingTests: XCTestCase {
         XCTAssertTrue(result.matches[0].isAutoPlayEligible)
     }
 
+    func testIndexedCandidateTermsCoverAbbreviationsAndAlternateNames() {
+        let terms = KyroSportsStreamMatcher.candidateSearchTerms(for: samHoustonAtJaxState())
+        XCTAssertTrue(terms.contains("SHSU"))
+        XCTAssertTrue(terms.contains("JVST"))
+        XCTAssertTrue(terms.contains("jxst"))
+        XCTAssertTrue(terms.contains("Jax State"))
+        XCTAssertTrue(terms.contains("Jacksonville State Gamecocks"))
+    }
+
     func testCategorySupportsButNeverProvesAMatch() {
         let named = match(michiganStateAtMichigan(), [channel("c", "Michigan State vs Michigan", category: "USA | NCAAF")])
         XCTAssertTrue(named.matches.first?.reasons.contains("Listed under USA | NCAAF") == true)
