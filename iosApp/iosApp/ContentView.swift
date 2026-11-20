@@ -3212,6 +3212,11 @@ struct MainTabView: View {
             // registered here, beside `Route`, because the Live TV tab sits inside the TabView and
             // a registration there is invisible to this stack (Build 81's blank pushes).
             .liveTVShellRoutes(service: .shared, path: $router.path)
+            // Build 104: the performance report splits frame pacing by section (off unless the
+            // diagnostics overlay is on).
+            .onChange(of: selectedDestination.title, initial: true) { _, title in
+                KyroPerformanceDiagnostics.section(title)
+            }
         }
     }
 

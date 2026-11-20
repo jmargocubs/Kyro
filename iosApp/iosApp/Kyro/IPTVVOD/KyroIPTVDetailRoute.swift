@@ -65,6 +65,24 @@ enum KyroIPTVPlaybackPlan {
 
     static func sourceLabel(providerName: String) -> String { "IPTV · \(providerName)" }
 
+    /// The player request for a title or episode. `playURL` is the provider's stream URL, or the
+    /// relay URL standing in for it (`XtreamVODStreamRoute.relayed`).
+    static func request(
+        playURL: URL, item: XtreamVODItem, episode: XtreamVODEpisode?, providerName: String,
+        state: XtreamVODWatchState, fromStart: Bool,
+        probe: (@MainActor () async -> ExternalStreamProbeReport?)? = nil,
+        onFinish: (@MainActor (_ position: Double, _ duration: Double, _ ended: Bool) -> Void)? = nil
+    ) -> ExternalPlaybackRequest {
+        ExternalPlaybackRequest(
+            url: playURL,
+            title: title(for: item, episode: episode),
+            sourceLabel: sourceLabel(providerName: providerName),
+            startPosition: startPosition(for: state, fromStart: fromStart),
+            probe: probe,
+            onFinish: onFinish
+        )
+    }
+
     /// The episode a series page's Play button offers: the most recently watched unfinished
     /// episode, else the one after the last finished episode. Nil means the first episode.
     static func resumeEpisode(

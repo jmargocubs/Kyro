@@ -23,6 +23,8 @@ struct KyroIPTVVODDetailView: View {
     @State private var playback: ExternalPlaybackRequest?
     @State private var selectedSeason: Int?
     @State private var scrollState = PhoneDetailScrollState()
+    /// Set while the stream's route is checked before the player opens, so a second tap waits.
+    @State private var isPreparingPlayback = false
 
     var body: some View {
         PhoneDetailPageSurface(
@@ -132,7 +134,7 @@ struct KyroIPTVVODDetailView: View {
                 let state = service.watchState(for: item)
                 PhonePrimaryPillButton(
                     icon: "play.fill",
-                    title: KyroIPTVPlaybackPlan.isResumable(state) ? "Resume" : "Play",
+                    title: isPreparingPlayback ? "Starting…" : (KyroIPTVPlaybackPlan.isResumable(state) ? "Resume" : "Play"),
                     action: { play(episode: nil, fromStart: false) },
                     fullWidth: true,
                     progress: KyroIPTVPlaybackPlan.progress(for: state)
@@ -148,7 +150,8 @@ struct KyroIPTVVODDetailView: View {
                 let state = service.watchState(for: item, episode: episode)
                 PhonePrimaryPillButton(
                     icon: "play.fill",
-                    title: "\(KyroIPTVPlaybackPlan.isResumable(state) ? "Resume" : "Play") S\(episode.season) E\(episode.number)",
+                    title: isPreparingPlayback ? "Starting…"
+                        : "\(KyroIPTVPlaybackPlan.isResumable(state) ? "Resume" : "Play") S\(episode.season) E\(episode.number)",
                     action: { play(episode: episode, fromStart: false) },
                     fullWidth: true,
                     progress: KyroIPTVPlaybackPlan.progress(for: state)
@@ -269,34 +272,57 @@ struct KyroIPTVVODDetailView: View {
     }
 
     private func play(episode: XtreamVODEpisode?, fromStart: Bool) {
+        guard !isPreparingPlayback else { return }
         playbackError = nil
-        let url: URL
+        let streamURL: URL
         do {
-            url = try service.playbackURL(for: item, episode: episode)
+            streamURL = try service.playbackURL(for: item, episode: episode)
         } catch {
             playbackError = (error as? LocalizedError)?.errorDescription ?? "This title cannot be played."
             return
         }
-        let start = KyroIPTVPlaybackPlan.startPosition(for: service.watchState(for: item, episode: episode),
-                                                       fromStart: fromStart)
+        let state = service.watchState(for: item, episode: episode)
         // Xtream accounts commonly allow one stream at a time. Live TV (including an inline
         // Sports player or its Picture in Picture window) would hold that connection and the
         // provider would refuse this one, so release it first.
         let liveTV = LiveTVService.shared
         if liveTV.playerSession.state != .stopped { liveTV.endPlayback() }
+        isPreparingPlayback = true
         let service = service
         let item = item
-        playback = ExternalPlaybackRequest(
-            url: url,
-            title: KyroIPTVPlaybackPlan.title(for: item, episode: episode),
-            sourceLabel: KyroIPTVPlaybackPlan.sourceLabel(providerName: providerName),
-            startPosition: start,
-            probe: { await XtreamVODStreamProbe.probe(url) },
-            onFinish: { position, duration, ended in
-                service.saveProgress(position: ended ? max(position, duration) : position,
-                                     duration: duration, item: item, episode: episode)
+        let providerName = providerName
+        Task {
+            defer { isPreparingPlayback = false }
+            // Build 104: a provider that redirects to plain HTTP plays through the loopback relay;
+            // everything else keeps the provider URL, as before.
+            let started = KyroPerformanceClock.now()
+            let resolved = await XtreamVODStreamRoute.resolve(streamURL)
+            KyroPerformanceDiagnostics.record(.iptvStreamRoute, milliseconds: (KyroPerformanceClock.now() - started) * 1000)
+            let playURL: URL
+            switch resolved.route {
+            case .direct:
+                playURL = streamURL
+            case .relayed:
+                do {
+                    playURL = try await XtreamVODCleartextRelay.shared.url(for: streamURL)
+                } catch {
+                    playbackError = "This title cannot be played right now."
+                    return
+                }
             }
-        )
+            XtreamVODDiagnostics.event(resolved.route == .relayed ? "play_relayed" : "play_direct",
+                                       kind: item.kind, count: resolved.hops)
+            playback = KyroIPTVPlaybackPlan.request(
+                playURL: playURL, item: item, episode: episode, providerName: providerName,
+                state: state, fromStart: fromStart,
+                probe: { await XtreamVODStreamProbe.probe(playURL) },
+                onFinish: { position, duration, ended in
+                    service.saveProgress(position: ended ? max(position, duration) : position,
+                                         duration: duration, item: item, episode: episode)
+                    if resolved.route == .relayed { XtreamVODCleartextRelay.shared.release(playURL) }
+                }
+            )
+        }
     }
 }
 

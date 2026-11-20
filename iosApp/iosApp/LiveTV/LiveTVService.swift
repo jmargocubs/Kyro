@@ -108,6 +108,21 @@ final class LiveTVService {
     @ObservationIgnored private var upNextGeneration = 0
     /// Providers whose channels came from a playlist download in this process, so they can play.
     @ObservationIgnored private var liveCatalogs = Set<UUID>()
+
+    /// Build 104: channels Sports can match and play. A restored SQLite generation keeps each
+    /// channel's full stream URL, and Live TV already plays those rows before the session's
+    /// download (`isPlayable` checks only the URL). Sports used to wait for that download and its
+    /// 100K-row import (about 4.4 s on an M2 before any network time) on every cold launch: the
+    /// rule "cached rows are not playable" dates from the JSON snapshot, which strips credentials.
+    /// A finished download bumps the catalog revision, and Live Now re-matches against it.
+    private func hasSportsMatchableCatalog(_ providerID: UUID) -> Bool {
+        if liveCatalogs.contains(providerID) { return true }
+        #if os(iOS)
+        return channelStoreFreshProviderIDs.contains(providerID)
+        #else
+        return false
+        #endif
+    }
     @ObservationIgnored private var automaticRefreshAttempts: [UUID: Date] = [:]
     /// The one Live TV player session for the process, created on first playback. Views read it
     /// from here so a SwiftUI redraw never allocates a player or registers an audio claim.
@@ -362,10 +377,10 @@ final class LiveTVService {
     /// Sports Hub's manual picker uses the fresh indexed catalog rather than building 40K folded
     /// entries on sheet presentation. A failed SQLite write retains the established array path.
     func sportsManualChannels(matching query: String, providerID: UUID) async -> [LiveTVChannel] {
-        guard selectedProviderID == providerID, liveCatalogs.contains(providerID) else { return [] }
+        guard selectedProviderID == providerID, hasSportsMatchableCatalog(providerID) else { return [] }
         if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore() {
             let results = await store.page(providerID: providerID, query: query, limit: 40)
-            guard selectedProviderID == providerID, liveCatalogs.contains(providerID) else { return [] }
+            guard selectedProviderID == providerID, hasSportsMatchableCatalog(providerID) else { return [] }
             return results.filter { isPlayable($0) }
         }
         let catalog = channelCatalogs[providerID] ?? []
@@ -380,7 +395,7 @@ final class LiveTVService {
     }
 
     var canSearchSportsManualChannels: Bool {
-        selectedProviderID.map { liveCatalogs.contains($0) } ?? false
+        selectedProviderID.map { hasSportsMatchableCatalog($0) } ?? false
     }
     #endif
 
@@ -651,6 +666,15 @@ final class LiveTVService {
             return
         }
 
+        // Build 104: time the whole refresh (download, import, verification) and mark the span,
+        // so the performance report shows its cost and whether other screens slow down meanwhile.
+        let refreshStarted = KyroPerformanceClock.now()
+        KyroPerformanceDiagnostics.catalogRefresh(true)
+        defer {
+            KyroPerformanceDiagnostics.catalogRefresh(false)
+            KyroPerformanceDiagnostics.record(.liveTVCatalogRefresh,
+                                              milliseconds: (KyroPerformanceClock.now() - refreshStarted) * 1000)
+        }
         let token = UUID()
         let work = Task { [weak self] () throws -> LiveTVCatalogDownload in
             guard let self else { throw CancellationError() }
@@ -1324,10 +1348,11 @@ final class LiveTVService {
         }.value
     }
 
-    /// Cached rows are browseable, not playable. A tap needs this session's downloaded catalog,
-    /// so wait for a due refresh, but only until the channels are in (never for the guide).
+    /// A tap needs playable channels: the restored SQLite generation or this session's download.
+    /// Without either, start the due refresh and wait, but only until the channels are in (never
+    /// for the guide). Restoring the SQLite generation ends the wait in milliseconds.
     private func awaitPlayableCatalog(_ providerID: UUID) async {
-        guard !liveCatalogs.contains(providerID) else { return }
+        guard !hasSportsMatchableCatalog(providerID) else { return }
         let token = UUID()
         sportsPrepare = (token, false)
         Task { [weak self] in
@@ -1336,7 +1361,7 @@ final class LiveTVService {
         }
         let deadline = Date().addingTimeInterval(Self.sportsCatalogWaitSeconds)
         // The refresh publishes channels before it downloads the guide; stop waiting then.
-        while !liveCatalogs.contains(providerID), Date() < deadline, !Task.isCancelled,
+        while !hasSportsMatchableCatalog(providerID), Date() < deadline, !Task.isCancelled,
               sportsPrepare?.token == token, sportsPrepare?.finished == false {
             try? await Task.sleep(for: .milliseconds(150))
         }
@@ -1344,7 +1369,7 @@ final class LiveTVService {
 
     private func sportsChannelIndex(for providerID: UUID, game: KyroSportsGame) async -> KyroSportsChannelIndex? {
         let revision = channelCatalogRevision
-        let isLive = liveCatalogs.contains(providerID) && providers.contains(where: { $0.id == providerID })
+        let isLive = hasSportsMatchableCatalog(providerID) && providers.contains(where: { $0.id == providerID })
         guard isLive else { return nil }
         var candidates: [LiveTVChannel] = []
         #if os(iOS)
@@ -2137,9 +2162,9 @@ extension LiveTVService: KyroSportsLiveNowSource {
         guard let providerID = selectedProviderID, providers.contains(where: { $0.id == providerID }) else {
             return .noProvider
         }
-        // Cached rows are not playable; wait for this session's download (Sports Hub prewarm
-        // runs the due-only refresh). Live Now itself never starts one.
-        guard liveCatalogs.contains(providerID) else {
+        // The restored SQLite generation or this session's download (Sports Hub prewarm runs the
+        // due-only refresh). Live Now itself never starts one.
+        guard hasSportsMatchableCatalog(providerID) else {
             return isLoading || playlistRefresh != nil || isPrewarmingSports ? .catalogLoading : .catalogUnavailable
         }
         return .ready(KyroSportsLiveNowRevision(providerID: providerID, catalogRevision: channelCatalogRevision,
@@ -2149,6 +2174,8 @@ extension LiveTVService: KyroSportsLiveNowSource {
     /// The same local matcher as a tap, against the cached channel index and guide-key map, at
     /// utility priority. No playlist wait, no download, no playback.
     func liveNowMatches(for game: KyroSportsGame, now: Date) async -> KyroSportsStreamMatchResult? {
+        let started = KyroPerformanceClock.now()
+        defer { KyroPerformanceDiagnostics.record(.sportsEventMatch, milliseconds: (KyroPerformanceClock.now() - started) * 1000) }
         guard case .ready(let revision) = liveNowAvailability,
               let index = await sportsChannelIndex(for: revision.providerID, game: game), !Task.isCancelled,
               index.catalogRevision == revision.catalogRevision else { return nil }

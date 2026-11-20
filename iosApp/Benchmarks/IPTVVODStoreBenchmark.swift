@@ -140,6 +140,18 @@ enum IPTVVODStoreBenchmark {
         let deepPageStart = ContinuousClock.now
         let deepPage = await store.page(providerID: provider, kind: kind, offset: count - 100)
         let deepPageMS = milliseconds(deepPageStart)
+        // Build 104: Recommended's overview, the queries `KyroIPTVBrowseModel.refreshOverviewIfNeeded`
+        // runs once per promoted catalog: count, category summaries, Recently Added and up to eight
+        // category shelves.
+        let overviewStart = ContinuousClock.now
+        _ = await store.count(providerID: provider, kind: kind)
+        let summaries = XtreamVODCategorySummary.ordered(await store.categorySummaries(providerID: provider, kind: kind))
+        let summariesMS = milliseconds(overviewStart)
+        _ = await store.newest(providerID: provider, kind: kind, limit: 20)
+        for summary in XtreamVODCategorySummary.shelfCategories(summaries) {
+            _ = await store.newest(providerID: provider, kind: kind, category: summary.name, limit: 20)
+        }
+        let overviewMS = milliseconds(overviewStart)
         let stored = await store.count(providerID: provider, kind: kind)
         let isolated = await store.count(providerID: other, kind: kind)
         precondition(stored == count && isolated == 0 && page.count == 100
@@ -148,7 +160,7 @@ enum IPTVVODStoreBenchmark {
         await store.close()
         let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("catalog.sqlite").path)
         let bytes = (attributes[.size] as? NSNumber)?.intValue ?? -1
-        print("\(kind.rawValue),\(count),\(importMS),\(searchMS),\(categoryMS),\(pageMS),\(deepPageMS),\(bytes),\(rssMegabytes())")
+        print("\(kind.rawValue),\(count),\(importMS),\(searchMS),\(categoryMS),\(pageMS),\(deepPageMS),\(summariesMS),\(overviewMS),\(bytes),\(rssMegabytes())")
     }
 
     static func main() async throws {
@@ -160,7 +172,7 @@ enum IPTVVODStoreBenchmark {
         try await checkLegacyMigration(root: root)
         try await checkRecovery(root: root)
         try await checkAnchorBoundaries(root: root)
-        print("kind,count,import_ms,search_ms,category_ms,page_ms,deep_page_ms,sqlite_bytes,process_peak_rss_mb")
+        print("kind,count,import_ms,search_ms,category_ms,page_ms,deep_page_ms,overview_summaries_ms,overview_total_ms,sqlite_bytes,process_peak_rss_mb")
         for count in [100_000, 200_000, 400_000] { try await run(kind: .movie, count: count, root: root) }
         for count in [50_000, 100_000, 200_000] { try await run(kind: .series, count: count, root: root) }
     }

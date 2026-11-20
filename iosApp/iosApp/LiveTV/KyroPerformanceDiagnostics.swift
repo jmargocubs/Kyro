@@ -70,6 +70,31 @@ enum KyroPerformanceDiagnostics {
         KyroPerformanceStats.shared.record(interval.metric, milliseconds: (KyroPerformanceClock.now() - interval.start) * 1000)
     }
 
+    /// Records a duration measured elsewhere (for work that crosses actors, where an interval
+    /// value would have to travel with it).
+    @MainActor
+    static func record(_ metric: KyroPerformanceMetric, milliseconds: Double) {
+        guard isEnabled else { return }
+        KyroPerformanceStats.shared.record(metric, milliseconds: milliseconds)
+    }
+
+    /// Build 104: the top-level section on screen (Home, Movies, Series, Sports, Live TV…), so
+    /// the report splits frame pacing by section and a slow one stands out.
+    @MainActor
+    static func section(_ name: String) {
+        guard isEnabled else { return }
+        KyroPerformanceStats.shared.setSection(name, at: KyroPerformanceClock.now())
+    }
+
+    /// Build 104: a Live TV playlist download and import is running. The report gives frame
+    /// pacing for that time separately, to show whether it slows the rest of the app.
+    @MainActor
+    static func catalogRefresh(_ isRunning: Bool) {
+        guard isEnabled else { return }
+        signposter.emitEvent(isRunning ? "Catalog refresh began" : "Catalog refresh ended")
+        KyroPerformanceStats.shared.setCatalogRefresh(isRunning, at: KyroPerformanceClock.now())
+    }
+
     /// A Guide surface became visible or hidden. `source` tells the watch screen's Guide tab and
     /// the full TV Guide apart; Guide frame pacing counts while either is visible.
     @MainActor
@@ -119,6 +144,13 @@ enum KyroPerformanceMetric: String, CaseIterable {
     case categoryDirectory = "Category data"
     case listReveal = "List reveal"
     case sportsDetailLoad = "Detail load"
+    // Build 104
+    case liveTVCatalogRefresh = "Live TV catalog refresh"
+    case sportsLiveNowReady = "Sports Live Now ready"
+    case sportsEventMatch = "Sports event match"
+    case iptvStreamRoute = "IPTV stream route"
+    case iptvOverview = "IPTV overview"
+    case iptvGridPage = "IPTV grid page"
 }
 
 /// Frame pacing over some stretch of active time.
@@ -172,6 +204,14 @@ final class KyroPerformanceStats {
     private(set) var pauses = 0
     private(set) var pausedSeconds: Double = 0
     private(set) var startedAt: Double
+    /// Build 104: frames per top-level section, and while a catalog refresh runs.
+    private(set) var sections: [String: KyroFrameTally] = [:]
+    private(set) var section: String?
+    private(set) var whileCatalogRefresh = KyroFrameTally()
+    private(set) var catalogRefreshes = 0
+    private var sectionSince: Double?
+    private var catalogRefreshSince: Double?
+    private var isRefreshingCatalog = false
 
     private var guideSources: Set<String> = []
     private var isActive = true
@@ -204,6 +244,27 @@ final class KyroPerformanceStats {
         all.add(interval: interval, expected: expected)
         if isGuideVisible { guide.add(interval: interval, expected: expected) }
         if isBuffering { whileBuffering.add(interval: interval, expected: expected) }
+        if let section { sections[section, default: KyroFrameTally()].add(interval: interval, expected: expected) }
+        if isRefreshingCatalog { whileCatalogRefresh.add(interval: interval, expected: expected) }
+    }
+
+    func setSection(_ name: String, at now: Double) {
+        guard name != section else { return }
+        if let section, let since = sectionSince { sections[section, default: KyroFrameTally()].seconds += max(0, now - since) }
+        section = name
+        sectionSince = isActive ? now : nil
+    }
+
+    func setCatalogRefresh(_ running: Bool, at now: Double) {
+        guard running != isRefreshingCatalog else { return }
+        isRefreshingCatalog = running
+        if running {
+            catalogRefreshes += 1
+            if isActive { catalogRefreshSince = now }
+        } else {
+            if let since = catalogRefreshSince { whileCatalogRefresh.seconds += max(0, now - since) }
+            catalogRefreshSince = nil
+        }
     }
 
     /// The app left the active state. Frames stop counting until `resume`.
@@ -257,11 +318,17 @@ final class KyroPerformanceStats {
         guideSince = nil
         if let since = bufferingSince { whileBuffering.seconds += max(0, now - since) }
         bufferingSince = nil
+        if let section, let since = sectionSince { sections[section, default: KyroFrameTally()].seconds += max(0, now - since) }
+        sectionSince = nil
+        if let since = catalogRefreshSince { whileCatalogRefresh.seconds += max(0, now - since) }
+        catalogRefreshSince = nil
     }
 
     private func openTimedSpans(at now: Double) {
         if isGuideVisible { guideSince = now }
         if isBuffering { bufferingSince = now }
+        if section != nil { sectionSince = now }
+        if isRefreshingCatalog { catalogRefreshSince = now }
     }
 
     func reset(at now: Double = KyroPerformanceClock.now()) {
@@ -280,6 +347,11 @@ final class KyroPerformanceStats {
         guideSince = isActive && isGuideVisible ? now : nil
         bufferingSince = isActive && isBuffering ? now : nil
         episodeStart = isBuffering ? now : nil
+        sections = [:]
+        sectionSince = isActive && section != nil ? now : nil
+        whileCatalogRefresh = KyroFrameTally()
+        catalogRefreshes = isRefreshingCatalog ? 1 : 0
+        catalogRefreshSince = isActive && isRefreshingCatalog ? now : nil
     }
 
     /// Elapsed time minus time spent inactive.
@@ -312,6 +384,14 @@ final class KyroPerformanceStats {
             lines.append("While buffering: \(bufferingTally.summary)")
         } else {
             lines.append("Buffering: none")
+        }
+        for name in sections.keys.sorted() {
+            let open = name == section ? sectionSince : nil
+            lines.append("Section \(name): \(tally(sections[name] ?? KyroFrameTally(), openedAt: open, now: now).summary)")
+        }
+        if catalogRefreshes > 0 {
+            lines.append("Live TV catalog refreshes: \(catalogRefreshes)\(isRefreshingCatalog ? " (running)" : "")")
+            lines.append("While a catalog refresh ran: \(tally(whileCatalogRefresh, openedAt: catalogRefreshSince, now: now).summary)")
         }
         for counter in KyroPerformanceCounter.allCases {
             let value = counters[counter] ?? 0

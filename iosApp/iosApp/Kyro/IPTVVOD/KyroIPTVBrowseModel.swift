@@ -68,6 +68,8 @@ final class KyroIPTVBrowseModel {
         let catalog = service.catalogRevision
         if overviewRevision != catalog {
             overviewRevision = catalog
+            let started = KyroPerformanceClock.now()
+            defer { KyroPerformanceDiagnostics.record(.iptvOverview, milliseconds: (KyroPerformanceClock.now() - started) * 1000) }
             let count = await service.count(providerID: providerID, kind: kind)
             let summaries = await service.categorySummaries(providerID: providerID, kind: kind)
             var built: [Shelf] = []
@@ -101,8 +103,10 @@ final class KyroIPTVBrowseModel {
         gridGeneration &+= 1
         let generation = gridGeneration
         gridIsLoading = true
+        let started = KyroPerformanceClock.now()
         let page = await service.page(providerID: providerID, kind: kind, query: query,
                                       category: category, offset: 0)
+        KyroPerformanceDiagnostics.record(.iptvGridPage, milliseconds: (KyroPerformanceClock.now() - started) * 1000)
         guard generation == gridGeneration else { return }
         gridItems = page
         gridHasMore = page.count == 100
