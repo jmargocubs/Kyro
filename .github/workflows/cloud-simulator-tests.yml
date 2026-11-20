@@ -17,11 +17,15 @@ on:
 permissions:
   contents: read
 
+# Keep focus runs from cancelling each other mid-simulator work.
+concurrency:
+  group: kyro-tvos-focus-${{ github.event_name }}-${{ github.event.inputs.suite || 'push' }}
+  cancel-in-progress: false
+
 jobs:
-  # Compile-only path for Build 102 export validation. Uses generic tvOS
-  # destinations so Apple TV simulator create/boot failures cannot hide a
-  # compilation result. Application code is unchanged from the export fix.
-  tvos-compile-export:
+  # Release diagnostic lane (focus-export). Generic tvOS destination — no simulator.
+  # Runs concurrently with the Debug export-integration lane.
+  tvos-release-diagnostic:
     if: github.event_name == 'workflow_dispatch' && inputs.suite == 'focus-export'
     runs-on: xcode-27
     timeout-minutes: 50
@@ -79,32 +83,20 @@ jobs:
             CURRENT_PROJECT_VERSION=101 MARKETING_VERSION=1.0.0 \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee "$RUNNER_TEMP/tvos-diag-build.log"
-      - name: Compile Debug tvOS app and export tests (simulator SDK, no device boot)
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme SiloTV \
-            -destination 'generic/platform=tvOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/kyro-derived-debug" \
-            -jobs 2 -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
-            2>&1 | tee "$RUNNER_TEMP/tvos-debug-build.log"
-      - name: Upload compile logs
+      - name: Upload release diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kyro-tvos-compile-export-${{ github.run_id }}
+          name: kyro-tvos-release-diagnostic-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/tvos-packages.log
             ${{ runner.temp }}/tvos-diag-build.log
-            ${{ runner.temp }}/tvos-debug-build.log
           retention-days: 7
 
-  # Optional focused export integration tests. Requires a usable Apple TV
-  # simulator. Failure here is reported separately from compilation.
-  tvos-export-tests:
+  # Debug export-integration lane (focus-export). Builds tests once, then
+  # test-without-building. Does not redo Release diagnostic work.
+  tvos-export-integration:
     if: github.event_name == 'workflow_dispatch' && inputs.suite == 'focus-export'
-    needs: tvos-compile-export
     runs-on: xcode-27
     timeout-minutes: 50
     steps:
@@ -150,16 +142,24 @@ jobs:
           xcrun simctl boot "$id"
           xcrun simctl bootstatus "$id" -b
           echo "Simulator: $device / $runtime / $id"
-      - name: Build and run focused LAN export integration tests
+      - name: Build for testing (Debug, once)
         shell: bash
         run: |
           set -euo pipefail
+          # Keep DerivedData under RUNNER_TEMP so build-for-testing products stay
+          # on the compatible path used by the following test-without-building step.
           xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme SiloTV \
             -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
             -derivedDataPath "$RUNNER_TEMP/kyro-derived" \
             -jobs 2 -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/tvos-build.log"
+      - name: Run export integration tests without rebuilding
+        shell: bash
+        run: |
+          set -euo pipefail
+          # All four TVFocusReportServerTests methods (authenticated download,
+          # invalid auth, empty capture, expired session).
           xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme SiloTV \
             -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
             -derivedDataPath "$RUNNER_TEMP/kyro-derived" \
@@ -168,17 +168,44 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/tvos-focus.xcresult" \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/tvos-tests.log"
-      - name: Upload export test results
+      - name: Upload export integration results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kyro-tvos-export-tests-${{ github.run_id }}
+          name: kyro-tvos-export-integration-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/tvos-focus.xcresult
             ${{ runner.temp }}/tvos-build.log
             ${{ runner.temp }}/tvos-packages.log
             ${{ runner.temp }}/tvos-tests.log
           retention-days: 7
+
+  # Required-check aggregator: a green focus-export run needs BOTH lanes.
+  # Prevents a failed Release diagnostic or failed export tests from being ignored.
+  tvos-focus-export-result:
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.suite == 'focus-export'
+    needs: [tvos-release-diagnostic, tvos-export-integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Require both focus-export lanes
+        env:
+          RELEASE_RESULT: ${{ needs.tvos-release-diagnostic.result }}
+          EXPORT_RESULT: ${{ needs.tvos-export-integration.result }}
+        run: |
+          set -euo pipefail
+          echo "tvos-release-diagnostic=$RELEASE_RESULT"
+          echo "tvos-export-integration=$EXPORT_RESULT"
+          failed=0
+          if [ "$RELEASE_RESULT" != success ]; then
+            echo "::error::Release diagnostic lane did not succeed ($RELEASE_RESULT)"
+            failed=1
+          fi
+          if [ "$EXPORT_RESULT" != success ]; then
+            echo "::error::Export integration lane did not succeed ($EXPORT_RESULT)"
+            failed=1
+          fi
+          exit "$failed"
 
   tvos-focus:
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'focus-export')
