@@ -167,8 +167,15 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         remote.press(.select)
         settle(1.5)
         path.append(focusedLabel(app))
-        path.append(press(.left, app, "movies controls left"))
-        XCTAssertEqual(path.last, "All Titles", "Left moves to the neighbouring mode")
+        // After the mode switch the generic focused-element query can miss this chip although it
+        // holds focus (the run's screen recording shows the ring on All Titles), so assert on the
+        // button itself, with a bounded wait for the transition.
+        remote.press(.left)
+        let allTitles = app.buttons["All Titles"]
+        let focusedAllTitles = expectation(for: NSPredicate(format: "hasFocus == true"), evaluatedWith: allTitles)
+        XCTAssertEqual(XCTWaiter().wait(for: [focusedAllTitles], timeout: 5), .completed,
+                       "Left moves to the neighbouring mode, All Titles")
+        path.append("All Titles")
         remote.press(.select)
         settle(1.5)
         path.append(press(.down, app, "movies back to grid"))
