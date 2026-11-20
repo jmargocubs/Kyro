@@ -10,11 +10,11 @@ focus preference, navigation guard, delay, or restoration rule is intentionally 
 
 The inspector is compiled under `DEBUG || KYRO_FOCUS_DIAGNOSTICS`. On this
 diagnostic branch the `SiloTV` target in `iosApp/project.yml` uses a build-number
-lookup: only `KYRO_FOCUS_DIAGNOSTICS_101` is defined. The existing cloud workflow's
-`CURRENT_PROJECT_VERSION=101` therefore enables the inspector in its Release
-archive; other Release build numbers do not opt in. Never reuse build number 101
-for a production archive. Global `DEBUG` is not enabled, so unrelated debug
-behavior and the old private-API overlay stay out.
+lookup: `KYRO_FOCUS_DIAGNOSTICS_101` and `KYRO_FOCUS_DIAGNOSTICS_102` are defined.
+Cloud unsigned IPA stamps of build 101 or 102 therefore enable the inspector in
+Release; other Release build numbers do not opt in. Never reuse those diagnostic
+build numbers for a production archive. Global `DEBUG` is not enabled, so unrelated
+debug behavior and the old private-API overlay stay out.
 Entry points in `TVFocusDiagnostics` are `nonisolated` and drop events raised off
 the main thread.
 
