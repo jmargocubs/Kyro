@@ -28,6 +28,12 @@ enum TVScreenLayout {
     /// Top of page content on root pages without a hero.
     static let contentTopInset: CGFloat =
         SiloTheme.Skyline.barTopInset + SiloTheme.Skyline.barHeight + menuBarClearance
+    #if DEBUG
+    /// Focus-harness switch (`-kyroTVFocusHarnessNoEdgeToEdge`): `tvEdgeToEdgeScroll` becomes a
+    /// no-op so hosted UI tests can compare focus with and without the Build 99 scroll geometry.
+    nonisolated(unsafe) static var debugDisablesEdgeToEdge = false
+    #endif
+
     /// Room for a focused card: the 1.04 lift, the 4 pt ring and the 18 pt shadow at y + 8.
     static let focusRoom: CGFloat = 26
     /// Space between page sections (header, control row, content).
@@ -62,7 +68,20 @@ struct TVEdgeToEdgeScroll: ViewModifier {
     var topRoom: CGFloat = TVScreenLayout.focusRoom
     @State private var measuredOverscan: CGFloat = 0
 
+    @ViewBuilder
     func body(content: Content) -> some View {
+        #if DEBUG
+        if TVScreenLayout.debugDisablesEdgeToEdge {
+            content
+        } else {
+            edgeToEdge(content)
+        }
+        #else
+        edgeToEdge(content)
+        #endif
+    }
+
+    private func edgeToEdge(_ content: Content) -> some View {
         content
             .contentMargins(.horizontal, horizontalBleed, for: .scrollContent)
             .contentMargins(.top, topRoom, for: .scrollContent)

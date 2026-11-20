@@ -151,6 +151,7 @@ struct ContentView: View {
         #endif
         #if os(tvOS) && DEBUG
         .modifier(TVFocusDebugActivationModifier())
+        .modifier(TVFocusHarnessModifier())
         #endif
         #if os(iOS)
         .companionPairingCard(

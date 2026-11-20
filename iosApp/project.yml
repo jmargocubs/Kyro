@@ -516,6 +516,24 @@ targets:
         # mangling, and its Info.plist are untouched.
         OTHER_SWIFT_FLAGS: "$(inherited) -module-alias Silo=SiloTV"
 
+  # Siri Remote focus tests for tvOS (Build 100). XCUIRemote presses drive the real
+  # focus engine on the hosted Apple TV simulator over the Debug-only focus harness
+  # (`-kyroTVFocusHarness`, tvOS/Debug/TVFocusHarness.swift). Offline fixtures only.
+  SiloTVUITests:
+    type: bundle.ui-testing
+    platform: tvOS
+    sources:
+      - path: TVUITests
+    dependencies:
+      - target: SiloTV
+    settings:
+      base:
+        PRODUCT_NAME: SiloTVUITests
+        GENERATE_INFOPLIST_FILE: "YES"
+        SDKROOT: appletvos
+        SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
+        TEST_TARGET_NAME: SiloTV
+
 schemes:
   Silo:
     build:
@@ -563,12 +581,14 @@ schemes:
       targets:
         SiloTV: all
         SiloTVTests: [test]
+        SiloTVUITests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
         - SiloTVTests
+        - SiloTVUITests
     archive:
       config: Release
     analyze:
