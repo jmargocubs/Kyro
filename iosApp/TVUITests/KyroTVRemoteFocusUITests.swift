@@ -53,6 +53,7 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         let app = launch(.livetv)
         XCTAssertTrue(waitForFocus(app, in: liveTVControls))
         XCTAssertTrue(waitForChannels(app), "fixture channels loaded")
+        capture("livetv-channels")
         let first = press(.down, app, "livetv down")
         XCTAssertTrue(first.hasPrefix("Watch Harness"), "Down enters the channel grid, got \(first)")
         let right = press(.right, app, "livetv grid right")
@@ -87,6 +88,7 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertEqual(press(.right, app, "to categories"), "Categories")
         remote.press(.select)
         settle()
+        capture("livetv-categories")
         let firstCard = press(.down, app, "into categories")
         XCTAssertFalse(liveTVControls.contains(firstCard), "Down enters the category grid, got \(firstCard)")
         let card = press(.right, app, "category right")
@@ -112,9 +114,12 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertEqual(focusedLabel(app), "TV Guide")
         remote.press(.select)
         settle(2)
+        capture("guide-open")
         let header = focusedLabel(app)
         let channel = press(.down, app, "guide down")
         let program = press(.right, app, "guide right")
+        for _ in 0..<12 { _ = press(.down, app, "guide scroll") }
+        capture("guide-scrolled")
         log("guide", [header, channel, program])
         XCTAssertNotEqual(channel, header, "Down leaves the guide toolbar")
         XCTAssertNotEqual(program, channel, "Right moves from the channel tile into its listings")
@@ -130,6 +135,7 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     func testMoviesGridMovesCardByCardAndUpReachesTheControls() {
         let app = launch(.movies)
         XCTAssertTrue(waitFor(app, timeout: 20) { $0.hasPrefix("Harness Movie") }, "Movies enters on its first card")
+        capture("movies")
         let first = focusedLabel(app)
         var path = [first]
         for _ in 0..<3 { path.append(press(.right, app, "movies right")) }
@@ -147,6 +153,32 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         let controls = [press(.right, app, "movies controls right"), press(.right, app, "movies controls right")]
         log("movies controls", controls)
         assertNeverMenu(path + [up1, up2] + controls)
+    }
+
+    func testMoviesMenuRoundTripAndModeSwitchKeepFocusOnThePage() {
+        let app = launch(.movies)
+        XCTAssertTrue(waitFor(app, timeout: 20) { $0.hasPrefix("Harness Movie") })
+        let controls = press(.up, app, "movies to controls")
+        XCTAssertFalse(controls.hasPrefix("Harness Movie"), "Up from the first row reaches the controls, got \(controls)")
+        var path = [controls]
+        // Walk the control row to Continue Watching, open it (empty), then come back to All Titles.
+        for _ in 0..<4 where focusedLabel(app) != "Continue Watching" { path.append(press(.right, app, "movies controls right")) }
+        XCTAssertEqual(focusedLabel(app), "Continue Watching")
+        remote.press(.select)
+        settle(1.5)
+        path.append(focusedLabel(app))
+        path.append(press(.left, app, "movies controls left"))
+        XCTAssertEqual(path.last, "All Titles", "Left moves to the neighbouring mode")
+        remote.press(.select)
+        settle(1.5)
+        path.append(press(.down, app, "movies back to grid"))
+        XCTAssertTrue(path.last?.hasPrefix("Harness Movie") == true, "Down returns to the catalog grid, got \(path.last ?? "")")
+        let menu = upUntilMenu(app, path: &path)
+        XCTAssertEqual(menu, "Menu Live TV", "Up from the control row reaches the top menu")
+        path.append(press(.down, app, "movies menu down"))
+        log("movies menu/mode", path)
+        XCTAssertFalse(path.last?.hasPrefix("Menu ") ?? true, "Down from the menu re-enters the page")
+        assertNeverMenu(Array(path.dropLast(2)))
     }
 
     // MARK: Sports
@@ -208,6 +240,22 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     private func waitForChannels(_ app: XCUIApplication) -> Bool {
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Watch Harness'")).firstMatch
             .waitForExistence(timeout: 20)
+    }
+
+    private func upUntilMenu(_ app: XCUIApplication, path: inout [String]) -> String {
+        for _ in 0..<4 {
+            let label = press(.up, app, "up to menu")
+            path.append(label)
+            if label.hasPrefix("Menu ") { return label }
+        }
+        return path.last ?? "<none>"
+    }
+
+    private func capture(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func assertNeverMenu(_ labels: [String], file: StaticString = #filePath, line: UInt = #line) {

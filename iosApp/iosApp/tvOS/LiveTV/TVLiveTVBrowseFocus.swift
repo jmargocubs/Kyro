@@ -25,6 +25,13 @@ enum TVLiveTVBrowseFocus: Hashable {
     }
 }
 
+/// A deferred focus claim on the Live TV page (see `TVLiveTVRootView.claimFocusAfterTeardown`).
+enum TVLiveTVFocusHandoff: Hashable {
+    /// A category just opened: its loading placeholder, or its first channel if already loaded.
+    case channelEntry
+    case target(TVLiveTVBrowseFocus)
+}
+
 /// What the content region shows, reduced to what focus needs.
 enum TVLiveTVBrowseContent: Equatable {
     /// A status page with a button (setup, retry, manage providers).

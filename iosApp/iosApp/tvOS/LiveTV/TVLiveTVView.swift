@@ -253,11 +253,11 @@ struct TVLiveTVRootView: View {
         }
         .onChange(of: search.isSearching) { _, searching in
             guard !searching, pendingChannelEntry else { return }
+            let target = TVLiveTVBrowseFocusPlanner.afterChannelResults(
+                currentFocus: focusedControl, firstChannelID: visibleMatches.first?.id)
+            // Clearing the flag removes the focused placeholder, so the channel claim waits for it.
             pendingChannelEntry = false
-            if let target = TVLiveTVBrowseFocusPlanner.afterChannelResults(
-                currentFocus: focusedControl, firstChannelID: visibleMatches.first?.id) {
-                focusedControl = target
-            }
+            if let target { claimFocusAfterTeardown(.target(target)) }
         }
         .onChange(of: service.favoriteChannelIDs) { updateSearch() }
         .onChange(of: service.channelCatalogRevision) { refreshVisibleCatalog() }
@@ -340,6 +340,7 @@ struct TVLiveTVRootView: View {
                 Image(systemName: "magnifyingglass")
                 TextField("Search channels", text: $query)
                     .textFieldStyle(.plain)
+                    .accessibilityLabel("Search channels")
             }
             .font(.system(size: 24))
             .padding(.horizontal, 20)
@@ -444,7 +445,7 @@ struct TVLiveTVRootView: View {
                 // category it came from. Showing the grid any other way leaves focus alone.
                 if let target = TVLiveTVBrowseFocusPlanner.categoryGridRestoration(
                     pending: pendingCategoryRestore, visible: visible) {
-                    focusedControl = target
+                    claimFocusAfterTeardown(.target(target))
                 }
                 pendingCategoryRestore = nil
             }
@@ -476,14 +477,14 @@ struct TVLiveTVRootView: View {
         }
     }
 
-    /// The focused category card is about to be removed. Hand focus to the channel region's
-    /// loading placeholder in the same update, so the engine never falls back to the first chip
-    /// (All Channels) while the category's channels load.
+    /// The focused category card is about to be removed. Focus moves to the channel region's
+    /// loading placeholder (or straight to the first channel if results are already in) once the
+    /// card's teardown has committed; see `claimFocusAfterTeardown`.
     private func openCategory(_ category: String?) {
         pendingChannelEntry = true
         lastContentChannel = nil
         navigation.openCategory(category)
-        focusedControl = .placeholder
+        claimFocusAfterTeardown(.channelEntry)
     }
 
     private var channelGrid: some View {
@@ -594,13 +595,13 @@ struct TVLiveTVRootView: View {
                 : (index > 0 ? matches[index - 1].id : nil)
         }
         visibility.hide(channel, in: scope)
-        focusedControl = next.map(FocusTarget.channel) ?? .section(navigation.section)
+        claimFocusAfterTeardown(.target(next.map(FocusTarget.channel) ?? .section(navigation.section)))
     }
 
     private func hideCategory(_ category: String) {
         let next = navigation.hideCategory(category, visibleCategories: visibleCategories)
         visibility.hideCategory(category, in: scope)
-        focusedControl = next.map(FocusTarget.category) ?? .section(.categories)
+        claimFocusAfterTeardown(.target(next.map(FocusTarget.category) ?? .section(.categories)))
     }
 
     private var providerSummary: String {
@@ -632,6 +633,32 @@ struct TVLiveTVRootView: View {
             focusedControl = .section(section)
         case .topMenu:
             onTopMenuFocusRequest()
+        }
+    }
+
+    /// Every focus write that replaces a removed, focused view (opening or closing a category,
+    /// channel results replacing the loading placeholder, hiding a channel or category) runs one
+    /// main-queue turn after the change.
+    ///
+    /// Build 100 root cause: these writes ran in the same update as the removal. The focus engine
+    /// repairs from the resigning view first and fell back to the first control, All Channels; the
+    /// write then lost, the planner read the chip as a user move, and the next Back from that chip
+    /// went to the top menu. Reproduced with XCUIRemote in `KyroTVRemoteFocusUITests`. The same
+    /// rule is applied by `TVPageFocusOwner` and the shell's `selectRoot`.
+    private func claimFocusAfterTeardown(_ handoff: TVLiveTVFocusHandoff) {
+        DispatchQueue.main.async {
+            guard !isTopMenuFocused else { return }
+            switch handoff {
+            case .target(let target):
+                focusedControl = target
+            case .channelEntry:
+                // Results can land before this turn: then the channels are already showing.
+                if showsChannelLoading {
+                    focusedControl = .placeholder
+                } else {
+                    focusedControl = visibleMatches.first.map { .channel($0.id) } ?? .section(navigation.section)
+                }
+            }
         }
     }
 
