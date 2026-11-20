@@ -215,3 +215,62 @@ search, source and provider; play Live TV, movie and episode; verify EPG/current
 Silo history isolation, VOD disable/re-enable, backup preview/restore/Undo, interrupted import
 recovery, low-storage failure and offline relaunch. Do not call the capacity targets supported
 until those measurements pass.
+
+## Verification pass (commit after 218b183b)
+
+**Consumer coverage (read from source, not executed in-app).** Normal SQLite path, no
+selected-provider `[LiveTVChannel]`: Browse/Guide/category/favorites paging, unified search, EPG
+filter and associations (compact guide-ID/name projections read from SQLite), player picker
+(`LiveTVPagedChannelModel`), Home previews (favorites page + ordered ID resolution), playback
+lookup by stable ID, and deep restoration by ordinal anchor. There is no next/previous-channel
+stepping in the player; the picker is the only channel switch.
+
+**Defect found and fixed.** Sports matching retrieved candidates only by team words in the
+*channel name*. Events carried by a generic network channel ("ESPN") that the *guide* lists were
+no longer found, a regression from the old full-index match. `sportsChannelIndex` now also reads
+the guide rows overlapping the event (`KyroSportsStreamMatcher.guideCandidateKeys`) and fetches
+those channels with `LiveTVChannelCatalogStore.channels(providerID:guideKeys:)`, bounded to 400
+rows. Limit: channels linked to the guide only by display name (no guide ID) are not retrieved this
+way. The lookup uses `lower(trim(guide_id))`, which is an unindexed scan; it is allocation-free
+and measured below.
+
+**Remaining full-array paths.**
+- Legacy JSON restore (one-time, no SQLite generation) and failed-store fallback: whole array, ≤ cap.
+- `epgAssociationValues` / `programAssociations`: all-row compact projections (bounded EPG).
+- Debug fixture route and `KyroSportsMatchReport` (internal builds) read `service.channels`
+  (empty on the SQLite path); the `LiveTVPlayerView`/Sports hub call sites still pass
+  `service.channels`, which is empty on the SQLite path and ignored by the SQLite picker.
+- `LiveTVService.loadXtream` and the M3U array parser remain for the non-iOS and legacy paths.
+
+**Fresh benchmark (this pass, new process per size, Apple M2).** Host benchmark of the production
+store and importer; not an integrated app run.
+
+| Channels | Import+index | Selective | Broad | Guide-key (Sports) | DB file | Streaming peak | Peak w/ associations | Retained |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 40,000 | 3.60 s* | 35 ms* | 8 ms | 28 ms | 30.4 MB | 17 MB | 31 MB | 23 MB |
+| 60,000 | 2.66 s | 8 ms | 11 ms | 25 ms | 45.7 MB | 17 MB | 36 MB | 28 MB |
+| 80,000 | 3.54 s | 11 ms | 14 ms | 36 ms | 61.0 MB | 18 MB | 45 MB | 36 MB |
+| 100,000 | 4.46 s | 14 ms | 18 ms | 43 ms | 76.3 MB | 18 MB | 53 MB | 44 MB |
+
+*The 40K run was the first after a fresh compile (cold file cache); it is not a regression
+signal. Category/deep page, keyset page and EPG ID lookup were all under 1 ms. The 100 MB host
+target holds. The benchmark's own preconditions (counts, ordering, isolation, favorites,
+atomic replace, cancellation, offline restore) passed.
+
+**Credential storage audit.**
+- Protection: `completeUntilFirstUserAuthentication` on the directory, now also set explicitly on
+  `channels.sqlite`, `-wal`, `-shm` (fixed; previously directory-only).
+- Backup: excluded on the directory and now on each file (fixed likewise).
+- Logging: no `print`/`NSLog`/logger calls in the store or importer; stream URLs are not logged there.
+- Diagnostics/export: iOS diagnostics live under Caches; the settings backup reads its own
+  subpaths. Nothing enumerates `Silo/LiveTV/ChannelCatalog`.
+- Not fixed, recommended: Xtream URLs embed username and password. Resolving at playback time
+  needs a store schema change (keep `stream_id`, rebuild the URL from the Keychain secret) and
+  touches every `channel.streamURL` consumer. M3U URLs may carry provider tokens that cannot be
+  reconstructed. At-rest risk is limited to a protected, non-backed-up file.
+
+**Development-only 100K override.** `KYRO_LIVETV_100K_VALIDATION` (compile condition) raises the
+cap to 100,000 and the playlist limit to 110 MiB. It is defined nowhere in `project.yml`; it
+exists only if a validation build passes it as `SWIFT_ACTIVE_COMPILATION_CONDITIONS`. Default
+builds keep 40,000 (`testProductionCapIsFortyThousandWithoutValidationFlag`, compiled not run).
+The flagged variant itself has not been compiled yet.

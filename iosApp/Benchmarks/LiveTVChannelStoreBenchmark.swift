@@ -171,6 +171,11 @@ enum LiveTVChannelStoreBenchmark {
         let epgStart = ContinuousClock.now
         let epgIDs = await store.channelIDs(providerID: first, guideID: "epg-\(count)")
         let epgMS = milliseconds(epgStart)
+        // Sports guide-key retrieval: mixed-case lookup must hit the normalized guide ID.
+        let sportsKeyStart = ContinuousClock.now
+        let sportsKeyed = await store.channels(providerID: first, guideKeys: ["epg-\(count)", "epg-1", "missing"])
+        let sportsKeyMS = milliseconds(sportsKeyStart)
+        precondition(Set(sportsKeyed.map(\.id)) == [channel(count - 1).id, channel(0).id])
         let categories = await store.categories(providerID: first)
         let stored = await store.count(providerID: first)
         let isolated = await store.count(providerID: second)
@@ -218,7 +223,7 @@ enum LiveTVChannelStoreBenchmark {
         let retainedRSS = residentRSSMB()
         let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("channels.sqlite").path)
         let bytes = (attributes[.size] as? NSNumber)?.intValue ?? -1
-        print("\(count),\(importMS),\(searchMS),\(broadSearchMS),\(categoryMS),\(deepCategoryMS),\(guideMS),\(keysetMS),\(epgMS),\(bytes),\(streamingImportPeakRSS),\(peakRSSMB()),\(compactAssociationRSS),\(retainedAfterAssociationsRSS),\(retainedRSS)")
+        print("\(count),\(importMS),\(searchMS),\(broadSearchMS),\(categoryMS),\(deepCategoryMS),\(guideMS),\(keysetMS),\(epgMS),\(sportsKeyMS),\(bytes),\(streamingImportPeakRSS),\(peakRSSMB()),\(compactAssociationRSS),\(retainedAfterAssociationsRSS),\(retainedRSS)")
     }
 
     static func main() async throws {
@@ -228,7 +233,7 @@ enum LiveTVChannelStoreBenchmark {
         }
         let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         try await correctness(root: root)
-        print("count,import_ms,search_ms,broad_search_ms,category_ms,deep_category_ms,guide_page_ms,keyset_page_ms,epg_lookup_ms,sqlite_bytes,streaming_import_peak_rss_mb,process_peak_rss_mb,compact_association_rss_mb,retained_after_associations_rss_mb,retained_after_close_rss_mb")
+        print("count,import_ms,search_ms,broad_search_ms,category_ms,deep_category_ms,guide_page_ms,keyset_page_ms,epg_lookup_ms,sports_guide_key_ms,sqlite_bytes,streaming_import_peak_rss_mb,process_peak_rss_mb,compact_association_rss_mb,retained_after_associations_rss_mb,retained_after_close_rss_mb")
         let counts: [Int]
         if CommandLine.arguments.count == 3 {
             guard let count = Int(CommandLine.arguments[2]), count > 0 else {
