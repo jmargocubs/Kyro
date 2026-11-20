@@ -29,7 +29,7 @@ enum KyroSportsEventDetailsLayout {
         guard status.isScheduled else { return false }
         switch league {
         case .atp, .wta: return isSingles
-        case .nfl, .nba, .nhl, .mlb, .collegeFootball, .soccer: return true
+        case .nfl, .nba, .nhl, .mlb, .collegeFootball, .collegeBasketballMen, .collegeBasketballWomen, .soccer: return true
         }
     }
 

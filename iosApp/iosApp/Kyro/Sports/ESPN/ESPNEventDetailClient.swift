@@ -189,7 +189,7 @@ struct ESPNEventDetailClient: Sendable {
 
     private func supportsDetails(for league: KyroSportLeague) -> Bool {
         switch league {
-        case .nfl, .nba, .collegeFootball, .mlb, .nhl, .soccer: true
+        case .nfl, .nba, .collegeFootball, .collegeBasketballMen, .collegeBasketballWomen, .mlb, .nhl, .soccer: true
         case .atp, .wta: false
         }
     }
@@ -331,7 +331,7 @@ enum ESPNEventDetailMapping {
                   selectedTeamIDs.contains(teamID),
                   let abbreviation = nonempty(team.abbreviation) else { return nil }
             let groups = (item.statistics ?? []).compactMap { group -> KyroSportsPlayerStatGroup? in
-                let labels = group.labels ?? []
+                let labels = group.labels ?? group.keys ?? []
                 let lines = (group.athletes ?? []).compactMap { line -> KyroSportsPlayerStatLine? in
                     guard line.didNotPlay != true, let athlete = line.athlete,
                           let name = nonempty(athlete.displayName), !((line.stats ?? []).isEmpty) else { return nil }

@@ -70,6 +70,22 @@ final class KyroSportsEventChannelMatchingTests: XCTestCase {
         XCTAssertEqual(result.autoPlayCandidates.map(\.channel.id), ["dazn"], "the name identifies the event")
     }
 
+    func testCollegeHoopsFullSchoolNamesAndGuideTitlesMatchWithoutGenericNetworkFalsePositive() {
+        let away = KyroSportsTeam(id: "duke", league: .collegeBasketballMen, abbreviation: "DUKE", nickname: "Blue Devils", location: "Duke",
+                                  alternateNames: ["Duke Blue Devils"])
+        let home = KyroSportsTeam(id: "unc", league: .collegeBasketballMen, abbreviation: "UNC", nickname: "Tar Heels", location: "North Carolina",
+                                  alternateNames: ["North Carolina Tar Heels"])
+        let game = KyroSportsGame(id: KyroGameID(provider: "espn", league: .collegeBasketballMen, rawID: "cbb-1"),
+                                  league: .collegeBasketballMen, startTime: now, status: .live,
+                                  home: KyroGameTeam(team: home), away: KyroGameTeam(team: away), broadcast: "ESPN2")
+        let eventChannel = channel("event", "ESPN2: Duke Blue Devils vs North Carolina Tar Heels", category: "NCAAM")
+        XCTAssertEqual(match(game, [eventChannel]).matches.first?.channel.id, "event")
+        XCTAssertTrue(match(game, [channel("generic", "ESPN")]).matches.isEmpty)
+        let guideResult = match(game, [channel("guide", "ESPN2", guideID: "espn")],
+                                guide: try? guide([("espn", "Duke vs. North Carolina" )]))
+        XCTAssertEqual(guideResult.matches.count, 1)
+    }
+
     func testMatchupSpellingsAndReversedOrderAllMatch() {
         for name in ["NCAAF: Michigan State vs Michigan", "Michigan State at Michigan", "Michigan vs. Michigan State",
                      "NCAAF 03: (12) Michigan State vs (3) Michigan", "Michigan St @ Michigan Wolverines",

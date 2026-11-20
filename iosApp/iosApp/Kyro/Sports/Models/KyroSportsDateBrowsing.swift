@@ -8,6 +8,8 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
     case nhl
     case mlb
     case collegeFootball
+    case collegeBasketballMen
+    case collegeBasketballWomen
     case atp
     case wta
     case soccer
@@ -16,7 +18,7 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
 
     /// Visual order: All | NFL | NCAA | NBA | NHL | MLB | ATP | WTA
     static var filterOrder: [KyroSportsCategory] {
-        [.all, .nfl, .collegeFootball, .nba, .nhl, .mlb, .soccer, .atp, .wta]
+        [.all, .nfl, .collegeFootball, .nba, .nhl, .mlb, .collegeBasketballMen, .collegeBasketballWomen, .soccer, .atp, .wta]
     }
 
     var displayName: String {
@@ -27,6 +29,8 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nhl: KyroSportLeague.nhl.displayName
         case .mlb: KyroSportLeague.mlb.displayName
         case .collegeFootball: KyroSportLeague.collegeFootball.displayName
+        case .collegeBasketballMen: KyroSportLeague.collegeBasketballMen.displayName
+        case .collegeBasketballWomen: KyroSportLeague.collegeBasketballWomen.displayName
         case .atp: KyroSportLeague.atp.displayName
         case .wta: KyroSportLeague.wta.displayName
         case .soccer: KyroSportLeague.soccer.displayName
@@ -51,6 +55,8 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nhl: KyroSportLeague.nhl.shortName
         case .mlb: KyroSportLeague.mlb.shortName
         case .collegeFootball: KyroSportLeague.collegeFootball.shortName
+        case .collegeBasketballMen: KyroSportLeague.collegeBasketballMen.shortName
+        case .collegeBasketballWomen: KyroSportLeague.collegeBasketballWomen.shortName
         case .atp: KyroSportLeague.atp.shortName
         case .wta: KyroSportLeague.wta.shortName
         case .soccer: KyroSportLeague.soccer.shortName
@@ -65,6 +71,8 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nhl: KyroSportLeague.nhl.symbolName
         case .mlb: KyroSportLeague.mlb.symbolName
         case .collegeFootball: KyroSportLeague.collegeFootball.symbolName
+        case .collegeBasketballMen: KyroSportLeague.collegeBasketballMen.symbolName
+        case .collegeBasketballWomen: KyroSportLeague.collegeBasketballWomen.symbolName
         case .atp: KyroSportLeague.atp.symbolName
         case .wta: KyroSportLeague.wta.symbolName
         case .soccer: KyroSportLeague.soccer.symbolName
@@ -82,6 +90,8 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nhl: [.nhl]
         case .mlb: [.mlb]
         case .collegeFootball: [.collegeFootball]
+        case .collegeBasketballMen: [.collegeBasketballMen]
+        case .collegeBasketballWomen: [.collegeBasketballWomen]
         case .atp: [.atp]
         case .wta: [.wta]
         case .soccer: [.soccer]
@@ -96,6 +106,8 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nhl: .nhl
         case .mlb: .mlb
         case .collegeFootball: .collegeFootball
+        case .collegeBasketballMen: .collegeBasketballMen
+        case .collegeBasketballWomen: .collegeBasketballWomen
         case .atp: .atp
         case .wta: .wta
         case .soccer: .soccer
@@ -109,6 +121,8 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nhl: self = .nhl
         case .mlb: self = .mlb
         case .collegeFootball: self = .collegeFootball
+        case .collegeBasketballMen: self = .collegeBasketballMen
+        case .collegeBasketballWomen: self = .collegeBasketballWomen
         case .atp: self = .atp
         case .wta: self = .wta
         case .soccer: self = .soccer
@@ -155,7 +169,16 @@ enum KyroSportsBrowseCalendar {
 
 /// Date-local schedule assembly for All Sports and single-league chips.
 enum KyroSportsDaySchedule {
-    static let sectionOrder: [KyroSportLeague] = [.nfl, .collegeFootball, .nba, .nhl, .mlb, .soccer, .atp, .wta]
+    static let sectionOrder: [KyroSportLeague] = [.nfl, .collegeFootball, .collegeBasketballMen, .collegeBasketballWomen, .nba, .nhl, .mlb, .soccer, .atp, .wta]
+
+    static func filtered(_ games: [KyroSportsGame], conference: String? = nil, top25Only: Bool = false) -> [KyroSportsGame] {
+        games.filter { game in
+            let teams = [game.home.team, game.away.team]
+            if top25Only && ![game.home, game.away].contains(where: { ($0.rank ?? 0) > 0 && ($0.rank ?? 0) <= 25 }) { return false }
+            guard let conference, !conference.isEmpty else { return true }
+            return teams.contains { $0.conference?.localizedCaseInsensitiveCompare(conference) == .orderedSame }
+        }
+    }
 
     struct SportSection: Identifiable, Equatable, Sendable {
         let league: KyroSportLeague

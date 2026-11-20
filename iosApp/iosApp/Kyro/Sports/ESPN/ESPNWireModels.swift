@@ -191,6 +191,14 @@ struct ESPNScoreboardResponse: Decodable, Sendable {
         let logo: String?
         /// ESPN's variant of `logo` drawn for dark backgrounds.
         let logoDark: String?
+        let groups: [TeamGroup]?
+        let standingSummary: String?
+    }
+
+    struct TeamGroup: Decodable, Sendable {
+        let id: String?
+        let name: String?
+        let abbreviation: String?
     }
 
     struct Record: Decodable, Sendable {

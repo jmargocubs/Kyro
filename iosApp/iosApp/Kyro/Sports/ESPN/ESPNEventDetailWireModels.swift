@@ -252,6 +252,7 @@ struct ESPNEventSummaryResponse: Decodable, Sendable {
         let type: String?
         let displayName: String?
         let labels: [String]?
+        let keys: [String]?
         let athletes: [PlayerLine]?
     }
 

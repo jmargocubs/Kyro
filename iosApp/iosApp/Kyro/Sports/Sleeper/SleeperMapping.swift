@@ -65,6 +65,7 @@ enum SleeperMapping {
         case .nfl: "nfl"
         case .nba: "nba"
         case .collegeFootball: "cfb"
+        case .collegeBasketballMen, .collegeBasketballWomen: ""
         case .mlb: "mlb"
         case .nhl: "nhl"
         case .atp, .wta: ""

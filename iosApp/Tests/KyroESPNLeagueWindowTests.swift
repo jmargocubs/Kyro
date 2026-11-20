@@ -93,6 +93,40 @@ final class KyroESPNLeagueWindowTests: XCTestCase {
         XCTAssertTrue(nfl.allSatisfy { $0.status.isScheduled && $0.seasonType == .regular })
     }
 
+    func testCollegeBasketballPathsAndDivisionOneFixtureMapping() throws {
+        XCTAssertEqual(ESPNMapping.path(for: .collegeBasketballMen), "/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard")
+        XCTAssertEqual(ESPNMapping.path(for: .collegeBasketballWomen), "/apis/site/v2/sports/basketball/womens-college-basketball/scoreboard")
+        XCTAssertEqual(ESPNLeagueWindowStrategy.strategy(for: .collegeBasketballMen), .dailyRequests)
+        XCTAssertEqual(ESPNLeagueWindowStrategy.strategy(for: .collegeBasketballWomen), .dailyRequests)
+        XCTAssertEqual(KyroSportsCategory(league: .collegeBasketballMen).leagues, [.collegeBasketballMen])
+        XCTAssertEqual(KyroSportsCategory(league: .collegeBasketballWomen).leagues, [.collegeBasketballWomen])
+    }
+
+    func testCollegeBasketballMapsRankedSchoolsAndFiltersTop25AndConference() throws {
+        let json = #"{"events":[{"id":"college-1","date":"2026-11-19T19:00Z","season":{"year":2027,"type":2},"competitions":[{"id":"college-1","date":"2026-11-19T19:00Z","status":{"type":{"state":"pre","name":"STATUS_SCHEDULED","description":"Scheduled"}},"competitors":[{"homeAway":"home","score":"","curatedRank":{"current":4},"team":{"id":"ucla","abbreviation":"UCLA","location":"UCLA","name":"Bruins","displayName":"UCLA Bruins","standingSummary":"1st in Big Ten"}},{"homeAway":"away","score":"","team":{"id":"calpoly","abbreviation":"CP","location":"Cal Poly","name":"Mustangs","displayName":"Cal Poly Mustangs","standingSummary":"1st in Big West"}}]}]}]}"#
+        let response = try JSONDecoder().decode(ESPNScoreboardResponse.self, from: Data(json.utf8))
+        let men = try XCTUnwrap(ESPNMapping.game(from: response.events[0], league: .collegeBasketballMen))
+        XCTAssertEqual(men.home.rank, 4)
+        XCTAssertEqual(men.status, .scheduled)
+        XCTAssertNil(men.home.score)
+        XCTAssertEqual(men.home.team.conference, "Big Ten")
+        XCTAssertEqual(KyroSportsDaySchedule.filtered([men], top25Only: true).count, 1)
+        XCTAssertEqual(KyroSportsDaySchedule.filtered([men], conference: "Big Ten").count, 1)
+        XCTAssertTrue(KyroSportsDaySchedule.filtered([men], conference: "ACC").isEmpty)
+        let women = try XCTUnwrap(ESPNMapping.game(from: response.events[0], league: .collegeBasketballWomen))
+        XCTAssertEqual(women.league, .collegeBasketballWomen)
+    }
+
+    func testRateLimitedCollegeResponseUsesCachedFallback() async throws {
+        let transport = StubESPNTransport()
+        let client = ESPNAPIClient(transport: transport)
+        transport.set(.init(data: Data(#"{"events":[]}"#.utf8)))
+        _ = try await client.fetchScoreboard(league: .collegeBasketballMen, dates: "20261119", policy: .today)
+        transport.set(.init(data: Data(), status: 429), leaguePath: ESPNMapping.path(for: .collegeBasketballMen), dates: "20261119")
+        let payload = try await client.fetchScoreboard(league: .collegeBasketballMen, dates: "20261119", policy: .today, ignoreFreshness: true)
+        XCTAssertTrue(payload.response.events.isEmpty)
+    }
+
     // MARK: NBA
 
     func testNBAFinalsMapTeamsScoresRecordsQuartersAndLogos() throws {

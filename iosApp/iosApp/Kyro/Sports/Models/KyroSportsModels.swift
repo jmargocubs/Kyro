@@ -12,6 +12,8 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
     case nfl
     case nba
     case collegeFootball
+    case collegeBasketballMen
+    case collegeBasketballWomen
     case mlb
     case nhl
     case atp
@@ -29,6 +31,8 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nfl: "NFL"
         case .nba: "NBA"
         case .collegeFootball: "NCAA Football"
+        case .collegeBasketballMen: "NCAA Men’s Basketball"
+        case .collegeBasketballWomen: "NCAA Women’s Basketball"
         case .mlb: "MLB"
         case .nhl: "NHL"
         case .atp: "ATP"
@@ -43,6 +47,8 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nfl: "NFL"
         case .nba: "NBA"
         case .collegeFootball: "NCAA"
+        case .collegeBasketballMen: "NCAAM"
+        case .collegeBasketballWomen: "NCAAW"
         case .mlb: "MLB"
         case .nhl: "NHL"
         case .atp: "ATP"
@@ -54,7 +60,7 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
     var symbolName: String {
         switch self {
         case .nfl, .collegeFootball: "football.fill"
-        case .nba: "basketball.fill"
+        case .nba, .collegeBasketballMen, .collegeBasketballWomen: "basketball.fill"
         case .mlb: "baseball.fill"
         case .nhl: "hockey.puck.fill"
         case .atp, .wta: "tennisball.fill"
@@ -67,6 +73,8 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         switch self {
         case .nfl: 0x428DFF
         case .collegeFootball: 0xA783E8
+        case .collegeBasketballMen: 0xF4A55A
+        case .collegeBasketballWomen: 0xED8EB6
         case .nba: 0xF4A55A
         case .nhl: 0x53BFB9
         case .mlb: 0xE87575
@@ -81,6 +89,7 @@ enum KyroSportLeague: String, CaseIterable, Identifiable, Codable, Sendable {
         case .nfl: "Regular season"
         case .nba: "Regular season"
         case .collegeFootball: "Regular season"
+        case .collegeBasketballMen, .collegeBasketballWomen: "Regular season & postseason"
         case .mlb: "Regular season"
         case .nhl: "Regular season"
         case .atp, .wta: "Tour"
