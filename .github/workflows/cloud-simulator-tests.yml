@@ -6,12 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'Tests to run. "full" (default) is the complete validation suite; "tvos-ui" runs only the Siri Remote UI tests.'
+        description: 'Tests to run: full suite, Siri Remote UI, or focused LAN diagnostic export integration tests.'
         type: choice
         default: full
         options:
           - full
           - tvos-ui
+          - focus-export
 
 permissions:
   contents: read
@@ -83,6 +84,8 @@ jobs:
           export TEST_RUNNER_KYRO_RENDER_DIR="$RUNNER_TEMP/guide-renders"
           if [ "$SUITE" = "tvos-ui" ]; then
             tests=(SiloTVUITests/KyroTVRemoteFocusUITests)
+          elif [ "$SUITE" = "focus-export" ]; then
+            tests=(SiloTVTests/TVFocusReportServerTests)
           else
             tests=(
               SiloTVTests/KyroTVFocusTests
