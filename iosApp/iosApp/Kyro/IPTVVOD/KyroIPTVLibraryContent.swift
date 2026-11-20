@@ -11,18 +11,27 @@ struct KyroIPTVLibraryContent: View {
     @Bindable var model: KyroIPTVBrowseModel
 
     private let service = XtreamVODService.shared
+    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     var body: some View {
         Group {
             if !model.hasLoadedOverview {
-                ScrollView { PosterRowsSkeleton().padding(.top, SiloTheme.padding) }
+                ScrollView {
+                    VStack(spacing: 0) {
+                        if let pageScrollControls { pageScrollControls }
+                        PosterRowsSkeleton().padding(.top, SiloTheme.padding)
+                    }
+                }
                     .scrollDisabled(true)
             } else if !model.hasCatalog {
                 ScrollView {
-                    KyroIPTVCatalogStatusView(provider: provider, emphasis: .page)
-                        .padding(SiloTheme.padding)
-                        .frame(maxWidth: 520)
-                        .frame(maxWidth: .infinity)
+                    VStack(spacing: 0) {
+                        if let pageScrollControls { pageScrollControls }
+                        KyroIPTVCatalogStatusView(provider: provider, emphasis: .page)
+                            .padding(SiloTheme.padding)
+                            .frame(maxWidth: 520)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
                 .reportsPageChromeScroll()
             } else {
@@ -50,10 +59,12 @@ struct KyroIPTVLibraryContent: View {
 private struct KyroIPTVRecommendedView: View {
     let provider: LiveTVProvider
     let model: KyroIPTVBrowseModel
+    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: SiloTheme.largePadding) {
+                if let pageScrollControls { pageScrollControls }
                 KyroIPTVImportBanner(providerID: provider.id)
                 if !model.continueWatching.isEmpty {
                     PosterShelf(title: "Continue Watching", items: model.continueWatching) { item in
@@ -80,10 +91,12 @@ private struct KyroIPTVRecommendedView: View {
 private struct KyroIPTVLibraryGridView: View {
     let provider: LiveTVProvider
     @Bindable var model: KyroIPTVBrowseModel
+    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     var body: some View {
         ScrollView {
             VStack(spacing: SiloTheme.padding) {
+                if let pageScrollControls { pageScrollControls }
                 KyroIPTVImportBanner(providerID: provider.id)
                 searchField
                 controlBar
@@ -267,10 +280,12 @@ private struct KyroIndexedItems: RandomAccessCollection {
 /// collection narrows a library, without adding a navigation destination.
 private struct KyroIPTVCollectionsView: View {
     let model: KyroIPTVBrowseModel
+    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
+                if let pageScrollControls { pageScrollControls }
                 ForEach(model.categories) { summary in
                     Button {
                         model.showCategory(summary.name)

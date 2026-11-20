@@ -12,6 +12,7 @@ struct BrowseView: View {
     @State private var showFilters = false
     @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
+    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     @ViewBuilder
     var body: some View {
@@ -65,6 +66,7 @@ struct BrowseView: View {
     private var emptyContent: some View {
         ScrollView {
             VStack(spacing: SiloTheme.padding) {
+                if let pageScrollControls { pageScrollControls }
                 if showsSearchShortcut {
                     searchBar
                 }
@@ -120,6 +122,7 @@ struct BrowseView: View {
     private var scrollContent: some View {
         ScrollView {
             VStack(spacing: SiloTheme.padding) {
+                if let pageScrollControls { pageScrollControls }
                 if showsSearchShortcut {
                     searchBar
                 }
@@ -459,6 +462,7 @@ struct LibraryRecommendedView: View {
 
     @State private var viewModel = LibraryRecommendedViewModel()
     @Environment(AppRouter.self) private var router
+    @Environment(\.libraryPageScrollControls) private var pageScrollControls
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -501,6 +505,7 @@ struct LibraryRecommendedView: View {
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: SiloTheme.largePadding) {
+                if let pageScrollControls { pageScrollControls }
                 if viewModel.scopeIncomplete { scopeNotice }
                 ForEach(viewModel.sections) { section in
                     SectionRow(

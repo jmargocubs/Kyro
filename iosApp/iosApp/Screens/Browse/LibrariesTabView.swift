@@ -33,6 +33,17 @@ struct PinnedLibraryGroupedElement<Element> {
     var isNestedLibrary: Bool { parentCategory != nil }
 }
 
+private struct LibraryPageScrollControlsKey: EnvironmentKey {
+    static let defaultValue: AnyView? = nil
+}
+
+extension EnvironmentValues {
+    var libraryPageScrollControls: AnyView? {
+        get { self[LibraryPageScrollControlsKey.self] }
+        set { self[LibraryPageScrollControlsKey.self] = newValue }
+    }
+}
+
 /// Orders navigation elements so pinned libraries sit directly beneath the
 /// media-type category that contains them, while libraries without a visible
 /// parent (mixed libraries, or categories the user hid) stay at root level.
@@ -403,9 +414,8 @@ struct LibrariesTabView: View {
 
     @ViewBuilder
     private func loadedContent(activeLibrary: Library?) -> some View {
-        // Switch tab content directly here so we can hoist the top bar + tab
-        // selector into a single `safeAreaInset` overlay shared by all three
-        // tabs and by both sources.
+        // Source and tab controls are injected into each tab's primary scroll
+        // content, so they move with the posters rather than occupying a pinned inset.
         ZStack {
             if let activeLibrary {
                 tabContent(activeLibrary: activeLibrary)
@@ -423,28 +433,12 @@ struct LibrariesTabView: View {
                 if shows { hasShownAlternate = true }
             }
             .environment(hostedHeader?.state ?? chromeScrollState)
-            .safeAreaInset(edge: .top, spacing: 0) {
+            .environment(\.libraryPageScrollControls, AnyView(
                 topChrome(activeLibrary: activeLibrary)
-                    // The title and tab selector share one rounded panel.
-                    .pageChromeBacking(
-                        scrollState: hostedHeader?.state ?? chromeScrollState,
-                        outset: EdgeInsets(top: 0, leading: -8, bottom: -8, trailing: -8)
-                    )
-                    // Same scroll-driven glass as the Detail page chrome. The shell gives the
-                    // header its own constant backdrop; the selector and tabs below it need one
-                    // too, since glass alone can reveal bright posters during a fling.
-                    .background {
-                        if let hostedHeader {
-                            // Keep the accepted selector/tabs layout, but prevent poster colors
-                            // from washing through the floating controls. Start below the shell
-                            // header's runway: its own backdrop covers the wordmark/actions.
-                            Color.siloPageCanvas.opacity(0.78)
-                                .padding(.top, hostedHeader.runway)
-                                .allowsHitTesting(false)
-                        }
-                        PageChromeGlass(scrollState: hostedHeader?.state ?? chromeScrollState)
-                    }
-            }
+                    .pageChromeBacking(scrollState: hostedHeader?.state ?? chromeScrollState,
+                                       outset: EdgeInsets(top: 0, leading: -8, bottom: -8, trailing: -8))
+                    .background(PageChromeGlass(scrollState: hostedHeader?.state ?? chromeScrollState))
+            ))
     }
 
     @ViewBuilder
@@ -496,10 +490,9 @@ struct LibrariesTabView: View {
     private func headerStack(activeLibrary: Library?, scrollsTabs: Bool) -> some View {
         let label = selectorLabel(activeLibrary: activeLibrary)
         return VStack(alignment: .leading, spacing: 0) {
-            if let hosted = hostedHeader {
-                // The shell's one header sits in this runway; the library selector is page
-                // content directly beneath it.
-                Color.clear.frame(height: hosted.runway)
+            if hostedHeader != nil {
+                // The global shell header is independently pinned. All page controls
+                // start at the top of the scroll content beneath its safe area.
                 HStack(spacing: 12) {
                     LibrarySelectorButton(
                         title: label.title,

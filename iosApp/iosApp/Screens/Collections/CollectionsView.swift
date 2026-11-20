@@ -518,6 +518,7 @@ struct LibraryCollectionsView: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @Environment(AppRouter.self) private var router
+    @Environment(\.libraryPageScrollControls) private var pageScrollControls
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.verticalSizeClass) private var vSize
 
@@ -542,6 +543,7 @@ struct LibraryCollectionsView: View {
             if !viewModel.isEmpty {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: SiloTheme.padding) {
+                        if let pageScrollControls { pageScrollControls }
                         ForEach(viewModel.sections) { section in
                             sectionView(section)
                         }
