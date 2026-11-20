@@ -32,6 +32,20 @@ final class KyroAppHeaderTests: XCTestCase {
         }
     }
 
+    func testFastScrollingClampsChromeWithoutResettingOtherDestinations() {
+        let states = KyroShellScrollStates()
+        let movies = states.state(for: .movies)
+        let series = states.state(for: .series)
+        movies.update(10_000)
+        XCTAssertEqual(movies.offset, PageChromeGlass.fadeEnd)
+        series.update(20)
+        XCTAssertEqual(movies.offset, PageChromeGlass.fadeEnd)
+        XCTAssertEqual(series.offset, 20)
+        movies.update(-100)
+        XCTAssertEqual(movies.offset, 0)
+        XCTAssertEqual(series.offset, 20, "scrolling another tab must not reset this page's chrome")
+    }
+
     func testPagesHostedByTheShellSkipTheirOwnHeaderOnEveryTab() {
         let ctx = context()
         for destination in KyroGlobalDestination.tabDestinations(fourthTab: .default) {

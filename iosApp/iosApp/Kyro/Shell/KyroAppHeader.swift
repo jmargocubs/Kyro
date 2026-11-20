@@ -51,9 +51,9 @@ enum KyroShellHeader {
         secondaryTitle == nil ? context : nil
     }
 
-    /// Movies and Series draw their own glass panel behind the header, library selector and page
-    /// chips as one piece, so the header adds no second strip over it. Every other page has the
-    /// header's own strip.
+    /// Movies and Series draw their own scrolling glass panel behind the selector and page chips,
+    /// so the header avoids stacking a second glass node over it. The constant translucent
+    /// backdrop still protects the wordmark and actions on every destination.
     static func headerDrawsGlass(for destination: KyroGlobalDestination) -> Bool {
         switch destination {
         case .movies, .series: false
@@ -135,6 +135,12 @@ struct KyroAppHeader: View {
         .padding(.top, KyroShellHeader.topInset(hasStatusColumn: statusColumn != nil))
         .padding(.bottom, SiloTheme.smallPadding)
         .background {
+            // The scroll-driven glass is fully transparent at the top of a page and native
+            // material can still reveal bright poster colors during a fast fling. Keep a
+            // constant, translucent canvas behind the wordmark and actions on every tab.
+            Color.siloPageCanvas.opacity(0.78)
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
             if KyroShellHeader.headerDrawsGlass(for: destination) {
                 PageChromeGlass(scrollState: state)
             }

@@ -430,10 +430,18 @@ struct LibrariesTabView: View {
                         scrollState: hostedHeader?.state ?? chromeScrollState,
                         outset: EdgeInsets(top: 0, leading: -8, bottom: -8, trailing: -8)
                     )
-                    // Same scroll-driven glass as the Detail page chrome so
-                    // the selector and actions stay legible over posters. Under the shell's
-                    // header this panel reaches up behind it, so the header adds no second strip.
+                    // Same scroll-driven glass as the Detail page chrome. The shell gives the
+                    // header its own constant backdrop; the selector and tabs below it need one
+                    // too, since glass alone can reveal bright posters during a fling.
                     .background {
+                        if let hostedHeader {
+                            // Keep the accepted selector/tabs layout, but prevent poster colors
+                            // from washing through the floating controls. Start below the shell
+                            // header's runway: its own backdrop covers the wordmark/actions.
+                            Color.siloPageCanvas.opacity(0.78)
+                                .padding(.top, hostedHeader.runway)
+                                .allowsHitTesting(false)
+                        }
                         PageChromeGlass(scrollState: hostedHeader?.state ?? chromeScrollState)
                     }
             }
