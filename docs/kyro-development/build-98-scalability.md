@@ -96,15 +96,15 @@ FTS initially took 8.8 seconds for a 100K search because SQLite chose the ordina
 probed the virtual table per row. Rewriting the predicate as a one-time rowid subquery reduced
 that synthetic query to 14 ms. This is a query-plan fix, not an iPhone responsiveness claim.
 
-The benchmark compiles the **production** channel store with `KYRO_CHANNEL_HOST_TESTS`; only
-`LiveTVChannel` is a matching host stub. It generates deterministic numbered channels across
-40 categories, then calls the same `LiveTVChannelCatalogImporter.replace` bridge now used by
-`LiveTVService` refresh. Import time excludes fixture creation but includes 1,024-row staging,
-generation promotion and orphan cleanup. This bridge still receives a full parsed array; its
-peak RSS is therefore materially higher than the earlier direct-store-only benchmark. Results
-are one optimized-Swift run on Apple M2/macOS
-26.6, not p95; RSS is whole-process high-water mark across the sequential run. DB size is the
-closed main file, excluding WAL/SHM and filesystem overhead. No Simulator ran.
+The benchmark compiles the **production** channel store and bounded-batch importer with
+`KYRO_CHANNEL_HOST_TESTS`; only `LiveTVChannel` is a matching host stub. It produces deterministic
+numbered channels across 40 categories one 1,024-row batch at a time, so the scale fixture is not
+itself a hidden full array. Import time includes staging, generation promotion and orphan cleanup.
+After queries complete, the benchmark deliberately materializes the current compatibility catalog
+to quantify the remaining production cost, then releases it and samples resident memory again.
+Each size below ran in a fresh process. Results are one optimized-Swift run on Apple M2/macOS 26.6,
+not p95. DB size is the closed main file, excluding WAL/SHM and filesystem overhead. The benchmark
+does not include a real network response body or poster/EPG memory. No Simulator ran.
 
 ```sh
 swiftc -O -D KYRO_CHANNEL_HOST_TESTS -lsqlite3 \
@@ -112,20 +112,23 @@ swiftc -O -D KYRO_CHANNEL_HOST_TESTS -lsqlite3 \
   iosApp/iosApp/LiveTV/LiveTVChannelCatalogImporter.swift \
   iosApp/Benchmarks/LiveTVChannelStoreBenchmark.swift -o /tmp/kyro-channel-benchmark
 BENCH_DIR=$(mktemp -d)
-/tmp/kyro-channel-benchmark "$BENCH_DIR"
+/tmp/kyro-channel-benchmark "$BENCH_DIR" 100000
 ```
 
-| Channels | Production bridge import + index | Selective search | Broad search | Category/deep page | Final Guide/keyset page | EPG ID lookup | DB file | Peak RSS |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 40,000 | 1.308 s | 6 ms | 7 ms | <1 ms | <1 ms | <1 ms | 30.4 MB | 49 MB |
-| 60,000 | 1.964 s | 8 ms | 11 ms | <1 ms | <1 ms | <1 ms | 45.7 MB | 68 MB |
-| 80,000 | 2.665 s | 11 ms | 14 ms | <1 ms | <1 ms | <1 ms | 61.0 MB | 87 MB |
-| 100,000 | 3.379 s | 14 ms | 18 ms | <1 ms | <1 ms | <1 ms | 76.3 MB | 110 MB |
+| Channels | Streaming import + index | Selective search | Broad search | Category/deep page | Final Guide/keyset page | EPG ID lookup | DB file | Streaming peak RSS | Peak with compatibility array | Retained after release |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 40,000 | 1.507 s | 6 ms | 7 ms | <1 ms | <1 ms | <1 ms | 30.4 MB | 18 MB | 46 MB | 38 MB |
+| 60,000 | 2.243 s | 8 ms | 11 ms | <1 ms | <1 ms | <1 ms | 45.7 MB | 18 MB | 61 MB | 53 MB |
+| 80,000 | 3.045 s | 11 ms | 14 ms | <1 ms | <1 ms | <1 ms | 61.0 MB | 18 MB | 75 MB | 67 MB |
+| 100,000 | 3.948 s | 14 ms | 19 ms | <1 ms | <1 ms | <1 ms | 76.3 MB | 18 MB | 89 MB | 81 MB |
 
-Provisional channel-store budgets: 100K bridge import/index <10 s, selective
+Provisional channel-store budgets: 100K import/index <10 s, selective
 search <50 ms, category and Guide page and EPG ID lookup <50 ms, main DB <100 MB,
-host process peak RSS <100 MB. The 100K fixture **misses the memory budget** at 110 MB because
-the production bridge still receives a full parsed array. It does not exercise provider download/parsing, mixed-content EPG,
+host process peak RSS <100 MB. The isolated 100K fixture now meets the provisional memory budget:
+streamed staging peaks at 18 MB and the transitional selected-provider array raises peak RSS to
+89 MB. Releasing the array leaves 81 MB resident because Swift's allocator does not immediately
+return every page to macOS. This is host evidence, not an iPhone budget guarantee. It does not
+exercise a provider response body, mixed-content EPG,
 long-running UI work, image loading, low storage, or real-device memory. The broad search uses
 the common word “Channel” and returns the first 100 rows; representative query/category p95
 still requires profiling. Main-thread stalls were not instrumented in this host benchmark;
@@ -139,9 +142,9 @@ The dependency trace before migration found these full-array paths:
 
 | Consumer | Current production path | Status |
 |---|---|---|
-| M3U/Xtream import | `LiveTVM3UParser.parseResult` and `loadXtream` build full arrays | Not migrated |
-| Refresh and snapshots | `LiveTVService.channelCatalogs`, whole-array JSON snapshot | SQLite staging/promotion wired to refresh; arrays and JSON retained for compatibility |
-| Offline restore | JSON decode/materialization; SQLite fallback if JSON unavailable | Partial; fallback still materializes an array |
+| M3U/Xtream import | Provider response data is parsed directly into bounded SQLite staging batches | Migrated on iOS; the downloaded response `Data` remains one bounded-by-policy allocation |
+| Refresh and snapshots | `LiveTVService.channelCatalogs`, whole-array JSON snapshot | Atomic SQLite promotion is production; redundant JSON is removed only after a valid promotion; selected-provider array remains |
+| Offline restore | Legacy JSON migration followed by protected SQLite generation | Migrated storage; the compatibility service restore still materializes the selected provider |
 | Browse/search/favorites | `LiveTVChannelSearchModel`, grouped arrays, `LiveTVChannelFiltering` | iOS production UI migrated to indexed count/page queries and a 1,000-row maximum window; legacy snapshot fallback remains array-backed |
 | Categories | `LiveTVCategoryDirectory` scans full array | iOS Categories UI migrated to a grouped SQLite summary; legacy fallback and browsing-context validation remain array-backed |
 | Guide/list/grid | `LiveTVGuideView.rows` holds filtered full array | iOS Guide rows migrated to the bounded sliding window; arbitrary deep saved-position/playing-channel reveal remains unresolved |
@@ -149,48 +152,52 @@ The dependency trace before migration found these full-array paths:
 | EPG | full-array filter construction, short-guide invalidation scans | Filter construction moved off main; associations still array-backed |
 | Playback/player picker | `LiveTVPlayerView(channels:)`, full-array search | Not migrated |
 | Home/favorites/history | full-array preview resolver and recent pruning | Recent pruning moved off main and bounded to at most 15 IDs; preview still scans |
-| Provider switching | retained arrays for every visited provider | Not migrated |
+| Provider switching | complete arrays were retained for every visited provider | Partially migrated: switching evicts the previous provider array; selected provider still materializes |
 
-On iOS, `LiveTVService.refresh` now opens the existing SQLite store on a utility worker, stages
-the parsed catalog in bounded batches, and promotes only a validated generation. A failure
-leaves the previous active generation in place and the established Live TV path functional.
+On iOS, `LiveTVService.refresh` now scans M3U bytes line by line or Xtream live-stream JSON one
+top-level member at a time, stages at most 1,024 channels per store call, and promotes only a
+validated generation. Provider order, stable IDs, duplicate rules and the 40K cap remain intact.
+Cancellation or an invalid generation leaves the old generation active. A provider/source change
+that races the promotion restores the prior active generation before orphan cleanup.
 Provider removal deletes its channel rows. Offline restore uses the existing redacted JSON
-snapshot first; if it is absent, a valid SQLite generation restores browse-only channel
-objects with non-playable `about:blank` URLs. A focused XCTest covers this flow but has only
-been **compiled**, not run. The synthetic Mac host checks execute the production importer bridge,
-atomic replacement, cancellation, provider isolation, favorites, filtered counts, category
-summaries, EPG IDs, and offline restore. A focused paging XCTest walks 1,205 imported channels
-forward and backward and asserts that no more than 1,000 are retained, but it too has only been
-compiled.
+snapshot first for migration; after the next successful promotion the protected Application
+Support SQLite generation becomes the last-known-good snapshot and the redundant JSON file is
+removed. SQLite is excluded from device backup and uses complete-until-first-authentication file
+protection. Same-session provider switching restores playable rows from SQLite; cold offline rows
+remain non-playable until refresh, matching the old snapshot policy. The synthetic Mac host check
+executes bounded import, atomic replacement, late-promotion rollback, cancellation, provider
+isolation, favorites, filtered counts, category summaries, EPG IDs and offline restore. Focused
+XCTest coverage was compiled but not executed.
 
 ## Live TV integration still required
 
 Live TV remains limited to **40,000** channels. Raising the constant now would be unsafe:
 
-- `LiveTVService.channelCatalogs` retains complete `[LiveTVChannel]` arrays, and source switching,
-  playback lookup, favorites and EPG filter creation still depend on them.
+- `LiveTVService.channelCatalogs` still retains one complete selected-provider
+  `[LiveTVChannel]`. Playback lookup/picker, Home previews, EPG filter creation, automatic Sports
+  matching, unified search and several restoration/fallback paths still depend on it.
 - Direct iOS Browse, Guide, favorites, search, category selection and Sports manual selection are
   paged. Unified app search, automatic Sports matching, Home previews and the playback picker
   still consume the full catalog or an all-channel derivative.
-- The offline channel snapshot is a whole-array JSON encode/decode with a 32 MB file ceiling.
-- M3U and Xtream imports still build full arrays before replacement. The SQLite store is now
-  wired to refresh and fallback restore, but import parsing, unified search, automatic Sports
-  matching, playback and most EPG paths still use the legacy arrays. The production-bridge benchmark is **not** an
-  integrated app benchmark and cannot validate 100K UI responsiveness.
-- The SQLite channel cache stores stream URLs, which may embed provider credentials. It lives
-  under Caches with iOS file protection and is excluded from backup, while the legacy JSON
-  snapshot remains URL-free. Verify protection and cache lifecycle on a device, and review
+- Legacy JSON snapshots migrate safely, but a cold legacy restore still decodes its old whole-array
+  file once. New successful imports do not write another whole-array JSON snapshot.
+- M3U and Xtream parsing is bounded-batch, but unified search, automatic Sports matching,
+  playback and most EPG paths still use the selected-provider compatibility array. The host
+  benchmark is not an integrated app benchmark and cannot validate 100K UI responsiveness.
+- The SQLite channel catalog stores stream URLs, which may embed provider credentials. It now
+  lives under protected Application Support and is excluded from backup. Verify protection and
+  lifecycle on a device, and review
   whether URL encryption or ID-based reconstruction is required before expanding this path.
 
-The next milestone must stream M3U/Xtream into the staged store, replace whole-array JSON
-offline snapshots, migrate unified search, automatic Sports matching, provider switching,
-EPG matching and playback resolution to ID-based paths, and add arbitrary-offset restoration
+The next milestone must remove the selected-provider compatibility array by migrating unified
+search, automatic Sports matching, Home previews, EPG matching/filtering, playback resolution and
+the player picker to indexed/ID-based paths, and add arbitrary-offset restoration
 for Guide/Browse selection. It must rerun correctness/performance on the integrated app before
 changing the 40K import cap.
 
 ## Validation and device acceptance
 
-The generic iOS `build-for-testing` succeeded after this query migration as a compile gate only.
+The generic iOS `build-for-testing` succeeded after the streaming-import migration as a compile gate only.
 It does **not** run XCTest.
 The Mac host benchmarks exercise VOD and channel-store SQLite correctness and synthetic scale.
 The updated `LiveTVChannelSnapshotTests.testChannelStoreRefreshPagingAndOfflineFallback`, the

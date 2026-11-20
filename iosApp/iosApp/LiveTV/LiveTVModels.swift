@@ -1301,71 +1301,110 @@ enum LiveTVCatalogLimits {
 }
 
 enum LiveTVM3UParser {
+    /// Incremental parser over the downloaded bytes. It decodes one line and returns at most one
+    /// store batch at a time, avoiding the former full UTF-8/Latin-1 string, split-line array, and
+    /// channel array living together. Deduplication and stable-ID behavior match `parseResult`.
+    struct StreamingScanner {
+        private let data: Data
+        private let providerID: UUID
+        private let limit: Int
+        private var cursor: Data.Index
+        private var pending: (name: String, attributes: [String: String])?
+        private var seenIDs = Set<String>()
+        private var seenEntries = Set<String>()
+        private var accepted = 0
+        private(set) var hitChannelLimit = false
+        private(set) var isFinished = false
+
+        init(data: Data, providerID: UUID, limit: Int = LiveTVCatalogLimits.maximumChannels) throws {
+            guard limit > 0 else { throw LiveTVError.invalidPlaylist }
+            self.data = data
+            self.providerID = providerID
+            self.limit = limit
+            cursor = data.startIndex
+        }
+
+        mutating func nextBatch(maximumCount: Int = 1_024) throws -> [LiveTVChannel]? {
+            guard !isFinished else { return nil }
+            let target = min(max(1, maximumCount), 1_024)
+            var channels: [LiveTVChannel] = []
+            channels.reserveCapacity(target)
+            while channels.count < target, let rawLine = nextLine() {
+                if Task.isCancelled { throw CancellationError() }
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                if line.hasPrefix("#EXTINF:") {
+                    let attributes = LiveTVM3UParser.parseAttributes(line)
+                    let name = LiveTVM3UParser.displayName(in: line)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    pending = name.flatMap { $0.isEmpty ? nil : ($0, attributes) }
+                    continue
+                }
+                guard !line.isEmpty, !line.hasPrefix("#"), let item = pending else { continue }
+                pending = nil
+                guard let url = LiveTVM3UParser.webURL(line) else { continue }
+                if accepted >= limit {
+                    hitChannelLimit = true
+                    isFinished = true
+                    break
+                }
+
+                let guideID = item.attributes["tvg-id"]?.nilIfBlank
+                let foldedName = item.name.folding(
+                    options: [.caseInsensitive, .diacriticInsensitive],
+                    locale: Locale(identifier: "en_US_POSIX")
+                ).lowercased()
+                let stableSource = guideID?.lowercased() ?? foldedName
+                guard seenEntries.insert("\(stableSource)\u{1F}\(foldedName)").inserted else { continue }
+                var stableID = LiveTVM3UParser.channelID(providerID: providerID, key: stableSource)
+                if !seenIDs.insert(stableID).inserted {
+                    stableID = LiveTVM3UParser.channelID(
+                        providerID: providerID, key: "\(stableSource)|name:\(foldedName)"
+                    )
+                    guard seenIDs.insert(stableID).inserted else { continue }
+                }
+                channels.append(LiveTVChannel(
+                    id: stableID,
+                    guideID: guideID,
+                    name: item.name,
+                    streamURL: url,
+                    logoURL: item.attributes["tvg-logo"].flatMap(LiveTVM3UParser.webURL),
+                    category: item.attributes["group-title"]?.nilIfBlank ?? "Other"
+                ))
+                accepted += 1
+            }
+            if cursor >= data.endIndex { isFinished = true }
+            return channels.isEmpty && isFinished ? nil : channels
+        }
+
+        private mutating func nextLine() -> String? {
+            guard cursor < data.endIndex else { return nil }
+            let start = cursor
+            while cursor < data.endIndex, data[cursor] != 0x0A, data[cursor] != 0x0D {
+                cursor = data.index(after: cursor)
+            }
+            let line = data[start..<cursor]
+            if cursor < data.endIndex {
+                let first = data[cursor]
+                cursor = data.index(after: cursor)
+                if first == 0x0D, cursor < data.endIndex, data[cursor] == 0x0A {
+                    cursor = data.index(after: cursor)
+                }
+            }
+            return String(data: line, encoding: .utf8) ?? String(data: line, encoding: .isoLatin1)
+        }
+    }
+
     static func parse(data: Data, providerID: UUID, limit: Int = LiveTVCatalogLimits.maximumChannels) throws -> [LiveTVChannel] {
         try parseResult(data: data, providerID: providerID, limit: limit).channels
     }
 
     static func parseResult(data: Data, providerID: UUID, limit: Int = LiveTVCatalogLimits.maximumChannels) throws -> LiveTVM3UParseResult {
-        guard limit > 0, let text = String(data: data, encoding: .utf8)
-                ?? String(data: data, encoding: .isoLatin1) else {
-            throw LiveTVError.invalidPlaylist
-        }
-
+        var scanner = try StreamingScanner(data: data, providerID: providerID, limit: limit)
         var channels: [LiveTVChannel] = []
-        var seenIDs = Set<String>()
-        var seenEntries = Set<String>()
-        var pending: (name: String, attributes: [String: String])?
-        var hitChannelLimit = false
-        let lines = text.split(whereSeparator: \.isNewline)
-        var index = lines.startIndex
-        while index < lines.endIndex {
-            let line = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
-            index = lines.index(after: index)
-            if line.hasPrefix("#EXTINF:") {
-                let attributes = parseAttributes(line)
-                let name = displayName(in: line)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                pending = name.flatMap { $0.isEmpty ? nil : ($0, attributes) }
-                continue
-            }
-            guard !line.isEmpty, !line.hasPrefix("#"), let item = pending else { continue }
-            pending = nil
-            guard let url = webURL(line) else { continue }
-
-            if channels.count >= limit {
-                // A later valid EXTINF+URL pair proves the playlist continues past the cap.
-                hitChannelLimit = true
-                break
-            }
-
-            let guideID = item.attributes["tvg-id"]?.nilIfBlank
-            let foldedName = item.name.folding(
-                options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")
-            ).lowercased()
-            let stableSource = guideID?.lowercased() ?? foldedName
-            // The same guide ID and name twice is one channel listed twice.
-            guard seenEntries.insert("\(stableSource)\u{1F}\(foldedName)").inserted else { continue }
-            var stableID = Self.channelID(providerID: providerID, key: stableSource)
-            if !seenIDs.insert(stableID).inserted {
-                // Event feeds often borrow one guide ID ("DAZN1.uk") for many differently named
-                // channels. Before Build 38 every one after the first was dropped. The first keeps
-                // its identity; each later one gets an ID keyed by guide ID and name, which stays
-                // stable across refreshes.
-                stableID = Self.channelID(providerID: providerID, key: "\(stableSource)|name:\(foldedName)")
-                guard seenIDs.insert(stableID).inserted else { continue }
-            }
-
-            let logo = item.attributes["tvg-logo"].flatMap(webURL)
-            let category = item.attributes["group-title"]?.nilIfBlank ?? "Other"
-            channels.append(LiveTVChannel(
-                id: stableID,
-                guideID: guideID,
-                name: item.name,
-                streamURL: url,
-                logoURL: logo,
-                category: category
-            ))
+        while let batch = try scanner.nextBatch() {
+            channels.append(contentsOf: batch)
         }
-        return LiveTVM3UParseResult(channels: channels, hitChannelLimit: hitChannelLimit)
+        return LiveTVM3UParseResult(channels: channels, hitChannelLimit: scanner.hitChannelLimit)
     }
 
     private static func channelID(providerID: UUID, key: String) -> String {

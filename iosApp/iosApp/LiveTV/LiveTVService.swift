@@ -2,6 +2,13 @@ import Foundation
 import Observation
 import CryptoKit
 
+private enum LiveTVCatalogDownload: Sendable {
+    case materialized(LiveTVCachedCatalog)
+    #if os(iOS)
+    case indexed(count: Int, categories: [String], hitChannelLimit: Bool)
+    #endif
+}
+
 /// One memoized channel-to-guide match and the channel fields it was computed from.
 struct LiveTVChannelKeyMemo {
     let guideID: String?
@@ -85,7 +92,7 @@ final class LiveTVService {
     @ObservationIgnored private let recentHistoryStore: LiveTVRecentHistoryStore
     /// The one playlist download in flight. Removing its provider cancels it and clears this, so a
     /// late result can no longer be applied.
-    @ObservationIgnored private var playlistRefresh: (providerID: UUID, token: UUID, task: Task<LiveTVCachedCatalog, Error>)?
+    @ObservationIgnored private var playlistRefresh: (providerID: UUID, token: UUID, task: Task<LiveTVCatalogDownload, Error>)?
     #if os(iOS)
     @ObservationIgnored private var catalogImportInProgress = false
     #endif
@@ -348,6 +355,14 @@ final class LiveTVService {
 
     func selectProvider(_ id: UUID) {
         guard providers.contains(where: { $0.id == id }) else { return }
+        #if os(iOS)
+        if let previous = selectedProviderID, previous != id {
+            // The SQLite generation remains playable and provider-scoped. Do not retain complete
+            // Swift catalogs for every provider visited during this process lifetime.
+            channelCatalogs[previous] = nil
+            cacheRestores.removeValue(forKey: previous)?.cancel()
+        }
+        #endif
         selectedProviderID = id
         scheduleHomePreviewRebuild()
         errorMessage = nil
@@ -403,7 +418,8 @@ final class LiveTVService {
         // The JSON snapshot is the first migration fallback for existing installations. A
         // completed SQLite generation also restores offline if that older snapshot is absent.
         if channelCatalogs[providerID] == nil, let store = await channelStore(),
-           let restored = await LiveTVChannelCatalogImporter.restore(providerID: providerID, from: store),
+           let restored = await LiveTVChannelCatalogImporter.restore(providerID: providerID, from: store,
+                                                                      playable: liveCatalogs.contains(providerID)),
            channelCatalogs[providerID] == nil, providers.contains(where: { $0.id == providerID }) {
             channelCatalogs[providerID] = restored
             categoryCatalogs[providerID] = await store.categories(providerID: providerID).map(\.name)
@@ -596,7 +612,7 @@ final class LiveTVService {
         }
 
         let token = UUID()
-        let work = Task { [weak self] () throws -> LiveTVCachedCatalog in
+        let work = Task { [weak self] () throws -> LiveTVCatalogDownload in
             guard let self else { throw CancellationError() }
             return try await self.downloadCatalog(source, providerID: providerID)
         }
@@ -617,10 +633,10 @@ final class LiveTVService {
         #endif
         guard providers.contains(where: { $0.id == providerID }) else { return }
 
-        let loaded: LiveTVCachedCatalog
+        let download: LiveTVCatalogDownload
         switch result {
         case .success(let catalog):
-            loaded = catalog
+            download = catalog
         case .failure(let error as LiveTVError):
             if selectedProviderID == providerID { errorMessage = error.localizedDescription }
             return
@@ -630,10 +646,33 @@ final class LiveTVService {
             }
             return
         }
+        let loaded: LiveTVCachedCatalog
+        var alreadyIndexed = false
+        switch download {
+        case .materialized(let catalog):
+            loaded = catalog
+        #if os(iOS)
+        case .indexed(let count, let categories, let hitChannelLimit):
+            guard let store = await channelStore(),
+                  let channels = await store.offlineCatalog(providerID: providerID, maximumChannels: Self.maximumChannels),
+                  channels.count == count else {
+                channelStoreFreshProviderIDs.remove(providerID)
+                if selectedProviderID == providerID {
+                    errorMessage = "The channel catalog could not be restored after import. Your previous catalog is unchanged."
+                }
+                return
+            }
+            loaded = LiveTVCachedCatalog(channels: channels, categories: categories,
+                                         hitChannelLimit: hitChannelLimit)
+            alreadyIndexed = true
+        #endif
+        }
         #if os(iOS)
         guard !Task.isCancelled, providers.contains(where: { $0.id == providerID }),
               loadSourceConfiguration(providerID: providerID) == source else { return }
-        if let store = await channelStore() {
+        if alreadyIndexed {
+            channelStoreFreshProviderIDs.insert(providerID)
+        } else if let store = await channelStore() {
             // A cancelled or failed stage leaves its previous generation selected. Keep the
             // established in-memory/JSON path usable during this staged UI migration.
             if (try? await LiveTVChannelCatalogImporter.replace(loaded.channels, providerID: providerID, in: store)) != nil {
@@ -694,8 +733,19 @@ final class LiveTVService {
                 : nil
         }
 
+        #if os(iOS)
+        if channelStoreFreshProviderIDs.contains(providerID) {
+            // The protected, non-purgeable SQLite generation is the offline snapshot. Remove the
+            // legacy JSON only after promotion, eliminating a second full-catalog encode and file.
+            await channelSnapshotStore.remove(providerID: providerID)
+        } else {
+            await channelSnapshotStore.save(providerID: providerID, channels: loaded.channels,
+                                            secrets: LiveTVSnapshotSecrets(source: source))
+        }
+        #else
         await channelSnapshotStore.save(providerID: providerID, channels: loaded.channels,
                                         secrets: LiveTVSnapshotSecrets(source: source))
+        #endif
         // The provider may have been removed while the snapshot was written; never leave it behind.
         guard providers.contains(where: { $0.id == providerID }) else {
             await channelSnapshotStore.remove(providerID: providerID)
@@ -708,7 +758,45 @@ final class LiveTVService {
         await refreshGuide(providerID: providerID, source: source, force: guideFilterChanged)
     }
 
-    private func downloadCatalog(_ source: LiveTVSourceConfiguration, providerID: UUID) async throws -> LiveTVCachedCatalog {
+    private func downloadCatalog(_ source: LiveTVSourceConfiguration, providerID: UUID) async throws -> LiveTVCatalogDownload {
+        #if os(iOS)
+        if source.kind == .m3u, let playlistURL = source.playlistURL, let store = await channelStore() {
+            let previousGeneration = await store.activeGeneration(providerID: providerID)
+            let playlistData = try await fetch(playlistURL, maximumBytes: Self.maximumPlaylistBytes)
+            let channelLimit = Self.maximumChannels
+            let importing = Task.detached(priority: .utility) {
+                try await LiveTVChannelCatalogImporter.stageM3U(
+                    data: playlistData, providerID: providerID, in: store, limit: channelLimit
+                )
+            }
+            let imported = try await withTaskCancellationHandler {
+                try await importing.value
+            } onCancel: {
+                importing.cancel()
+            }
+            guard !Task.isCancelled, providers.contains(where: { $0.id == providerID }),
+                  loadSourceConfiguration(providerID: providerID) == source else {
+                try? await store.pruneOrphans()
+                throw CancellationError()
+            }
+            try await store.promote(providerID: providerID, generation: imported.generation,
+                                    expectedCount: imported.channelCount)
+            guard !Task.isCancelled, providers.contains(where: { $0.id == providerID }),
+                  loadSourceConfiguration(providerID: providerID) == source else {
+                try? await store.restoreActiveGeneration(providerID: providerID,
+                                                         generation: previousGeneration)
+                try? await store.pruneOrphans()
+                throw CancellationError()
+            }
+            try? await store.pruneOrphans()
+            let categories = await store.categories(providerID: providerID).map(\.name)
+            return .indexed(count: imported.channelCount, categories: categories,
+                            hitChannelLimit: imported.hitChannelLimit)
+        }
+        if source.kind == .xtream, let store = await channelStore() {
+            return try await downloadAndStageXtream(source, providerID: providerID, store: store)
+        }
+        #endif
         let loadedChannels: [LiveTVChannel]
         let hitChannelLimit: Bool
         if source.kind == .m3u, let playlistURL = source.playlistURL {
@@ -728,8 +816,74 @@ final class LiveTVService {
         let categories = await Task.detached(priority: .utility) {
             LiveTVChannel.orderedCategories(of: loadedChannels)
         }.value
-        return LiveTVCachedCatalog(channels: loadedChannels, categories: categories, hitChannelLimit: hitChannelLimit)
+        return .materialized(LiveTVCachedCatalog(channels: loadedChannels, categories: categories,
+                                                 hitChannelLimit: hitChannelLimit))
     }
+
+    #if os(iOS)
+    private func downloadAndStageXtream(_ source: LiveTVSourceConfiguration, providerID: UUID,
+                                        store: LiveTVChannelCatalogStore) async throws -> LiveTVCatalogDownload {
+        guard let server = source.serverURL, let username = source.username, let password = source.password else {
+            throw LiveTVError.invalidConfiguration
+        }
+        let previousGeneration = await store.activeGeneration(providerID: providerID)
+        let authURL = try XtreamURLBuilder.apiURL(server: server, username: username, password: password)
+        let authData = try await fetch(authURL, maximumBytes: 1024 * 1024)
+        let outputFormats = try XtreamResponseParser.account(from: authData)
+        if let providerIndex = providers.firstIndex(where: { $0.id == providerID }) {
+            providers[providerIndex].allowedOutputFormats = outputFormats
+            persistProviders()
+        }
+
+        var categoryNames: [String: String] = [:]
+        if let categoryURL = try? XtreamURLBuilder.apiURL(server: server, username: username, password: password,
+                                                          action: "get_live_categories"),
+           let categoryData = try? await fetch(categoryURL, maximumBytes: 4 * 1024 * 1024) {
+            categoryNames = await Task.detached(priority: .utility) {
+                guard let records = try? XtreamResponseParser.categories(from: categoryData) else { return [:] }
+                return Dictionary(records.compactMap { record in
+                    guard let id = record.categoryID, let name = record.categoryName,
+                          !id.isEmpty, !name.isEmpty else { return nil }
+                    return (id, name)
+                }, uniquingKeysWith: { first, _ in first })
+            }.value
+        }
+
+        let streamsURL = try XtreamURLBuilder.apiURL(server: server, username: username, password: password,
+                                                     action: "get_live_streams")
+        let streamsData = try await fetch(streamsURL, maximumBytes: Self.maximumPlaylistBytes)
+        let channelLimit = Self.maximumChannels
+        let importing = Task.detached(priority: .utility) {
+            try await LiveTVChannelCatalogImporter.stageXtream(
+                data: streamsData, providerID: providerID, in: store, server: server,
+                username: username, password: password, outputFormats: outputFormats,
+                categories: categoryNames, limit: channelLimit
+            )
+        }
+        let imported = try await withTaskCancellationHandler {
+            try await importing.value
+        } onCancel: {
+            importing.cancel()
+        }
+        guard !Task.isCancelled, providers.contains(where: { $0.id == providerID }),
+              loadSourceConfiguration(providerID: providerID) == source else {
+            try? await store.pruneOrphans()
+            throw CancellationError()
+        }
+        try await store.promote(providerID: providerID, generation: imported.generation,
+                                expectedCount: imported.channelCount)
+        guard !Task.isCancelled, providers.contains(where: { $0.id == providerID }),
+              loadSourceConfiguration(providerID: providerID) == source else {
+            try? await store.restoreActiveGeneration(providerID: providerID, generation: previousGeneration)
+            try? await store.pruneOrphans()
+            throw CancellationError()
+        }
+        try? await store.pruneOrphans()
+        let categories = await store.categories(providerID: providerID).map(\.name)
+        return .indexed(count: imported.channelCount, categories: categories,
+                        hitChannelLimit: imported.hitChannelLimit)
+    }
+    #endif
 
     /// Shows the cached guide immediately, then refreshes it when the policy says it is due.
     private func refreshGuide(providerID: UUID, source: LiveTVSourceConfiguration, force: Bool = false) async {

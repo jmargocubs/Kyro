@@ -38,6 +38,17 @@ enum LiveTVChannelStoreBenchmark {
         return getrusage(RUSAGE_SELF, &info) == 0 ? Int(info.ru_maxrss) / 1_048_576 : -1
     }
 
+    static func residentRSSMB() -> Int {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Int(info.resident_size) / 1_048_576 : -1
+    }
+
     static func correctness(root: URL) async throws {
         let store = try LiveTVChannelCatalogStore(directory: root.appendingPathComponent("correctness"))
         let original = [channel(0), channel(1)]
@@ -62,6 +73,13 @@ enum LiveTVChannelStoreBenchmark {
         let replacementCount = try await LiveTVChannelCatalogImporter.replace(replacement, providerID: first,
                                                                               in: store, generation: "new")
         precondition(replacementCount == 2)
+        let activeBeforeRollback = await store.activeGeneration(providerID: first)
+        precondition(activeBeforeRollback == "new")
+        let raced = [channel(0, category: "Raced Category"), channel(1, category: "Raced Category")]
+        let racedCount = try await store.stage(raced, providerID: first,
+                                               generation: "raced", startingOrdinal: 0)
+        try await store.promote(providerID: first, generation: "raced", expectedCount: racedCount)
+        try await store.restoreActiveGeneration(providerID: first, generation: activeBeforeRollback)
         let current = await store.page(providerID: first)
         let favorites = await store.page(providerID: first, favoritesOnly: true)
         let oldProvider = await store.page(providerID: second)
@@ -105,12 +123,20 @@ enum LiveTVChannelStoreBenchmark {
     static func run(count: Int, root: URL) async throws {
         let directory = root.appendingPathComponent("channels-\(count)")
         let store = try LiveTVChannelCatalogStore(directory: directory)
-        let channels = (0..<count).map { channel($0) }
+        var nextOrdinal = 0
         let start = ContinuousClock.now
-        let imported = try await LiveTVChannelCatalogImporter.replace(channels, providerID: first,
-                                                                      in: store, generation: "benchmark")
-        precondition(imported == count)
+        let imported = try await LiveTVChannelCatalogImporter.replaceBatches(
+            providerID: first, in: store, generation: "benchmark"
+        ) {
+            guard nextOrdinal < count else { return nil }
+            let end = min(nextOrdinal + LiveTVChannelCatalogImporter.batchSize, count)
+            let batch = (nextOrdinal..<end).map { channel($0) }
+            nextOrdinal = end
+            return batch
+        }
+        precondition(imported.channelCount == count)
         let importMS = milliseconds(start)
+        let streamingImportPeakRSS = peakRSSMB()
         let searchStart = ContinuousClock.now
         let search = await store.page(providerID: first, query: "Channel 0001234")
         let searchMS = milliseconds(searchStart)
@@ -157,20 +183,35 @@ enum LiveTVChannelStoreBenchmark {
         precondition(favorites.map(\.id) == [last.id] && favoriteCount == 1)
         precondition(summaries.count == 40 && summaries.reduce(0) { $0 + $1.channelCount } == count
                      && summaries.reduce(0) { $0 + $1.favoriteCount } == 1)
+        var compatibilityCatalog = await store.offlineCatalog(providerID: first, maximumChannels: count)
+        precondition(compatibilityCatalog?.count == count)
+        let materializedRSS = residentRSSMB()
+        compatibilityCatalog = nil
         await store.close()
+        let retainedRSS = residentRSSMB()
         let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("channels.sqlite").path)
         let bytes = (attributes[.size] as? NSNumber)?.intValue ?? -1
-        print("\(count),\(importMS),\(searchMS),\(broadSearchMS),\(categoryMS),\(deepCategoryMS),\(guideMS),\(keysetMS),\(epgMS),\(bytes),\(peakRSSMB())")
+        print("\(count),\(importMS),\(searchMS),\(broadSearchMS),\(categoryMS),\(deepCategoryMS),\(guideMS),\(keysetMS),\(epgMS),\(bytes),\(streamingImportPeakRSS),\(peakRSSMB()),\(materializedRSS),\(retainedRSS)")
     }
 
     static func main() async throws {
-        guard CommandLine.arguments.count == 2 else {
-            fputs("usage: live-tv-channel-benchmark TEMP_DIRECTORY\n", stderr)
+        guard CommandLine.arguments.count == 2 || CommandLine.arguments.count == 3 else {
+            fputs("usage: live-tv-channel-benchmark TEMP_DIRECTORY [CHANNEL_COUNT]\n", stderr)
             exit(2)
         }
         let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         try await correctness(root: root)
-        print("count,import_ms,search_ms,broad_search_ms,category_ms,deep_category_ms,guide_page_ms,keyset_page_ms,epg_lookup_ms,sqlite_bytes,process_peak_rss_mb")
-        for count in [40_000, 60_000, 80_000, 100_000] { try await run(count: count, root: root) }
+        print("count,import_ms,search_ms,broad_search_ms,category_ms,deep_category_ms,guide_page_ms,keyset_page_ms,epg_lookup_ms,sqlite_bytes,streaming_import_peak_rss_mb,process_peak_rss_mb,materialized_catalog_rss_mb,retained_after_release_rss_mb")
+        let counts: [Int]
+        if CommandLine.arguments.count == 3 {
+            guard let count = Int(CommandLine.arguments[2]), count > 0 else {
+                fputs("CHANNEL_COUNT must be a positive integer\n", stderr)
+                exit(2)
+            }
+            counts = [count]
+        } else {
+            counts = [40_000, 60_000, 80_000, 100_000]
+        }
+        for count in counts { try await run(count: count, root: root) }
     }
 }
