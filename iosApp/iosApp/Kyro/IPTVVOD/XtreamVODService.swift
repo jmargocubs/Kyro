@@ -78,6 +78,9 @@ final class XtreamVODService {
     static let shared = XtreamVODService()
     private(set) var progress: XtreamVODImportProgress?
     private(set) var revision = 0
+    /// Changes only when a catalog generation is promoted or removed, never for watch-state saves,
+    /// so browsing reloads shelves and categories only when the catalog itself changed.
+    private(set) var catalogRevision = 0
     private(set) var activeProviderID: UUID?
     /// Opened lazily and retried on every refresh, so one storage failure never disables VOD for
     /// the rest of the app session (Build 93 held a nil store until relaunch).
@@ -264,6 +267,7 @@ final class XtreamVODService {
                 try Task.checkCancellation()
                 try await store.promote(providerID: providerID, kind: kind, generation: generation)
                 revision &+= 1
+                catalogRevision &+= 1
                 succeeded += 1
                 XtreamVODDiagnostics.event("promoted", kind: kind, count: accepted)
                 setResult(.ready, kind: kind)
@@ -381,6 +385,16 @@ final class XtreamVODService {
         return await (await readableStore)?.categories(providerID: providerID, kind: kind) ?? []
     }
 
+    func newest(providerID: UUID, kind: XtreamVODKind, category: String? = nil, limit: Int = 20) async -> [XtreamVODItem] {
+        guard IPTVVODPreference.isEnabled(in: defaults) else { return [] }
+        return await (await readableStore)?.newest(providerID: providerID, kind: kind, category: category, limit: limit) ?? []
+    }
+
+    func categorySummaries(providerID: UUID, kind: XtreamVODKind) async -> [XtreamVODCategorySummary] {
+        guard IPTVVODPreference.isEnabled(in: defaults) else { return [] }
+        return await (await readableStore)?.categorySummaries(providerID: providerID, kind: kind) ?? []
+    }
+
     func refreshedAt(providerID: UUID) -> Date? {
         lastSuccessfulRefresh[providerID] ?? defaults.object(forKey: "kyro.iptvvod.lastRefresh.\(providerID.uuidString)") as? Date
     }
@@ -393,6 +407,7 @@ final class XtreamVODService {
         lastSuccessfulRefresh[providerID] = nil
         cachedDetails = cachedDetails.filter { !$0.key.hasPrefix(providerID.uuidString) }
         revision &+= 1
+        catalogRevision &+= 1
     }
 
     func personalItems(providerID: UUID, kind: XtreamVODKind, favorites: Bool) async -> [XtreamVODItem] {
@@ -494,6 +509,7 @@ final class XtreamVODService {
         lastSuccessfulRefresh[providerID] = nil
         cachedDetails = cachedDetails.filter { !$0.key.hasPrefix(providerID.uuidString) }
         revision &+= 1
+        catalogRevision &+= 1
     }
 }
 #endif

@@ -1455,6 +1455,12 @@ class PlayerViewModel {
     /// Subtitles & Captioning preferences mid-playback.
     private var systemCaptionObserverToken: NSObjectProtocol?
     @ObservationIgnored private var externalPlaybackTask: Task<Void, Never>?
+    /// Provider-owned media (IPTV VOD) this player opened directly. Non-nil routes the engine's
+    /// startup, end and failure events away from Silo's session, replan and progress logic.
+    @ObservationIgnored private(set) var externalPlayback: ExternalPlaybackRequest?
+    /// Credential-free failure code shown under an external playback error, e.g.
+    /// `reason=access_refused engine=sourcerefused code=403 hops=1 status=403 …`.
+    var externalPlaybackDiagnosticCode: String?
     /// Triggers a V3 replan when the audio route the session was planned
     /// against changes. iOS/tvOS only — macOS has no `AVAudioSession`.
     private var outputRouteObserverToken: NSObjectProtocol?
@@ -1789,6 +1795,7 @@ class PlayerViewModel {
         guard !isDisposed, scopedEvent.epoch == activeAetherLoadEpoch else { return }
         defer { syncBufferingQualitySignals() }
         guard !noteBufferingTransportEvent(scopedEvent) else { return }
+        guard !handleExternalPlaybackEvent(scopedEvent.event) else { return }
         defer { publishWatchPartySnapshot() }
         switch scopedEvent.event {
         case .state(let state):
@@ -6600,46 +6607,163 @@ class PlayerViewModel {
     }
 
     /// Plays provider-owned media through the same Aether controller and player surface as Silo.
-    /// Xtream credentials are part of the URL, so never log or forward it to the Silo server.
-    func loadExternalURL(_ url: URL) {
-        guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {
+    /// Xtream credentials are part of the URL, so it is never logged or forwarded to the Silo server.
+    ///
+    /// Build 99 called `beginLoad` without recording the epoch in `activeAetherLoadEpoch`, so
+    /// `handleAetherEvent` dropped every engine event (playing, time, duration, tracks, end,
+    /// failure), and it replaced Aether's typed failure with one generic sentence. This load is
+    /// epoch-tracked like a Silo load; `handleExternalPlaybackEvent` owns the events that would
+    /// otherwise reach Silo's session, replan and progress logic.
+    func loadExternalPlayback(_ request: ExternalPlaybackRequest) {
+        externalPlaybackTask?.cancel()
+        externalPlayback = request
+        title = request.title
+        externalPlaybackDiagnosticCode = nil
+        errorIsRetryable = true
+        guard ["http", "https"].contains(request.url.scheme?.lowercased() ?? ""), request.url.host != nil else {
             error = "This provider returned an invalid playback address."
+            errorIsRetryable = false
             isLoading = false
             return
         }
-        externalPlaybackTask?.cancel()
         error = nil
         isLoading = true
+        isBuffering = false
+        isPlaying = false
+        hasReachedEndOfFile = false
+        currentTime = max(0, request.startPosition)
+        duration = 0
+        Self.recordExternalPlayback("open_requested", "resume=\(request.startPosition > 0 ? "yes" : "no")")
         externalPlaybackTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            var epoch: AetherPlaybackController.LoadEpoch?
             do {
                 let spec = try AetherLoadSpec(
-                    directURL: url,
+                    directURL: request.url,
                     headers: [:],
-                    startPosition: 0,
+                    startPosition: max(0, request.startPosition),
                     audioOnly: false,
-                    forwardBufferSegments: PlayerSettings.shared.bufferAhead.forwardBufferSegments
+                    preferredAudioLanguages: AetherInitialAudioPreference.languages(
+                        selectedOrdinal: nil, tracks: [], fallbackLanguage: settings.audioLanguage),
+                    forwardBufferSegments: settings.bufferAhead.forwardBufferSegments
                 )
-                let epoch = aetherPlaybackController.beginLoad(spec)
-                try await aetherPlaybackController.finishLoad(epoch)
-                guard !Task.isCancelled else { return }
-                isLoading = false
+                let loadEpoch = aetherPlaybackController.beginLoad(spec, shouldPlayWhenReady: true)
+                epoch = loadEpoch
+                activeAetherLoadEpoch = loadEpoch
+                establishedAetherLoadEpoch = nil
+                sourceWatch = PlaybackSourceWatch()
+                try await aetherPlaybackController.finishLoad(loadEpoch)
+                guard !Task.isCancelled, !isDisposed, activeAetherLoadEpoch == loadEpoch else { return }
+                establishedAetherLoadEpoch = loadEpoch
+                adoptAetherInventory()
+                isLoading = currentPhaseIsLoading()
                 aetherPlaybackController.play()
+                Self.recordExternalPlayback(
+                    "opened",
+                    "audio=\(audioTracks.count) subtitles=\(subtitleTracks.count)"
+                )
             } catch is CancellationError {
                 // A replacement load or dismissal owns the next state.
             } catch {
-                guard !Task.isCancelled else { return }
-                isLoading = false
-                // Localized transport errors can include the authenticated URL.
-                self.error = "Kyro couldn’t open this provider stream. It may be offline or use an unsupported format."
+                guard !Task.isCancelled, !isDisposed else { return }
+                if let epoch, activeAetherLoadEpoch == epoch {
+                    activeAetherLoadEpoch = nil
+                    establishedAetherLoadEpoch = nil
+                }
+                let failure = (error as? AetherPlaybackController.LoadFailure)?.failure
+                    ?? aetherPlaybackController.engine.errorInfo
+                await failExternalPlayback(failure, request: request)
             }
         }
+    }
+
+    /// Engine events of an external load that must not reach Silo's handlers. Returns false for
+    /// the transport events both kinds of load handle the same way (state, time, duration,
+    /// buffering, tracks).
+    private func handleExternalPlaybackEvent(_ event: AetherPlaybackController.Event) -> Bool {
+        guard let request = externalPlayback else { return false }
+        switch event {
+        case .firstFrame:
+            viewingHasPlayed = true
+            isLoading = false
+            Self.recordExternalPlayback("first_frame", "")
+            return true
+        case .ended:
+            hasReachedEndOfFile = true
+            isPlaying = false
+            isLoading = false
+            Self.recordExternalPlayback("ended", "")
+            return true
+        case .failure(let failure):
+            guard failure.kind != .audioTrackSwitchFailed || isAetherLoadEstablished else { return true }
+            externalPlaybackTask?.cancel()
+            externalPlaybackTask = Task { @MainActor [weak self] in
+                await self?.failExternalPlayback(failure, request: request)
+            }
+            return true
+        case .transportRestoreFailed:
+            externalPlaybackTask?.cancel()
+            externalPlaybackTask = Task { @MainActor [weak self] in
+                await self?.failExternalPlayback(nil, request: request)
+            }
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Shows the engine's classification at once, then refines it with the request's probe. The
+    /// probe runs only after the engine has released the source, so it never competes with
+    /// playback for a provider connection.
+    private func failExternalPlayback(_ failure: PlaybackErrorInfo?, request: ExternalPlaybackRequest) async {
+        guard !isDisposed else { return }
+        if aetherPlaybackController.activeLoadEpoch != nil {
+            disposeAetherPlayback()
+        }
+        activeAetherLoadEpoch = nil
+        establishedAetherLoadEpoch = nil
+        isLoading = false
+        isPlaying = false
+        isBuffering = false
+        let kind = failure?.kind.rawValue
+        let engineReason = ExternalPlaybackDiagnostics.reason(
+            kind: kind ?? "", domain: failure?.underlyingDomain, code: failure?.underlyingCode)
+        error = ExternalPlaybackDiagnostics.userMessage(for: engineReason)
+        errorIsRetryable = true
+        externalPlaybackDiagnosticCode = ExternalPlaybackDiagnostics.diagnosticCode(
+            reason: engineReason, kind: kind, domain: failure?.underlyingDomain,
+            code: failure?.underlyingCode, probe: nil)
+        Self.recordExternalPlayback("failed", externalPlaybackDiagnosticCode ?? "")
+        guard let probe = request.probe else { return }
+        let report = await probe()
+        guard !Task.isCancelled, !isDisposed, externalPlayback?.id == request.id, error != nil else { return }
+        let reason = ExternalPlaybackDiagnostics.reason(engine: engineReason, probe: report)
+        error = ExternalPlaybackDiagnostics.userMessage(for: reason)
+        errorIsRetryable = reason != .insecureConnectionBlocked && reason != .notFound
+            && reason != .unsupportedMedia && reason != .notMedia
+        externalPlaybackDiagnosticCode = ExternalPlaybackDiagnostics.diagnosticCode(
+            reason: reason, kind: kind, domain: failure?.underlyingDomain,
+            code: failure?.underlyingCode, probe: report)
+        Self.recordExternalPlayback("probe", externalPlaybackDiagnosticCode ?? "")
+    }
+
+    private static func recordExternalPlayback(_ event: String, _ state: String) {
+        #if os(iOS)
+        // Credential-free by construction: callers pass counts and diagnostic codes only.
+        KyroLifecycleJournal.record("iptv_vod", event, state)
+        #endif
+        logger.info("[IPTV-VOD] \(event, privacy: .public) \(state, privacy: .public)")
     }
 
     /// Re-run the last `loadAndPlay` from scratch after an error. Currently a
     /// fresh session — simpler than retrying just the stream load, and
     /// tolerates stale server-side sessions that may have been reaped.
     func retry() {
+        if let external = externalPlayback {
+            // Provider media has no Silo session to renew; reopen it where it stopped.
+            loadExternalPlayback(external.resuming(at: currentTime))
+            return
+        }
         if connectionState == .lost {
             // Try again after a lost connection: a fresh reconnect at the
             // saved position, with the viewer's tracks and play intent.
@@ -8650,6 +8774,10 @@ class PlayerViewModel {
         guard !isDisposed else { return }
         externalPlaybackTask?.cancel()
         externalPlaybackTask = nil
+        if let external = externalPlayback, viewingHasPlayed {
+            // Resume state stays with the provider's catalog, never Silo's progress API.
+            external.onFinish?(currentTime, duration, hasReachedEndOfFile)
+        }
         #if os(iOS)
         KyroPiPDiagnostics.record(
             "player_cleanup",

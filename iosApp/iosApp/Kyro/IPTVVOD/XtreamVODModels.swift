@@ -22,6 +22,53 @@ struct XtreamVODItem: Identifiable, Codable, Hashable, Sendable {
     var id: String { "\(providerID.uuidString):\(kind.rawValue):\(remoteID)" }
 }
 
+/// Provider titles usually carry their year, e.g. "Heat (1995)" or "Heat - 1995". Silo cards show
+/// a year under the title; IPTV cards read it from the title so both sources caption alike.
+enum XtreamVODTitle {
+    static func year(in title: String) -> Int? {
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count >= 4 else { return nil }
+        var tail = Substring(trimmed)
+        let bracketed = tail.hasSuffix(")") || tail.hasSuffix("]")
+        if bracketed { tail = tail.dropLast() }
+        let digits = tail.suffix(4)
+        guard digits.count == 4, digits.allSatisfy(\.isASCII), digits.allSatisfy(\.isNumber),
+              let year = Int(digits), (1900...2100).contains(year) else { return nil }
+        let head = tail.dropLast(4)
+        // Only a set-apart year counts: "(1995)", "[1995]" or "- 1995". A bare trailing number
+        // is part of the title ("Blade Runner 2049").
+        if bracketed { return head.last == "(" || head.last == "[" ? year : nil }
+        let separator = head.hasSuffix(" ") ? head.dropLast() : head
+        return separator.hasSuffix("-") ? year : nil
+    }
+}
+
+/// A provider category and how many titles it holds in the active catalog.
+struct XtreamVODCategorySummary: Hashable, Sendable, Identifiable {
+    let name: String
+    let count: Int
+    var id: String { name }
+
+    /// Largest first, then by name, so Recommended leads with the provider's main shelves and
+    /// the order is stable between launches.
+    static func ordered(_ summaries: [XtreamVODCategorySummary]) -> [XtreamVODCategorySummary] {
+        summaries.sorted {
+            $0.count != $1.count ? $0.count > $1.count
+                : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    /// The categories Recommended draws as shelves: the largest few, skipping adult and
+    /// placeholder groups that panels commonly include.
+    static func shelfCategories(_ ordered: [XtreamVODCategorySummary], limit: Int = 8) -> [XtreamVODCategorySummary] {
+        let excluded = ["xxx", "adult", "18+", "for adults"]
+        return Array(ordered.lazy.filter { summary in
+            let name = summary.name.lowercased()
+            return summary.count > 0 && name != "other" && !excluded.contains { name.contains($0) }
+        }.prefix(limit))
+    }
+}
+
 struct XtreamVODEpisode: Identifiable, Hashable, Sendable {
     let remoteID: Int
     let season: Int

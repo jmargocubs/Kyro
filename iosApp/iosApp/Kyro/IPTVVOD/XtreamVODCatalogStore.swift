@@ -400,6 +400,64 @@ actor XtreamVODCatalogStore {
         return items
     }
 
+    /// Newest titles first. Xtream assigns stream and series IDs in the order a panel adds them,
+    /// so a descending ID is the provider's own "recently added" order. Without a category this
+    /// walks the primary-key index backwards; with one it sorts only that category's rows.
+    func newest(providerID: UUID, kind: XtreamVODKind, category: String? = nil, limit: Int = 20) -> [XtreamVODItem] {
+        let categoryFilter = category == nil ? "" : " AND i.category=?"
+        guard let statement = try? prepare("""
+            SELECT i.remote_id,i.title,i.category,i.poster,i.ext,i.summary,i.genre,i.rating
+            FROM vod_items i JOIN vod_active a
+              ON i.provider=a.provider AND i.kind=a.kind AND i.generation=a.generation
+            WHERE i.provider=? AND i.kind=?\(categoryFilter)
+            ORDER BY i.remote_id DESC LIMIT ?
+            """) else { return [] }
+        defer { sqlite3_finalize(statement) }
+        bind(providerID.uuidString, at: 1, in: statement)
+        bind(kind.rawValue, at: 2, in: statement)
+        var next: Int32 = 3
+        if let category {
+            bind(category, at: next, in: statement)
+            next += 1
+        }
+        sqlite3_bind_int(statement, next, Int32(min(max(limit, 1), 100)))
+        return readItems(statement, providerID: providerID, kind: kind)
+    }
+
+    /// Every category with its title count, largest first, in one grouped pass over the
+    /// category index. Callers cache it per catalog revision.
+    func categorySummaries(providerID: UUID, kind: XtreamVODKind) -> [XtreamVODCategorySummary] {
+        guard let statement = try? prepare("""
+            SELECT i.category, COUNT(*) FROM vod_items i JOIN vod_active a
+              ON i.provider=a.provider AND i.kind=a.kind AND i.generation=a.generation
+            WHERE i.provider=? AND i.kind=? GROUP BY i.category
+            """) else { return [] }
+        defer { sqlite3_finalize(statement) }
+        bind(providerID.uuidString, at: 1, in: statement)
+        bind(kind.rawValue, at: 2, in: statement)
+        var result: [XtreamVODCategorySummary] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let raw = sqlite3_column_text(statement, 0) else { continue }
+            result.append(.init(name: String(cString: raw), count: Int(sqlite3_column_int64(statement, 1))))
+        }
+        return XtreamVODCategorySummary.ordered(result)
+    }
+
+    private func readItems(_ statement: OpaquePointer, providerID: UUID, kind: XtreamVODKind) -> [XtreamVODItem] {
+        func value(_ index: Int32) -> String? {
+            guard let raw = sqlite3_column_text(statement, index) else { return nil }
+            return String(cString: raw)
+        }
+        var items: [XtreamVODItem] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            items.append(.init(providerID: providerID, kind: kind, remoteID: Int(sqlite3_column_int64(statement, 0)),
+                               title: value(1) ?? "Untitled", category: value(2) ?? "Other",
+                               poster: value(3), fileExtension: value(4), summary: value(5),
+                               genre: value(6), rating: value(7)))
+        }
+        return items
+    }
+
     func item(providerID: UUID, kind: XtreamVODKind, remoteID: Int) -> XtreamVODItem? {
         guard let statement = try? prepare("""
             SELECT i.title,i.category,i.poster,i.ext,i.summary,i.genre,i.rating

@@ -8,10 +8,8 @@ import SwiftUI
 struct PlayerView: View {
     let contentId: String
     /// Provider-owned playback bypasses Silo's content preparation while retaining this view's
-    /// Aether controller, PiP, orientation and transport architecture.
-    let externalPlaybackURL: URL?
-    let externalPlaybackTitle: String?
-    let externalPlaybackSource: String?
+    /// Aether controller, PiP, orientation, transport and HUD.
+    let externalPlayback: ExternalPlaybackRequest?
     let libraryId: Int?
     let preferredFileId: Int?
     /// The viewer picked `preferredFileId` in a version picker.
@@ -75,9 +73,7 @@ struct PlayerView: View {
 
     init(
         contentId: String,
-        externalPlaybackURL: URL? = nil,
-        externalPlaybackTitle: String? = nil,
-        externalPlaybackSource: String? = nil,
+        externalPlayback: ExternalPlaybackRequest? = nil,
         libraryId: Int? = nil,
         preferredFileId: Int? = nil,
         pinsVersion: Bool = false,
@@ -95,9 +91,7 @@ struct PlayerView: View {
         onDismissRequested: (() -> Void)? = nil
     ) {
         self.contentId = contentId
-        self.externalPlaybackURL = externalPlaybackURL
-        self.externalPlaybackTitle = externalPlaybackTitle
-        self.externalPlaybackSource = externalPlaybackSource
+        self.externalPlayback = externalPlayback
         self.libraryId = libraryId
         _viewModelBox = StateObject(wrappedValue: PlayerViewModelBox(PlayerViewModel(libraryId: libraryId)))
         self.preferredFileId = preferredFileId
@@ -151,20 +145,6 @@ struct PlayerView: View {
         }
         .overlay(alignment: .top) {
             ZStack(alignment: .top) {
-                if let externalPlaybackTitle {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(externalPlaybackTitle).font(.headline).lineLimit(1)
-                            if let externalPlaybackSource {
-                                Text(externalPlaybackSource).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 10)
-                    .allowsHitTesting(false)
-                }
                 if let error = viewModel.error {
                     errorView(error)
                         #if os(iOS)
@@ -551,13 +531,13 @@ struct PlayerView: View {
         }
         #endif
         .onAppear {
-            if let externalPlaybackURL {
+            if let externalPlayback {
                 #if os(iOS)
                 orientationCoordinator.activatePlayer()
                 viewModel.playerPresentationDidAppear()
                 bindPictureInPicture(to: viewModel)
                 #endif
-                viewModel.loadExternalURL(externalPlaybackURL)
+                viewModel.loadExternalPlayback(externalPlayback)
                 return
             }
             if let context = watchPartyContext {
@@ -990,6 +970,15 @@ struct PlayerView: View {
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
+
+            if let code = viewModel.externalPlaybackDiagnosticCode {
+                // Credential-free; lets a device report name the cause without logs.
+                Text(code)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
 
             HStack(spacing: 16) {
                 if viewModel.errorIsRetryable {

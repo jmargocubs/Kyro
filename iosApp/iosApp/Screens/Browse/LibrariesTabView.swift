@@ -218,6 +218,38 @@ struct LibraryVideoScopePicker: View {
     }
 }
 
+/// A catalog that is not a Silo library, offered beside the Silo libraries of a Movies or Series
+/// page (Kyro's IPTV VOD). The page keeps its one header, library selector and Recommended /
+/// Library / Collections bar for both; only the tab content differs, and each source keeps its
+/// own tab, scroll position and loaded pages.
+struct LibraryAlternateSource {
+    let id: String
+    /// Shown in the selector while this source is active, e.g. the provider's name.
+    let name: String
+    /// The selector's second line, e.g. "IPTV · Movies".
+    let selectorCaption: String
+    /// The picker row's second line.
+    let pickerCaption: String
+    let systemImage: String
+    let isSelected: Bool
+    let tab: Binding<LibraryPageTab>
+    let select: (Bool) -> Void
+    let content: () -> AnyView
+}
+
+/// Shows one source's tab content while keeping the other mounted, so switching sources keeps
+/// both scroll positions and loaded pages instead of rebuilding either page.
+private struct LibrarySourceVisibility: ViewModifier {
+    let isVisible: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isVisible ? 1 : 0)
+            .allowsHitTesting(isVisible)
+            .accessibilityHidden(!isVisible)
+    }
+}
+
 /// Root of the Libraries tab.
 ///
 /// Mirrors the Plex/Android flow: the tab lands directly on the active
@@ -229,8 +261,11 @@ struct LibrariesTabView: View {
     let fixedLibraryId: Int?
     let libraryAuthority: MainTabLibraryAuthority?
     let onLibrariesLoaded: ((MainTabLibraryAuthority?, [Library]) -> Void)?
+    let alternateSource: LibraryAlternateSource?
 
     @State private var libraries: [Library] = []
+    /// The alternate source's content stays mounted once shown.
+    @State private var hasShownAlternate = false
     @State private var selectedLibraryId: Int?
     @State private var selectedTab: LibraryPageTab = .recommended
     @State private var selectedVideoScope: LibraryVideoScope = .movie
@@ -279,12 +314,14 @@ struct LibrariesTabView: View {
         category: PrimaryMenuBuiltin? = nil,
         fixedLibraryId: Int? = nil,
         libraryAuthority: MainTabLibraryAuthority? = nil,
-        onLibrariesLoaded: ((MainTabLibraryAuthority?, [Library]) -> Void)? = nil
+        onLibrariesLoaded: ((MainTabLibraryAuthority?, [Library]) -> Void)? = nil,
+        alternateSource: LibraryAlternateSource? = nil
     ) {
         self.category = category
         self.fixedLibraryId = fixedLibraryId
         self.libraryAuthority = libraryAuthority
         self.onLibrariesLoaded = onLibrariesLoaded
+        self.alternateSource = alternateSource
         let storageKey = librarySelectionStorageKey(
             category: category,
             fixedLibraryId: fixedLibraryId,
@@ -294,9 +331,15 @@ struct LibrariesTabView: View {
         _storedLibraryId = State(initialValue: storedLibrarySelectionId(for: storageKey))
     }
 
+    /// The alternate source is on screen: chosen, or the only catalog this page has.
+    private var showsAlternate: Bool {
+        guard let alternateSource else { return false }
+        return alternateSource.isSelected || (activeLibrary == nil && !(isLoading && libraries.isEmpty))
+    }
+
     var body: some View {
         Group {
-            if let activeLibrary {
+            if activeLibrary != nil || showsAlternate {
                 loadedContent(activeLibrary: activeLibrary)
             } else if let error, visibleLibraries.isEmpty {
                 ErrorView(state: error, onRetry: { Task { await loadLibraries() } })
@@ -340,26 +383,45 @@ struct LibrariesTabView: View {
             LibraryPickerSheet(
                 libraries: visibleLibraries,
                 scopedCategory: pickerScopeCategory,
-                selectedLibraryId: selectedLibraryId,
+                selectedLibraryId: showsAlternate ? nil : selectedLibraryId,
+                alternateSource: alternateSource,
+                isAlternateSelected: showsAlternate,
                 onSelect: { id in
+                    alternateSource?.select(false)
                     selectedLibraryId = id
                     persistLibrarySelection(id)
                     showPicker = false
                     StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
+                },
+                onSelectAlternate: {
+                    alternateSource?.select(true)
+                    showPicker = false
                 }
             )
         }
     }
 
     @ViewBuilder
-    private func loadedContent(activeLibrary: Library) -> some View {
+    private func loadedContent(activeLibrary: Library?) -> some View {
         // Switch tab content directly here so we can hoist the top bar + tab
         // selector into a single `safeAreaInset` overlay shared by all three
-        // tabs.
-        tabContent(activeLibrary: activeLibrary)
-            // Forces the whole tab subtree to reset when switching
-            // libraries, so stale content never flashes on screen.
-            .id("\(activeLibrary.id):\(videoScope(for: activeLibrary)?.rawValue ?? "all")")
+        // tabs and by both sources.
+        ZStack {
+            if let activeLibrary {
+                tabContent(activeLibrary: activeLibrary)
+                    // Forces the whole tab subtree to reset when switching
+                    // libraries, so stale content never flashes on screen.
+                    .id("\(activeLibrary.id):\(videoScope(for: activeLibrary)?.rawValue ?? "all")")
+                    .modifier(LibrarySourceVisibility(isVisible: !showsAlternate))
+            }
+            if let alternateSource, showsAlternate || hasShownAlternate {
+                alternateSource.content()
+                    .modifier(LibrarySourceVisibility(isVisible: showsAlternate))
+            }
+        }
+            .onChange(of: showsAlternate, initial: true) { _, shows in
+                if shows { hasShownAlternate = true }
+            }
             .environment(hostedHeader?.state ?? chromeScrollState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 topChrome(activeLibrary: activeLibrary)
@@ -390,7 +452,7 @@ struct LibrariesTabView: View {
     }
 
     @ViewBuilder
-    private func topChrome(activeLibrary: Library) -> some View {
+    private func topChrome(activeLibrary: Library?) -> some View {
         if centersHeader {
             // The title and tabs center as one block, the title lined up
             // with the first tab, while they fit side by side.
@@ -405,15 +467,35 @@ struct LibrariesTabView: View {
         }
     }
 
-    private func headerStack(activeLibrary: Library, scrollsTabs: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+    /// The selector names whichever source is on screen: the Silo library, or the alternate
+    /// source (the IPTV provider) with its own caption.
+    private func selectorLabel(activeLibrary: Library?) -> (title: String, caption: String) {
+        if showsAlternate, let alternateSource {
+            return (alternateSource.name, alternateSource.selectorCaption)
+        }
+        if let activeLibrary {
+            return (activeLibrary.name, LibrarySelectorButton.typeLabel(for: activeLibrary))
+        }
+        return ("Libraries", "")
+    }
+
+    /// Each source keeps its own Recommended / Library / Collections choice.
+    private var pageTabBinding: Binding<LibraryPageTab> {
+        if showsAlternate, let alternateSource { return alternateSource.tab }
+        return $selectedTab
+    }
+
+    private func headerStack(activeLibrary: Library?, scrollsTabs: Bool) -> some View {
+        let label = selectorLabel(activeLibrary: activeLibrary)
+        return VStack(alignment: .leading, spacing: 0) {
             if let hosted = hostedHeader {
                 // The shell's one header sits in this runway; the library selector is page
                 // content directly beneath it.
                 Color.clear.frame(height: hosted.runway)
                 HStack(spacing: 12) {
                     LibrarySelectorButton(
-                        library: activeLibrary,
+                        title: label.title,
+                        caption: label.caption,
                         canSwitch: canSwitchLibraries,
                         onTap: { showPicker = true }
                     )
@@ -423,7 +505,8 @@ struct LibrariesTabView: View {
                 .padding(.bottom, SiloTheme.smallPadding)
             } else {
             LibrariesTopBar(
-                activeLibrary: activeLibrary,
+                title: label.title,
+                caption: label.caption,
                 canSwitch: canSwitchLibraries,
                 onLibraryTap: { showPicker = true },
                 onSearch: { router.navigate(to: .search) },
@@ -440,10 +523,11 @@ struct LibrariesTabView: View {
             .padding(.bottom, SiloTheme.smallPadding)
             }
 
-            if activeLibrary.isMixedLibrary && category != .movies && category != .series {
+            if !showsAlternate, let activeLibrary,
+               activeLibrary.isMixedLibrary && category != .movies && category != .series {
                 LibraryVideoScopePicker(selection: $selectedVideoScope)
             }
-            LibraryPageTabSelector(selectedTab: $selectedTab, scrolls: scrollsTabs)
+            LibraryPageTabSelector(selectedTab: pageTabBinding, scrolls: scrollsTabs)
                 .padding(.bottom, SiloTheme.padding)
         }
     }
@@ -487,7 +571,7 @@ struct LibrariesTabView: View {
         #if os(macOS)
         false
         #else
-        visibleLibraries.count > 1
+        visibleLibraries.count > 1 || (alternateSource != nil && !visibleLibraries.isEmpty)
         #endif
     }
 
@@ -594,7 +678,8 @@ struct LibrariesTabView: View {
 /// Plex-style top bar: library selector on the left, shared action icons
 /// (search / profile) on the right.
 private struct LibrariesTopBar: View {
-    let activeLibrary: Library
+    let title: String
+    let caption: String
     let canSwitch: Bool
     let onLibraryTap: () -> Void
     let onSearch: () -> Void
@@ -609,7 +694,8 @@ private struct LibrariesTopBar: View {
             SidebarToggleButton()
 
             LibrarySelectorButton(
-                library: activeLibrary,
+                title: title,
+                caption: caption,
                 canSwitch: canSwitch,
                 onTap: onLibraryTap
             )
@@ -632,7 +718,8 @@ private struct LibrariesTopBar: View {
 /// Compact library selector: library name with a small chevron, stacked above
 /// a secondary label. Tap opens the picker sheet.
 private struct LibrarySelectorButton: View {
-    let library: Library
+    let title: String
+    let caption: String
     let canSwitch: Bool
     let onTap: () -> Void
 
@@ -640,7 +727,7 @@ private struct LibrarySelectorButton: View {
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Text(library.name)
+                    Text(title)
                         .font(.siloTitle)
                     .foregroundStyle(Color.siloOnSurface)
                         .lineLimit(1)
@@ -650,17 +737,20 @@ private struct LibrarySelectorButton: View {
                             .foregroundColor(.siloOnSurface)
                     }
                 }
-                Text(typeLabel)
-                    .font(.siloCaption)
-                    .foregroundStyle(Color.siloSecondaryText)
-                    .lineLimit(1)
+                if !caption.isEmpty {
+                    Text(caption)
+                        .font(.siloCaption)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .lineLimit(1)
+                }
             }
         }
         .buttonStyle(.plain)
         .disabled(!canSwitch)
+        .accessibilityIdentifier("librarySourceSelector")
     }
 
-    private var typeLabel: String {
+    static func typeLabel(for library: Library) -> String {
         if library.isAudiobookLibrary { return "Audiobooks" }
         if library.isMixedLibrary { return "Movies & Series" }
         if library.isSeriesLibrary { return "Series" }
@@ -678,7 +768,10 @@ private struct LibraryPickerSheet: View {
     let libraries: [Library]
     let scopedCategory: PrimaryMenuBuiltin?
     let selectedLibraryId: Int?
+    var alternateSource: LibraryAlternateSource? = nil
+    var isAlternateSelected = false
     let onSelect: (Int) -> Void
+    var onSelectAlternate: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
 
@@ -711,7 +804,10 @@ private struct LibraryPickerSheet: View {
 
     private var content: some View {
         ScrollView {
-            VStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
+                if alternateSource != nil, !libraries.isEmpty {
+                    pickerSectionTitle("Silo")
+                }
                 ForEach(libraries) { library in
                     LibraryPickerRow(
                         library: library,
@@ -720,12 +816,34 @@ private struct LibraryPickerSheet: View {
                         onTap: { onSelect(library.id) }
                     )
                 }
+                if let alternateSource {
+                    pickerSectionTitle("IPTV")
+                        .padding(.top, libraries.isEmpty ? 0 : SiloTheme.smallPadding)
+                    Button(action: onSelectAlternate) {
+                        LibraryPickerRowLabel(
+                            systemImage: alternateSource.systemImage,
+                            title: alternateSource.name,
+                            caption: alternateSource.pickerCaption,
+                            isSelected: isAlternateSelected
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("librarySourceRow.\(alternateSource.id)")
+                }
             }
             .padding(.horizontal, SiloTheme.padding)
             .padding(.vertical, SiloTheme.padding)
         }
         .siloSheetBackground()
-        .navigationTitle("Libraries")
+        .navigationTitle(alternateSource == nil ? "Libraries" : "Sources")
+    }
+
+    private func pickerSectionTitle(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.siloCaption.weight(.semibold))
+            .tracking(1)
+            .foregroundStyle(Color.siloSecondaryText)
+            .padding(.horizontal, 4)
     }
 }
 
@@ -737,45 +855,8 @@ private struct LibraryPickerRow: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(Color.siloOnSurface.opacity(0.12))
-                    Image(systemName: iconName)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.siloOnSurface)
-                }
-                .frame(width: 40, height: 40)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(library.name)
-                        .font(.siloHeadline)
-                        .foregroundColor(.siloOnSurface)
-                    if let typeLabel {
-                        Text(typeLabel)
-                            .font(.siloCaption)
-                            .foregroundColor(.siloSecondaryText)
-                    }
-                }
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.siloOnSurface)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .background(
-                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
-                    .fill(isSelected ? Color.siloOnSurface.opacity(0.10) : Color.siloSurfaceElevated)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
-                            .stroke(Color.siloOutline, lineWidth: 1)
-                    )
-            )
+            LibraryPickerRowLabel(systemImage: iconName, title: library.name,
+                                  caption: typeLabel, isSelected: isSelected)
         }
         .buttonStyle(.plain)
     }
@@ -800,5 +881,56 @@ private struct LibraryPickerRow: View {
         if library.type == "movies" { return "Movies library" }
         if library.type == "music" { return "Music library" }
         return "Library"
+    }
+}
+
+/// One picker row's look, shared by Silo libraries and the alternate (IPTV) source.
+private struct LibraryPickerRowLabel: View {
+    let systemImage: String
+    let title: String
+    let caption: String?
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.siloOnSurface.opacity(0.12))
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.siloOnSurface)
+            }
+            .frame(width: 40, height: 40)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.siloHeadline)
+                    .foregroundColor(.siloOnSurface)
+                if let caption {
+                    Text(caption)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
+                }
+            }
+
+            Spacer()
+
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.siloOnSurface)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                .fill(isSelected ? Color.siloOnSurface.opacity(0.10) : Color.siloSurfaceElevated)
+                .overlay(
+                    RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                        .stroke(Color.siloOutline, lineWidth: 1)
+                )
+        )
+        .contentShape(Rectangle())
     }
 }

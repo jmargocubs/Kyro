@@ -33,29 +33,19 @@ struct CatalogGrid: View {
     #else
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.verticalSizeClass) private var vSize
-    private var columns: [GridItem] {
-        if dynamicTypeSize.isAccessibilitySize {
-            return Array(
-                repeating: GridItem(.flexible(), spacing: 8, alignment: .top),
-                count: hSize == .regular ? 3 : 2
-            )
-        }
-        if let fit = widthFittedPosterFit {
-            return fit.columns
-        }
-        if usesThreeColumnPhoneLayout {
-            return Array(
-                repeating: GridItem(.flexible(), spacing: 8),
-                count: 3
-            )
-        }
-        return AdaptiveColumns.posters(
-            for: hSize,
+    /// Shared with the IPTV catalog grid so both sources lay posters out identically.
+    private var layout: PosterGridLayout {
+        PosterGridLayout(
+            gridWidth: gridWidth,
+            horizontalSizeClass: hSize,
+            verticalSizeClass: vSize,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize,
             posterSize: uiCustomization.cardPresentation.posterSize,
-            spacing: 8
+            forcesThreeColumnsOnPhone: forcesThreeColumnsOnPhone
         )
     }
-    private let rowSpacing: CGFloat = 12
+    private var columns: [GridItem] { layout.columns }
+    private let rowSpacing: CGFloat = PosterGridLayout.rowSpacing
     #endif
 
     var body: some View {
@@ -150,70 +140,13 @@ struct CatalogGrid: View {
         #endif
     }
 
-    private var usesThreeColumnPhoneLayout: Bool {
-        #if os(iOS)
-        forcesThreeColumnsOnPhone && UIDevice.current.userInterfaceIdiom == .phone
-        #else
-        false
-        #endif
-    }
-
-    /// Cards fill their column instead of sitting at the fixed phone width
-    /// inside it: always on iPad, and on a phone once the grid is too wide for
-    /// three-up posters. Nil otherwise and until the grid has been measured.
-    private var widthFittedPosterFit: AdaptiveColumns.PosterGridFit? {
-        #if os(iOS)
-        let posterSize = uiCustomization.cardPresentation.posterSize
-        guard UIDevice.current.userInterfaceIdiom == .pad else {
-            return AdaptiveColumns.widePhonePosterFit(
-                containerWidth: gridWidth,
-                posterSize: posterSize,
-                verticalSizeClass: vSize
-            )
-        }
-        return AdaptiveColumns.widthFittedPosters(
-            containerWidth: gridWidth,
-            minimumCardWidth: AdaptiveColumns.tabletMinimumPosterWidth * posterSize.scale,
-            spacing: AdaptiveColumns.tabletPosterSpacing
-        )
-        #else
-        return nil
-        #endif
-    }
-
-    /// MediaCard applies the global poster-size scale after its override. Undo
-    /// that scale here, then cap the standard width to the measured grid cell.
+    /// MediaCard applies the global poster-size scale after its override; the shared layout
+    /// undoes that scale and caps the standard width to the measured grid cell.
     private var cardWidthOverride: CGFloat? {
-        #if os(iOS)
-        if dynamicTypeSize.isAccessibilitySize {
-            let fittedWidth = AdaptiveColumns.fittedPosterWidth(
-                containerWidth: gridWidth,
-                columnCount: columns.count,
-                spacing: 8,
-                maximumWidth: 240
-            )
-            return fittedWidth / uiCustomization.cardPresentation.posterSize.scale
-        }
-        if let fit = widthFittedPosterFit {
-            return fit.cardWidth / uiCustomization.cardPresentation.posterSize.scale
-        }
-        // Phone cards shrink to their column rather than spilling into the
-        // gaps, as they would in a window narrower than three standard
-        // posters, such as the iPhone Duo's cover screen beside its status
-        // column.
-        guard UIDevice.current.userInterfaceIdiom == .phone else { return nil }
-        let scale = uiCustomization.cardPresentation.posterSize.scale
-        let fittedWidth = AdaptiveColumns.fittedPosterWidth(
-            containerWidth: gridWidth,
-            columnCount: columns.count,
-            spacing: 8,
-            maximumWidth: usesThreeColumnPhoneLayout
-                ? SiloTheme.posterCardWidth
-                : SiloTheme.posterCardWidth * scale
-        )
-        return fittedWidth / scale
-        #else
+        #if os(tvOS)
         return nil
+        #else
+        return layout.cardWidthOverride
         #endif
     }
 }

@@ -575,13 +575,26 @@ struct LiveTVSettingsView: View {
             }
 
 #if os(iOS)
-            Section("IPTV Movies & Series") {
-                Toggle("Enable IPTV VOD", isOn: $iptvVODEnabled)
+            Section {
+                Toggle("Show IPTV Movies & Series", isOn: $iptvVODEnabled)
                     .onChange(of: iptvVODEnabled) { _, enabled in
                         IPTVVODPreference.setEnabled(enabled)
                     }
-                Text("Use the Movies and Series source switch to browse this provider’s catalogs beside your Silo libraries. Kyro imports both catalogs from the selected Xtream provider and shows progress there. Your saved provider and Live TV stay available if you turn VOD off. No credentials need to be entered again.")
-                    .font(.footnote).foregroundStyle(Color.siloSecondaryText)
+                    .accessibilityIdentifier("kyroIPTVVODToggle")
+                if iptvVODEnabled {
+                    if let provider = service.selectedProvider, provider.kind == .xtream {
+                        KyroIPTVCatalogStatusView(provider: provider, emphasis: .settings)
+                    } else {
+                        Text("Select an Xtream Codes provider above. Movies and Series come from Xtream providers only.")
+                            .font(.footnote).foregroundStyle(Color.siloSecondaryText)
+                    }
+                }
+            } header: {
+                Text("IPTV Movies & Series")
+            } footer: {
+                Text(iptvVODEnabled
+                     ? "Turning this off hides IPTV titles and keeps the imported catalogs, your provider and Live TV."
+                     : "Off by default. When on, your Xtream provider appears in the library selector of the Movies and Series tabs, beside your Silo libraries.")
             }
             if KyroLiveTVNavigationSettingsPolicy.offersStylePicker(
                 unifiedShellActive: KyroUnifiedNavigation.isActive, isSupported: KyroLiveTVNavigation.isSupported) {

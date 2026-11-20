@@ -259,29 +259,7 @@ struct BrowseView: View {
     }
 
     private func controlChip(icon: String, text: String, trailing: String? = nil, badge: Int? = nil) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-            Text(text)
-                .font(.siloBody)
-            if let trailing {
-                Text(trailing)
-                    .font(.siloCaption)
-                    .foregroundColor(.siloSecondaryText)
-            }
-            if let badge, badge > 0 {
-                Text("\(badge)")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(.siloBackground)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(Color.siloOnSurface))
-            }
-        }
-        .foregroundColor(.siloOnSurface)
-        .padding(.horizontal, 13)
-        .padding(.vertical, 8)
-        .siloGlass(in: .capsule)
+        CatalogControlChip(icon: icon, text: text, trailing: trailing, badge: badge)
     }
 
     // MARK: - Active Filters
