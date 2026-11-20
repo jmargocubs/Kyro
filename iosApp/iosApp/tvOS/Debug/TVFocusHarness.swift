@@ -51,7 +51,8 @@ private struct TVFocusHarnessShell: View {
     let page: TVFocusHarnessPage
 
     @State private var service = TVFocusHarnessFixture.makeLiveTVService()
-    @State private var vodProvider = TVFocusHarnessFixture.stageMovies()
+    @State private var vodProvider = TVFocusHarnessFixture.vodProvider
+    @State private var moviesStaged = false
     @State private var contentFocusRequest = 1
     @State private var menuSuppressed = true
     @FocusState private var menuFocus: String?
@@ -66,6 +67,11 @@ private struct TVFocusHarnessShell: View {
             menu
         }
         .ignoresSafeArea(edges: [.top, .horizontal])
+        .task {
+            guard page == .movies else { return }
+            await TVFocusHarnessFixture.stageMovies(for: vodProvider)
+            moviesStaged = true
+        }
         .onChange(of: menuFocus) { _, focused in
             // Focus left the menu by a native move into the page: disable the menu again.
             if focused == nil, !menuSuppressed { menuSuppressed = true }
@@ -80,8 +86,12 @@ private struct TVFocusHarnessShell: View {
                              focusRequest: contentFocusRequest, isTopMenuFocused: !menuSuppressed,
                              onTopMenuFocusRequest: focusMenu)
         case .movies:
-            TVXtreamVODView(provider: vodProvider, kind: .movie, focusRequest: contentFocusRequest,
-                            isTopMenuFocused: !menuSuppressed, onMoveUp: focusMenu)
+            if moviesStaged {
+                TVXtreamVODView(provider: vodProvider, kind: .movie, focusRequest: contentFocusRequest,
+                                isTopMenuFocused: !menuSuppressed, onMoveUp: focusMenu)
+            } else {
+                ProgressView().focusable()
+            }
         case .sports:
             TVSportsHubView(service: service, focusRequest: contentFocusRequest,
                             isTopMenuFocused: !menuSuppressed, onTopMenuFocusRequest: focusMenu)
@@ -144,23 +154,27 @@ enum TVFocusHarnessFixture {
         return service
     }
 
-    /// Stages 120 fictional movies for a fixture provider in the shared VOD catalog store.
-    static func stageMovies() -> LiveTVProvider {
-        let id = UUID(uuidString: "6B1D2C9E-0F4A-4C1B-9A57-3E1F0D0C0A99")!
-        var provider = LiveTVProvider(id: id, name: "Harness VOD", channelCount: 0, lastRefreshed: Date(), kind: .xtream)
+    static var vodProvider: LiveTVProvider {
+        var provider = LiveTVProvider(id: UUID(uuidString: "6B1D2C9E-0F4A-4C1B-9A57-3E1F0D0C0A99")!,
+                                      name: "Harness VOD", channelCount: 0, lastRefreshed: Date(), kind: .xtream)
         provider.vodEnabled = true
         provider.vodMoviesEnabled = true
+        return provider
+    }
+
+    /// Stages 120 fictional movies for the fixture provider in the shared VOD catalog store.
+    static func stageMovies(for provider: LiveTVProvider) async {
+        let id = provider.id
         let items = (1...120).map { index in
             XtreamVODItem(providerID: id, kind: .movie, remoteID: index, title: "Harness Movie \(index)",
                           category: categories[index % categories.count], poster: nil, fileExtension: "mp4",
                           summary: nil, genre: nil, rating: nil)
         }
-        if let store = try? XtreamVODCatalogStore() {
-            store.remove(providerID: id)
-            try? store.stage(items, generation: "harness")
-            try? store.promote(providerID: id, kind: .movie, generation: "harness")
-        }
-        return provider
+        guard let store = try? XtreamVODCatalogStore() else { return }
+        await store.remove(providerID: id)
+        try? await store.stage(items, generation: "harness")
+        try? await store.promote(providerID: id, kind: .movie, generation: "harness")
+        await store.close()
     }
 
     static var playlist: String {
