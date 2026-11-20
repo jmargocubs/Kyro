@@ -697,8 +697,13 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         XCTAssertEqual(PlaylistURLProtocol.requests, 1)
         XCTAssertEqual(service.channels.first?.streamURL.scheme, "https")
         XCTAssertEqual(service.categories, ["news", "Sports"], "refreshed and cached categories share one order")
-        let cached = await snapshots.loadCatalog(providerID: providerID)
-        XCTAssertEqual(cached?.categories, service.categories)
+        let legacySnapshot = await snapshots.loadCatalog(providerID: providerID)
+        XCTAssertNil(legacySnapshot, "successful SQLite promotion removes the redundant JSON catalog")
+        let restarted = makeService()
+        await restarted.restoreCachedState(for: providerID)
+        XCTAssertEqual(restarted.categories, service.categories)
+        XCTAssertTrue(restarted.channels.allSatisfy { $0.streamURL.scheme == "about" },
+                      "the protected SQLite generation remains the browse-only offline source")
 
         await service.prepareSelectedProvider()
         await service.prepareSelectedProvider(now: Date().addingTimeInterval(60 * 60))

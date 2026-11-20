@@ -17,7 +17,7 @@ actor LiveTVChannelCatalogStore {
     private var database: OpaquePointer?
 
     static func defaultDirectory() -> URL {
-        (FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true))
             .appendingPathComponent("Silo/LiveTV/ChannelCatalog", isDirectory: true)
     }
@@ -26,8 +26,13 @@ actor LiveTVChannelCatalogStore {
         let root = directory ?? Self.defaultDirectory()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         #if os(iOS)
-        // M3U stream addresses may embed provider credentials. This cache is excluded from
-        // backups by location and inherits data protection for the database and WAL files.
+        // M3U stream addresses may embed provider credentials. Keep the last-known-good catalog
+        // outside purgeable Caches, explicitly exclude it from backup, and protect the database,
+        // WAL and SHM files until the device has been unlocked once after boot.
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var protectedRoot = root
+        try protectedRoot.setResourceValues(values)
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                                                ofItemAtPath: root.path)
         #endif
@@ -162,6 +167,56 @@ actor LiveTVChannelCatalogStore {
             let result = sqlite3_step(statement)
             sqlite3_finalize(statement)
             guard result == SQLITE_DONE else { throw StoreError.storage }
+            try execute("COMMIT")
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+    }
+
+    func activeGeneration(providerID: UUID) -> String? {
+        guard let statement = try? prepare("SELECT generation FROM channel_active WHERE provider=?") else { return nil }
+        defer { sqlite3_finalize(statement) }
+        bind(providerID.uuidString, 1, statement)
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let raw = sqlite3_column_text(statement, 0) else { return nil }
+        return String(cString: raw)
+    }
+
+    /// Restores the generation that was active before a source changed during promotion. The old
+    /// rows are intentionally retained until the caller performs its post-promotion validation.
+    func restoreActiveGeneration(providerID: UUID, generation: String?) throws {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            if let generation {
+                let count = try prepare("SELECT COUNT(*) FROM channel_items WHERE provider=? AND generation=?")
+                bind(providerID.uuidString, 1, count)
+                bind(generation, 2, count)
+                guard sqlite3_step(count) == SQLITE_ROW else {
+                    sqlite3_finalize(count)
+                    throw StoreError.invalidGeneration
+                }
+                let channelCount = Int(sqlite3_column_int64(count, 0))
+                sqlite3_finalize(count)
+                guard channelCount > 0 else { throw StoreError.invalidGeneration }
+                let statement = try prepare("""
+                    INSERT INTO channel_active(provider,generation,channel_count) VALUES(?,?,?)
+                    ON CONFLICT(provider) DO UPDATE SET generation=excluded.generation,
+                      channel_count=excluded.channel_count
+                    """)
+                bind(providerID.uuidString, 1, statement)
+                bind(generation, 2, statement)
+                sqlite3_bind_int64(statement, 3, sqlite3_int64(channelCount))
+                let result = sqlite3_step(statement)
+                sqlite3_finalize(statement)
+                guard result == SQLITE_DONE else { throw StoreError.storage }
+            } else {
+                let statement = try prepare("DELETE FROM channel_active WHERE provider=?")
+                bind(providerID.uuidString, 1, statement)
+                let result = sqlite3_step(statement)
+                sqlite3_finalize(statement)
+                guard result == SQLITE_DONE else { throw StoreError.storage }
+            }
             try execute("COMMIT")
         } catch {
             try? execute("ROLLBACK")
