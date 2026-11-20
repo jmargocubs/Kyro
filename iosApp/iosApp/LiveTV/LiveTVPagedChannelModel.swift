@@ -42,8 +42,9 @@ final class LiveTVPagedChannelModel {
 
     func reset(service: LiveTVService, providerID: UUID?, catalogRevision: Int,
                query: String, category: String?, favoritesOnly: Bool) {
-        request?.cancel()
         guard let providerID else {
+            request?.cancel()
+            request = nil
             identity = nil
             channels = []
             totalCount = 0
@@ -57,7 +58,11 @@ final class LiveTVPagedChannelModel {
                             query: query.trimmingCharacters(in: .whitespacesAndNewlines),
                             category: category, favoritesOnly: favoritesOnly,
                             favoritesSignature: service.favoriteChannelIDs.hashValue)
+        // SwiftUI can call updateSearch from both the home tab and its pushed destination.
+        // A repeated update for the same query must not cancel the in-flight request: doing so
+        // left `isLoading` true forever because the cancelled task correctly refused publication.
         guard next != identity else { return }
+        request?.cancel()
         identity = next
         isLoading = true
         request = Task { [weak self, weak service] in

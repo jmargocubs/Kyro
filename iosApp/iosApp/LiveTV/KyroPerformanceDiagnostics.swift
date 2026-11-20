@@ -144,6 +144,9 @@ enum KyroPerformanceMetric: String, CaseIterable {
     case categoryDirectory = "Category data"
     case listReveal = "List reveal"
     case sportsDetailLoad = "Detail load"
+    case sportsProviderFetch = "Sports provider fetch"
+    case sportsGrouping = "Sports event grouping"
+    case sportsFirstVisibleEvent = "Sports first visible event"
     // Build 104
     case liveTVCatalogRefresh = "Live TV catalog refresh"
     case sportsLiveNowReady = "Sports Live Now ready"

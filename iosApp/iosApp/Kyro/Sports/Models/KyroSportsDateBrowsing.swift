@@ -17,9 +17,11 @@ enum KyroSportsCategory: String, CaseIterable, Identifiable, Codable, Sendable {
     var id: String { rawValue }
 
     /// Visual order: All | NFL | NCAA | NBA | NHL | MLB | ATP | WTA
-    static var filterOrder: [KyroSportsCategory] {
+    /// Menu and filter-chip options are immutable data; keep one lightweight array rather than
+    /// allocating it during every Sports Hub body/menu reconstruction.
+    static let filterOrder: [KyroSportsCategory] = {
         [.all, .nfl, .collegeFootball, .nba, .nhl, .mlb, .collegeBasketballMen, .collegeBasketballWomen, .soccer, .atp, .wta]
-    }
+    }()
 
     var displayName: String {
         switch self {

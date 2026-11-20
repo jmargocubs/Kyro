@@ -284,6 +284,9 @@ final class KyroBuild73CategoriesTests: XCTestCase {
     func testFilterChoiceSetsSelection() {
         XCTAssertEqual(LiveTVCategoryNavigation.filterSelection(for: .category("Sports")), "Sports")
         XCTAssertNil(LiveTVCategoryNavigation.filterSelection(for: .all))
+        XCTAssertEqual(LiveTVCategoryNavigation.browserFilters(for: .category("Disney Events")), .category("Disney Events"))
+        XCTAssertEqual(LiveTVCategoryNavigation.browserFilters(for: .favorites), .favorites)
+        XCTAssertEqual(LiveTVCategoryNavigation.browserFilters(for: .all), .channels)
     }
 
     /// The watch screen's Guide keeps Watch and its player: a fixed full-height page, never a push
