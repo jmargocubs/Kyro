@@ -13,6 +13,9 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     private let remote = XCUIRemote.shared
     private var currentApp: XCUIApplication?
     private let liveTVControls = ["All Channels", "Categories", "Favorites", "TV Guide", "Providers"]
+    private let sportsCategories = ["All", "NFL", "NCAA", "NBA", "NHL", "MLB", "SOC", "ATP", "WTA"]
+    private let sportsModes = ["Live", "Upcoming", "Recent"]
+    private let moviesControls = ["Search movies", "All Titles", "Continue Watching", "Favorites", "Refresh Catalog"]
 
     override func setUp() {
         continueAfterFailure = true
@@ -149,7 +152,9 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
 
     func testMoviesGridMovesCardByCardAndUpReachesTheControls() {
         let app = launch(.movies)
-        recordInitialFocus(app, page: "movies")
+        recordInitialFocus(app, page: "movies", marker: app.buttons["All Titles"]) {
+            $0.hasPrefix("Harness Movie") || self.moviesControls.contains($0)
+        }
         XCTAssertTrue(waitFor(app, timeout: 20) { $0.hasPrefix("Harness Movie") }, "Movies enters on its first card")
         capture("movies")
         let first = focusedLabel(app)
@@ -173,7 +178,9 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
 
     func testMoviesMenuRoundTripAndModeSwitchKeepFocusOnThePage() {
         let app = launch(.movies)
-        recordInitialFocus(app, page: "movies")
+        recordInitialFocus(app, page: "movies", marker: app.buttons["All Titles"]) {
+            $0.hasPrefix("Harness Movie") || self.moviesControls.contains($0)
+        }
         XCTAssertTrue(waitFor(app, timeout: 20) { $0.hasPrefix("Harness Movie") })
         let controls = press(.up, app, "movies to controls")
         XCTAssertFalse(controls.hasPrefix("Harness Movie"), "Up from the first row reaches the controls, got \(controls)")
@@ -212,14 +219,47 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
 
     // MARK: Sports
 
-    func testSportsCategoryRowStillMovesOneChipAtATime() {
+    /// The two Sports chip rows are fixed in code (`KyroSportsCategory.filterOrder` and
+    /// `TVSportsMode`), so this walk does not depend on live sports data: only the game cards below
+    /// them come from the network, and an empty "No live events" page is normal. Where focus enters
+    /// the page does depend on that data, so the test first moves to a known chip, All.
+    func testSportsChipRowsMoveOneChipAtATimeAndStopAtTheirEnds() {
         let app = launch(.sports)
-        XCTAssertTrue(waitFor(app, timeout: 20) { !$0.isEmpty && $0 != "<none>" }, "Sports takes focus")
+        XCTAssertTrue(app.buttons["All"].waitForExistence(timeout: 20), "Sports page is showing")
+        XCTAssertTrue(waitFor(app, timeout: 20) { $0 != "<none>" }, "Sports takes focus")
         var path = [focusedLabel(app)]
-        for _ in 0..<4 { path.append(press(.right, app, "sports right")) }
-        log("sports", path)
-        XCTAssertEqual(Set(path).count, path.count, "each Right reached a new control")
-        assertNeverMenu(path)
+
+        // Known start: Up until focus is on the category row (from a game card, the day row or the
+        // mode row), then Left to its first chip.
+        for _ in 0..<4 where !sportsCategories.contains(focusedLabel(app)) {
+            if focusedLabel(app) == "Refresh" { path.append(press(.down, app, "sports to categories")) }
+            else { path.append(press(.up, app, "sports to categories")) }
+        }
+        XCTAssertTrue(sportsCategories.contains(focusedLabel(app)), "reached the category row, got \(focusedLabel(app))")
+        for _ in 0..<sportsCategories.count where focusedLabel(app) != "All" {
+            path.append(press(.left, app, "sports to All"))
+        }
+        XCTAssertEqual(focusedLabel(app), "All", "known start on the first category chip")
+        log("sports start", path)
+
+        // Category row: Right visits every chip in order, then stays on the last one.
+        var categories = ["All"]
+        for _ in 1..<sportsCategories.count { categories.append(press(.right, app, "sports category right")) }
+        XCTAssertEqual(categories, sportsCategories, "Right moves to each adjacent category chip")
+        XCTAssertEqual(press(.right, app, "sports category right at end"), "WTA", "Right at the last chip stays there")
+        var back = ["WTA"]
+        for _ in 1..<sportsCategories.count { back.append(press(.left, app, "sports category left")) }
+        XCTAssertEqual(back, Array(sportsCategories.reversed()), "Left retraces the category row")
+
+        // Mode row, directly below All.
+        XCTAssertEqual(press(.down, app, "sports to modes"), "Live", "Down from All enters the mode row on Live")
+        let modes = ["Live", press(.right, app, "sports mode right"), press(.right, app, "sports mode right")]
+        XCTAssertEqual(modes, sportsModes, "Right moves to each adjacent mode chip")
+        XCTAssertEqual(press(.right, app, "sports mode right at end"), "Recent", "Right at the last mode stays there")
+        let modesBack = ["Recent", press(.left, app, "sports mode left"), press(.left, app, "sports mode left")]
+        XCTAssertEqual(modesBack, Array(sportsModes.reversed()), "Left retraces the mode row")
+        log("sports rows", categories + back + modes + modesBack)
+        assertNeverMenu(path + categories + back + modes + modesBack)
     }
 
     // MARK: Helpers
@@ -280,15 +320,23 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
             .waitForExistence(timeout: 20)
     }
 
-    /// Logs the first element that holds focus after the page opens, before any press.
-    private func recordInitialFocus(_ app: XCUIApplication, page: String) {
-        let deadline = Date().addingTimeInterval(20)
+    /// Logs the first element on the harness page that holds focus after it opens, before any
+    /// press. The harness cover sits over the app's sign-in screen, whose controls stay in the
+    /// accessibility tree, so wait for the page's marker and for focus on one of the page's own
+    /// elements; report anything else after 10 s.
+    private func recordInitialFocus(_ app: XCUIApplication, page: String, marker: XCUIElement,
+                                    onPage: (String) -> Bool) {
+        guard marker.waitForExistence(timeout: 20) else {
+            print("KYRO-FOCUS \(page) initial focus: page never appeared; focus \(focusedLabel(app))")
+            return
+        }
+        let deadline = Date().addingTimeInterval(10)
         var label = focusedLabel(app)
-        while label == "<none>", Date() < deadline {
+        while !onPage(label), Date() < deadline {
             settle(0.25)
             label = focusedLabel(app)
         }
-        print("KYRO-FOCUS \(page) initial focus: \(label.isEmpty ? "<unlabelled>" : label)")
+        print("KYRO-FOCUS \(page) initial focus: \(onPage(label) ? label : "not on the page after 10 s (\(label))")")
         capture("\(page)-initial-focus")
     }
 
