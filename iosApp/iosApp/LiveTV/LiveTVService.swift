@@ -80,6 +80,7 @@ final class LiveTVService {
     @ObservationIgnored private let channelStoreDirectory: URL?
     @ObservationIgnored private var favoriteStoreRevision = 0
     @ObservationIgnored private var favoriteStoreSyncedRevisions: [UUID: Int] = [:]
+    @ObservationIgnored private var channelStoreFreshProviderIDs = Set<UUID>()
     #endif
     @ObservationIgnored private let recentHistoryStore: LiveTVRecentHistoryStore
     /// The one playlist download in flight. Removing its provider cancels it and clears this, so a
@@ -208,6 +209,13 @@ final class LiveTVService {
         return channelCatalogs[selectedProviderID] ?? []
     }
 
+    /// Catalog size without requiring SwiftUI to read or retain the channel array.
+    var selectedChannelCount: Int {
+        guard let selectedProviderID else { return 0 }
+        return providers.first(where: { $0.id == selectedProviderID })?.channelCount
+            ?? channelCatalogs[selectedProviderID]?.count ?? 0
+    }
+
     /// True once this provider's channels (cached or live) are in memory. Saved browsing state must
     /// wait for its own provider: `channelCatalogRevision` also changes when another provider loads.
     func hasCatalog(for providerID: UUID) -> Bool {
@@ -236,19 +244,94 @@ final class LiveTVService {
     /// SQL work off the main actor; callers discard results if the provider or revision changes.
     func channelPage(providerID: UUID, query: String = "", category: String? = nil,
                      favoritesOnly: Bool = false, offset: Int = 0, limit: Int = 100) async -> [LiveTVChannel] {
-        guard providers.contains(where: { $0.id == providerID }), let store = await channelStore() else { return [] }
-        if favoritesOnly, favoriteStoreSyncedRevisions[providerID] != favoriteStoreRevision {
-            let revision = favoriteStoreRevision
-            let prefix = providerID.uuidString + ":"
-            let scoped = Set(favoriteChannelIDs.filter { $0.hasPrefix(prefix) })
-            do {
-                try await store.replaceFavorites(scoped, providerID: providerID)
-                if favoriteStoreRevision == revision { favoriteStoreSyncedRevisions[providerID] = revision }
-            } catch { return [] }
-            guard favoriteStoreSyncedRevisions[providerID] == favoriteStoreRevision else { return [] }
+        guard providers.contains(where: { $0.id == providerID }) else { return [] }
+        if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore(),
+           await store.count(providerID: providerID) > 0 {
+            guard await synchronizeFavoritesIfNeeded(providerID: providerID, store: store) else { return [] }
+            return await store.page(providerID: providerID, query: query, category: category,
+                                    favoritesOnly: favoritesOnly, offset: offset, limit: limit)
         }
-        return await store.page(providerID: providerID, query: query, category: category,
-                                favoritesOnly: favoritesOnly, offset: offset, limit: limit)
+        // Existing installations may have only the legacy JSON snapshot on first launch after
+        // updating. Keep that bounded-to-40K compatibility path until the next successful import.
+        let catalog = channelCatalogs[providerID] ?? []
+        let favorites = favoriteChannelIDs
+        return await Task.detached(priority: .userInitiated) {
+            let filtered = LiveTVChannelFiltering.filter(catalog, query: query, category: category,
+                                                         favoritesOnly: favoritesOnly, favoriteIDs: favorites)
+            let start = min(max(0, offset), filtered.count)
+            let end = min(start + min(max(limit, 1), 200), filtered.count)
+            return Array(filtered[start..<end])
+        }.value
+    }
+
+    func channelCount(providerID: UUID, query: String = "", category: String? = nil,
+                      favoritesOnly: Bool = false) async -> Int {
+        guard providers.contains(where: { $0.id == providerID }) else { return 0 }
+        if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore(),
+           await store.count(providerID: providerID) > 0 {
+            guard await synchronizeFavoritesIfNeeded(providerID: providerID, store: store) else { return 0 }
+            return await store.count(providerID: providerID, query: query, category: category,
+                                     favoritesOnly: favoritesOnly)
+        }
+        let catalog = channelCatalogs[providerID] ?? []
+        let favorites = favoriteChannelIDs
+        return await Task.detached(priority: .utility) {
+            LiveTVChannelFiltering.filter(catalog, query: query, category: category,
+                                          favoritesOnly: favoritesOnly, favoriteIDs: favorites).count
+        }.value
+    }
+
+    func categoryDirectory(providerID: UUID) async -> LiveTVCategoryDirectory {
+        guard providers.contains(where: { $0.id == providerID }) else { return .empty }
+        if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore(),
+           await store.count(providerID: providerID) > 0,
+           await synchronizeFavoritesIfNeeded(providerID: providerID, store: store) {
+            return await LiveTVCategoryDirectory.indexed(store.categorySummaries(providerID: providerID))
+        }
+        let categories = categoryCatalogs[providerID] ?? []
+        let catalog = channelCatalogs[providerID] ?? []
+        let favorites = favoriteChannelIDs
+        return await Task.detached(priority: .utility) {
+            LiveTVCategoryDirectory.build(categories: categories, channels: catalog,
+                                          favoriteIDs: favorites)
+        }.value
+    }
+
+    private func synchronizeFavoritesIfNeeded(providerID: UUID,
+                                              store: LiveTVChannelCatalogStore) async -> Bool {
+        guard favoriteStoreSyncedRevisions[providerID] != favoriteStoreRevision else { return true }
+        let revision = favoriteStoreRevision
+        let prefix = providerID.uuidString + ":"
+        let scoped = Set(favoriteChannelIDs.filter { $0.hasPrefix(prefix) })
+        do {
+            try await store.replaceFavorites(scoped, providerID: providerID)
+            if favoriteStoreRevision == revision { favoriteStoreSyncedRevisions[providerID] = revision }
+        } catch { return false }
+        return favoriteStoreSyncedRevisions[providerID] == favoriteStoreRevision
+    }
+
+    /// Sports Hub's manual picker uses the fresh indexed catalog rather than building 40K folded
+    /// entries on sheet presentation. A failed SQLite write retains the established array path.
+    func sportsManualChannels(matching query: String, providerID: UUID) async -> [LiveTVChannel] {
+        guard selectedProviderID == providerID, liveCatalogs.contains(providerID) else { return [] }
+        if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore() {
+            let results = await store.page(providerID: providerID, query: query, limit: 40)
+            guard selectedProviderID == providerID, liveCatalogs.contains(providerID) else { return [] }
+            return results.filter { isPlayable($0) }
+        }
+        let catalog = channelCatalogs[providerID] ?? []
+        let providerIDs = playableProviderIDs
+        let folded = KyroSportsStreamMatcher.normalized(query)
+        return await Task.detached(priority: .userInitiated) {
+            Array(catalog.lazy.filter {
+                LiveTVService.isPlayable($0) { providerIDs.contains($0) }
+                    && KyroSportsStreamMatcher.normalized($0.name + " " + $0.category).contains(folded)
+            }.prefix(40))
+        }.value
+    }
+
+    var canSearchSportsManualChannels: Bool {
+        selectedProviderID.map { liveCatalogs.contains($0) } ?? false
     }
     #endif
 
@@ -324,6 +407,7 @@ final class LiveTVService {
            channelCatalogs[providerID] == nil, providers.contains(where: { $0.id == providerID }) {
             channelCatalogs[providerID] = restored
             categoryCatalogs[providerID] = await store.categories(providerID: providerID).map(\.name)
+            channelStoreFreshProviderIDs.insert(providerID)
             await pruneRecentHistory(for: providerID, validChannels: restored)
             channelCatalogRevision &+= 1
             if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
@@ -422,6 +506,9 @@ final class LiveTVService {
         }
         cacheRestores.removeValue(forKey: id)?.cancel()
         liveCatalogs.remove(id)
+        #if os(iOS)
+        channelStoreFreshProviderIDs.remove(id)
+        #endif
         automaticRefreshAttempts[id] = nil
         providers.removeAll { $0.id == id }
         channelCatalogs[id] = nil
@@ -534,10 +621,17 @@ final class LiveTVService {
         if let store = await channelStore() {
             // A cancelled or failed stage leaves its previous generation selected. Keep the
             // established in-memory/JSON path usable during this staged UI migration.
-            _ = try? await LiveTVChannelCatalogImporter.replace(loaded.channels, providerID: providerID, in: store)
+            if (try? await LiveTVChannelCatalogImporter.replace(loaded.channels, providerID: providerID, in: store)) != nil {
+                channelStoreFreshProviderIDs.insert(providerID)
+            } else {
+                channelStoreFreshProviderIDs.remove(providerID)
+            }
+        } else {
+            channelStoreFreshProviderIDs.remove(providerID)
         }
         guard !Task.isCancelled, providers.contains(where: { $0.id == providerID }),
               loadSourceConfiguration(providerID: providerID) == source else {
+            channelStoreFreshProviderIDs.remove(providerID)
             if !providers.contains(where: { $0.id == providerID }), let store = await channelStore() {
                 try? await store.remove(providerID: providerID)
             }

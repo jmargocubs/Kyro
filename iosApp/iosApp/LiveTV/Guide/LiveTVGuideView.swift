@@ -32,6 +32,9 @@ struct LiveTVGuideView: View {
     @State private var suppressNextSearchUpdate = false
     @State private var searchGeneration = 0
     @State private var searchModel = LiveTVChannelSearchModel()
+    #if os(iOS)
+    @State private var pagedChannels = LiveTVPagedChannelModel()
+    #endif
     @State private var searchRestoration: LiveTVGuideSearchRestoration?
     @State private var browsingRestoration = LiveTVGuideBrowsingRestoration()
     @State private var restoredContextProviderID: UUID?
@@ -132,6 +135,9 @@ struct LiveTVGuideView: View {
                 saveBrowsingContext(for: restoredContextProviderID)
                 searchGeneration += 1
                 searchModel.cancel()
+                #if os(iOS)
+                pagedChannels.cancel()
+                #endif
                 searchText = ""
                 isSearchPending = false
                 rows = []
@@ -161,6 +167,9 @@ struct LiveTVGuideView: View {
                 saveBrowsingContext()
                 searchGeneration += 1
                 searchModel.cancel()
+                #if os(iOS)
+                pagedChannels.cancel()
+                #endif
                 isSearchPending = false
                 if watch == nil { service.presentation.surfaceDisappeared(.guide) }
             }
@@ -459,7 +468,7 @@ struct LiveTVGuideView: View {
     @ViewBuilder
     private var content: some View {
         switch LiveTVGuideContentState.resolve(hasProviders: !service.providers.isEmpty, isLoading: service.isLoading,
-                                               errorMessage: service.errorMessage, channelCount: service.channels.count,
+                                               errorMessage: service.errorMessage, channelCount: service.selectedChannelCount,
                                                visibleCount: rows.count) {
         case .setup:
             ContentUnavailableView("Set Up Live TV", systemImage: "antenna.radiowaves.left.and.right",
@@ -583,6 +592,7 @@ struct LiveTVGuideView: View {
                             onTune: { tune(channel) }
                         )
                         .equatable()
+                        .onAppear { loadMoreIfNeeded(after: channel) }
                         .background {
                             // Only the row being revealed measures itself, and only until it is centred.
                             if isPlaying, listReveal?.channelID == channel.id {
@@ -725,6 +735,7 @@ struct LiveTVGuideView: View {
                                 onSelect: { select($0, on: channel, at: now) }
                             )
                             .equatable()
+                            .onAppear { loadMoreIfNeeded(after: channel) }
                         }
                     } header: {
                         LiveTVGuideTimeHeader(timeline: timeline, now: now, metrics: metrics)
@@ -815,6 +826,7 @@ struct LiveTVGuideView: View {
             channels: service.channels,
             favoriteIDs: service.favoriteChannelIDs,
             catalogRevision: service.channelCatalogRevision,
+            indexedDirectory: liveTVIndexedCategoryDirectory(service: service),
             initialPosition: categoryPickerPosition,
             select: { choice in
                 selectedCategory = LiveTVCategoryNavigation.filterSelection(for: choice)
@@ -896,16 +908,29 @@ struct LiveTVGuideView: View {
         // empty state would make SwiftUI tear down the visible guide and lose its two-axis
         // ScrollPosition. The pending overlay communicates that results are not final yet.
         isSearchPending = true
+        #if os(iOS)
+        pagedChannels.reset(service: service, providerID: providerID, catalogRevision: catalogRevision,
+                            query: query, category: category, favoritesOnly: favoriteFilter)
+        #else
         searchModel.update(channels: service.channels, query: query, category: category,
                            favoritesOnly: favoriteFilter, favoriteIDs: favoriteIDs, includeGroups: false)
+        #endif
         Task { @MainActor in
+            #if os(iOS)
+            await pagedChannels.waitForCurrentQuery()
+            #else
             await searchModel.waitForCurrentSearch()
+            #endif
             guard generation == searchGeneration, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines),
                   let providerID, providerID == service.selectedProviderID,
                   catalogRevision == service.channelCatalogRevision,
                   category == selectedCategory, favoriteFilter == favoritesOnly,
                   favoriteIDs == service.favoriteChannelIDs else { return }
+            #if os(iOS)
+            rows = pagedChannels.channels
+            #else
             rows = searchModel.matches
+            #endif
             isSearchPending = false
             KyroPerformanceDiagnostics.end(perfMarks.categoryChange)
             perfMarks.categoryChange = nil
@@ -945,18 +970,50 @@ struct LiveTVGuideView: View {
         searchRestoration = nil
         searchGeneration += 1
         searchModel.cancel()
+        #if os(iOS)
+        pagedChannels.cancel()
+        #endif
         isSearchPending = false
         if let restoration {
             selectedCategory = restoration.category
             favoritesOnly = restoration.favoritesOnly
         }
         let filters = restoration?.dismissedFilters ?? .channels
+        #if os(iOS)
+        searchGeneration += 1
+        let generation = searchGeneration
+        pagedChannels.reset(service: service, providerID: service.selectedProviderID,
+                            catalogRevision: service.channelCatalogRevision,
+                            query: filters.query, category: filters.category,
+                            favoritesOnly: filters.favoritesOnly)
+        Task { @MainActor in
+            await pagedChannels.waitForCurrentQuery()
+            guard generation == searchGeneration else { return }
+            rows = pagedChannels.channels
+            if let restoration {
+                position.scrollTo(x: CGFloat(restoration.offsetX), y: CGFloat(restoration.offsetY))
+            }
+        }
+        #else
         rows = LiveTVChannelFiltering.filter(service.channels, query: filters.query,
                                              category: filters.category, favoritesOnly: filters.favoritesOnly,
                                              favoriteIDs: service.favoriteChannelIDs)
         if let restoration {
             position.scrollTo(x: CGFloat(restoration.offsetX), y: CGFloat(restoration.offsetY))
         }
+        #endif
+    }
+
+    private func loadMoreIfNeeded(after channel: LiveTVChannel) {
+        #if os(iOS)
+        guard rows.first?.id == channel.id || rows.last?.id == channel.id else { return }
+        pagedChannels.loadPageIfNeeded(around: channel, service: service)
+        Task { @MainActor in
+            await pagedChannels.waitForCurrentQuery()
+            guard service.selectedProviderID != nil else { return }
+            rows = pagedChannels.channels
+        }
+        #endif
     }
 
     private func dismissSearchInput() {

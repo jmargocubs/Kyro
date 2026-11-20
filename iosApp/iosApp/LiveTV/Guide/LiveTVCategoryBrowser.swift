@@ -138,6 +138,35 @@ struct LiveTVCategoryDirectory: Equatable, Sendable {
         return LiveTVCategoryDirectory(categories: categories, frequent: frequent, favoriteChannelCount: favorites,
                                        totalChannelCount: channels.count, entries: entries)
     }
+
+    #if os(iOS)
+    static func indexed(_ summaries: [LiveTVChannelCatalogStore.CategorySummary]) -> LiveTVCategoryDirectory {
+        let categories = summaries.map(\.name)
+        let entries = Dictionary(uniqueKeysWithValues: summaries.map {
+            ($0.name, Entry(channelCount: $0.channelCount, artworkChannel: $0.artworkChannel))
+        })
+        let frequent = summaries.enumerated().sorted {
+            let lhs = ($0.element.favoriteCount, $0.element.channelCount)
+            let rhs = ($1.element.favoriteCount, $1.element.channelCount)
+            return lhs == rhs ? $0.offset < $1.offset : lhs > rhs
+        }.prefix(4).map(\.element.name)
+        return LiveTVCategoryDirectory(categories: categories, frequent: frequent,
+                                       favoriteChannelCount: summaries.reduce(0) { $0 + $1.favoriteCount },
+                                       totalChannelCount: summaries.reduce(0) { $0 + $1.channelCount },
+                                       entries: entries)
+    }
+    #endif
+}
+
+/// Keeps the shared category page source-compatible with tvOS while enabling the iOS-only
+/// SQLite directory. The non-iOS targets continue through their established in-memory path.
+@MainActor
+func liveTVIndexedCategoryDirectory(service: LiveTVService) -> ((UUID) async -> LiveTVCategoryDirectory)? {
+    #if os(iOS)
+    return { providerID in await service.categoryDirectory(providerID: providerID) }
+    #else
+    return nil
+    #endif
 }
 
 /// What the user picked on the Categories page.
@@ -438,6 +467,9 @@ struct LiveTVCategoryBrowserPage: View {
     let channels: [LiveTVChannel]
     let favoriteIDs: Set<String>
     let catalogRevision: Int
+    /// iOS production catalogs provide one indexed summary per category. Other platforms and
+    /// legacy snapshots keep the established in-memory builder.
+    var indexedDirectory: ((UUID) async -> LiveTVCategoryDirectory)? = nil
     /// Home offers a Favorites row; filters keep their own favorites toggle.
     var showsFavorites = false
     let initialPosition: LiveTVGuideCategoryPickerID?
@@ -455,6 +487,7 @@ struct LiveTVCategoryBrowserPage: View {
     @State private var preferences = LiveTVCategoryPreferences()
     @State private var showingManage = false
     @State private var showingDiagnostics = false
+    @State private var directoryGeneration = 0
     @FocusState private var isSearchFocused: Bool
     @ScaledMetric(relativeTo: .body) private var tileMinHeight: CGFloat = 180
 
@@ -538,9 +571,28 @@ struct LiveTVCategoryBrowserPage: View {
     }
 
     private func rebuildDirectory(keepingPosition: Bool) {
+        #if os(iOS)
+        if let providerID, let indexedDirectory {
+            directoryGeneration += 1
+            let generation = directoryGeneration
+            Task { @MainActor in
+                let interval = KyroPerformanceDiagnostics.begin("Category data", .categoryDirectory)
+                let loaded = await indexedDirectory(providerID)
+                KyroPerformanceDiagnostics.end(interval)
+                guard generation == directoryGeneration, self.providerID == providerID else { return }
+                directory = loaded
+                finishDirectoryRebuild(keepingPosition: keepingPosition)
+            }
+            return
+        }
+        #endif
         let interval = KyroPerformanceDiagnostics.begin("Category data", .categoryDirectory)
         directory = LiveTVCategoryDirectory.build(categories: categories, channels: channels, favoriteIDs: favoriteIDs)
         KyroPerformanceDiagnostics.end(interval)
+        finishDirectoryRebuild(keepingPosition: keepingPosition)
+    }
+
+    private func finishDirectoryRebuild(keepingPosition: Bool) {
         refreshProjection()
         if keepingPosition, case .category(let name)? = position, !categories.contains(name) {
             position = .allCategories
