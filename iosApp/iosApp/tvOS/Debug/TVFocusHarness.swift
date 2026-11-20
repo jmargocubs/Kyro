@@ -29,6 +29,11 @@ struct TVFocusHarnessModifier: ViewModifier {
                       let requested = TVFocusHarnessPage(rawValue: raw) else { return }
                 TVScreenLayout.debugDisablesEdgeToEdge =
                     CommandLine.arguments.contains("-kyroTVFocusHarnessNoEdgeToEdge")
+                // Stage Movies before the page is presented, so it mounts once with its catalog
+                // already stored, the way a real provider page opens. No placeholder takes focus first.
+                if requested == .movies {
+                    await TVFocusHarnessFixture.stageMovies(for: TVFocusHarnessFixture.vodProvider)
+                }
                 // Let the startup splash lift first; the cover must own focus, not the splash.
                 try? await Task.sleep(for: .seconds(1.5))
                 page = requested
@@ -52,7 +57,6 @@ private struct TVFocusHarnessShell: View {
 
     @State private var service = TVFocusHarnessFixture.makeLiveTVService()
     @State private var vodProvider = TVFocusHarnessFixture.vodProvider
-    @State private var moviesStaged = false
     @State private var contentFocusRequest = 1
     @State private var menuSuppressed = true
     @FocusState private var menuFocus: String?
@@ -67,11 +71,6 @@ private struct TVFocusHarnessShell: View {
             menu
         }
         .ignoresSafeArea(edges: [.top, .horizontal])
-        .task {
-            guard page == .movies else { return }
-            await TVFocusHarnessFixture.stageMovies(for: vodProvider)
-            moviesStaged = true
-        }
         .onChange(of: menuFocus) { _, focused in
             // Focus left the menu by a native move into the page: disable the menu again.
             if focused == nil, !menuSuppressed { menuSuppressed = true }
@@ -86,12 +85,8 @@ private struct TVFocusHarnessShell: View {
                              focusRequest: contentFocusRequest, isTopMenuFocused: !menuSuppressed,
                              onTopMenuFocusRequest: focusMenu)
         case .movies:
-            if moviesStaged {
-                TVXtreamVODView(provider: vodProvider, kind: .movie, focusRequest: contentFocusRequest,
-                                isTopMenuFocused: !menuSuppressed, onMoveUp: focusMenu)
-            } else {
-                ProgressView().focusable()
-            }
+            TVXtreamVODView(provider: vodProvider, kind: .movie, focusRequest: contentFocusRequest,
+                            isTopMenuFocused: !menuSuppressed, onMoveUp: focusMenu)
         case .sports:
             TVSportsHubView(service: service, focusRequest: contentFocusRequest,
                             isTopMenuFocused: !menuSuppressed, onTopMenuFocusRequest: focusMenu)

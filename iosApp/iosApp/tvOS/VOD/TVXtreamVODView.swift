@@ -138,6 +138,7 @@ struct TVXtreamVODView: View {
         HStack(spacing: 18) {
             TextField("Search \(kind.title.lowercased())", text: $query)
                 .textFieldStyle(.plain)
+                .accessibilityLabel("Search \(kind.title.lowercased())")
                 .font(.system(size: 25))
                 .padding(.horizontal, 18)
                 .frame(width: 440, height: 58)

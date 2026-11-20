@@ -4,6 +4,14 @@ on:
   push:
     branches: [kyro/tvos]
   workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Tests to run. "full" (default) is the complete validation suite; "tvos-ui" runs only the Siri Remote UI tests.'
+        type: choice
+        default: full
+        options:
+          - full
+          - tvos-ui
 
 permissions:
   contents: read
@@ -66,40 +74,53 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/tvos-build.log"
       - name: Run focus and large-catalog regressions
         shell: bash
+        env:
+          # Push runs and the default manual run use the full suite.
+          SUITE: ${{ inputs.suite || 'full' }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/guide-renders"
           export TEST_RUNNER_KYRO_RENDER_DIR="$RUNNER_TEMP/guide-renders"
+          if [ "$SUITE" = "tvos-ui" ]; then
+            tests=(SiloTVUITests/KyroTVRemoteFocusUITests)
+          else
+            tests=(
+              SiloTVTests/KyroTVFocusTests
+              SiloTVTests/KyroTVVisibilityTests
+              SiloTVTests/KyroTVLiveTVBrowseFocusTests
+              SiloTVTests/KyroTVGuideLayoutTests
+              SiloTVTests/KyroTVEdgeToEdgeLayoutTests
+              SiloTVUITests/KyroTVRemoteFocusUITests
+              SiloTVTests/KyroTVLiveTVTests
+              SiloTVTests/LiveTVImportProgressTests
+              SiloTVTests/XtreamVODTests
+              SiloTVTests/XtreamVODRefreshTests
+              SiloTVTests/XtreamVODLargeCatalogTests
+              SiloTVTests/TVVideoSourceTests
+              SiloTVTests/KyroTVFoundationTests
+              SiloTVTests/LibraryVideoScopeTests
+              SiloTVTests/KyroTVPairingTransferTests
+              SiloTVTests/LiveTVChannelSnapshotTests/testImportProgressCompletesOnlyAfterGuideAndCountsAcceptedChannels
+              SiloTVTests/LiveTVChannelSnapshotTests/testNetworkFailureAndRetryPreservePreviousChannels
+              SiloTVTests/LiveTVChannelSnapshotTests/testXtreamImportCountsDecodedStreamRecords
+              SiloTVTests/LiveTVChannelSnapshotTests/testCancellationStopsHeldDownloadAndAllowsRetry
+              SiloTVTests/LiveTVChannelSnapshotTests/testOversizedDownloadFailsWithoutReplacingWorkingProvider
+              SiloTVTests/LiveTVChannelSnapshotTests/testTransferCapStopsUnknownLengthResponse
+              SiloTVTests/LiveTVCatalogCapacityTests/test40kImportKeepsEveryChannelBelowTheNewCap
+              SiloTVTests/LiveTVCatalogCapacityTests/test60kAnd100kCountsAndCap
+              SiloTVTests/LiveTVCatalogBenchmarkTests/test100kHostedBenchmark
+              SiloTVTests/TVMenuEntryFocusStateTests
+              SiloTVTests/LiveTVCatalogCapacityTests/test40kSearchAndEventMatching
+            )
+          fi
+          only=()
+          for test in "${tests[@]}"; do only+=("-only-testing:$test"); done
+          echo "Suite: $SUITE (${#tests[@]} selections)"
           xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme SiloTV \
             -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
             -derivedDataPath "$RUNNER_TEMP/kyro-derived" \
             -jobs 2 -parallel-testing-enabled NO -collect-test-diagnostics never \
-            -only-testing:SiloTVTests/KyroTVFocusTests \
-            -only-testing:SiloTVTests/KyroTVVisibilityTests \
-            -only-testing:SiloTVTests/KyroTVLiveTVBrowseFocusTests \
-            -only-testing:SiloTVTests/KyroTVGuideLayoutTests \
-            -only-testing:SiloTVTests/KyroTVEdgeToEdgeLayoutTests \
-            -only-testing:SiloTVUITests/KyroTVRemoteFocusUITests \
-            -only-testing:SiloTVTests/KyroTVLiveTVTests \
-            -only-testing:SiloTVTests/LiveTVImportProgressTests \
-            -only-testing:SiloTVTests/XtreamVODTests \
-            -only-testing:SiloTVTests/XtreamVODRefreshTests \
-            -only-testing:SiloTVTests/XtreamVODLargeCatalogTests \
-            -only-testing:SiloTVTests/TVVideoSourceTests \
-            -only-testing:SiloTVTests/KyroTVFoundationTests \
-            -only-testing:SiloTVTests/LibraryVideoScopeTests \
-            -only-testing:SiloTVTests/KyroTVPairingTransferTests \
-            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testImportProgressCompletesOnlyAfterGuideAndCountsAcceptedChannels \
-            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testNetworkFailureAndRetryPreservePreviousChannels \
-            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testXtreamImportCountsDecodedStreamRecords \
-            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testCancellationStopsHeldDownloadAndAllowsRetry \
-            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testOversizedDownloadFailsWithoutReplacingWorkingProvider \
-            -only-testing:SiloTVTests/LiveTVChannelSnapshotTests/testTransferCapStopsUnknownLengthResponse \
-            -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test40kImportKeepsEveryChannelBelowTheNewCap \
-            -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test60kAnd100kCountsAndCap \
-            -only-testing:SiloTVTests/LiveTVCatalogBenchmarkTests/test100kHostedBenchmark \
-            -only-testing:SiloTVTests/TVMenuEntryFocusStateTests \
-            -only-testing:SiloTVTests/LiveTVCatalogCapacityTests/test40kSearchAndEventMatching \
+            "${only[@]}" \
             -resultBundlePath "$RUNNER_TEMP/tvos-focus.xcresult" \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/tvos-tests.log"

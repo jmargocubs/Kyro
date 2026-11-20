@@ -11,10 +11,25 @@ import XCTest
 /// reproduce touch-surface swipes, so passing here does not prove physical Siri Remote behaviour.
 final class KyroTVRemoteFocusUITests: XCTestCase {
     private let remote = XCUIRemote.shared
+    private var currentApp: XCUIApplication?
     private let liveTVControls = ["All Channels", "Categories", "Favorites", "TV Guide", "Providers"]
 
     override func setUp() {
         continueAfterFailure = true
+    }
+
+    /// Every failure carries the screen and the app's accessibility tree at that moment.
+    override func record(_ issue: XCTIssue) {
+        var issue = issue
+        if let app = currentApp {
+            let screen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screen.name = "failure-screen"
+            issue.add(screen)
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = "failure-accessibility-tree"
+            issue.add(tree)
+        }
+        super.record(issue)
     }
 
     // MARK: Live TV
@@ -134,6 +149,7 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
 
     func testMoviesGridMovesCardByCardAndUpReachesTheControls() {
         let app = launch(.movies)
+        recordInitialFocus(app, page: "movies")
         XCTAssertTrue(waitFor(app, timeout: 20) { $0.hasPrefix("Harness Movie") }, "Movies enters on its first card")
         capture("movies")
         let first = focusedLabel(app)
@@ -157,6 +173,7 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
 
     func testMoviesMenuRoundTripAndModeSwitchKeepFocusOnThePage() {
         let app = launch(.movies)
+        recordInitialFocus(app, page: "movies")
         XCTAssertTrue(waitFor(app, timeout: 20) { $0.hasPrefix("Harness Movie") })
         let controls = press(.up, app, "movies to controls")
         XCTAssertFalse(controls.hasPrefix("Harness Movie"), "Up from the first row reaches the controls, got \(controls)")
@@ -167,17 +184,22 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         remote.press(.select)
         settle(1.5)
         path.append(focusedLabel(app))
-        // After the mode switch the generic focused-element query can miss this chip although it
-        // holds focus (the run's screen recording shows the ring on All Titles), so assert on the
-        // button itself, with a bounded wait for the transition.
+        // After a mode switch XCUITest does not report focus on the chip it moved to (Build 100 run
+        // 44679136854: the recording shows the ring on All Titles while hasFocus stays false), so
+        // prove where Left went by what Select does there. Left onto the search field or no move
+        // at all would leave All Titles unselected and fail here.
         remote.press(.left)
-        let allTitles = app.buttons["All Titles"]
-        let focusedAllTitles = expectation(for: NSPredicate(format: "hasFocus == true"), evaluatedWith: allTitles)
-        XCTAssertEqual(XCTWaiter().wait(for: [focusedAllTitles], timeout: 5), .completed,
-                       "Left moves to the neighbouring mode, All Titles")
-        path.append("All Titles")
+        settle()
         remote.press(.select)
         settle(1.5)
+        let allTitles = app.buttons["All Titles"]
+        let continueWatching = app.buttons["Continue Watching"]
+        XCTAssertTrue(waitUntil(5) { allTitles.isSelected },
+                      "Left then Select chose All Titles, the neighbouring mode")
+        XCTAssertFalse(continueWatching.isSelected, "Continue Watching is no longer selected")
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Harness Movie'")).firstMatch
+                        .waitForExistence(timeout: 10), "the catalog reappears")
+        path.append("All Titles (selected)")
         path.append(press(.down, app, "movies back to grid"))
         XCTAssertTrue(path.last?.hasPrefix("Harness Movie") == true, "Down returns to the catalog grid, got \(path.last ?? "")")
         let menu = upUntilMenu(app, path: &path)
@@ -209,6 +231,7 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         app.launchArguments = ["-kyroTVFocusHarness", page.rawValue, "-kyro.c3.introduction.completed", "YES"]
         if !edgeToEdge { app.launchArguments.append("-kyroTVFocusHarnessNoEdgeToEdge") }
         app.launch()
+        currentApp = app
         return app
     }
 
@@ -255,6 +278,27 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     private func waitForChannels(_ app: XCUIApplication) -> Bool {
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Watch Harness'")).firstMatch
             .waitForExistence(timeout: 20)
+    }
+
+    /// Logs the first element that holds focus after the page opens, before any press.
+    private func recordInitialFocus(_ app: XCUIApplication, page: String) {
+        let deadline = Date().addingTimeInterval(20)
+        var label = focusedLabel(app)
+        while label == "<none>", Date() < deadline {
+            settle(0.25)
+            label = focusedLabel(app)
+        }
+        print("KYRO-FOCUS \(page) initial focus: \(label.isEmpty ? "<unlabelled>" : label)")
+        capture("\(page)-initial-focus")
+    }
+
+    private func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            settle(0.25)
+        }
+        return condition()
     }
 
     private func upUntilMenu(_ app: XCUIApplication, path: inout [String]) -> String {
