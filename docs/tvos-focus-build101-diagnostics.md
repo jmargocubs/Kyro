@@ -9,11 +9,12 @@ No playback, source selection, channel filtering, PiP, layout, focus target,
 focus preference, navigation guard, delay, or restoration rule is intentionally changed.
 
 The inspector is compiled under `DEBUG || KYRO_FOCUS_DIAGNOSTICS`. On this
-diagnostic branch the `SiloTV` target in `iosApp/project.yml` sets
-`SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) KYRO_FOCUS_DIAGNOSTICS`, so the
-existing cloud unsigned-IPA workflow (Release archive) includes it with no workflow
-change. Global `DEBUG` is not enabled, so unrelated debug behavior and the old
-private-API overlay stay out. Remove that one setting before any production build.
+diagnostic branch the `SiloTV` target in `iosApp/project.yml` uses a build-number
+lookup: only `KYRO_FOCUS_DIAGNOSTICS_101` is defined. The existing cloud workflow's
+`CURRENT_PROJECT_VERSION=101` therefore enables the inspector in its Release
+archive; other Release build numbers do not opt in. Never reuse build number 101
+for a production archive. Global `DEBUG` is not enabled, so unrelated debug
+behavior and the old private-API overlay stay out.
 Entry points in `TVFocusDiagnostics` are `nonisolated` and drop events raised off
 the main thread.
 
@@ -147,6 +148,13 @@ contains structural sanitized events, not account/media data. No public publishi
 or third-party upload is involved. IPv6-only/link-local/guest networks are unsupported.
 
 ## Validation and delivery record
+
+- Compile correction: removed unsupported `delaysPressesBegan` from the
+  `UIGestureRecognizer` subclass. The tvOS SDK documents `delaysTouchesBegan`,
+  `delaysTouchesEnded`, and `cancelsTouchesInView` as applying to presses as well;
+  all remain false. No replacement property, focus rule, or button mapping was
+  introduced. The observer still only fails recognition and cannot prevent other
+  recognizers. Physical coexistence remains a device test, not a static guarantee.
 
 - Takeover review: implementation commit `32e8d8691d411c40dae2f7dfde0313bd20817e52`
   was already committed and pushed by the earlier run. Cloud archive

@@ -196,9 +196,10 @@ final class TVRemoteFocusInspector: ObservableObject {
         for window in windows where window.isKeyWindow && !inputs.contains(where: { $0.view === window }) {
             let observer = TVPassiveRemoteObserver(target: nil, action: nil)
             observer.cancelsTouchesInView = false
+            // UIKit documents these touch-named flags as covering presses too.
+            // UIGestureRecognizer has no separate delaysPressesBegan property.
             observer.delaysTouchesBegan = false
             observer.delaysTouchesEnded = false
-            observer.delaysPressesBegan = false
             window.addGestureRecognizer(observer)
             inputs.append(observer)
         }
