@@ -153,20 +153,21 @@ jobs:
           IPA_SIZE: ${{ steps.metadata.outputs.ipa_size }}
         run: |
           set -euo pipefail
-          # Safe 403 fallback: Kyro prerelease already exists above. A catalog
-          # permission failure must not delete or rewrite that release; leave it
-          # for workflow_dispatch recovery once secrets/permissions are fixed.
+          # PARTIAL PUBLICATION FAILURE on catalog 403: Kyro prerelease already
+          # exists above and must not be deleted. Fail this job clearly and leave
+          # recovery to workflow_dispatch once secrets/permissions are fixed.
           clone_err="$RUNNER_TEMP/catalog-clone.err"
           if ! git clone "https://x-access-token:$GH_TOKEN@github.com/$CATALOG_REPO.git" "$RUNNER_TEMP/catalog" 2>"$clone_err"; then
             if grep -Eq '403|Authentication failed|Permission denied' "$clone_err"; then
               {
-                echo "### Catalog update deferred (403)"
-                echo "Kyro GitHub prerelease was created/verified. feather-apps clone returned 403."
-                echo "Fix \`secrets.KYRO\` contents:write access to \`$CATALOG_REPO\`, then re-run this workflow with source_run_id=\`$RUN_ID\`."
+                echo "### PARTIAL PUBLICATION FAILURE"
+                echo "GitHub release creation/verification succeeded, but catalog publication failed (feather-apps clone 403)."
+                echo "The Kyro prerelease was preserved."
+                echo "Recovery: fix \`secrets.KYRO\` contents:write access to \`$CATALOG_REPO\`, then re-run this workflow with source_run_id=\`$RUN_ID\`."
               } | tee -a "$GITHUB_STEP_SUMMARY"
-              echo "::warning::Catalog clone 403 — release preserved for retry via workflow_dispatch"
+              echo "::error::PARTIAL PUBLICATION FAILURE — release preserved; catalog not updated (clone 403). Retry via workflow_dispatch source_run_id=$RUN_ID"
               echo "deferred=true" >> "$GITHUB_OUTPUT"
-              exit 0
+              exit 1
             fi
             cat "$clone_err" >&2
             exit 1
@@ -256,13 +257,14 @@ jobs:
             fi
             if grep -Eq '403|Authentication failed|Permission denied' "$push_err"; then
               {
-                echo "### Catalog update deferred (403)"
-                echo "Kyro GitHub prerelease was created/verified. feather-apps push returned 403."
-                echo "Fix \`secrets.KYRO\` access to \`$CATALOG_REPO\`, then re-run with source_run_id=\`$RUN_ID\`."
+                echo "### PARTIAL PUBLICATION FAILURE"
+                echo "GitHub release creation/verification succeeded, but catalog publication failed (feather-apps push 403)."
+                echo "The Kyro prerelease was preserved."
+                echo "Recovery: fix \`secrets.KYRO\` access to \`$CATALOG_REPO\`, then re-run this workflow with source_run_id=\`$RUN_ID\`."
               } | tee -a "$GITHUB_STEP_SUMMARY"
-              echo "::warning::Catalog push 403 — release preserved for retry via workflow_dispatch"
+              echo "::error::PARTIAL PUBLICATION FAILURE — release preserved; catalog not updated (push 403). Retry via workflow_dispatch source_run_id=$RUN_ID"
               echo "deferred=true" >> "$GITHUB_OUTPUT"
-              exit 0
+              exit 1
             fi
             echo "Push attempt $attempts failed; rebasing onto origin/main"
             cat "$push_err" >&2 || true
