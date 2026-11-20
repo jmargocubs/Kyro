@@ -958,7 +958,7 @@ enum KyroSportsStreamMatcher {
             add(team.location, strong: true, guarded: false)
             for name in team.alternateNames { add(name, strong: true, guarded: false) }
             add(team.abbreviation, strong: team.abbreviation.count >= 3, guarded: false)
-        case .collegeFootball:
+        case .collegeFootball, .collegeBasketballMen, .collegeBasketballWomen:
             add(full, strong: true, guarded: false)
             add(team.location, strong: true, guarded: true)
             for name in team.alternateNames { add(name, strong: true, guarded: true) }
@@ -1000,7 +1000,7 @@ enum KyroSportsStreamMatcher {
             let preferred = pool.filter { !weakWords.contains($0) }
             return (preferred.isEmpty ? pool : preferred).max(by: { $0.count < $1.count })
         }).sorted()
-        let display = league == .collegeFootball ? (team.location ?? team.nickname) : team.nickname
+        let display = (league == .collegeFootball || league == .collegeBasketballMen || league == .collegeBasketballWomen) ? (team.location ?? team.nickname) : team.nickname
         return Participant(displayName: display, aliases: aliases, anchors: anchors, strongAnchors: strongAnchors)
     }
 
@@ -1032,6 +1032,8 @@ enum KyroSportsStreamMatcher {
         switch league {
         case .nfl: ["nfl", "football"]
         case .collegeFootball: ["ncaa", "ncaaf", "college", "cfb", "football", "fbs", "fcs"]
+        case .collegeBasketballMen: ["ncaa", "ncaam", "college", "basketball", "march madness"]
+        case .collegeBasketballWomen: ["ncaa", "ncaaw", "college", "basketball", "march madness"]
         case .nba: ["nba", "basketball"]
         case .nhl: ["nhl", "hockey"]
         case .mlb: ["mlb", "baseball"]
@@ -1050,6 +1052,8 @@ enum KyroSportsStreamMatcher {
                                ["soccer"], ["volleyball"], ["ncaab"], ["ncaaw"], ["ncaawb"], ["cbb"], ["wbb"],
                                ["mbb"]],
             .nba: [["wnba"], ["ncaa"], ["ncaab"], ["college"], ["g", "league"], ["nfl"], ["nhl"], ["mlb"]],
+            .collegeBasketballMen: [["nba"], ["wnba"], ["ncaaw"], ["ncaawb"], ["wbb"], ["women", "college"], ["nfl"], ["nhl"], ["mlb"]],
+            .collegeBasketballWomen: [["nba"], ["wnba"], ["ncaam"], ["mbb"], ["men", "college"], ["nfl"], ["nhl"], ["mlb"]],
             .nhl: [["ahl"], ["echl"], ["ohl"], ["whl"], ["ncaa"], ["college"], ["nfl"], ["nba"], ["mlb"]],
             .mlb: [["milb"], ["ncaa"], ["college"], ["nfl"], ["nba"], ["nhl"]],
             .atp: [["wta"], ["women"], ["womens"], ["doubles"]],
@@ -1064,6 +1068,7 @@ enum KyroSportsStreamMatcher {
                                      "lacrosse", "wrestling", "tennis", "golf"]
         switch league {
         case .nfl, .collegeFootball: return football
+        case .collegeBasketballMen, .collegeBasketballWomen: return ["football", "hockey", "baseball", "soccer", "tennis"]
         case .nba: return ["football", "hockey", "baseball", "soccer", "volleyball", "tennis"]
         case .nhl: return ["football", "basketball", "baseball", "soccer", "tennis"]
         case .mlb: return ["football", "basketball", "hockey", "softball", "soccer", "tennis"]
@@ -1153,7 +1158,7 @@ enum KyroSportsStreamMatcher {
         }
         for side in [game.away, game.home] {
             switch game.league {
-            case .collegeFootball: add(side.team.location ?? side.team.nickname)
+            case .collegeFootball, .collegeBasketballMen, .collegeBasketballWomen: add(side.team.location ?? side.team.nickname)
             case .atp, .wta: add(side.team.nickname.split(separator: " ").last.map(String.init))
             default: add(side.team.nickname)
             }

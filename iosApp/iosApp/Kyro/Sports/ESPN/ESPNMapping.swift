@@ -10,6 +10,8 @@ enum ESPNMapping {
         case .mlb: "/apis/site/v2/sports/baseball/mlb/scoreboard"
         case .nhl: "/apis/site/v2/sports/hockey/nhl/scoreboard"
         case .collegeFootball: "/apis/site/v2/sports/football/college-football/scoreboard"
+        case .collegeBasketballMen: "/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+        case .collegeBasketballWomen: "/apis/site/v2/sports/basketball/womens-college-basketball/scoreboard"
         case .atp: "/apis/site/v2/sports/tennis/atp/scoreboard"
         case .wta: "/apis/site/v2/sports/tennis/wta/scoreboard"
         case .soccer: "/apis/site/v2/sports/soccer/eng.1/scoreboard"
@@ -49,13 +51,13 @@ enum ESPNMapping {
             team: homeTeam,
             score: includesScore ? integer(from: homeWire.score?.stringValue) : nil,
             record: overallRecord(from: homeWire.records ?? []),
-            rank: pollRank(from: homeWire.curatedRank)
+            rank: pollRank(from: homeWire.curatedRank) ?? collegeRank(homeWire.curatedRank, league: league)
         )
         let away = KyroGameTeam(
             team: awayTeam,
             score: includesScore ? integer(from: awayWire.score?.stringValue) : nil,
             record: overallRecord(from: awayWire.records ?? []),
-            rank: pollRank(from: awayWire.curatedRank)
+            rank: pollRank(from: awayWire.curatedRank) ?? collegeRank(awayWire.curatedRank, league: league)
         )
 
         return KyroSportsGame(
@@ -367,8 +369,23 @@ enum ESPNMapping {
             darkLogoURL: nonempty(wire.logoDark).flatMap(URL.init(string:)),
             primaryColorHex: nonempty(wire.color),
             alternateColorHex: nonempty(wire.alternateColor),
+            conference: wire.groups?.first.flatMap { nonempty($0.name) }
+                ?? collegeConference(wire.standingSummary, league: league),
             alternateNames: alternates
         )
+    }
+
+    private static func collegeRank(_ rank: ESPNScoreboardResponse.Rank?, league: KyroSportLeague) -> Int? {
+        guard league == .collegeBasketballMen || league == .collegeBasketballWomen,
+              let value = rank?.current, (1...25).contains(value) else { return nil }
+        return value
+    }
+
+    private static func collegeConference(_ summary: String?, league: KyroSportLeague) -> String? {
+        guard league == .collegeBasketballMen || league == .collegeBasketballWomen,
+              let summary, let range = summary.range(of: #"(?i)\bin\s+(.+)$"#, options: .regularExpression) else { return nil }
+        let value = String(summary[range]).replacingOccurrences(of: #"(?i)^in\s+"#, with: "", options: .regularExpression)
+        return nonempty(value)
     }
 
     private static func statusDetail(
@@ -443,7 +460,7 @@ enum ESPNMapping {
         switch league {
         case .mlb: "inning\(period)"
         case .nhl: nhlSuffix(period: period, seasonType: seasonType).id
-        case .nfl, .nba, .collegeFootball: period <= 4 ? "q\(period)" : "ot\(period - 4)"
+        case .nfl, .nba, .collegeFootball, .collegeBasketballMen, .collegeBasketballWomen: period <= 4 ? "q\(period)" : "ot\(period - 4)"
         case .atp, .wta: "set\(period)"
         case .soccer: "half\(period)"
         }
@@ -453,7 +470,7 @@ enum ESPNMapping {
         switch league {
         case .mlb: return String(period)
         case .nhl: return nhlSuffix(period: period, seasonType: seasonType).label
-        case .nfl, .collegeFootball, .nba:
+        case .nfl, .collegeFootball, .nba, .collegeBasketballMen, .collegeBasketballWomen:
             return period <= 4 ? "Q\(period)" : period == 5 ? "OT" : "\(period - 4)OT"
         case .atp, .wta: return "Set \(period)"
         case .soccer: return period == 1 ? "1H" : period == 2 ? "2H" : "ET\(period - 2)"

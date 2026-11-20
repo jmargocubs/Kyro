@@ -344,7 +344,7 @@ enum KyroSportsSectioning {
                 return gameWeek == currentWeek
             }
             return isInsideRollingWindow(start: start, now: now, calendar: calendar)
-        case .nba, .nhl, .mlb:
+        case .nba, .nhl, .mlb, .collegeBasketballMen, .collegeBasketballWomen:
             return isInsideRollingWindow(start: start, now: now, calendar: calendar)
         case .atp, .wta:
             return isInsideRollingWindow(start: start, now: now, calendar: calendar)

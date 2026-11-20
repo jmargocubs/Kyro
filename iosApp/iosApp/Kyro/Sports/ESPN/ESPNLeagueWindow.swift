@@ -49,6 +49,7 @@ enum ESPNLeagueWindowStrategy: Equatable, Sendable {
     static func strategy(for league: KyroSportLeague) -> ESPNLeagueWindowStrategy {
         switch league {
         case .collegeFootball: .currentWeek
+        case .collegeBasketballMen, .collegeBasketballWomen: .dailyRequests
         case .atp, .wta: .tournamentDay
         case .soccer: .soccerRegistry
         case .nfl, .nba, .nhl, .mlb: .dailyRequests

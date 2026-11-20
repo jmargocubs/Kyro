@@ -93,7 +93,7 @@ struct KyroSportsPlayerBoxScoreSelection: Equatable {
         switch side(of: team, in: game) {
         case .away?, .home?:
             let sideTeam = side(of: team, in: game) == .away ? game.away.team : game.home.team
-            let names = game.league == .collegeFootball
+            let names = (game.league == .collegeFootball || game.league == .collegeBasketballMen || game.league == .collegeBasketballWomen)
                 ? [sideTeam.location, sideTeam.nickname]
                 : [sideTeam.nickname, sideTeam.location]
             candidates = names + sideTeam.alternateNames.sorted { $0.count < $1.count }.map(Optional.some)

@@ -187,6 +187,7 @@ enum KyroSportsPregameRules {
         case .nhl: [("wins", "W"), ("losses", "L"), ("otLosses", "OTL"), ("points", "PTS")]
         case .nfl: [("wins", "W"), ("losses", "L"), ("ties", "T"), ("winPercent", "PCT")]
         case .collegeFootball: [("vs. Conf.", "CONF"), ("overall", "OVR")]
+        case .collegeBasketballMen, .collegeBasketballWomen: [("vs. Conf.", "CONF"), ("overall", "OVR")]
         case .soccer: [("gamesPlayed", "GP"), ("wins", "W"), ("ties", "D"), ("losses", "L"),
                        ("pointDifferential", "GD"), ("points", "PTS")]
         case .atp, .wta: []

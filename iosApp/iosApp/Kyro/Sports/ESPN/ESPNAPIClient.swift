@@ -309,11 +309,16 @@ actor ESPNAPIClient {
         }
         var items: [URLQueryItem] = []
         if let dates { items.append(URLQueryItem(name: "dates", value: dates)) }
-        items.append(URLQueryItem(name: "limit", value: league == .collegeFootball ? "500" : "1000"))
+        items.append(URLQueryItem(name: "limit", value: (league == .collegeFootball || league == .collegeBasketballMen || league == .collegeBasketballWomen) ? "500" : "1000"))
         if league == .collegeFootball {
             // ESPN group 80 is FBS. Keeping it explicit avoids mixing FCS and
             // lower-division games into the future NCAA screen.
             items.append(URLQueryItem(name: "groups", value: "80"))
+        }
+        if league == .collegeBasketballMen || league == .collegeBasketballWomen {
+            // ESPN group 50 is Division I. Query IDs are source-owned metadata and
+            // are not assumptions about tournament type or conference.
+            items.append(URLQueryItem(name: "groups", value: "50"))
         }
         components.queryItems = items
         guard let url = components.url else { throw KyroSportsDataError.malformedResponse }
