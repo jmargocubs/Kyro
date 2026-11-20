@@ -933,12 +933,16 @@ private struct LibraryPickerRowLabel: View {
         .padding(.vertical, 14)
         .background(
             RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
-                .fill(isSelected ? Color.siloOnSurface.opacity(0.10) : Color.siloSurfaceElevated)
+                .fill(isSelected ? Color.siloOnSurface.opacity(0.24) : Color.siloSurfaceElevated)
                 .overlay(
                     RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
                         .stroke(Color.siloOutline, lineWidth: 1)
                 )
         )
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityLabel(title)
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 }

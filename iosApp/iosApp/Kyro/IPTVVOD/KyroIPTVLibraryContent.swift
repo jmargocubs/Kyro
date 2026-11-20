@@ -342,8 +342,9 @@ struct KyroIPTVPosterCard: View {
                 cardWidthOverride: cardWidthOverride,
                 rowTitles: rowTitles
             )
-            // The link owns the tap; the card is its label.
-            .allowsHitTesting(false)
+            // Keep hit testing enabled for the NavigationLink's label subtree. Disabling
+            // hit testing here also disables the enclosing link on iOS, making every
+            // poster look tappable but preventing the detail route from activating.
         }
         .buttonStyle(.plain)
         .accessibilityLabel(item.title)
