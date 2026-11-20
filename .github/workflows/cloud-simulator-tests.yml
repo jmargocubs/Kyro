@@ -18,7 +18,170 @@ permissions:
   contents: read
 
 jobs:
+  # Compile-only path for Build 102 export validation. Uses generic tvOS
+  # destinations so Apple TV simulator create/boot failures cannot hide a
+  # compilation result. Application code is unchanged from the export fix.
+  tvos-compile-export:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'focus-export'
+    runs-on: xcode-27
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '27.1'
+      - uses: ./.github/actions/install-xcodegen
+        with:
+          cache: 'true'
+          save-cache: 'false'
+      - name: Generate tvOS project
+        run: xcodegen generate --spec iosApp/project.yml
+      - name: Resolve locked packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            2>&1 | tee "$RUNNER_TEMP/tvos-packages.log"
+      - name: Verify diagnostic flag gating in project settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ordinary Release builds must not expand KYRO_FOCUS_DIAGNOSTICS.
+          ordinary=$(xcodebuild -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -configuration Release -showBuildSettings \
+            CURRENT_PROJECT_VERSION=102 \
+            2>/dev/null | awk -F' = ' '/SWIFT_ACTIVE_COMPILATION_CONDITIONS/ {print $2; exit}')
+          echo "Ordinary Release SWIFT_ACTIVE_COMPILATION_CONDITIONS=$ordinary"
+          case "$ordinary" in
+            *KYRO_FOCUS_DIAGNOSTICS*) echo "::error::diagnostic flag leaked into ordinary Release build 102"; exit 1 ;;
+          esac
+          diagnostic=$(xcodebuild -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -configuration Release -showBuildSettings \
+            CURRENT_PROJECT_VERSION=101 \
+            2>/dev/null | awk -F' = ' '/SWIFT_ACTIVE_COMPILATION_CONDITIONS/ {print $2; exit}')
+          echo "Diagnostic Release SWIFT_ACTIVE_COMPILATION_CONDITIONS=$diagnostic"
+          case "$diagnostic" in
+            *KYRO_FOCUS_DIAGNOSTICS*) echo "OK: build 101 enables KYRO_FOCUS_DIAGNOSTICS" ;;
+            *) echo "::error::build 101 did not enable KYRO_FOCUS_DIAGNOSTICS"; exit 1 ;;
+          esac
+      - name: Compile Release tvOS with diagnostic flag (build 101)
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -destination 'generic/platform=tvOS' \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/kyro-derived-diag" \
+            -jobs 2 -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            CURRENT_PROJECT_VERSION=101 MARKETING_VERSION=1.0.0 \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/tvos-diag-build.log"
+      - name: Compile Debug tvOS app and export tests (simulator SDK, no device boot)
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -destination 'generic/platform=tvOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/kyro-derived-debug" \
+            -jobs 2 -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/tvos-debug-build.log"
+      - name: Upload compile logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kyro-tvos-compile-export-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/tvos-packages.log
+            ${{ runner.temp }}/tvos-diag-build.log
+            ${{ runner.temp }}/tvos-debug-build.log
+          retention-days: 7
+
+  # Optional focused export integration tests. Requires a usable Apple TV
+  # simulator. Failure here is reported separately from compilation.
+  tvos-export-tests:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'focus-export'
+    needs: tvos-compile-export
+    runs-on: xcode-27
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '27.1'
+      - uses: ./.github/actions/install-xcodegen
+        with:
+          cache: 'true'
+          save-cache: 'false'
+      - name: Generate tvOS project
+        run: xcodegen generate --spec iosApp/project.yml
+      - name: Resolve locked packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            2>&1 | tee "$RUNNER_TEMP/tvos-packages.log"
+      - name: Prepare Apple TV 4K simulator
+        id: prepare_sim
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun simctl list runtimes --json > "$RUNNER_TEMP/runtimes.json"
+          simulator=$(python3 scripts/ci/apple-build-metadata.py --test-simulator SiloTV --runtimes "$RUNNER_TEMP/runtimes.json")
+          runtime=$(jq -r .runtime <<< "$simulator")
+          device=$(jq -r .device_type <<< "$simulator")
+          if [ -z "$runtime" ]; then
+            sdk_version=$(xcrun --sdk appletvsimulator --show-sdk-version)
+            xcodebuild -downloadPlatform tvOS -buildVersion "$sdk_version"
+            xcrun simctl list runtimes --json > "$RUNNER_TEMP/runtimes.json"
+            simulator=$(python3 scripts/ci/apple-build-metadata.py --test-simulator SiloTV --runtimes "$RUNNER_TEMP/runtimes.json")
+            runtime=$(jq -r .runtime <<< "$simulator")
+            device=$(jq -r .device_type <<< "$simulator")
+          fi
+          test -n "$runtime"
+          id=$(xcrun simctl create Kyro-Focus-Apple-TV-4K "$device" "$runtime")
+          echo "TVOS_SIMULATOR_ID=$id" >> "$GITHUB_ENV"
+          xcrun simctl boot "$id"
+          xcrun simctl bootstatus "$id" -b
+          echo "Simulator: $device / $runtime / $id"
+      - name: Build and run focused LAN export integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/kyro-derived" \
+            -jobs 2 -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/tvos-build.log"
+          xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -destination "platform=tvOS Simulator,id=$TVOS_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/kyro-derived" \
+            -jobs 2 -parallel-testing-enabled NO -collect-test-diagnostics never \
+            -only-testing:SiloTVTests/TVFocusReportServerTests \
+            -resultBundlePath "$RUNNER_TEMP/tvos-focus.xcresult" \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/tvos-tests.log"
+      - name: Upload export test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kyro-tvos-export-tests-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/tvos-focus.xcresult
+            ${{ runner.temp }}/tvos-build.log
+            ${{ runner.temp }}/tvos-packages.log
+            ${{ runner.temp }}/tvos-tests.log
+          retention-days: 7
+
   tvos-focus:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'focus-export')
     runs-on: xcode-27
     timeout-minutes: 50
     steps:
@@ -84,8 +247,6 @@ jobs:
           export TEST_RUNNER_KYRO_RENDER_DIR="$RUNNER_TEMP/guide-renders"
           if [ "$SUITE" = "tvos-ui" ]; then
             tests=(SiloTVUITests/KyroTVRemoteFocusUITests)
-          elif [ "$SUITE" = "focus-export" ]; then
-            tests=(SiloTVTests/TVFocusReportServerTests)
           else
             tests=(
               SiloTVTests/KyroTVFocusTests
