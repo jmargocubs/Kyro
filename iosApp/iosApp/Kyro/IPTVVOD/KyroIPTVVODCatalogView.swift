@@ -1,5 +1,4 @@
 #if os(iOS)
-import AVKit
 import NukeUI
 import SwiftUI
 
@@ -13,15 +12,16 @@ private struct KyroIPTVPlayback: Identifiable {
 struct KyroIPTVVODCatalogView: View {
     let provider: LiveTVProvider
     let kind: XtreamVODKind
+    @Binding var category: String?
+    @Binding var query: String
 
     private let service = XtreamVODService.shared
     @State private var items: [XtreamVODItem] = []
     @State private var categories: [String] = []
-    @State private var category: String?
-    @State private var query = ""
     @State private var isLoading = false
     @State private var hasMore = true
     @State private var errorMessage: String?
+    @State private var loadGeneration = 0
 
     private let columns = [GridItem(.adaptive(minimum: 130, maximum: 190), spacing: 12)]
 
@@ -30,7 +30,7 @@ struct KyroIPTVVODCatalogView: View {
             LazyVStack(alignment: .leading, spacing: 16) {
                 Text("IPTV \(kind.title)")
                     .font(.largeTitle.bold())
-                Text("Source: IPTV · \(provider.name)")
+                Label(provider.name, systemImage: "antenna.radiowaves.left.and.right")
                     .font(.subheadline).foregroundStyle(.secondary)
 
                 if !categories.isEmpty {
@@ -118,19 +118,27 @@ struct KyroIPTVVODCatalogView: View {
     }
 
     private func reload() async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         items = []
         hasMore = true
+        isLoading = false
         errorMessage = nil
         categories = await service.categories(providerID: provider.id, kind: kind)
-        await loadNext()
+        guard generation == loadGeneration, !Task.isCancelled else { return }
+        await loadNext(generation: generation)
     }
 
-    private func loadNext() async {
+    private func loadNext(generation: Int? = nil) async {
         guard !isLoading && hasMore && IPTVVODPreference.isEnabled() else { return }
         isLoading = true
+        let activeGeneration = generation ?? loadGeneration
         let page = await service.page(providerID: provider.id, kind: kind, query: query,
                                       category: category, offset: items.count)
-        guard !Task.isCancelled else { isLoading = false; return }
+        guard !Task.isCancelled, activeGeneration == loadGeneration else {
+            if activeGeneration == loadGeneration { isLoading = false }
+            return
+        }
         items.append(contentsOf: page)
         hasMore = page.count == 100
         isLoading = false
@@ -163,6 +171,7 @@ private struct KyroIPTVVODDetailView: View {
     let providerName: String
 
     private let service = XtreamVODService.shared
+    @Environment(\.dismiss) private var dismiss
     @State private var detail: XtreamVODDetail?
     @State private var errorMessage: String?
     @State private var playback: KyroIPTVPlayback?
@@ -210,7 +219,13 @@ private struct KyroIPTVVODDetailView: View {
             catch { errorMessage = (error as? LocalizedError)?.errorDescription ?? "Details are unavailable." }
         }
         .fullScreenCover(item: $playback) { request in
-            KyroIPTVVODPlayerView(request: request)
+            PlayerView(contentId: "iptv-vod-\(request.id.uuidString)",
+                       externalPlaybackURL: request.url,
+                       externalPlaybackTitle: request.title,
+                       externalPlaybackSource: request.source,
+                       onDismissRequested: { dismiss() })
+            .id(request.id)
+            .interactiveDismissDisabled()
         }
     }
 
@@ -225,32 +240,4 @@ private struct KyroIPTVVODDetailView: View {
     }
 }
 
-private struct KyroIPTVVODPlayerView: View {
-    let request: KyroIPTVPlayback
-    @Environment(\.dismiss) private var dismiss
-    @State private var player: AVPlayer
-
-    init(request: KyroIPTVPlayback) {
-        self.request = request
-        _player = State(initialValue: AVPlayer(url: request.url))
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Button("Done", systemImage: "xmark") { dismiss() }
-                Spacer()
-                VStack(alignment: .trailing) {
-                    Text(request.title).lineLimit(1)
-                    Text(request.source).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .padding()
-            VideoPlayer(player: player)
-        }
-        .background(.black)
-        .onAppear { player.play() }
-        .onDisappear { player.pause(); player.replaceCurrentItem(with: nil) }
-    }
-}
 #endif

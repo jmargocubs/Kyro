@@ -580,7 +580,7 @@ struct LiveTVSettingsView: View {
                     .onChange(of: iptvVODEnabled) { _, enabled in
                         IPTVVODPreference.setEnabled(enabled)
                     }
-                Text("IPTV titles stay separate from your Silo libraries. Turning this off keeps Live TV and your provider connection.")
+                Text("Use the Movies and Series source switch to browse this provider’s catalogs beside your Silo libraries. Kyro imports both catalogs from the selected Xtream provider and shows progress there. Your saved provider and Live TV stay available if you turn VOD off. No credentials need to be entered again.")
                     .font(.footnote).foregroundStyle(Color.siloSecondaryText)
             }
             if KyroLiveTVNavigationSettingsPolicy.offersStylePicker(

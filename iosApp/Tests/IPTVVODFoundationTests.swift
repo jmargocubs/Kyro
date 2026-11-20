@@ -107,6 +107,18 @@ final class IPTVVODFoundationTests: XCTestCase {
                                                                 username: "user", password: "pass",
                                                                 kind: .series, itemID: 42,
                                                                 fileExtension: "exe"))
+        for container in ["mkv", "ts", "avi", "webm"] {
+            let compatible = try XtreamURLBuilder.vodPlaybackURL(
+                server: "https://vod.example/base", username: "user", password: "pass",
+                kind: .series, itemID: 99, fileExtension: container.uppercased()
+            )
+            XCTAssertEqual(compatible.pathExtension, container)
+            XCTAssertTrue(compatible.path.hasPrefix("/base/series/user/"))
+        }
+        XCTAssertThrowsError(try XtreamURLBuilder.vodPlaybackURL(
+            server: "https://vod.example", username: "user", password: "pass",
+            kind: .movie, itemID: 42, fileExtension: "mkv/extra"
+        ))
     }
 
     func testStreamingImportCancellationKeepsActiveGeneration() async throws {

@@ -7,6 +7,11 @@ import SwiftUI
 /// floating HUD for route, track, chapter, and playback controls.
 struct PlayerView: View {
     let contentId: String
+    /// Provider-owned playback bypasses Silo's content preparation while retaining this view's
+    /// Aether controller, PiP, orientation and transport architecture.
+    let externalPlaybackURL: URL?
+    let externalPlaybackTitle: String?
+    let externalPlaybackSource: String?
     let libraryId: Int?
     let preferredFileId: Int?
     /// The viewer picked `preferredFileId` in a version picker.
@@ -70,6 +75,9 @@ struct PlayerView: View {
 
     init(
         contentId: String,
+        externalPlaybackURL: URL? = nil,
+        externalPlaybackTitle: String? = nil,
+        externalPlaybackSource: String? = nil,
         libraryId: Int? = nil,
         preferredFileId: Int? = nil,
         pinsVersion: Bool = false,
@@ -87,6 +95,9 @@ struct PlayerView: View {
         onDismissRequested: (() -> Void)? = nil
     ) {
         self.contentId = contentId
+        self.externalPlaybackURL = externalPlaybackURL
+        self.externalPlaybackTitle = externalPlaybackTitle
+        self.externalPlaybackSource = externalPlaybackSource
         self.libraryId = libraryId
         _viewModelBox = StateObject(wrappedValue: PlayerViewModelBox(PlayerViewModel(libraryId: libraryId)))
         self.preferredFileId = preferredFileId
@@ -140,6 +151,20 @@ struct PlayerView: View {
         }
         .overlay(alignment: .top) {
             ZStack(alignment: .top) {
+                if let externalPlaybackTitle {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(externalPlaybackTitle).font(.headline).lineLimit(1)
+                            if let externalPlaybackSource {
+                                Text(externalPlaybackSource).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 10)
+                    .allowsHitTesting(false)
+                }
                 if let error = viewModel.error {
                     errorView(error)
                         #if os(iOS)
@@ -526,6 +551,15 @@ struct PlayerView: View {
         }
         #endif
         .onAppear {
+            if let externalPlaybackURL {
+                #if os(iOS)
+                orientationCoordinator.activatePlayer()
+                viewModel.playerPresentationDidAppear()
+                bindPictureInPicture(to: viewModel)
+                #endif
+                viewModel.loadExternalURL(externalPlaybackURL)
+                return
+            }
             if let context = watchPartyContext {
                 #if os(iOS)
                 orientationCoordinator.activatePlayer()

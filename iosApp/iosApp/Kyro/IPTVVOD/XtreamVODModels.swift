@@ -321,7 +321,12 @@ extension XtreamURLBuilder {
 
     static func vodPlaybackURL(server: String, username: String, password: String,
                                kind: XtreamVODKind, itemID: Int, fileExtension: String?) throws -> URL {
-        guard itemID > 0, let ext = fileExtension?.lowercased(), ["mp4", "m3u8", "mov", "m4v"].contains(ext) else {
+        // Xtream panels commonly return Matroska and MPEG-TS containers as well as MP4/HLS.
+        // Aether (the app's normal playback engine) probes the response; don't reject a source
+        // based on AVPlayer's much smaller extension allowlist before it gets that chance.
+        guard itemID > 0, let ext = fileExtension?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(), !ext.isEmpty, ext.count <= 12,
+            ext.unicodeScalars.allSatisfy(CharacterSet.alphanumerics.contains) else {
             throw XtreamVODError.unsupportedFormat
         }
         guard var components = URLComponents(string: server), ["http", "https"].contains(components.scheme?.lowercased() ?? ""),

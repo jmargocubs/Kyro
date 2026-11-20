@@ -1454,6 +1454,7 @@ class PlayerViewModel {
     /// Re-applies subtitle styling when the user edits the system's
     /// Subtitles & Captioning preferences mid-playback.
     private var systemCaptionObserverToken: NSObjectProtocol?
+    @ObservationIgnored private var externalPlaybackTask: Task<Void, Never>?
     /// Triggers a V3 replan when the audio route the session was planned
     /// against changes. iOS/tvOS only — macOS has no `AVAudioSession`.
     private var outputRouteObserverToken: NSObjectProtocol?
@@ -6598,6 +6599,43 @@ class PlayerViewModel {
         )
     }
 
+    /// Plays provider-owned media through the same Aether controller and player surface as Silo.
+    /// Xtream credentials are part of the URL, so never log or forward it to the Silo server.
+    func loadExternalURL(_ url: URL) {
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {
+            error = "This provider returned an invalid playback address."
+            isLoading = false
+            return
+        }
+        externalPlaybackTask?.cancel()
+        error = nil
+        isLoading = true
+        externalPlaybackTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let spec = try AetherLoadSpec(
+                    directURL: url,
+                    headers: [:],
+                    startPosition: 0,
+                    audioOnly: false,
+                    forwardBufferSegments: PlayerSettings.shared.bufferAhead.forwardBufferSegments
+                )
+                let epoch = aetherPlaybackController.beginLoad(spec)
+                try await aetherPlaybackController.finishLoad(epoch)
+                guard !Task.isCancelled else { return }
+                isLoading = false
+                aetherPlaybackController.play()
+            } catch is CancellationError {
+                // A replacement load or dismissal owns the next state.
+            } catch {
+                guard !Task.isCancelled else { return }
+                isLoading = false
+                // Localized transport errors can include the authenticated URL.
+                self.error = "Kyro couldn’t open this provider stream. It may be offline or use an unsupported format."
+            }
+        }
+    }
+
     /// Re-run the last `loadAndPlay` from scratch after an error. Currently a
     /// fresh session — simpler than retrying just the stream load, and
     /// tolerates stale server-side sessions that may have been reaped.
@@ -8610,6 +8648,8 @@ class PlayerViewModel {
 
     func cleanup() {
         guard !isDisposed else { return }
+        externalPlaybackTask?.cancel()
+        externalPlaybackTask = nil
         #if os(iOS)
         KyroPiPDiagnostics.record(
             "player_cleanup",

@@ -11,6 +11,10 @@ struct KyroMediaSourceRoot: View {
     @AppStorage(IPTVVODPreference.key) private var vodEnabled = false
     @AppStorage("kyro.movies.source.v1") private var movieSource = "silo"
     @AppStorage("kyro.series.source.v1") private var seriesSource = "silo"
+    @State private var movieCategory: String?
+    @State private var movieQuery = ""
+    @State private var seriesCategory: String?
+    @State private var seriesQuery = ""
     private let liveTV = LiveTVService.shared
 
     private var kind: XtreamVODKind { category == .movies ? .movie : .series }
@@ -27,18 +31,28 @@ struct KyroMediaSourceRoot: View {
     var body: some View {
         VStack(spacing: 0) {
             if canShowIPTV {
-                Picker("Source", selection: sourceBinding) {
-                    Text("Silo").tag("silo")
-                    Text("IPTV").tag("iptv")
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(isIPTVSelected ? "Browsing IPTV · \(provider?.name ?? "Provider")" : "Browsing Silo libraries")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Picker("Source", selection: sourceBinding) {
+                        Text("Silo").tag("silo")
+                        Text("IPTV").tag("iptv")
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("kyro\(kind.title)SourcePicker")
                 }
-                .pickerStyle(.segmented)
                 .padding(.horizontal, SiloTheme.padding)
                 .padding(.top, SiloTheme.smallPadding)
-                .accessibilityIdentifier("kyro\(kind.title)SourcePicker")
             }
             Group {
                 if isIPTVSelected, let provider {
-                    KyroIPTVVODCatalogView(provider: provider, kind: kind)
+                    KyroIPTVVODCatalogView(
+                        provider: provider,
+                        kind: kind,
+                        category: categoryBinding,
+                        query: queryBinding
+                    )
                 } else {
                     LibrariesTabView(category: category, libraryAuthority: libraryAuthority,
                                      onLibrariesLoaded: onLibrariesLoaded)
@@ -53,6 +67,14 @@ struct KyroMediaSourceRoot: View {
             let safe = selected == "iptv" ? "iptv" : "silo"
             if category == .movies { movieSource = safe } else { seriesSource = safe }
         })
+    }
+
+    private var categoryBinding: Binding<String?> {
+        category == .movies ? $movieCategory : $seriesCategory
+    }
+
+    private var queryBinding: Binding<String> {
+        category == .movies ? $movieQuery : $seriesQuery
     }
 }
 #endif
