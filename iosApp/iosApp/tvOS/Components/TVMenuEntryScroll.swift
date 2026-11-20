@@ -51,6 +51,7 @@ struct TVMenuEntryScroll: ViewModifier {
             .onDisappear { focusState.cancel() }
             .onChange(of: request, initial: true) { _, request in
                 guard focusState.receive(request, menuOwnsFocus: isTopMenuFocused) else { return }
+                TVFocusDiagnostics.record("scheduled", "EntryScroll", "received; waitingForGeometry")
                 var transaction = Transaction(animation: nil)
                 transaction.disablesAnimations = true
                 withTransaction(transaction) {
@@ -66,6 +67,7 @@ struct TVMenuEntryScroll: ViewModifier {
         // Wait for the layout that revealed the lazy entry row to commit.
         DispatchQueue.main.async {
             guard isAtTop, focusState.consume(pending) else { return }
+            TVFocusDiagnostics.record("state", "EntryScroll", "layoutReady; forwardingRequest")
             onReady(pending)
         }
     }

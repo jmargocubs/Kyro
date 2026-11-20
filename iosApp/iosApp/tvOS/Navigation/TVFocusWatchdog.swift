@@ -69,6 +69,7 @@ enum TVFocusSystemProbe {
     @MainActor
     static func requestFocusUpdate() {
         guard let window = keyWindow else { return }
+        TVFocusDiagnostics.record("request", "Watchdog", "windowSetNeedsFocusUpdate")
         window.setNeedsFocusUpdate()
         window.updateFocusIfNeeded()
     }
@@ -152,6 +153,7 @@ struct TVFocusWatchdogModifier: ViewModifier {
                 "action": .string("repair"),
             ]
         )
+        TVFocusDiagnostics.value("request", "Watchdog", "repairAttempt", repairsThisOutage)
         onRepair(repairsThisOutage)
     }
 

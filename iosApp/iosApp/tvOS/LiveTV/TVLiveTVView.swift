@@ -219,6 +219,12 @@ struct TVLiveTVRootView: View {
         // One Back press moves up one level. Covers, sheets and context menus own Back while
         // they are presented, so this runs only for the page itself.
         .onExitCommand(perform: handleBack)
+        .tvObserveFocus("LiveTV", value: focusedControl)
+        .onChange(of: contentEntryTarget, initial: true) { _, value in TVFocusDiagnostics.value("preference", "LiveTV", "contentDefaultFocus", value) }
+        .onChange(of: navigation) { _, value in TVFocusDiagnostics.value("state", "LiveTV", "navigation", value) }
+        .onChange(of: search.isSearching) { _, value in TVFocusDiagnostics.value("state", "LiveTV", "searching", value) }
+        .onChange(of: showsGuide) { _, value in TVFocusDiagnostics.value("state", "LiveTV", "guideCover", value) }
+        .onChange(of: showsProviders) { _, value in TVFocusDiagnostics.value("state", "LiveTV", "providersCover", value) }
         .task(id: service.selectedProviderID) {
             refreshVisibleCatalog()
             await service.prepareSelectedProvider()
@@ -353,7 +359,10 @@ struct TVLiveTVRootView: View {
         .focusSection()
         .focusScope(controlsScope)
         // The page's one directional boundary: Up from the row hands focus to the top menu.
-        .onMoveCommand { if $0 == .up { onTopMenuFocusRequest() } }
+        .onMoveCommand {
+            TVFocusDiagnostics.value("handler", "LiveTV", "controlRowMove", $0)
+            if $0 == .up { onTopMenuFocusRequest() }
+        }
     }
 
     /// The content region: the second native focus section. It always fills the width below the
@@ -624,12 +633,14 @@ struct TVLiveTVRootView: View {
     // MARK: Focus
 
     private func handleBack() {
+        TVFocusDiagnostics.record("handler", "LiveTV", "back")
         switch TVLiveTVBrowseFocusPlanner.back(from: focusedControl, navigation: navigation) {
         case .closeCategory(let category):
             pendingChannelEntry = false
             pendingCategoryRestore = category
             _ = navigation.back()
         case .focusControls(let section):
+            TVFocusDiagnostics.value("request", "LiveTV", "backToControls", FocusTarget.section(section))
             focusedControl = .section(section)
         case .topMenu:
             onTopMenuFocusRequest()
@@ -646,8 +657,10 @@ struct TVLiveTVRootView: View {
     /// went to the top menu. Reproduced with XCUIRemote in `KyroTVRemoteFocusUITests`. The same
     /// rule is applied by `TVPageFocusOwner` and the shell's `selectRoot`.
     private func claimFocusAfterTeardown(_ handoff: TVLiveTVFocusHandoff) {
+        TVFocusDiagnostics.value("scheduled", "LiveTV", "afterTeardown", handoff)
         DispatchQueue.main.async {
             guard !isTopMenuFocused else { return }
+            TVFocusDiagnostics.value("request", "LiveTV", "afterTeardownExecuted", handoff)
             switch handoff {
             case .target(let target):
                 focusedControl = target
@@ -667,12 +680,14 @@ struct TVLiveTVRootView: View {
         Task { @MainActor in
             await Task.yield()
             guard !isTopMenuFocused else { return }
+            TVFocusDiagnostics.value("request", "LiveTV", "entryAfterYield", FocusTarget.section(navigation.section))
             focusedControl = .section(navigation.section)
         }
     }
 
     private func restoreAfterCover() {
         guard !isTopMenuFocused, let target = focusBeforeCover else { return }
+        TVFocusDiagnostics.value("request", "LiveTV", "restoreAfterCover", target)
         focusedControl = Self.restorationTarget(target,
                                                 channelIDs: Set(visibleMatches.map(\.id)),
                                                 categories: Set(visibleCategories),
@@ -1721,6 +1736,10 @@ struct TVLiveTVGuideView: View {
         .ignoresSafeArea(.container, edges: .bottom)
         .background(TVKyroAmbientBackdrop().ignoresSafeArea())
         .defaultFocus($focus, focusHistory.isInGrid ? focusHistory.grid : focusHistory.header)
+        .tvObserveFocus("Guide", value: focus)
+        .onChange(of: entryTarget, initial: true) { _, value in TVFocusDiagnostics.value("preference", "Guide", "gridEntryTarget", value) }
+        .onChange(of: category) { _, value in TVFocusDiagnostics.value("state", "Guide", "category", value) }
+        .onChange(of: favoritesOnly) { _, value in TVFocusDiagnostics.value("state", "Guide", "favorites", value) }
         .modifier(LiveTVChannelCover(service: service, presenter: .guide, isEnabled: true,
                                      channelFilter: policy.isVisible))
         .onAppear {
@@ -1755,7 +1774,9 @@ struct TVLiveTVGuideView: View {
             }
         }
         .onExitCommand {
+            TVFocusDiagnostics.record("handler", "Guide", "back")
             if focusHistory.returnToHeader() {
+                TVFocusDiagnostics.value("request", "Guide", "returnToHeader", focusHistory.header)
                 focus = focusHistory.header
             } else {
                 dismiss()
@@ -1870,7 +1891,10 @@ struct TVLiveTVGuideView: View {
             activeListing = nil
             // The sole exceptional write: the focused row was removed, not
             // merely refreshed. Return to the user's originating filter.
-            if focus?.channelID != nil { focus = focusHistory.header }
+            if focus?.channelID != nil {
+                TVFocusDiagnostics.value("request", "Guide", "removedRowToHeader", focusHistory.header)
+                focus = focusHistory.header
+            }
         }
         prepareEntryTarget()
     }

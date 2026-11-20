@@ -72,6 +72,9 @@ struct TVSportsHubView: View {
         .task(id: store.selectedCategory) { await pollScores() }
         .task(id: focusRequest) { claimEntryFocus() }
         .onAppear { service.prewarmSportsMatching() }
+        .tvObserveFocus("Sports", value: focus)
+        .onChange(of: detailGame == nil) { _, value in TVFocusDiagnostics.value("state", "Sports", "detailClosed", value) }
+        .onChange(of: mode) { _, value in TVFocusDiagnostics.value("state", "Sports", "mode", value) }
     }
 
     private struct LoadKey: Hashable {
@@ -114,7 +117,10 @@ struct TVSportsHubView: View {
             .buttonStyle(TVKyroChipStyle())
             .focused($focus, equals: .refresh)
             .disabled(store.isRefreshing)
-            .onMoveCommand { if $0 == .up { onTopMenuFocusRequest() } }
+            .onMoveCommand {
+                TVFocusDiagnostics.value("handler", "Sports", "headerMove", $0)
+                if $0 == .up { onTopMenuFocusRequest() }
+            }
         }
     }
 
@@ -290,9 +296,13 @@ struct TVSportsHubView: View {
     }
 
     private func restoreFocus() {
+        TVFocusDiagnostics.record("scheduled", "Sports", "restoreAfterYield")
         Task { @MainActor in
             await Task.yield()
-            if let id = focusMemory.restoreTarget(visible: games.map(\.id)) { focus = .game(id) }
+            if let id = focusMemory.restoreTarget(visible: games.map(\.id)) {
+                TVFocusDiagnostics.value("request", "Sports", "restoreAfterYieldExecuted", Focus.game(id))
+                focus = .game(id)
+            }
         }
     }
 
@@ -301,6 +311,7 @@ struct TVSportsHubView: View {
         Task { @MainActor in
             await Task.yield()
             guard !isTopMenuFocused else { return }
+            TVFocusDiagnostics.value("request", "Sports", "entryAfterYield", Focus.mode(mode))
             focus = .mode(mode)
         }
     }

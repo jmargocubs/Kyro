@@ -208,6 +208,13 @@ struct TVMainTabView: View {
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSignOutConfirm)
         .ignoresSafeArea(edges: [.top, .horizontal])
         .tint(.siloOnSurface)
+        .tvObserveFocus("Shell", value: selectedRoot)
+        .onChange(of: selectedRoot) { _, value in TVFocusDiagnostics.value("state", "Shell", "rootIdentity", value) }
+        .onChange(of: openPanel) { _, value in TVFocusDiagnostics.value("state", "Shell", "openPanel", value) }
+        .onChange(of: panelEntersFocus) { _, value in TVFocusDiagnostics.value("state", "Shell", "panelEntered", value) }
+        .onChange(of: router.path.count) { _, value in TVFocusDiagnostics.value("state", "Shell", "routeDepth", value) }
+        .onChange(of: contentFocusRequest) { _, _ in TVFocusDiagnostics.record("request", "Shell", "contentHandoffTokenObserved") }
+        .onChange(of: topMenuFocusRequest) { _, _ in TVFocusDiagnostics.record("request", "Shell", "topMenuTokenObserved") }
         .fullScreenCover(isPresented: Binding(
             get: { audioStore.isShowingFullPlayer },
             set: { if !$0 { audioStore.dismissFullPlayer() } }
@@ -416,6 +423,7 @@ struct TVMainTabView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(edges: [.top, .horizontal])
         .onExitCommand {
+            TVFocusDiagnostics.record("handler", "Shell", "back")
             if router.path.isEmpty {
                 focusTopMenuIfVisible()
             } else {
@@ -1259,6 +1267,7 @@ struct TVMainTabView: View {
     /// §7); the default `nil` falls back to the selected tab. Always written
     /// so a prior override can't leak into a later content-exit call.
     private func focusTopMenuIfVisible(focusing target: TVTopMenuPanel? = nil) {
+        TVFocusDiagnostics.value("scheduled", "Shell", "focusTopMenuIfVisible", target)
         // The custom top menu only exists on root pages. Pushed detail,
         // player, and settings routes should keep normal navigation-stack
         // back behavior instead of being intercepted by the root shell.

@@ -189,6 +189,8 @@ struct TVCascadeSelector: View {
         .contentShape(Rectangle())
         .focusable(entersPanel)
         .focused($panelFocused)
+        .tvObserveFocus("Cascade", value: panelFocused)
+        .onChange(of: focus) { _, value in TVFocusDiagnostics.value("state", "Cascade", "highlightNotEngineFocus", value) }
         .onTapGesture(perform: commitFocusedSelection)
         .onMoveCommand(perform: handleMoveCommand)
     }
@@ -521,6 +523,7 @@ struct TVCascadeSelector: View {
     }
 
     private func handleMoveCommand(_ direction: MoveCommandDirection) {
+        TVFocusDiagnostics.value("handler", "Cascade", "move", direction)
         guard entersPanel, panelFocused, let currentFocus = focus else { return }
         switch TVCascadeFocusPlanner.move(from: currentFocus, direction: direction,
                                           libraryIDs: rowIDs, pills: pills,
@@ -539,6 +542,7 @@ struct TVCascadeSelector: View {
     }
 
     private func commitFocusedSelection() {
+        TVFocusDiagnostics.record("handler", "Cascade", "select")
         guard entersPanel, let focus else { return }
         switch focus {
         case .library(let libraryId):
@@ -555,7 +559,9 @@ struct TVCascadeSelector: View {
     }
 
     private func claimPanelFocus() {
+        TVFocusDiagnostics.record("scheduled", "Cascade", "claimPanelFocus")
         onPanelFocusChanged(true)
+        TVFocusDiagnostics.record("request", "Cascade", "panelFocusedTrue")
         panelFocused = true
     }
 }

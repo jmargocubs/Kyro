@@ -259,6 +259,9 @@ struct TVTopMenuBar: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.normalDuration), value: isMenuFocused)
         .focusSection()
         .disabled(isFocusSuppressed || panelEntersFocus)
+        .tvObserveFocus("TopMenu", value: focusedItem)
+        .onChange(of: isFocusSuppressed) { _, value in TVFocusDiagnostics.value("state", "TopMenu", "suppressed", value) }
+        .onChange(of: panelEntersFocus) { _, value in TVFocusDiagnostics.value("state", "TopMenu", "panelEntered", value) }
         // Menu handling must not be conditionally wrapped around the focused
         // tab buttons. Toggling an `onExitCommand` ancestor when `openPanel`
         // changes invalidates tvOS focus and produces the preview-open flash.
@@ -271,6 +274,7 @@ struct TVTopMenuBar: View {
         )
         .onChange(of: isFocusSuppressed) { _, newValue in
             if newValue {
+                TVFocusDiagnostics.record("request", "TopMenu", "clearOnSuppression")
                 focusedItem = nil
                 // Focus left the bar for content; a later return to any tab
                 // should dwell-open normally, so drop any close-suppression.
@@ -284,6 +288,7 @@ struct TVTopMenuBar: View {
             refocusAfterClose = false
             dwellSuppressedElement = nil
             dwellTask?.cancel()
+            TVFocusDiagnostics.record("request", "TopMenu", "watchdogReset")
             focusedItem = nil
         }
         .onChange(of: focusRequest) { _, _ in
@@ -299,6 +304,7 @@ struct TVTopMenuBar: View {
             // Home tab — the flash / focus reset. Content hand-off still nulls
             // via the isFocusSuppressed handler above.
             if !newValue && !panelEntersFocus {
+                TVFocusDiagnostics.record("request", "TopMenu", "contentHandoffClear")
                 focusedItem = nil
             }
         }
@@ -345,6 +351,7 @@ struct TVTopMenuBar: View {
             let spuriousFromOpenPreview = openPanel != nil && !panelEntersFocus
             if (spuriousFromOpenPreview || refocusAfterClose), let target = lastBarFocus {
                 refocusAfterClose = false
+                TVFocusDiagnostics.value("request", "TopMenu", "repinAfterNil", target)
                 focusedItem = target
                 return
             }
@@ -460,6 +467,7 @@ struct TVTopMenuBar: View {
         // A ScrollView is its own focus region on tvOS. At its leading edge,
         // explicitly hand Left back to the fixed Search anchor.
         .modifier(TVTopMenuLeadingBoundaryHandler(isLeading: index == 0) {
+            TVFocusDiagnostics.record("request", "TopMenu", "leadingBoundaryToSearch")
             focusedItem = .search
         })
         // Down opens this tab's cascade panel (if a dwell hasn't already)
@@ -534,7 +542,9 @@ struct TVTopMenuBar: View {
     }
 
     private func requestMenuFocus(attempt: Int = 0) {
+        TVFocusDiagnostics.value("scheduled", "TopMenu", "requestMenuFocusAttempt", attempt)
         guard !isFocusSuppressed else {
+            TVFocusDiagnostics.record("state", "TopMenu", "requestBlockedBySuppression")
             Self.logger.debug("topMenu.requestMenuFocus blocked suppressed=true")
             return
         }
@@ -546,11 +556,14 @@ struct TVTopMenuBar: View {
         // leaves dwell enabled — resting on a tab there should preview it.
         case .root(let root):
             dwellSuppressedElement = .root(root)
+            TVFocusDiagnostics.value("request", "TopMenu", "explicitRoot", TVTopMenuFocus.root(root))
             focusedItem = .root(root)
         case .profile:
             dwellSuppressedElement = .profile
+            TVFocusDiagnostics.record("request", "TopMenu", "explicitProfile")
             focusedItem = .profile
         case .none:
+            TVFocusDiagnostics.value("request", "TopMenu", "selectedRoot", TVTopMenuFocus.root(selectedRoot))
             focusedItem = .root(selectedRoot)
         }
         let item = focusedItem.map { String(describing: $0) } ?? "nil"
@@ -590,9 +603,11 @@ struct TVTopMenuBar: View {
         // in the centered layout the native focus graph resolves this first.
         // Down hands focus to the page's first item, matching the tabs.
         .onMoveCommand { direction in
+            TVFocusDiagnostics.value("handler", "TopMenu", "searchMove", direction)
             switch direction {
             case .right:
                 guard let firstRoot = roots.first else { return }
+                TVFocusDiagnostics.value("request", "TopMenu", "searchRightToRoot", TVTopMenuFocus.root(firstRoot))
                 focusedItem = .root(firstRoot)
             case .down:
                 onEnterContent()
@@ -619,6 +634,7 @@ struct TVTopMenuBar: View {
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .settings)
         .onMoveCommand { direction in
+            TVFocusDiagnostics.value("handler", "TopMenu", "settingsMove", direction)
             if direction == .down { onEnterContent() }
         }
         .accessibilityLabel("Settings")
@@ -677,6 +693,7 @@ struct TVTopMenuBar: View {
     /// by `TVWindowMenuPressCatcher` instead of `.onExitCommand` so changing
     /// `openPanel` never rewrites the focused tab's SwiftUI ancestor chain.
     private func handleExitPress() {
+        TVFocusDiagnostics.record("handler", "TopMenu", "back")
         let item = focusedItem.map { String(describing: $0) } ?? "nil"
         Self.logger.debug("topMenu.exitPress focusedItem=\(item, privacy: .public) openPanel=\(openPanel != nil, privacy: .public) selectedRoot=\(String(describing: selectedRoot), privacy: .public)")
         if openPanel != nil {
@@ -894,6 +911,7 @@ private struct TVTopMenuDownHandler: ViewModifier {
 
     func body(content: Content) -> some View {
         content.onMoveCommand { direction in
+            TVFocusDiagnostics.value("handler", "TopMenuDownBoundary", "move", direction)
             guard direction == .down else { return }
             if canOpenPanel {
                 onDown()
@@ -915,6 +933,7 @@ private struct TVTopMenuLeadingBoundaryHandler: ViewModifier {
     func body(content: Content) -> some View {
         if isLeading {
             content.onMoveCommand { direction in
+                TVFocusDiagnostics.value("handler", "TopMenuLeadingBoundary", "move", direction)
                 if direction == .left { onMoveLeft() }
             }
         } else {
@@ -1007,6 +1026,7 @@ final class TVWindowMenuPressUIView: UIView, UIGestureRecognizerDelegate {
 
     @objc private func handleMenuPress(_ recognizer: UITapGestureRecognizer) {
         guard isActive, recognizer.state == .ended else { return }
+        TVFocusDiagnostics.record("handler", "WindowMenuCatcher", "back-ended")
         onExit()
     }
 
@@ -1041,6 +1061,7 @@ struct TVForYouDropdown: View {
 
     var body: some View {
         panel
+            .tvObserveFocus("ForYouDropdown", value: focusedAction)
             .onChange(of: focusEntryGeneration) { _, generation in
                 applyEntryGeneration(generation)
             }
@@ -1060,6 +1081,7 @@ struct TVForYouDropdown: View {
               generation > 0,
               generation != lastAppliedEntryGeneration else { return }
         lastAppliedEntryGeneration = generation
+        TVFocusDiagnostics.record("request", "ForYouDropdown", "entryWatchlist")
         focusedAction = .watchlist
     }
 
@@ -1126,6 +1148,7 @@ private struct TVDropdownBoundaryMoveHandler: ViewModifier {
 
     func body(content: Content) -> some View {
         content.onMoveCommand { direction in
+            TVFocusDiagnostics.value("handler", "DropdownBoundary", "move", direction)
             switch direction {
             case .up:
                 onMoveUp?()
@@ -1206,6 +1229,7 @@ struct TVProfileDropdown: View {
               generation > 0,
               generation != lastAppliedEntryGeneration else { return }
         lastAppliedEntryGeneration = generation
+        TVFocusDiagnostics.record("request", "ProfileDropdown", "entrySwitchProfile")
         focusedAction = .switchProfile
     }
 

@@ -33,11 +33,13 @@ struct TVPageFocusOwner: ViewModifier {
             .contentShape(Rectangle())
             .focusable(true)
             .focused($isFocused)
+            .tvObserveFocus("Placeholder", value: isFocused)
             // The placeholder is not actionable, so the system focus effect
             // would only draw a halo around static text.
             .focusEffectDisabled()
             .accessibilityLabel(accessibilityLabel)
             .onMoveCommand { direction in
+                TVFocusDiagnostics.value("handler", "Placeholder", "move", direction)
                 guard direction == .up else { return }
                 onMoveUp?()
             }
@@ -53,6 +55,7 @@ struct TVPageFocusOwner: ViewModifier {
                 await Task.yield()
                 // The menu can take focus during the yield.
                 guard !Task.isCancelled, !isTopMenuFocused else { return }
+                TVFocusDiagnostics.record("request", "Placeholder", "claimAfterYield")
                 isFocused = true
             }
     }

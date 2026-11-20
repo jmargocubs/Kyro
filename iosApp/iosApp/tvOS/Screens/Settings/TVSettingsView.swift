@@ -568,6 +568,17 @@ struct TVSettingsView: View {
 
             TVSettingsInfoRow(title: "App Version", value: Self.versionString)
 
+            #if DEBUG || KYRO_FOCUS_DIAGNOSTICS
+            NavigationLink {
+                ScrollView { TVFocusInspectorSettings().padding(60) }
+                    .navigationTitle("Remote & Focus Inspector")
+            } label: {
+                Text("Remote & Focus Inspector (diagnostic)")
+            }
+            .buttonStyle(TVSettingsPaneRowStyle())
+            .focused($detailFocus, equals: .focusInspector)
+            #endif
+
             Button(action: presentPrivacyPolicy) {
                 HStack(spacing: 16) {
                     Image(systemName: "hand.raised.fill")
@@ -644,6 +655,9 @@ struct TVSettingsView: View {
 }
 
 enum TVSettingsDetailFocus: Hashable {
+    #if DEBUG || KYRO_FOCUS_DIAGNOSTICS
+    case focusInspector
+    #endif
     case top
     case generalAppleTVUser
     case generalProfileLaunch

@@ -97,6 +97,10 @@ struct TVXtreamVODView: View {
         .padding(.top, topInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(TVKyroAmbientBackdrop().ignoresSafeArea())
+        .tvObserveFocus(kind == .movie ? "IPTV-Movies" : "IPTV-Series", value: focused)
+        .onChange(of: kind, initial: true) { _, value in TVFocusDiagnostics.value("state", "IPTV-VOD", "kind", value) }
+        .onChange(of: isLoading) { _, value in TVFocusDiagnostics.value("state", "IPTV-VOD", "loading", value) }
+        .onChange(of: mode) { _, value in TVFocusDiagnostics.value("state", "IPTV-VOD", "mode", value) }
         .task(id: "\(provider.id)-\(kind.rawValue)-\(vod.revision)-\(mode.rawValue)") { await reload() }
         .task(id: query) {
             guard query != loadedQuery else { return }
@@ -163,6 +167,7 @@ struct TVXtreamVODView: View {
     }
 
     private func handleTopRowMove(_ direction: MoveCommandDirection) {
+        TVFocusDiagnostics.value("handler", "IPTV-VOD", "topRowMove", direction)
         // The intentional page-to-menu boundary. Every other move stays native.
         if direction == .up { onMoveUp?() }
     }
@@ -224,6 +229,7 @@ struct TVXtreamVODView: View {
     // MARK: - Focus
 
     private func requestEntry(_ request: Int) {
+        TVFocusDiagnostics.record("scheduled", "IPTV-VOD", "requestEntry")
         guard request > 0, !isTopMenuFocused else { return }
         entryRequest = request
     }
@@ -231,8 +237,12 @@ struct TVXtreamVODView: View {
     private func claimEntryFocus() {
         guard !isTopMenuFocused else { return }
         switch TVXtreamVODFocusPlanner.entryTarget(itemIDs: items.prefix(1).map(\.id), isLoading: isLoading, mode: mode) {
-        case .firstCard(let id): focused = .card(id); pendingEntryClaim = false
-        case .mode(let option): focused = .mode(option); pendingEntryClaim = false
+        case .firstCard(let id):
+            TVFocusDiagnostics.value("request", "IPTV-VOD", "entryCard", Field.card(id))
+            focused = .card(id); pendingEntryClaim = false
+        case .mode(let option):
+            TVFocusDiagnostics.value("request", "IPTV-VOD", "entryMode", Field.mode(option))
+            focused = .mode(option); pendingEntryClaim = false
         case .wait: pendingEntryClaim = true
         }
     }
@@ -269,6 +279,7 @@ struct TVXtreamVODView: View {
         if pendingEntryClaim {
             claimEntryFocus()
         } else if !focusedCardSurvives {
+            TVFocusDiagnostics.record("request", "IPTV-VOD", "focusedCardRemoved; firstCardOrMode")
             // The focused title disappeared (new query or mode): move to its nearest neighbour.
             focused = result.first.map { .card($0.id) } ?? .mode(mode)
         }

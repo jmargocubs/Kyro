@@ -189,6 +189,9 @@ targets:
     settings:
       base:
         PRODUCT_NAME: SiloTV
+        # Build 101 diagnostic branch only: compiles the Remote & Focus Inspector
+        # into the Release archive. Remove before shipping a production build.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) KYRO_FOCUS_DIAGNOSTICS"
         INFOPLIST_FILE: iosApp/tvOS-Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: TVAppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
