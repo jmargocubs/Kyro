@@ -433,9 +433,23 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         XCTAssertEqual(firstPage.map(\.name), ["News One"])
         XCTAssertEqual(sportsPage.map(\.name), ["Sport"])
         XCTAssertTrue(otherPage.isEmpty)
+        let totalCount = await writer.channelCount(providerID: providerID)
+        let newsCount = await writer.channelCount(providerID: providerID, query: "News")
+        let sportsCount = await writer.channelCount(providerID: providerID, category: "Sports")
+        XCTAssertEqual(totalCount, 2)
+        XCTAssertEqual(newsCount, 1)
+        XCTAssertEqual(sportsCount, 1)
+        let sportsManual = await writer.sportsManualChannels(matching: "News", providerID: providerID)
+        XCTAssertEqual(sportsManual.map(\.name), ["News One"])
         writer.toggleFavorite(try XCTUnwrap(firstPage.first))
         let favoritePage = await writer.channelPage(providerID: providerID, favoritesOnly: true)
         XCTAssertEqual(favoritePage.map(\.name), ["News One"])
+        let favoriteCount = await writer.channelCount(providerID: providerID, favoritesOnly: true)
+        XCTAssertEqual(favoriteCount, 1)
+        let directory = await writer.categoryDirectory(providerID: providerID)
+        XCTAssertEqual(directory.totalChannelCount, 2)
+        XCTAssertEqual(directory.favoriteChannelCount, 1)
+        XCTAssertEqual(directory.entry(for: "Sports").channelCount, 1)
 
         PlaylistURLProtocol.reset(body: playlist, status: 503)
         await writer.refresh(providerID: providerID)
@@ -449,6 +463,41 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         XCTAssertEqual(restarted.channels.map(\.name), ["News One", "Sport"])
         XCTAssertTrue(restarted.channels.allSatisfy { $0.streamURL.scheme == "about" },
                       "offline restoration remains browse-only")
+    }
+
+    func testPagedChannelModelKeepsABoundedBidirectionalWindow() async throws {
+        let rowCount = 1_205
+        let entries = (0..<rowCount).map { index in
+            "#EXTINF:-1 tvg-id=\"guide.\(index)\" group-title=\"Category \(index % 8)\",Channel \(index)\n" +
+            "https://stream.example.test/\(index).m3u8"
+        }
+        PlaylistURLProtocol.reset(body: (["#EXTM3U"] + entries).joined(separator: "\n"))
+        let service = makeService()
+        let providerID = try addProvider(to: service)
+        await service.refresh(providerID: providerID)
+
+        let model = LiveTVPagedChannelModel()
+        model.reset(service: service, providerID: providerID,
+                    catalogRevision: service.channelCatalogRevision,
+                    query: "", category: nil, favoritesOnly: false)
+        await model.waitForCurrentQuery()
+        XCTAssertEqual(model.totalCount, rowCount)
+        XCTAssertEqual(model.channels.count, LiveTVPagedChannelModel.pageSize)
+
+        while model.hasMoreAfter {
+            model.loadPageIfNeeded(around: try XCTUnwrap(model.channels.last), service: service)
+            await model.waitForCurrentQuery()
+            XCTAssertLessThanOrEqual(model.channels.count, LiveTVPagedChannelModel.maximumRetainedChannels)
+        }
+        XCTAssertTrue(model.hasMoreBefore)
+        XCTAssertEqual(model.channels.last?.name, "Channel 1204")
+
+        while model.hasMoreBefore {
+            model.loadPageIfNeeded(around: try XCTUnwrap(model.channels.first), service: service)
+            await model.waitForCurrentQuery()
+            XCTAssertLessThanOrEqual(model.channels.count, LiveTVPagedChannelModel.maximumRetainedChannels)
+        }
+        XCTAssertEqual(model.channels.first?.name, "Channel 0")
     }
 
     func testSourceChangeDoesNotDisplayAnotherV2GuideAndRemovalDoesNotRecreateIt() async throws {

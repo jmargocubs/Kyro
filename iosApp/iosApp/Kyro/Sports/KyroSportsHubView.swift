@@ -676,16 +676,8 @@ private struct KyroSportsStreamMatchSheet: View {
     let choose: (KyroSportsStreamMatch) -> Void
     let dismiss: () -> Void
     @State private var manualQuery = ""
-    @State private var manualCatalog: [ManualEntry] = []
     @State private var manualResults: [LiveTVChannel] = []
     @State private var currentProgrammes: [String: EPGProgram] = [:]
-
-    /// A playable channel with its folded search text, built once per sheet
-    /// off the main actor so typing never folds 40,000 names per keystroke.
-    private struct ManualEntry: Sendable {
-        let channel: LiveTVChannel
-        let folded: String
-    }
 
     private var game: KyroSportsGame { discovery.game }
 
@@ -740,24 +732,13 @@ private struct KyroSportsStreamMatchSheet: View {
             .navigationTitle("Choose a Stream")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: dismiss) } }
-            .task {
-                // Up to 40,000 channels: only the array and provider IDs are read on the main
-                // actor; the playback check and name folding run off it.
-                let channels = service.channels
-                let providerIDs = service.playableProviderIDs
-                manualCatalog = await Task.detached(priority: .userInitiated) {
-                    Array(channels.lazy
-                        .filter { LiveTVService.isPlayable($0) { providerIDs.contains($0) } }
-                        .map { ManualEntry(channel: $0, folded: KyroSportsStreamMatcher.normalized($0.name + " " + $0.category)) })
-                }.value
-            }
             .task(id: discovery.result?.matches.count ?? -1) {
                 guard let result = discovery.result else { return }
                 let unlisted = (result.matches + result.overflowMatches + result.possibleBroadcasters)
                     .filter { $0.program == nil }.map(\.channel)
                 currentProgrammes = await service.sportsCurrentProgrammes(for: unlisted)
             }
-            .task(id: "\(manualCatalog.count)|\(manualQuery)") {
+            .task(id: "\(service.selectedProviderID?.uuidString ?? "none")|\(service.channelCatalogRevision)|\(manualQuery)") {
                 let folded = KyroSportsStreamMatcher.normalized(manualQuery).trimmingCharacters(in: .whitespaces)
                 guard !folded.isEmpty else {
                     manualResults = []
@@ -765,11 +746,9 @@ private struct KyroSportsStreamMatchSheet: View {
                 }
                 try? await Task.sleep(for: .milliseconds(200))
                 guard !Task.isCancelled else { return }
-                let catalog = manualCatalog
-                let found = await Task.detached(priority: .userInitiated) {
-                    Array(catalog.lazy.filter { $0.folded.contains(folded) }.prefix(40).map(\.channel))
-                }.value
-                guard !Task.isCancelled else { return }
+                guard let providerID = service.selectedProviderID else { manualResults = []; return }
+                let found = await service.sportsManualChannels(matching: folded, providerID: providerID)
+                guard !Task.isCancelled, service.selectedProviderID == providerID else { return }
                 manualResults = found
             }
         }
@@ -813,7 +792,7 @@ private struct KyroSportsStreamMatchSheet: View {
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                 }
-            } else if manualResults.isEmpty, !manualCatalog.isEmpty {
+            } else if manualResults.isEmpty, service.canSearchSportsManualChannels {
                 Text("No channels match “\(manualQuery)”.")
                     .foregroundStyle(KyroTheme.textSecondary)
                     .listRowBackground(Color.white.opacity(0.05))

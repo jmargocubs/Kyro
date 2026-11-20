@@ -136,7 +136,12 @@ enum LiveTVChannelStoreBenchmark {
         let categories = await store.categories(providerID: first)
         let stored = await store.count(providerID: first)
         let isolated = await store.count(providerID: second)
+        let searchCount = await store.count(providerID: first, query: "Channel 0001234",
+                                            category: nil, favoritesOnly: false)
+        let categoryCount = await store.count(providerID: first, query: "",
+                                              category: "Category 17", favoritesOnly: false)
         precondition(stored == count && isolated == 0 && search.count == 1 && search[0].streamID == 1_235)
+        precondition(searchCount == 1 && categoryCount == count / 40)
         precondition(category.count == 100 && deepCategory.count == 100
                      && guide.count == 100 && keyset.count == 100 && broadSearch.count == 100)
         precondition(epgIDs == [channel(count - 1).id])
@@ -147,7 +152,11 @@ enum LiveTVChannelStoreBenchmark {
         precondition(resolved?.guideID == last.guideID && resolved?.streamURL == last.streamURL)
         try await store.setFavorite(true, channelID: last.id, providerID: first)
         let favorites = await store.page(providerID: first, favoritesOnly: true)
-        precondition(favorites.map(\.id) == [last.id])
+        let favoriteCount = await store.count(providerID: first, query: "", category: nil, favoritesOnly: true)
+        let summaries = await store.categorySummaries(providerID: first)
+        precondition(favorites.map(\.id) == [last.id] && favoriteCount == 1)
+        precondition(summaries.count == 40 && summaries.reduce(0) { $0 + $1.channelCount } == count
+                     && summaries.reduce(0) { $0 + $1.favoriteCount } == 1)
         await store.close()
         let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("channels.sqlite").path)
         let bytes = (attributes[.size] as? NSNumber)?.intValue ?? -1

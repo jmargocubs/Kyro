@@ -7,6 +7,12 @@ import SQLite3
 /// or individual IDs; no query returns an entire catalog of `LiveTVChannel` values.
 actor LiveTVChannelCatalogStore {
     enum StoreError: Error { case storage, invalidGeneration, invalidIdentity }
+    struct CategorySummary: Sendable {
+        let name: String
+        let channelCount: Int
+        let favoriteCount: Int
+        let artworkChannel: LiveTVChannel?
+    }
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     private var database: OpaquePointer?
 
@@ -170,6 +176,29 @@ actor LiveTVChannelCatalogStore {
         return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
     }
 
+    /// Count for the same indexed predicate as `page`. UI state can describe the complete
+    /// result without materializing it, and pagination can stop after the final bounded page.
+    func count(providerID: UUID, query: String, category: String?, favoritesOnly: Bool) -> Int {
+        let search = Self.expression(query)
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, search == nil { return 0 }
+        let favoriteJoin = favoritesOnly ? " JOIN channel_favorites f ON f.provider=i.provider AND f.id=i.id" : ""
+        let categoryFilter = category == nil ? "" : " AND i.category=?"
+        let searchFilter = search == nil ? "" : " AND i.rowid IN (SELECT rowid FROM channel_search WHERE channel_search MATCH ?)"
+        guard let statement = try? prepare("""
+            SELECT COUNT(*) FROM channel_items i JOIN channel_active a
+              ON i.provider=a.provider AND i.generation=a.generation
+            \(favoriteJoin)
+            WHERE i.provider=?\(categoryFilter)\(searchFilter)
+            """) else { return 0 }
+        defer { sqlite3_finalize(statement) }
+        bind(providerID.uuidString, 1, statement)
+        var next: Int32 = 2
+        if let category { bind(category, next, statement); next += 1 }
+        if let search { bind(search, next, statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
     /// Transitional 40K offline bridge. All pages run in one actor turn, so promotion cannot
     /// splice two generations into one restore. A read transaction also pins a WAL snapshot
     /// against another store connection promoting and pruning. Do not use this for a future
@@ -252,6 +281,7 @@ actor LiveTVChannelCatalogStore {
               favoritesOnly: Bool = false, offset: Int = 0, afterOrdinal: Int? = nil,
               limit: Int = 100) -> [LiveTVChannel] {
         let search = Self.expression(query)
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, search == nil { return [] }
         let favoriteJoin = favoritesOnly ? " JOIN channel_favorites f ON f.provider=i.provider AND f.id=i.id" : ""
         let categoryFilter = category == nil ? "" : " AND i.category=?"
         // An ordinary FTS JOIN lets SQLite choose the ordinal index first, then probe the FTS
@@ -342,9 +372,9 @@ actor LiveTVChannelCatalogStore {
 
     func categories(providerID: UUID) -> [(name: String, count: Int)] {
         guard let statement = try? prepare("""
-            SELECT i.category,COUNT(*) FROM channel_items i JOIN channel_active a
+            SELECT i.category,COUNT(*),MIN(i.ordinal) FROM channel_items i JOIN channel_active a
               ON i.provider=a.provider AND i.generation=a.generation
-            WHERE i.provider=? GROUP BY i.category
+            WHERE i.provider=? GROUP BY i.category ORDER BY MIN(i.ordinal)
             """) else { return [] }
         defer { sqlite3_finalize(statement) }
         bind(providerID.uuidString, 1, statement)
@@ -354,7 +384,56 @@ actor LiveTVChannelCatalogStore {
                 result.append((String(cString: raw), Int(sqlite3_column_int64(statement, 1))))
             }
         }
-        return result.sorted { $0.0.localizedStandardCompare($1.0) == .orderedAscending }
+        return result
+    }
+
+    /// One bounded row per category, including the first logo in provider order and favorite
+    /// counts. The Categories screen never needs to scan the channel catalog in Swift.
+    func categorySummaries(providerID: UUID) -> [CategorySummary] {
+        guard let statement = try? prepare("""
+            WITH grouped AS (
+              SELECT i.category AS category, COUNT(*) AS channel_count,
+                     SUM(CASE WHEN f.id IS NULL THEN 0 ELSE 1 END) AS favorite_count,
+                     MIN(i.ordinal) AS first_ordinal,
+                     MIN(CASE WHEN i.logo_url IS NULL THEN NULL ELSE i.ordinal END) AS artwork_ordinal
+              FROM channel_items i JOIN channel_active a
+                ON i.provider=a.provider AND i.generation=a.generation
+              LEFT JOIN channel_favorites f ON f.provider=i.provider AND f.id=i.id
+              WHERE i.provider=? GROUP BY i.category
+            )
+            SELECT g.category,g.channel_count,g.favorite_count,
+                   i.id,i.guide_id,i.name,i.stream_url,i.logo_url,i.stream_id
+            FROM grouped g
+            LEFT JOIN channel_items i ON i.provider=? AND i.generation=(
+              SELECT generation FROM channel_active WHERE provider=?
+            ) AND i.ordinal=g.artwork_ordinal
+            ORDER BY g.first_ordinal
+            """) else { return [] }
+        defer { sqlite3_finalize(statement) }
+        bind(providerID.uuidString, 1, statement)
+        bind(providerID.uuidString, 2, statement)
+        bind(providerID.uuidString, 3, statement)
+        var result: [CategorySummary] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            func value(_ column: Int32) -> String? {
+                sqlite3_column_text(statement, column).map { String(cString: $0) }
+            }
+            guard let name = value(0) else { continue }
+            var artwork: LiveTVChannel?
+            if let id = value(3), let channelName = value(5), let rawURL = value(6),
+               let streamURL = URL(string: rawURL) {
+                artwork = LiveTVChannel(id: id, guideID: value(4), name: channelName,
+                                        streamURL: streamURL, logoURL: value(7).flatMap(URL.init(string:)),
+                                        category: name,
+                                        streamID: sqlite3_column_type(statement, 8) == SQLITE_NULL
+                                            ? nil : Int(sqlite3_column_int64(statement, 8)))
+            }
+            result.append(CategorySummary(name: name,
+                                          channelCount: Int(sqlite3_column_int64(statement, 1)),
+                                          favoriteCount: Int(sqlite3_column_int64(statement, 2)),
+                                          artworkChannel: artwork))
+        }
+        return result
     }
 
     /// Removes only generations not referenced by `channel_active`, including crash orphans.

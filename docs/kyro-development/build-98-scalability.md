@@ -68,7 +68,7 @@ category/page query (including final page) <50 ms, main DB <250 MB and host proc
 meet those budgets, but do **not** validate provider JSON download/scan time, image load, deep
 pagination, populated metadata, disk-full behavior, concurrent UI work, or iPhone memory.
 
-## Live TV channel-store foundation (this milestone)
+## Live TV channel-store and iOS query integration (current milestone)
 
 The iOS-only `LiveTVChannelCatalogStore` now provides a separate SQLite channel database;
 VOD tables, identities, and lifecycle are unchanged. Rows are scoped by provider and import
@@ -80,7 +80,17 @@ provider-scoped favorites survive a generation replacement. Individual channel l
 guide ID, stream URL, and stream ID for future EPG/playback integration. A host correctness run
 checks interrupted promotion, cancellation, provider ID collision, category replacement,
 favorite persistence, guide ID association, and recovery on reopen. Each scale fixture also
-checks final-channel URL/guide lookup and favorite retrieval.
+checks final-channel URL/guide lookup, favorite retrieval, filtered result counts and the
+bounded category-summary query used by the iOS Categories screen.
+
+On iOS, Browse, direct Live TV search, favorites and Guide rows now request 200-channel pages
+from the provider-scoped store. `LiveTVPagedChannelModel` keeps a bidirectional sliding window
+of at most 1,000 channels, cancels stale requests, and rejects results after a provider or
+catalog-revision change. Reaching either window edge loads the adjacent page and drops rows at
+the opposite edge. Category selection uses one grouped SQLite summary per category rather than
+scanning the catalog in Swift. Sports Hub's manual channel picker uses the same indexed search
+and returns at most 40 matches. Existing installs without a valid SQLite generation retain a
+bounded legacy-array fallback until a successful refresh creates the indexed catalog.
 
 FTS initially took 8.8 seconds for a 100K search because SQLite chose the ordinal index and
 probed the virtual table per row. Rewriting the predicate as a one-time rowid subquery reduced
@@ -107,19 +117,21 @@ BENCH_DIR=$(mktemp -d)
 
 | Channels | Production bridge import + index | Selective search | Broad search | Category/deep page | Final Guide/keyset page | EPG ID lookup | DB file | Peak RSS |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 40,000 | 1.302 s | 5 ms | 7 ms | <1 ms | <1 ms | <1 ms | 30.4 MB | 49 MB |
-| 60,000 | 1.966 s | 8 ms | 11 ms | <1 ms | <1 ms | <1 ms | 45.7 MB | 69 MB |
-| 80,000 | 2.583 s | 11 ms | 14 ms | <1 ms | <1 ms | <1 ms | 61.0 MB | 88 MB |
-| 100,000 | 3.450 s | 14 ms | 18 ms | <1 ms | <1 ms | <1 ms | 76.3 MB | 111 MB |
+| 40,000 | 1.308 s | 6 ms | 7 ms | <1 ms | <1 ms | <1 ms | 30.4 MB | 49 MB |
+| 60,000 | 1.964 s | 8 ms | 11 ms | <1 ms | <1 ms | <1 ms | 45.7 MB | 68 MB |
+| 80,000 | 2.665 s | 11 ms | 14 ms | <1 ms | <1 ms | <1 ms | 61.0 MB | 87 MB |
+| 100,000 | 3.379 s | 14 ms | 18 ms | <1 ms | <1 ms | <1 ms | 76.3 MB | 110 MB |
 
 Provisional channel-store budgets: 100K bridge import/index <10 s, selective
 search <50 ms, category and Guide page and EPG ID lookup <50 ms, main DB <100 MB,
-host process peak RSS <100 MB. The 100K fixture **misses the memory budget** at 111 MB because
+host process peak RSS <100 MB. The 100K fixture **misses the memory budget** at 110 MB because
 the production bridge still receives a full parsed array. It does not exercise provider download/parsing, mixed-content EPG,
 long-running UI work, image loading, low storage, or real-device memory. The broad search uses
 the common word “Channel” and returns the first 100 rows; representative query/category p95
 still requires profiling. Main-thread stalls were not instrumented in this host benchmark;
-the generic iOS build does not supply runtime responsiveness evidence.
+the generic iOS build does not supply runtime responsiveness evidence. One immediately preceding
+run under transient host load recorded 8.610 s import and 67 ms selective search at 100K; the
+repeat above returned to the earlier range. These are single-run diagnostics, not stable p95s.
 
 ## Production consumer inventory and integration status
 
@@ -130,10 +142,10 @@ The dependency trace before migration found these full-array paths:
 | M3U/Xtream import | `LiveTVM3UParser.parseResult` and `loadXtream` build full arrays | Not migrated |
 | Refresh and snapshots | `LiveTVService.channelCatalogs`, whole-array JSON snapshot | SQLite staging/promotion wired to refresh; arrays and JSON retained for compatibility |
 | Offline restore | JSON decode/materialization; SQLite fallback if JSON unavailable | Partial; fallback still materializes an array |
-| Browse/search/favorites | `LiveTVChannelSearchModel`, grouped arrays, `LiveTVChannelFiltering` | UI not migrated; service exposes bounded `channelPage` and reconciles indexed favorites from UserDefaults before favorite queries |
-| Categories | `LiveTVCategoryDirectory` scans full array | Not migrated |
-| Guide/list/grid | `LiveTVGuideView.rows` holds filtered full array | Not migrated |
-| Sports Hub | detached full catalog index and manual-picker array | Not migrated |
+| Browse/search/favorites | `LiveTVChannelSearchModel`, grouped arrays, `LiveTVChannelFiltering` | iOS production UI migrated to indexed count/page queries and a 1,000-row maximum window; legacy snapshot fallback remains array-backed |
+| Categories | `LiveTVCategoryDirectory` scans full array | iOS Categories UI migrated to a grouped SQLite summary; legacy fallback and browsing-context validation remain array-backed |
+| Guide/list/grid | `LiveTVGuideView.rows` holds filtered full array | iOS Guide rows migrated to the bounded sliding window; arbitrary deep saved-position/playing-channel reveal remains unresolved |
+| Sports Hub | detached full catalog index and manual-picker array | Manual picker migrated to a 40-result indexed search; automatic game matching still builds the full catalog index |
 | EPG | full-array filter construction, short-guide invalidation scans | Filter construction moved off main; associations still array-backed |
 | Playback/player picker | `LiveTVPlayerView(channels:)`, full-array search | Not migrated |
 | Home/favorites/history | full-array preview resolver and recent pruning | Recent pruning moved off main and bounded to at most 15 IDs; preview still scans |
@@ -146,7 +158,10 @@ Provider removal deletes its channel rows. Offline restore uses the existing red
 snapshot first; if it is absent, a valid SQLite generation restores browse-only channel
 objects with non-playable `about:blank` URLs. A focused XCTest covers this flow but has only
 been **compiled**, not run. The synthetic Mac host checks execute the production importer bridge,
-atomic replacement, cancellation, provider isolation, favorites, EPG IDs, and offline restore.
+atomic replacement, cancellation, provider isolation, favorites, filtered counts, category
+summaries, EPG IDs, and offline restore. A focused paging XCTest walks 1,205 imported channels
+forward and backward and asserts that no more than 1,000 are retained, but it too has only been
+compiled.
 
 ## Live TV integration still required
 
@@ -154,12 +169,13 @@ Live TV remains limited to **40,000** channels. Raising the constant now would b
 
 - `LiveTVService.channelCatalogs` retains complete `[LiveTVChannel]` arrays, and source switching,
   playback lookup, favorites and EPG filter creation still depend on them.
-- `LiveTVChannelSearchIndex` duplicates the catalog metadata and scans every entry per query;
-  a blank query materializes every match. Browse/Guide SwiftUI state still receives full arrays.
+- Direct iOS Browse, Guide, favorites, search, category selection and Sports manual selection are
+  paged. Unified app search, automatic Sports matching, Home previews and the playback picker
+  still consume the full catalog or an all-channel derivative.
 - The offline channel snapshot is a whole-array JSON encode/decode with a 32 MB file ceiling.
 - M3U and Xtream imports still build full arrays before replacement. The SQLite store is now
-  wired to refresh and fallback restore, but Browse, Guide, search, Sports Hub, playback and
-  most EPG paths still use the legacy arrays. The production-bridge benchmark is **not** an
+  wired to refresh and fallback restore, but import parsing, unified search, automatic Sports
+  matching, playback and most EPG paths still use the legacy arrays. The production-bridge benchmark is **not** an
   integrated app benchmark and cannot validate 100K UI responsiveness.
 - The SQLite channel cache stores stream URLs, which may embed provider credentials. It lives
   under Caches with iOS file protection and is excluded from backup, while the legacy JSON
@@ -167,16 +183,19 @@ Live TV remains limited to **40,000** channels. Raising the constant now would b
   whether URL encryption or ID-based reconstruction is required before expanding this path.
 
 The next milestone must stream M3U/Xtream into the staged store, replace whole-array JSON
-offline snapshots, expose bounded page loaders to Browse/Guide/search, and migrate favorites,
-provider switching, EPG matching, Sports Hub and playback resolution to ID-based paths. It
-must rerun correctness/performance on the integrated app before changing the 40K import cap.
+offline snapshots, migrate unified search, automatic Sports matching, provider switching,
+EPG matching and playback resolution to ID-based paths, and add arbitrary-offset restoration
+for Guide/Browse selection. It must rerun correctness/performance on the integrated app before
+changing the 40K import cap.
 
 ## Validation and device acceptance
 
-The generic iOS `build-for-testing` succeeded as a compile gate only. It does **not** run XCTest.
+The generic iOS `build-for-testing` succeeded after this query migration as a compile gate only.
+It does **not** run XCTest.
 The Mac host benchmarks exercise VOD and channel-store SQLite correctness and synthetic scale.
-The new `LiveTVChannelSnapshotTests.testChannelStoreRefreshPagingAndOfflineFallback` and the
-existing iOS tests were compiled but not executed. VOD preference, backup, import cancellation,
+The updated `LiveTVChannelSnapshotTests.testChannelStoreRefreshPagingAndOfflineFallback`, the
+new bounded bidirectional-window test and the existing iOS tests were compiled but not executed.
+VOD preference, backup, import cancellation,
 source separation, and the new Live TV service integration still need an approved runtime test
 environment. No Simulator or IPA was used in this milestone.
 

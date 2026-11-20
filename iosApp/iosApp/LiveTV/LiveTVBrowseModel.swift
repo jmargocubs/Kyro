@@ -3,6 +3,12 @@ import SwiftUI
 import UIKit
 #endif
 
+struct LiveTVChannelBrowserSection: Identifiable {
+    let id: String
+    let category: String
+    var channels: [LiveTVChannel]
+}
+
 /// Build 82.1: when the channel browser may reuse a saved scroll snapshot.
 enum LiveTVBrowserScrollPolicy {
     /// Categories selections always open at the first channel. Only an explicit Home re-entry of
@@ -44,6 +50,9 @@ final class LiveTVBrowseModel {
     var favoritesOnly = false
     var isSearchPresented = false
     let searchModel = LiveTVChannelSearchModel()
+    #if os(iOS)
+    let pagedChannels = LiveTVPagedChannelModel()
+    #endif
     var listPosition = ScrollPosition(idType: String.self)
     var isShowingSettings = false
 
@@ -107,7 +116,57 @@ final class LiveTVBrowseModel {
         LiveTVChannelListContentState.resolve(hasProviders: !service.providers.isEmpty,
                                               isLoading: service.isLoading,
                                               errorMessage: service.errorMessage,
-                                              channelCount: service.channels.count)
+                                              channelCount: service.selectedChannelCount)
+    }
+
+    var browserResultCount: Int {
+        #if os(iOS)
+        pagedChannels.resultCount
+        #else
+        searchModel.resultCount
+        #endif
+    }
+
+    var browserIsSearching: Bool {
+        #if os(iOS)
+        pagedChannels.isLoading
+        #else
+        searchModel.isSearching
+        #endif
+    }
+
+    var browserSections: [LiveTVChannelBrowserSection] {
+        #if os(iOS)
+        var result: [LiveTVChannelBrowserSection] = []
+        for channel in pagedChannels.channels {
+            if result.last?.category == channel.category {
+                result[result.count - 1].channels.append(channel)
+            } else {
+                result.append(LiveTVChannelBrowserSection(id: channel.id, category: channel.category,
+                                                          channels: [channel]))
+            }
+        }
+        return result
+        #else
+        return searchModel.orderedCategories.compactMap { category in
+            guard let channels = searchModel.groups[category], let first = channels.first else { return nil }
+            return LiveTVChannelBrowserSection(id: first.id, category: category, channels: channels)
+        }
+        #endif
+    }
+
+    var browserMatches: [LiveTVChannel] {
+        #if os(iOS)
+        pagedChannels.channels
+        #else
+        searchModel.matches
+        #endif
+    }
+
+    func loadMoreIfNeeded(after channel: LiveTVChannel) {
+        #if os(iOS)
+        pagedChannels.loadPageIfNeeded(around: channel, service: service)
+        #endif
     }
 
     // MARK: Shell path
@@ -312,21 +371,32 @@ final class LiveTVBrowseModel {
     // MARK: Search
 
     func updateSearch() {
+        #if os(iOS)
+        pagedChannels.reset(service: service, providerID: service.selectedProviderID,
+                            catalogRevision: service.channelCatalogRevision,
+                            query: searchText, category: selectedCategory,
+                            favoritesOnly: favoritesOnly)
+        #else
         // Favorites shows one flat list in catalog order; every other screen groups by category.
         searchModel.update(channels: service.channels, query: searchText, category: selectedCategory,
                            favoritesOnly: favoritesOnly, favoriteIDs: service.favoriteChannelIDs,
                            includeGroups: !(favoritesOnly && searchText.isEmpty))
+        #endif
         guard let context = browsingContextToRestore,
               context.providerID == service.selectedProviderID,
               let providerID = service.selectedProviderID else { return }
         Task { @MainActor in
+            #if os(iOS)
+            await pagedChannels.waitForCurrentQuery()
+            #else
             await searchModel.waitForCurrentSearch()
+            #endif
             guard browsingContextToRestore == context, service.selectedProviderID == providerID,
                   service.hasCatalog(for: providerID),
                   showChannelBrowser,
                   searchText == context.searchQuery, selectedCategory == context.category,
                   favoritesOnly == context.favoritesOnly else { return }
-            let visibleLists = Array(searchModel.groups.values) + [searchModel.matches]
+            let visibleLists = browserSections.map(\.channels) + [browserMatches]
             if let channelID = context.channelID,
                visibleLists.contains(where: { $0.contains(where: { $0.id == channelID }) }) {
                 listPosition.scrollTo(id: channelID, anchor: .top)
@@ -505,6 +575,7 @@ struct LiveTVHomeCategoriesScreen: View {
             channels: service.channels,
             favoriteIDs: service.favoriteChannelIDs,
             catalogRevision: service.channelCatalogRevision,
+            indexedDirectory: liveTVIndexedCategoryDirectory(service: service),
             showsFavorites: true,
             initialPosition: browse.homeCategoryPickerPosition,
             select: { browse.chooseFromCategories(LiveTVCategoryNavigation.homeFilters(for: $0)) },
@@ -628,12 +699,23 @@ struct LiveTVChannelBrowserScreen: View {
                     .accessibilityIdentifier("liveTVBrowserCategory")
                     .listRowBackground(LiveTVSurface.row)
                 }
-                if browse.searchModel.resultCount == 0 {
+                if browse.browserIsSearching && browse.browserResultCount == 0 {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("Loading channels…").foregroundStyle(Color.siloSecondaryText)
+                        }
+                        .listRowBackground(LiveTVSurface.row)
+                    }
+                } else if browse.browserResultCount == 0 {
                     Section { ContentUnavailableView.search(text: browse.searchText).listRowBackground(LiveTVSurface.row) }
                 } else {
-                    ForEach(browse.searchModel.orderedCategories, id: \.self) { category in
-                        Section(category) {
-                            ForEach(browse.searchModel.groups[category] ?? []) { channel in channelRow(channel) }
+                    ForEach(browse.browserSections) { section in
+                        Section(section.category) {
+                            ForEach(section.channels) { channel in
+                                channelRow(channel)
+                                    .onAppear { browse.loadMoreIfNeeded(after: channel) }
+                            }
                         }
                     }
                 }
@@ -665,6 +747,7 @@ struct LiveTVChannelBrowserScreen: View {
             channels: service.channels,
             favoriteIDs: service.favoriteChannelIDs,
             catalogRevision: service.channelCatalogRevision,
+            indexedDirectory: liveTVIndexedCategoryDirectory(service: service),
             initialPosition: browse.browserCategoryPickerPosition,
             select: { browse.applyBrowserCategoryChoice($0) },
             rememberPosition: { browse.rememberBrowserCategoryPosition($0) })
@@ -693,8 +776,8 @@ struct LiveTVChannelBrowserScreen: View {
     // MARK: Favorites
 
     private var favoritesState: LiveTVFavoritesState {
-        LiveTVFavoritesState.resolve(contentState: browse.contentState, visibleCount: browse.searchModel.resultCount,
-                                     isSearching: browse.searchModel.isSearching)
+        LiveTVFavoritesState.resolve(contentState: browse.contentState, visibleCount: browse.browserResultCount,
+                                     isSearching: browse.browserIsSearching)
     }
 
     /// The Favorites destination: the starred channels of the active provider, each with what is
@@ -755,8 +838,9 @@ struct LiveTVChannelBrowserScreen: View {
                 }
             case .populated:
                 Section {
-                    ForEach(browse.searchModel.matches) { channel in
+                    ForEach(browse.browserMatches) { channel in
                         channelRow(channel)
+                            .onAppear { browse.loadMoreIfNeeded(after: channel) }
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) { service.toggleFavorite(channel) } label: {
                                     Label("Remove from Favorites", systemImage: "star.slash")
@@ -817,7 +901,7 @@ struct LiveTVChannelBrowserScreen: View {
                 .listRowBackground(LiveTVSurface.row)
             }
         }
-        if !service.channels.isEmpty, let error = LiveTVHomeErrorPresentation.message(service.errorMessage) {
+        if service.selectedChannelCount > 0, let error = LiveTVHomeErrorPresentation.message(service.errorMessage) {
             Section {
                 Label(error, systemImage: "exclamationmark.circle")
                     .font(.footnote).foregroundStyle(Color.siloErrorInk)
