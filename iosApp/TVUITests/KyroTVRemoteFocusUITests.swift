@@ -214,8 +214,16 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     private func press(_ button: XCUIRemote.Button, _ app: XCUIApplication, _ note: String) -> String {
         remote.press(button)
         settle()
-        let label = focusedLabel(app)
-        print("KYRO-FOCUS \(note): \(label)")
+        // A page reloading under focus can report no focused element for a moment. Wait up to
+        // 2.5 s before recording a real loss of focus.
+        var label = focusedLabel(app)
+        var waited = 0.0
+        while label == "<none>", waited < 2.5 {
+            settle(0.5)
+            waited += 0.5
+            label = focusedLabel(app)
+        }
+        print("KYRO-FOCUS \(note): \(label)\(waited > 0 ? " (settled after \(waited) s)" : "")")
         return label
     }
 
