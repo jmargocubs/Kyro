@@ -389,10 +389,10 @@ struct LiveTVView: View {
         LiveTVHomeModel(
             providers: service.providers,
             selectedProviderID: service.selectedProviderID,
-            channelCount: service.channels.count,
+            channelCount: service.selectedChannelCount,
             isLoading: service.isLoading,
             contentState: browse.contentState,
-            errorMessage: service.channels.isEmpty ? nil : LiveTVHomeErrorPresentation.message(service.errorMessage),
+            errorMessage: service.selectedChannelCount == 0 ? nil : LiveTVHomeErrorPresentation.message(service.errorMessage),
             sections: LiveTVHomeSections(recents: service.homeRecentChannels,
                                          favorites: service.homeFavoriteChannels,
                                          isPlayable: { service.canPlay($0) }),

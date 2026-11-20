@@ -134,9 +134,6 @@ final class LiveTVService {
     /// Sports Hub Live Now: live events with strong local stream evidence. Metadata only; it
     /// never starts a stream. One per process so its match cache outlives a tab switch.
     @ObservationIgnored private(set) lazy var sportsLiveNow = KyroSportsLiveNowModel(source: self)
-    @ObservationIgnored private var sportsIndex: (providerID: UUID, revision: Int, task: Task<KyroSportsChannelIndex?, Never>)?
-    @ObservationIgnored private var sportsGuideKeyCache: (providerID: UUID, revision: Int, generation: Int, task: Task<[String: [Int32]]?, Never>)?
-    @ObservationIgnored private var sportsIndexValue: KyroSportsChannelIndex?
     @ObservationIgnored private var sportsPrepare: (token: UUID, finished: Bool)?
     @ObservationIgnored private var sportsPrewarm: Task<Void, Never>?
     /// True while the Sports Hub prewarm runs. Observed, so Live Now re-reads its availability
@@ -213,6 +210,8 @@ final class LiveTVService {
 
     var channels: [LiveTVChannel] {
         guard let selectedProviderID else { return [] }
+        // A successful iOS SQLite generation is the normal catalog. This array is retained only
+        // for a legacy JSON migration or a failed-store fallback.
         return channelCatalogs[selectedProviderID] ?? []
     }
 
@@ -226,7 +225,11 @@ final class LiveTVService {
     /// True once this provider's channels (cached or live) are in memory. Saved browsing state must
     /// wait for its own provider: `channelCatalogRevision` also changes when another provider loads.
     func hasCatalog(for providerID: UUID) -> Bool {
+        #if os(iOS)
+        channelStoreFreshProviderIDs.contains(providerID) || channelCatalogs[providerID] != nil
+        #else
         channelCatalogs[providerID] != nil
+        #endif
     }
 
     #if os(iOS)
@@ -286,6 +289,45 @@ final class LiveTVService {
             LiveTVChannelFiltering.filter(catalog, query: query, category: category,
                                           favoritesOnly: favoritesOnly, favoriteIDs: favorites).count
         }.value
+    }
+
+    func channel(providerID: UUID, id: String) async -> LiveTVChannel? {
+        guard providers.contains(where: { $0.id == providerID }) else { return nil }
+        if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore() {
+            return await store.channel(providerID: providerID, id: id)
+        }
+        return channelCatalogs[providerID]?.first { $0.id == id }
+    }
+
+    func channelOffset(providerID: UUID, channelID: String, query: String = "", category: String? = nil,
+                       favoritesOnly: Bool = false) async -> Int? {
+        guard providers.contains(where: { $0.id == providerID }) else { return nil }
+        if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore() {
+            return await store.offset(providerID: providerID, channelID: channelID, query: query,
+                                      category: category, favoritesOnly: favoritesOnly)
+        }
+        let catalog = channelCatalogs[providerID] ?? []
+        let filtered = LiveTVChannelFiltering.filter(catalog, query: query, category: category,
+                                                     favoritesOnly: favoritesOnly,
+                                                     favoriteIDs: favoriteChannelIDs)
+        return filtered.firstIndex { $0.id == channelID }
+    }
+
+    func programSearchAssociations(providerID: UUID) async -> [EPGProgramChannel] {
+        guard providers.contains(where: { $0.id == providerID }) else { return [] }
+        if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore() {
+            let associations = await store.programAssociations(providerID: providerID)
+            return await Task.detached(priority: .utility) {
+                associations.map {
+                    EPGProgramChannel(id: $0.id, guideID: $0.guideID, name: $0.name, ordinal: $0.ordinal)
+                }
+            }
+            .value
+        }
+        return (channelCatalogs[providerID] ?? []).enumerated().map {
+            EPGProgramChannel(id: $0.element.id, guideID: $0.element.guideID,
+                              name: $0.element.name, ordinal: $0.offset)
+        }
     }
 
     func categoryDirectory(providerID: UUID) async -> LiveTVCategoryDirectory {
@@ -400,10 +442,23 @@ final class LiveTVService {
     private func loadCachedState(for providerID: UUID) async {
         let secrets = snapshotSecrets(providerID: providerID)
         let epgSource = loadSourceConfiguration(providerID: providerID).flatMap(Self.epgFeedSource)
-        if channelCatalogs[providerID] == nil,
+        #if os(iOS)
+        // Prefer the protected SQLite generation before touching the legacy JSON snapshot. This
+        // avoids decoding and retaining a second full catalog when both formats exist after an
+        // interrupted migration. JSON remains the recovery path only when SQLite is unavailable.
+        if let store = await channelStore(), await store.count(providerID: providerID) > 0,
+           providers.contains(where: { $0.id == providerID }) {
+            categoryCatalogs[providerID] = await store.categories(providerID: providerID).map(\.name)
+            channelStoreFreshProviderIDs.insert(providerID)
+            await pruneRecentHistory(providerID: providerID, store: store)
+            channelCatalogRevision &+= 1
+            if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
+        }
+        #endif
+        if !hasCatalog(for: providerID),
            let cached = await channelSnapshotStore.loadCatalog(providerID: providerID, secrets: secrets),
            // A download may have finished, or the provider been removed, while the file was read.
-           channelCatalogs[providerID] == nil, providers.contains(where: { $0.id == providerID }) {
+           !hasCatalog(for: providerID), providers.contains(where: { $0.id == providerID }) {
             channelCatalogs[providerID] = cached.channels
             categoryCatalogs[providerID] = cached.categories
             #if os(iOS)
@@ -414,21 +469,6 @@ final class LiveTVService {
             channelCatalogRevision &+= 1
             if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
         }
-        #if os(iOS)
-        // The JSON snapshot is the first migration fallback for existing installations. A
-        // completed SQLite generation also restores offline if that older snapshot is absent.
-        if channelCatalogs[providerID] == nil, let store = await channelStore(),
-           let restored = await LiveTVChannelCatalogImporter.restore(providerID: providerID, from: store,
-                                                                      playable: liveCatalogs.contains(providerID)),
-           channelCatalogs[providerID] == nil, providers.contains(where: { $0.id == providerID }) {
-            channelCatalogs[providerID] = restored
-            categoryCatalogs[providerID] = await store.categories(providerID: providerID).map(\.name)
-            channelStoreFreshProviderIDs.insert(providerID)
-            await pruneRecentHistory(for: providerID, validChannels: restored)
-            channelCatalogRevision &+= 1
-            if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
-        }
-        #endif
         // The guide cache is keyed by provider and only returned while still usable. Short-guide
         // listings alone never stand in for it.
         guard !showsFullGuide(providerID), let epgSource,
@@ -646,24 +686,31 @@ final class LiveTVService {
             }
             return
         }
-        let loaded: LiveTVCachedCatalog
+        let loaded: LiveTVCachedCatalog?
+        let importedCount: Int
+        let importedCategories: [String]
+        let hitChannelLimit: Bool
         var alreadyIndexed = false
         switch download {
         case .materialized(let catalog):
             loaded = catalog
+            importedCount = catalog.channels.count
+            importedCategories = catalog.categories
+            hitChannelLimit = catalog.hitChannelLimit
         #if os(iOS)
-        case .indexed(let count, let categories, let hitChannelLimit):
-            guard let store = await channelStore(),
-                  let channels = await store.offlineCatalog(providerID: providerID, maximumChannels: Self.maximumChannels),
-                  channels.count == count else {
+        case .indexed(let count, let categories, let wasTruncated):
+            guard let store = await channelStore(), await store.count(providerID: providerID) == count else {
                 channelStoreFreshProviderIDs.remove(providerID)
                 if selectedProviderID == providerID {
-                    errorMessage = "The channel catalog could not be restored after import. Your previous catalog is unchanged."
+                    errorMessage = "The indexed channel catalog could not be verified after import."
                 }
                 return
             }
-            loaded = LiveTVCachedCatalog(channels: channels, categories: categories,
-                                         hitChannelLimit: hitChannelLimit)
+            loaded = nil
+            importedCount = count
+            importedCategories = categories
+            hitChannelLimit = wasTruncated
+            self.channelCatalogs[providerID] = nil
             alreadyIndexed = true
         #endif
         }
@@ -672,7 +719,7 @@ final class LiveTVService {
               loadSourceConfiguration(providerID: providerID) == source else { return }
         if alreadyIndexed {
             channelStoreFreshProviderIDs.insert(providerID)
-        } else if let store = await channelStore() {
+        } else if let loaded, let store = await channelStore() {
             // A cancelled or failed stage leaves its previous generation selected. Keep the
             // established in-memory/JSON path usable during this staged UI migration.
             if (try? await LiveTVChannelCatalogImporter.replace(loaded.channels, providerID: providerID, in: store)) != nil {
@@ -694,41 +741,44 @@ final class LiveTVService {
         #endif
         let previousChannels = channelCatalogs[providerID] ?? []
         #if os(iOS)
-        let previousFilter = await Task.detached(priority: .utility) {
-            EPGChannelFilter(guideIDs: previousChannels.map(\.guideID), names: previousChannels.map(\.name))
-        }.value
-        let refreshedChannels = loaded.channels
-        let updatedFilter = await Task.detached(priority: .utility) {
-            EPGChannelFilter(guideIDs: refreshedChannels.map(\.guideID), names: refreshedChannels.map(\.name))
-        }.value
         guard !Task.isCancelled, providers.contains(where: { $0.id == providerID }),
               loadSourceConfiguration(providerID: providerID) == source else { return }
         #else
         let previousFilter = EPGChannelFilter(guideIDs: previousChannels.map(\.guideID), names: previousChannels.map(\.name))
-        let updatedFilter = EPGChannelFilter(guideIDs: loaded.channels.map(\.guideID), names: loaded.channels.map(\.name))
+        let updatedFilter = EPGChannelFilter(guideIDs: loaded?.channels.map(\.guideID) ?? [],
+                                             names: loaded?.channels.map(\.name) ?? [])
         #endif
+        #if os(iOS)
+        let guideFilterChanged = hasCatalog(for: providerID)
+        channelCatalogs[providerID] = alreadyIndexed ? nil : loaded?.channels
+        #else
         let guideFilterChanged = !previousChannels.isEmpty && previousFilter != updatedFilter
-        channelCatalogs[providerID] = loaded.channels
-        categoryCatalogs[providerID] = loaded.categories
+        channelCatalogs[providerID] = loaded?.channels
+        #endif
+        categoryCatalogs[providerID] = importedCategories
         #if os(iOS)
         isLoading = false
         #endif
         #if os(iOS)
-        await pruneRecentHistory(for: providerID, validChannels: loaded.channels)
+        if alreadyIndexed, let store = await channelStore() {
+            await pruneRecentHistory(providerID: providerID, store: store)
+        } else if let loaded {
+            await pruneRecentHistory(for: providerID, validChannels: loaded.channels)
+        }
         #else
-        pruneRecentHistory(for: providerID, validChannels: loaded.channels)
+        pruneRecentHistory(for: providerID, validChannels: loaded?.channels ?? [])
         #endif
         channelCatalogRevision &+= 1
         if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
         liveCatalogs.insert(providerID)
         if let providerIndex = providers.firstIndex(where: { $0.id == providerID }) {
-            providers[providerIndex].channelCount = loaded.channels.count
+            providers[providerIndex].channelCount = importedCount
             providers[providerIndex].lastRefreshed = .now
-            providers[providerIndex].catalogWasTruncated = loaded.hitChannelLimit
+            providers[providerIndex].catalogWasTruncated = hitChannelLimit
             persistProviders()
         }
         if selectedProviderID == providerID {
-            catalogNotice = loaded.hitChannelLimit
+            catalogNotice = hitChannelLimit
                 ? LiveTVCatalogNotice.channelLimitReached(limit: Self.maximumChannels)
                 : nil
         }
@@ -738,13 +788,15 @@ final class LiveTVService {
             // The protected, non-purgeable SQLite generation is the offline snapshot. Remove the
             // legacy JSON only after promotion, eliminating a second full-catalog encode and file.
             await channelSnapshotStore.remove(providerID: providerID)
-        } else {
+        } else if let loaded {
             await channelSnapshotStore.save(providerID: providerID, channels: loaded.channels,
                                             secrets: LiveTVSnapshotSecrets(source: source))
         }
         #else
-        await channelSnapshotStore.save(providerID: providerID, channels: loaded.channels,
-                                        secrets: LiveTVSnapshotSecrets(source: source))
+        if let loaded {
+            await channelSnapshotStore.save(providerID: providerID, channels: loaded.channels,
+                                            secrets: LiveTVSnapshotSecrets(source: source))
+        }
         #endif
         // The provider may have been removed while the snapshot was written; never leave it behind.
         guard providers.contains(where: { $0.id == providerID }) else {
@@ -912,12 +964,10 @@ final class LiveTVService {
         }
         if selectedProviderID == providerID { isGuideLoading = true }
         defer { if selectedProviderID == providerID { isGuideLoading = false } }
-        let channels = channelCatalogs[providerID] ?? []
         #if os(iOS)
-        let filter = await Task.detached(priority: .utility) {
-            EPGChannelFilter(guideIDs: channels.map(\.guideID), names: channels.map(\.name))
-        }.value
+        let filter = await epgChannelFilter(providerID: providerID)
         #else
+        let channels = channelCatalogs[providerID] ?? []
         let filter = EPGChannelFilter(guideIDs: channels.map(\.guideID), names: channels.map(\.name))
         #endif
         let currentEPGSource = Self.epgFeedSource(source)
@@ -955,6 +1005,24 @@ final class LiveTVService {
             updateGuideFreshness(for: providerID)
         }
     }
+
+    #if os(iOS)
+    /// Builds only the normalized guide-ID/name filter payload. Stream URLs, artwork, categories,
+    /// channel IDs, and full channel values stay on disk.
+    private func epgChannelFilter(providerID: UUID) async -> EPGChannelFilter? {
+        if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore(),
+           let values = await store.epgAssociationValues(providerID: providerID) {
+            return await Task.detached(priority: .utility) {
+                EPGChannelFilter(guideIDs: values.guideIDs, names: values.names)
+            }.value
+        }
+        let channels = channelCatalogs[providerID] ?? []
+        guard !channels.isEmpty else { return nil }
+        return await Task.detached(priority: .utility) {
+            EPGChannelFilter(guideIDs: channels.map(\.guideID), names: channels.map(\.name))
+        }.value
+    }
+    #endif
 
     var categories: [String] {
         guard let selectedProviderID else { return [] }
@@ -1088,6 +1156,14 @@ final class LiveTVService {
             }
             setGuideIndex(published, for: providerID)
             for evictedGuideID in publication.evictedGuideIDs {
+                #if os(iOS)
+                if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore() {
+                    for id in await store.channelIDs(providerID: providerID, guideID: evictedGuideID) {
+                        guideChannelRevisions[id, default: 0] &+= 1
+                    }
+                    continue
+                }
+                #endif
                 let evictedKey = EPGChannelKey.guideID(evictedGuideID)
                 for evictedChannel in channelCatalogs[providerID] ?? []
                     where EPGChannelKey.guideID(evictedChannel.guideID) == evictedKey {
@@ -1222,7 +1298,8 @@ final class LiveTVService {
             }
             await self.prepareSelectedProvider()
             guard self.selectedProviderID == providerID else { return }
-            _ = await self.sportsChannelIndex(for: providerID)
+            // Candidate retrieval is event-specific and bounded; prewarm only ensures the
+            // provider's playable SQLite generation is ready.
         }
     }
 
@@ -1237,7 +1314,7 @@ final class LiveTVService {
         }
         await awaitPlayableCatalog(providerID)
         guard !Task.isCancelled, selectedProviderID == providerID,
-              let index = await sportsChannelIndex(for: providerID), !Task.isCancelled else {
+              let index = await sportsChannelIndex(for: providerID, game: game), !Task.isCancelled else {
             return KyroSportsStreamMatcher.emptyResult(for: request, guide: nil, cancelled: true)
         }
         let guide = guideIndexes[providerID]
@@ -1265,36 +1342,39 @@ final class LiveTVService {
         }
     }
 
-    private func sportsChannelIndex(for providerID: UUID) async -> KyroSportsChannelIndex? {
+    private func sportsChannelIndex(for providerID: UUID, game: KyroSportsGame) async -> KyroSportsChannelIndex? {
         let revision = channelCatalogRevision
-        if let cached = sportsIndex, cached.providerID == providerID, cached.revision == revision {
-            return await cached.task.value
-        }
-        sportsIndex?.task.cancel()
-        sportsIndexValue = nil
-        sportsGuideKeyCache = nil
-        let catalog = channelCatalogs[providerID] ?? []
         let isLive = liveCatalogs.contains(providerID) && providers.contains(where: { $0.id == providerID })
-        let task = Task.detached(priority: .userInitiated) { () -> KyroSportsChannelIndex? in
-            // A downloaded catalog holds only web stream URLs; a cached one holds none.
-            let playable = isLive ? catalog.filter { ["http", "https"].contains($0.streamURL.scheme?.lowercased() ?? "") } : []
-            return KyroSportsChannelIndex.build(channels: playable, providerID: providerID, catalogRevision: revision)
+        guard isLive else { return nil }
+        var candidates: [LiveTVChannel] = []
+        #if os(iOS)
+        if channelStoreFreshProviderIDs.contains(providerID) {
+            var seen = Set<String>()
+            let phrases = KyroSportsStreamMatcher.candidateSearchTerms(for: game)
+            for phrase in phrases where !phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let page = await channelPage(providerID: providerID, query: phrase, limit: 200)
+                for channel in page where seen.insert(channel.id).inserted { candidates.append(channel) }
+                if candidates.count >= KyroSportsChannelIndex.maximumCandidateChannels { break }
+            }
+            candidates = Array(candidates.prefix(KyroSportsChannelIndex.maximumCandidateChannels))
+        } else {
+            candidates = channelCatalogs[providerID] ?? []
         }
-        sportsIndex = (providerID, revision, task)
+        #else
+        candidates = channelCatalogs[providerID] ?? []
+        #endif
+        let task = Task.detached(priority: .userInitiated) { () -> KyroSportsChannelIndex? in
+            let playable = candidates.filter { ["http", "https"].contains($0.streamURL.scheme?.lowercased() ?? "") }
+            return KyroSportsChannelIndex.build(channels: playable, providerID: providerID,
+                                                catalogRevision: revision)
+        }
         let value = await task.value
-        if sportsIndex?.revision == revision, sportsIndex?.providerID == providerID { sportsIndexValue = value }
+        guard selectedProviderID == providerID, channelCatalogRevision == revision else { return nil }
         return value
     }
 
     private func sportsGuideKeys(index: KyroSportsChannelIndex, guide: EPGIndex, providerID: UUID) async -> [String: [Int32]]? {
-        let generation = guideGenerations.generation(for: providerID)
-        if let cached = sportsGuideKeyCache, cached.revision == index.catalogRevision,
-           cached.providerID == providerID, cached.generation == generation {
-            return await cached.task.value
-        }
-        sportsGuideKeyCache?.task.cancel()
         let task = Task.detached(priority: .userInitiated) { index.guideKeyMap(for: guide) }
-        sportsGuideKeyCache = (providerID, index.catalogRevision, generation, task)
         return await task.value
     }
 
@@ -1305,7 +1385,7 @@ final class LiveTVService {
     /// No download, no playback.
     func sportsMatchReport(for game: KyroSportsGame, now: Date = .now) async -> KyroSportsMatchReport? {
         guard let providerID = selectedProviderID, liveCatalogs.contains(providerID),
-              let index = await sportsChannelIndex(for: providerID), !Task.isCancelled else { return nil }
+              let index = await sportsChannelIndex(for: providerID, game: game), !Task.isCancelled else { return nil }
         let generation = guideGenerations.generation(for: providerID)
         let guide = guideIndexes[providerID]
         let keys = await guide.asyncFlatMap { await self.sportsGuideKeys(index: index, guide: $0, providerID: providerID) }
@@ -1481,11 +1561,20 @@ final class LiveTVService {
         let session = playerSession
         let providerID = UUID(uuidString: String(channelID.prefix(36)))
         #if os(iOS)
-        let validChannelIDs: Set<String> = providerID.flatMap { channelCatalogs[$0] }?.contains(where: { $0.id == channelID }) == true
-            ? [channelID] : []
+        Task { [weak self] in
+            guard let self, let providerID else { return }
+            let isValid: Bool
+            if self.channelStoreFreshProviderIDs.contains(providerID), let store = await self.channelStore() {
+                isValid = await store.contains(providerID: providerID, id: channelID)
+            } else {
+                isValid = self.channelCatalogs[providerID]?.contains(where: { $0.id == channelID }) == true
+            }
+            self.finishRecordingPlayingReady(channelID: channelID, generation: generation,
+                                             providerID: providerID, isValid: isValid)
+        }
+        return
         #else
         let validChannelIDs = providerID.flatMap { channelCatalogs[$0] }.map { Set($0.map(\.id)) } ?? []
-        #endif
         guard let entry = LiveTVRecentHistory.playingReadyEntry(
                   channelID: channelID, generation: generation,
                   currentGeneration: session.controller.generation, activeChannelID: session.activeChannelID,
@@ -1496,7 +1585,25 @@ final class LiveTVService {
         recentlyWatchedRecords = LiveTVRecentHistory.inserting(entry, into: recentlyWatchedRecords)
         recentHistoryStore.save(recentlyWatchedRecords)
         if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
+        #endif
     }
+
+    #if os(iOS)
+    private func finishRecordingPlayingReady(channelID: String, generation: Int,
+                                             providerID: UUID, isValid: Bool) {
+        let session = playerSession
+        guard let entry = LiveTVRecentHistory.playingReadyEntry(
+                  channelID: channelID, generation: generation,
+                  currentGeneration: session.controller.generation, activeChannelID: session.activeChannelID,
+                  isPlaying: session.state == .playing,
+                  providerIsPresent: providers.contains(where: { $0.id == providerID }),
+                  validChannelIDs: isValid ? [channelID] : []),
+              recentlyWatchedRecords.first != entry else { return }
+        recentlyWatchedRecords = LiveTVRecentHistory.inserting(entry, into: recentlyWatchedRecords)
+        recentHistoryStore.save(recentlyWatchedRecords)
+        if selectedProviderID == providerID { scheduleHomePreviewRebuild() }
+    }
+    #endif
 
     #if os(iOS)
     private func pruneRecentHistory(for providerID: UUID, validChannels: [LiveTVChannel]) async {
@@ -1506,6 +1613,17 @@ final class LiveTVService {
             let validIDs = Set(validChannels.lazy.map(\.id).filter { wanted.contains($0) })
             return LiveTVRecentHistory.pruning(records, providerID: providerID, validChannelIDs: validIDs)
         }.value
+        guard records == recentlyWatchedRecords, updated != recentlyWatchedRecords else { return }
+        recentlyWatchedRecords = updated
+        recentHistoryStore.save(updated)
+    }
+
+    private func pruneRecentHistory(providerID: UUID, store: LiveTVChannelCatalogStore) async {
+        let records = recentlyWatchedRecords
+        let wanted = records.filter { $0.providerID == providerID }.map(\.channelID)
+        let valid = Set(await store.channels(providerID: providerID, ids: wanted,
+                                             limit: LiveTVRecentHistory.capacity).map(\.id))
+        let updated = LiveTVRecentHistory.pruning(records, providerID: providerID, validChannelIDs: valid)
         guard records == recentlyWatchedRecords, updated != recentlyWatchedRecords else { return }
         recentlyWatchedRecords = updated
         recentHistoryStore.save(updated)
@@ -1530,16 +1648,30 @@ final class LiveTVService {
         let generation = homePreviewGeneration
         homePreviewTask?.cancel()
         homePreviewWork?.cancel()
-        guard let providerID = selectedProviderID, let catalog = channelCatalogs[providerID] else {
+        guard let providerID = selectedProviderID, hasCatalog(for: providerID) else {
             publishHomePreview(.empty, providerID: nil)
             return
         }
         if homePreviewProviderID != providerID { publishHomePreview(.empty, providerID: nil) }
         let favoriteIDs = favoriteChannelIDs
         let records = recentlyWatchedRecords
-        let work = Task.detached(priority: .utility) {
-            LiveTVHomeChannelPreview.resolve(catalog: catalog, favoriteIDs: favoriteIDs,
-                                             recentRecords: records, providerID: providerID)
+        let fallbackCatalog = channelCatalogs[providerID]
+        let work = Task { [weak self] () -> LiveTVHomeChannelPreview.Result in
+            guard let self else { return .empty }
+            #if os(iOS)
+            if self.channelStoreFreshProviderIDs.contains(providerID), let store = await self.channelStore() {
+                guard await self.synchronizeFavoritesIfNeeded(providerID: providerID, store: store) else { return .empty }
+                let favorites = await store.page(providerID: providerID, favoritesOnly: true, limit: 12)
+                let recentIDs = records.filter { $0.providerID == providerID }.map(\.channelID)
+                let recents = await store.channels(providerID: providerID, ids: recentIDs, limit: 10)
+                return .init(favorites: favorites, recents: recents)
+            }
+            #endif
+            guard let fallbackCatalog else { return .empty }
+            return await Task.detached(priority: .utility) {
+                LiveTVHomeChannelPreview.resolve(catalog: fallbackCatalog, favoriteIDs: favoriteIDs,
+                                                 recentRecords: records, providerID: providerID)
+            }.value
         }
         homePreviewWork = work
         homePreviewTask = Task { [weak self] in
@@ -1547,7 +1679,7 @@ final class LiveTVService {
             guard !Task.isCancelled, let self,
                   self.homePreviewGeneration == generation,
                   self.selectedProviderID == providerID,
-                  self.channelCatalogs[providerID] != nil else { return }
+                  self.hasCatalog(for: providerID) else { return }
             self.publishHomePreview(result, providerID: providerID)
         }
     }
@@ -1759,9 +1891,18 @@ final class LiveTVService {
     /// Loads the first screenful of channels so a restored or refreshed SQLite guide paints complete.
     private func warmGuideWindow(_ providerID: UUID) {
         guard let index = guideIndexes[providerID], index.isSQLiteBacked else { return }
+        #if os(iOS)
+        Task { [weak self] in
+            guard let self else { return }
+            let channels = await self.channelPage(providerID: providerID, limit: Self.warmGuideChannels)
+            guard self.guideIndexes[providerID]?.sqlite?.guide.id == index.sqlite?.guide.id else { return }
+            for channel in channels { self.requestResidencyIfNeeded(index, providerID: providerID, channel: channel) }
+        }
+        #else
         for channel in (channelCatalogs[providerID] ?? []).prefix(Self.warmGuideChannels) {
             requestResidencyIfNeeded(index, providerID: providerID, channel: channel)
         }
+        #endif
     }
 
 #if DEBUG
@@ -1942,15 +2083,9 @@ extension LiveTVService: KyroSportsPlaybackDriving {
     }
 
     func sportsResolve(_ channel: LiveTVChannel) -> LiveTVChannel? {
-        let resolved: LiveTVChannel?
-        if let index = sportsIndexValue, index.providerID == selectedProviderID,
-           index.catalogRevision == channelCatalogRevision {
-            resolved = index.channel(id: channel.id)
-        } else {
-            resolved = channels.first { $0.id == channel.id }
-        }
-        guard let resolved, canPlay(resolved) else { return nil }
-        return resolved
+        guard let providerID = selectedProviderID,
+              LiveTVRecentChannel.belongs(channel.id, to: providerID), canPlay(channel) else { return nil }
+        return channel
     }
 
     /// Picture in Picture is bound by the player once it is on screen, never here, so a stream
@@ -2006,7 +2141,7 @@ extension LiveTVService: KyroSportsLiveNowSource {
     /// utility priority. No playlist wait, no download, no playback.
     func liveNowMatches(for game: KyroSportsGame, now: Date) async -> KyroSportsStreamMatchResult? {
         guard case .ready(let revision) = liveNowAvailability,
-              let index = await sportsChannelIndex(for: revision.providerID), !Task.isCancelled,
+              let index = await sportsChannelIndex(for: revision.providerID, game: game), !Task.isCancelled,
               index.catalogRevision == revision.catalogRevision else { return nil }
         let guide = guideIndexes[revision.providerID]
         let keys = await guide.asyncFlatMap { await self.sportsGuideKeys(index: index, guide: $0, providerID: revision.providerID) }

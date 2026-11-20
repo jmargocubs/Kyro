@@ -6,6 +6,17 @@ import SQLite3
 /// its contiguous ordinals and atomically switches `channel_active`. Callers fetch bounded pages
 /// or individual IDs; no query returns an entire catalog of `LiveTVChannel` values.
 actor LiveTVChannelCatalogStore {
+    struct EPGAssociationValues: Sendable {
+        let guideIDs: [String?]
+        let names: [String]
+    }
+
+    struct ProgramAssociation: Sendable {
+        let id: String
+        let guideID: String?
+        let name: String
+        let ordinal: Int
+    }
     enum StoreError: Error { case storage, invalidGeneration, invalidIdentity }
     struct CategorySummary: Sendable {
         let name: String
@@ -404,6 +415,110 @@ actor LiveTVChannelCatalogStore {
                              logoURL: value(4).flatMap(URL.init(string:)), category: category,
                              streamID: sqlite3_column_type(statement, 5) == SQLITE_NULL
                                  ? nil : Int(sqlite3_column_int64(statement, 5)))
+    }
+
+    func contains(providerID: UUID, id: String) -> Bool {
+        guard id.hasPrefix(providerID.uuidString + ":"), let statement = try? prepare("""
+            SELECT 1 FROM channel_items i JOIN channel_active a
+              ON i.provider=a.provider AND i.generation=a.generation
+            WHERE i.provider=? AND i.id=? LIMIT 1
+            """) else { return false }
+        defer { sqlite3_finalize(statement) }
+        bind(providerID.uuidString, 1, statement)
+        bind(id, 2, statement)
+        return sqlite3_step(statement) == SQLITE_ROW
+    }
+
+    /// Resolves a small identity set without scanning or materializing the catalog. Results retain
+    /// caller order, which preserves recently-watched ordering; missing or stale IDs are omitted.
+    func channels(providerID: UUID, ids: [String], limit: Int = 200) -> [LiveTVChannel] {
+        let bounded = Array(ids.prefix(min(max(limit, 1), 200)))
+        guard !bounded.isEmpty else { return [] }
+        var resolved: [String: LiveTVChannel] = [:]
+        resolved.reserveCapacity(bounded.count)
+        for id in bounded {
+            if let channel = channel(providerID: providerID, id: id) { resolved[id] = channel }
+        }
+        return bounded.compactMap { resolved[$0] }
+    }
+
+    /// Compact guide association snapshot built directly from SQLite rows. This avoids retaining
+    /// stream URLs, artwork URLs, categories, IDs, or full channel values merely to filter XMLTV.
+    func epgAssociationValues(providerID: UUID) -> EPGAssociationValues? {
+        guard let statement = try? prepare("""
+            SELECT i.guide_id,i.name FROM channel_items i JOIN channel_active a
+              ON i.provider=a.provider AND i.generation=a.generation
+            WHERE i.provider=? ORDER BY i.ordinal
+            """) else { return nil }
+        defer { sqlite3_finalize(statement) }
+        bind(providerID.uuidString, 1, statement)
+        var guideIDs: [String?] = []
+        var names: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guideIDs.append(sqlite3_column_text(statement, 0).map { String(cString: $0) })
+            guard let raw = sqlite3_column_text(statement, 1) else { continue }
+            names.append(String(cString: raw))
+        }
+        return names.isEmpty ? nil : EPGAssociationValues(guideIDs: guideIDs, names: names)
+    }
+
+    func programAssociations(providerID: UUID) -> [ProgramAssociation] {
+        guard let statement = try? prepare("""
+            SELECT i.id,i.guide_id,i.name,i.ordinal FROM channel_items i JOIN channel_active a
+              ON i.provider=a.provider AND i.generation=a.generation
+            WHERE i.provider=? ORDER BY i.ordinal
+            """) else { return [] }
+        defer { sqlite3_finalize(statement) }
+        bind(providerID.uuidString, 1, statement)
+        var result: [ProgramAssociation] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let rawID = sqlite3_column_text(statement, 0),
+                  let rawName = sqlite3_column_text(statement, 2) else { continue }
+            result.append(.init(id: String(cString: rawID),
+                                guideID: sqlite3_column_text(statement, 1).map { String(cString: $0) },
+                                name: String(cString: rawName),
+                                ordinal: Int(sqlite3_column_int64(statement, 3))))
+        }
+        return result
+    }
+
+    /// Offset of a stable channel anchor in the same predicate/order used by `page`.
+    func offset(providerID: UUID, channelID: String, query: String = "", category: String? = nil,
+                favoritesOnly: Bool = false) -> Int? {
+        guard channelID.hasPrefix(providerID.uuidString + ":") else { return nil }
+        let search = Self.expression(query)
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, search == nil { return nil }
+        let favoriteJoin = favoritesOnly ? " JOIN channel_favorites f ON f.provider=i.provider AND f.id=i.id" : ""
+        let categoryFilter = category == nil ? "" : " AND i.category=?"
+        let searchFilter = search == nil ? "" : " AND i.rowid IN (SELECT rowid FROM channel_search WHERE channel_search MATCH ?)"
+        guard let target = try? prepare("""
+            SELECT i.ordinal FROM channel_items i JOIN channel_active a
+              ON i.provider=a.provider AND i.generation=a.generation
+            \(favoriteJoin)
+            WHERE i.provider=? AND i.id=?\(categoryFilter)\(searchFilter) LIMIT 1
+            """) else { return nil }
+        bind(providerID.uuidString, 1, target)
+        bind(channelID, 2, target)
+        var next: Int32 = 3
+        if let category { bind(category, next, target); next += 1 }
+        if let search { bind(search, next, target) }
+        guard sqlite3_step(target) == SQLITE_ROW else { sqlite3_finalize(target); return nil }
+        let ordinal = Int(sqlite3_column_int64(target, 0))
+        sqlite3_finalize(target)
+
+        guard let count = try? prepare("""
+            SELECT COUNT(*) FROM channel_items i JOIN channel_active a
+              ON i.provider=a.provider AND i.generation=a.generation
+            \(favoriteJoin)
+            WHERE i.provider=? AND i.ordinal<?\(categoryFilter)\(searchFilter)
+            """) else { return nil }
+        defer { sqlite3_finalize(count) }
+        bind(providerID.uuidString, 1, count)
+        sqlite3_bind_int64(count, 2, sqlite3_int64(ordinal))
+        next = 3
+        if let category { bind(category, next, count); next += 1 }
+        if let search { bind(search, next, count) }
+        return sqlite3_step(count) == SQLITE_ROW ? Int(sqlite3_column_int64(count, 0)) : nil
     }
 
     /// A guide ID may legitimately map to several provider channels. Keep the lookup bounded

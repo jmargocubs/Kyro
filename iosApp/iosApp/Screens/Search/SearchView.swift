@@ -58,6 +58,7 @@ struct SearchView: View {
             silo: UnifiedSearchSiloAdapter(searchModel: searchModel,
                                            requestSearchModel: requestModel),
             catalogSnapshot: { liveTVService.unifiedSearchCatalogSnapshot() },
+            liveTVSource: .live(service: liveTVService),
             programs: programs
         ))
         self.usesTVTopMenuInset = usesTVTopMenuInset

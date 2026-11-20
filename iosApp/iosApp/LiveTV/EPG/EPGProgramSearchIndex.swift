@@ -1,5 +1,19 @@
 import Foundation
 
+struct EPGProgramChannel: Sendable {
+    let id: String
+    let guideID: String?
+    let name: String
+    let ordinal: Int
+
+    init(id: String, guideID: String?, name: String, ordinal: Int) {
+        self.id = id
+        self.guideID = guideID
+        self.name = name
+        self.ordinal = ordinal
+    }
+}
+
 /// An immutable, provider-scoped search projection of the in-memory guide: program titles and
 /// subtitles, each tied to the first playlist channel that maps to its guide channel.
 ///
@@ -112,7 +126,7 @@ struct EPGProgramSearchIndex: Sendable {
     private let textPostingStarts: [Int32]
     private let textPostings: [Int32]
 
-    private init?(identity: Identity, guide: EPGIndex, channels: [LiveTVChannel], now: Date,
+    private init?(identity: Identity, guide: EPGIndex, channels: [EPGProgramChannel], now: Date,
                   configuration: Configuration, foundationMatching: FoundationMatching) {
         guard !guide.isSQLiteBacked else { return nil }
         self.identity = identity
@@ -122,7 +136,8 @@ struct EPGProgramSearchIndex: Sendable {
         // First playlist channel per guide channel wins; later duplicates (HD/SD variants) are dropped.
         var channelByKey: [String: Int] = [:]
         var builtChannels: [Channel] = []
-        for (ordinal, channel) in channels.enumerated() {
+        for channel in channels {
+            let ordinal = channel.ordinal
             if ordinal.isMultiple(of: 256), Task.isCancelled { return nil }
             guard let key = guide.channelKey(guideID: channel.guideID, name: channel.name),
                   channelByKey[key] == nil else { continue }
@@ -237,7 +252,7 @@ struct EPGProgramSearchIndex: Sendable {
     }
 
     /// Builds off the caller's actor. Nil only when cancelled or for a SQLite-backed guide.
-    static func build(identity: Identity, guide: EPGIndex, channels: [LiveTVChannel], now: Date,
+    static func build(identity: Identity, guide: EPGIndex, channels: [EPGProgramChannel], now: Date,
                       configuration: Configuration = .production,
                       foundationMatching: FoundationMatching = .blocks) async -> Self? {
         let worker: Task<Self?, Never> = Task.detached(priority: .utility) {
@@ -248,6 +263,17 @@ struct EPGProgramSearchIndex: Sendable {
         return await withTaskCancellationHandler(operation: { await worker.value }, onCancel: {
             worker.cancel()
         })
+    }
+
+    static func build(identity: Identity, guide: EPGIndex, channels: [LiveTVChannel], now: Date,
+                      configuration: Configuration = .production,
+                      foundationMatching: FoundationMatching = .blocks) async -> Self? {
+        let associations = channels.enumerated().map {
+            EPGProgramChannel(id: $0.element.id, guideID: $0.element.guideID,
+                              name: $0.element.name, ordinal: $0.offset)
+        }
+        return await build(identity: identity, guide: guide, channels: associations, now: now,
+                           configuration: configuration, foundationMatching: foundationMatching)
     }
 
     /// Matches whose programme has not ended at `now`: live first, then upcoming by start time.
@@ -611,7 +637,23 @@ actor EPGProgramSearchIndexStore {
     struct Input: Sendable {
         let identity: EPGProgramSearchIndex.Identity
         let guide: EPGIndex?
-        let channels: [LiveTVChannel]
+        let channels: [EPGProgramChannel]
+
+        init(identity: EPGProgramSearchIndex.Identity, guide: EPGIndex?, channels: [LiveTVChannel]) {
+            self.identity = identity
+            self.guide = guide
+            self.channels = channels.enumerated().map {
+                EPGProgramChannel(id: $0.element.id, guideID: $0.element.guideID,
+                                  name: $0.element.name, ordinal: $0.offset)
+            }
+        }
+
+        init(identity: EPGProgramSearchIndex.Identity, guide: EPGIndex?,
+             associations: [EPGProgramChannel]) {
+            self.identity = identity
+            self.guide = guide
+            channels = associations
+        }
     }
     enum Outcome: Equatable, Sendable {
         case results([EPGProgramSearchIndex.Match]), queryTooShort, noGuide, unsupportedStorage

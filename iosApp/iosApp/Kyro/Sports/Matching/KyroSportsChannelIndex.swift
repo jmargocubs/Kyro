@@ -6,6 +6,7 @@ import Foundation
 /// tap until the catalog changes, so a tap never folds or scans 40,000 channel names. It holds
 /// channel values already in memory and whole-word postings; it never stores or logs a stream URL.
 struct KyroSportsChannelIndex: Sendable {
+    static let maximumCandidateChannels = 2_000
     let providerID: UUID?
     let catalogRevision: Int
     /// Playable channels only, in catalog order.

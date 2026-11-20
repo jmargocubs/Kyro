@@ -388,6 +388,9 @@ final class LiveTVBrowseModel {
         Task { @MainActor in
             #if os(iOS)
             await pagedChannels.waitForCurrentQuery()
+            if let channelID = context.channelID {
+                _ = await pagedChannels.restoreAnchor(channelID: channelID, service: service)
+            }
             #else
             await searchModel.waitForCurrentSearch()
             #endif
@@ -450,9 +453,17 @@ final class LiveTVBrowseModel {
 
     private func reconcileBrowsingContext() {
         guard let providerID = service.selectedProviderID,
-              let valid = browsingContextToRestore?.validatedWhenReady(
-                  selectedProviderID: providerID, catalogIsLoaded: service.hasCatalog(for: providerID),
-                  categories: service.categories, channels: service.channels) else { return }
+              let pending = browsingContextToRestore else { return }
+        #if os(iOS)
+        let valid = pending.validatedWhenReady(selectedProviderID: providerID,
+                                               catalogIsLoaded: service.hasCatalog(for: providerID),
+                                               categories: service.categories, channels: nil)
+        #else
+        let valid = pending.validatedWhenReady(selectedProviderID: providerID,
+                                               catalogIsLoaded: service.hasCatalog(for: providerID),
+                                               categories: service.categories, channels: service.channels)
+        #endif
+        guard let valid else { return }
         browsingContextToRestore = valid
         if selectedCategory != valid.category { selectedCategory = valid.category }
     }

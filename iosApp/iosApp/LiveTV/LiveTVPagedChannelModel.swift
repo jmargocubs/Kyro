@@ -94,6 +94,34 @@ final class LiveTVPagedChannelModel {
         }
     }
 
+    /// Repositions the bounded window around a stable channel identity. The store computes the
+    /// channel's offset under the current filters, so restoration does not walk every preceding
+    /// page and remains valid when a refreshed generation moves the channel.
+    @discardableResult
+    func restoreAnchor(channelID: String, service: LiveTVService) async -> Bool {
+        guard let identity else { return false }
+        let expected = identity
+        guard let anchorOffset = await service.channelOffset(
+            providerID: identity.providerID, channelID: channelID, query: identity.query,
+            category: identity.category, favoritesOnly: identity.favoritesOnly
+        ) else { return false }
+        let offset = max(0, anchorOffset - Self.pageSize / 2)
+        let loaded = await service.channelPage(providerID: identity.providerID, query: identity.query,
+                                               category: identity.category,
+                                               favoritesOnly: identity.favoritesOnly,
+                                               offset: offset, limit: Self.pageSize)
+        guard !Task.isCancelled, self.identity == expected,
+              service.selectedProviderID == expected.providerID,
+              service.channelCatalogRevision == expected.catalogRevision,
+              loaded.contains(where: { $0.id == channelID }) else { return false }
+        channels = loaded
+        startOffset = offset
+        hasMoreBefore = offset > 0
+        hasMoreAfter = offset + loaded.count < totalCount
+        isLoading = false
+        return true
+    }
+
     private func loadNext(service: LiveTVService) {
         guard hasMoreAfter, !isLoading, let identity else { return }
         isLoading = true

@@ -1164,6 +1164,30 @@ enum KyroSportsStreamMatcher {
         return values
     }
 
+    /// Indexed candidate retrieval terms for the disk-backed Live TV catalog. Include provider
+    /// abbreviations and alternate spellings because event channels often use only forms such as
+    /// `SHSU @ JXST`; the full matcher still decides whether any retrieved row is a real match.
+    static func candidateSearchTerms(for game: KyroSportsGame) -> [String] {
+        var values: [String] = []
+        func add(_ value: String?) {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty, value.uppercased() != "TBD", !values.contains(value) else { return }
+            values.append(value)
+        }
+        for value in manualSuggestions(for: game) { add(value) }
+        for side in [game.away, game.home] {
+            add(side.team.fullName)
+            add(side.team.location)
+            add(side.team.nickname)
+            add(side.team.abbreviation)
+            for alternate in side.team.alternateNames { add(alternate) }
+            let participant = participant(for: side.team, league: game.league)
+            for alias in participant.aliases { add(alias.tokens.joined(separator: " ")) }
+            for anchor in participant.anchors { add(anchor) }
+        }
+        return values
+    }
+
     // MARK: Normalization
 
     static func normalized(_ value: String) -> String {
