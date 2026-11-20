@@ -185,9 +185,16 @@ final class KyroTVEdgeToEdgeLayoutTests: XCTestCase {
         if scrollToEnd {
             let scroll = try XCTUnwrap(scrollViews(in: host.view).first { $0.contentSize.height > $0.bounds.height + 1 },
                                        "the page scrolls vertically")
-            let maxY = scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.height
-            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: maxY), animated: false)
-            spin(0.8)
+            // Lazy stacks estimate their height and grow as rows load, so repeat until the end holds.
+            var lastHeight: CGFloat = -1
+            for _ in 0..<12 where abs(scroll.contentSize.height - lastHeight) > 0.5 {
+                lastHeight = scroll.contentSize.height
+                let maxY = scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.height
+                scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: maxY), animated: false)
+                spin(0.5)
+            }
+            print("KYRO-LAYOUT scroll end: contentSize \(scroll.contentSize.height), inset bottom "
+                  + "\(scroll.adjustedContentInset.bottom), offset \(scroll.contentOffset.y), bounds \(scroll.bounds.height)")
         }
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
