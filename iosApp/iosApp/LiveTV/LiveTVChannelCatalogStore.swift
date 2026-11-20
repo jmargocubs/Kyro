@@ -84,6 +84,23 @@ actor LiveTVChannelCatalogStore {
                 VALUES('delete',old.rowid,old.name,old.category);
             END;
             """)
+        Self.hardenFiles(in: root)
+    }
+
+    /// Protection is set on the directory, and again on each SQLite file once it exists, so the
+    /// database, WAL and SHM never rely on class inheritance alone.
+    static func hardenFiles(in root: URL) {
+        #if os(iOS)
+        for name in ["channels.sqlite", "channels.sqlite-wal", "channels.sqlite-shm"] {
+            var url = root.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                                                   ofItemAtPath: url.path)
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? url.setResourceValues(values)
+        }
+        #endif
     }
 
     deinit { if let database { sqlite3_close(database) } }
@@ -538,6 +555,46 @@ actor LiveTVChannelCatalogStore {
             if let raw = sqlite3_column_text(statement, 0) { ids.append(String(cString: raw)) }
         }
         return ids
+    }
+
+    /// Channels whose normalized guide ID (trimmed, lower-cased: `EPGChannelKey.guideID`) is in
+    /// `keys`. Bounded by `limit`; used by Sports matching to retrieve the channels airing an event
+    /// that the guide names, which channel-name search cannot find (a game on a generic "ESPN").
+    func channels(providerID: UUID, guideKeys: [String], limit: Int = 400) -> [LiveTVChannel] {
+        let keys = Array(Set(guideKeys)).prefix(500)
+        guard !keys.isEmpty else { return [] }
+        var result: [LiveTVChannel] = []
+        let bound = min(max(limit, 1), 1_000)
+        var start = keys.startIndex
+        while start < keys.endIndex, result.count < bound {
+            let end = keys.index(start, offsetBy: 100, limitedBy: keys.endIndex) ?? keys.endIndex
+            let chunk = Array(keys[start..<end])
+            start = end
+            let marks = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            guard let statement = try? prepare("""
+                SELECT i.id,i.guide_id,i.name,i.category,i.stream_url,i.logo_url,i.stream_id
+                FROM channel_items i JOIN channel_active a
+                  ON i.provider=a.provider AND i.generation=a.generation
+                WHERE i.provider=? AND lower(trim(i.guide_id)) IN (\(marks))
+                ORDER BY i.ordinal LIMIT ?
+                """) else { continue }
+            defer { sqlite3_finalize(statement) }
+            bind(providerID.uuidString, 1, statement)
+            for (offset, key) in chunk.enumerated() { bind(key, Int32(offset + 2), statement) }
+            sqlite3_bind_int(statement, Int32(chunk.count + 2), Int32(bound - result.count))
+            while sqlite3_step(statement) == SQLITE_ROW {
+                func value(_ column: Int32) -> String? {
+                    sqlite3_column_text(statement, column).map { String(cString: $0) }
+                }
+                guard let id = value(0), let name = value(2), let category = value(3),
+                      let rawURL = value(4), let streamURL = URL(string: rawURL) else { continue }
+                result.append(LiveTVChannel(id: id, guideID: value(1), name: name, streamURL: streamURL,
+                                            logoURL: value(5).flatMap(URL.init(string:)), category: category,
+                                            streamID: sqlite3_column_type(statement, 6) == SQLITE_NULL
+                                                ? nil : Int(sqlite3_column_int64(statement, 6))))
+            }
+        }
+        return result
     }
 
     func categories(providerID: UUID) -> [(name: String, count: Int)] {

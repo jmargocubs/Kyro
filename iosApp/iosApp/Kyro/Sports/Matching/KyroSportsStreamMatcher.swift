@@ -1188,6 +1188,17 @@ enum KyroSportsStreamMatcher {
         return values
     }
 
+    /// Guide channel keys with a programme around the event that may name a participant. These
+    /// are normalized guide IDs, so the indexed catalog can retrieve exactly the airing channels.
+    static func guideCandidateKeys(guide: EPGIndex, request: KyroSportsStreamMatchRequest) -> [String] {
+        let context = MatchContext(game: request.game)
+        guard context.isMatchable else { return [] }
+        let read = guideRows(guide: guide, interval: eventInterval(for: request.game, request: request), context: context)
+        guard !read.cancelled else { return [] }
+        var seen = Set<String>()
+        return read.rows.compactMap { seen.insert($0.key).inserted ? $0.key : nil }
+    }
+
     // MARK: Normalization
 
     static func normalized(_ value: String) -> String {

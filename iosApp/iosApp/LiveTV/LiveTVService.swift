@@ -1342,6 +1342,15 @@ final class LiveTVService {
                 if candidates.count >= KyroSportsChannelIndex.maximumCandidateChannels { break }
             }
             candidates = Array(candidates.prefix(KyroSportsChannelIndex.maximumCandidateChannels))
+            // Channels the guide says are airing the event (generic networks carry no team name).
+            if let guide = guideIndexes[providerID], let store = await channelStore() {
+                let request = KyroSportsStreamMatchRequest(game: game, now: .now)
+                let keys = await Task.detached(priority: .userInitiated) {
+                    KyroSportsStreamMatcher.guideCandidateKeys(guide: guide, request: request)
+                }.value
+                for channel in await store.channels(providerID: providerID, guideKeys: keys)
+                where seen.insert(channel.id).inserted { candidates.append(channel) }
+            }
         } else {
             candidates = channelCatalogs[providerID] ?? []
         }

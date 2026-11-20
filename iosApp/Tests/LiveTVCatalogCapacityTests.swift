@@ -9,6 +9,20 @@ final class LiveTVCatalogCapacityTests: XCTestCase {
     private let providerID = UUID(uuidString: "6F1C2B5E-9B7C-4E0B-A2E4-1D3C5B7A9F00")!
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+    // MARK: Production cap
+
+    /// The 100K validation override is compile-time only; an ordinary build must keep 40,000.
+    func testProductionCapIsFortyThousandWithoutValidationFlag() {
+        #if KYRO_LIVETV_100K_VALIDATION
+        XCTAssertEqual(LiveTVCatalogLimits.maximumChannels, 100_000)
+        XCTAssertTrue(LiveTVCatalogLimits.isValidationOverrideActive)
+        #else
+        XCTAssertEqual(LiveTVCatalogLimits.maximumChannels, 40_000)
+        XCTAssertFalse(LiveTVCatalogLimits.isValidationOverrideActive)
+        #endif
+        XCTAssertEqual(LiveTVCatalogLimits.productionMaximumChannels, 40_000)
+    }
+
     // MARK: Identity
 
     func testEventChannelsSharingAGuideIDAreAllImported() throws {
