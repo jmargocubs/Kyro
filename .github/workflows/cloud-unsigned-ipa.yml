@@ -54,7 +54,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: cloud-unsigned-ipa
+  # Platform-specific so iOS and tvOS IPA builds can run independently.
+  # Artifact names already include platform + build number.
+  group: cloud-unsigned-ipa-${{ inputs.platform }}
   cancel-in-progress: false
 
 jobs:
@@ -114,7 +116,16 @@ jobs:
           sysctl -n hw.ncpu hw.memsize
           df -h "$RUNNER_TEMP" | tail -1
 
-      - name: Install XcodeGen
+      - name: Install pinned XcodeGen
+        if: hashFiles('.github/actions/install-xcodegen/action.yml') != ''
+        uses: ./.github/actions/install-xcodegen
+        with:
+          cache: 'true'
+          # workflow_dispatch is a trusted event for the composite action save gate
+          save-cache: 'true'
+
+      - name: Install XcodeGen (legacy checkout fallback)
+        if: hashFiles('.github/actions/install-xcodegen/action.yml') == ''
         run: command -v xcodegen >/dev/null || brew install xcodegen
 
       - name: Restore SwiftPM cache
@@ -123,7 +134,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: iosApp/.spm-packages
-          key: spm-${{ inputs.platform }}-${{ hashFiles('iosApp/project.yml', 'iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          # Key on Package.resolved only. project.yml changes every app commit and
+          # was busting SPM cache hits while package pins stayed identical
+          # (measured: builds 99 hit vs 100/101 miss with identical Package.resolved).
+          key: spm-${{ inputs.platform }}-${{ hashFiles('iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            spm-${{ inputs.platform }}-
 
       - name: Generate project and resolve packages
         working-directory: iosApp
@@ -227,7 +243,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Kyro-${{ inputs.platform }}-unsigned-ipa-${{ inputs.build_number }}
+          # Include run_id so concurrent platform builds and retries never clobber names.
+          name: Kyro-${{ inputs.platform }}-unsigned-ipa-${{ inputs.build_number }}-${{ github.run_id }}
           path: out/
           retention-days: 7
           if-no-files-found: error
