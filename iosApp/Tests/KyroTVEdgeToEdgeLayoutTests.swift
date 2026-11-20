@@ -147,7 +147,7 @@ final class KyroTVEdgeToEdgeLayoutTests: XCTestCase {
         let oldRows = try Pixels(before).litRuns(xs: xs, top: top)
         let newRows = try Pixels(after).litRuns(xs: xs, top: top)
         let endRows = try Pixels(afterEnd).litRuns(xs: xs, top: top)
-        let oldFull = oldRows.filter { $0.count >= Int(metrics.rowHeight) - 4 }.count
+        let oldFull = oldRows.filter { $0.count >= (oldRows.map(\.count).max() ?? 0) - 2 }.count
         let newVisibleRows = newRows.filter { $0.count >= 10 }.count
         let safeBottom = Int(extended.height - overscan)
         print("KYRO-LAYOUT guide 1760-wide: rows drawn \(oldRows.count) -> \(newVisibleRows) (full in Build 98: \(oldFull)); "
@@ -158,7 +158,9 @@ final class KyroTVEdgeToEdgeLayoutTests: XCTestCase {
         let lastBottom = try XCTUnwrap(endRows.last?.upperBound)
         XCTAssertLessThanOrEqual(lastBottom, safeBottom, "the last row rests inside the safe area")
         XCTAssertGreaterThanOrEqual(lastBottom, safeBottom - Int(metrics.verticalInset + TVLiveTVGuideLayout.focusRoom) - 6)
-        XCTAssertGreaterThanOrEqual(endRows.last?.count ?? 0, Int(metrics.rowHeight) - 4, "the last row is not clipped")
+        // Cells are drawn slightly shorter than the row, so compare with the tallest drawn row.
+        let fullRow = try XCTUnwrap(endRows.map(\.count).max())
+        XCTAssertGreaterThanOrEqual(endRows.last?.count ?? 0, fullRow - 2, "the last row is not clipped")
     }
 
     // MARK: Helpers
@@ -240,8 +242,9 @@ private struct LiveTVCategoryPageHarness: View {
         Group {
             if build98 { build98Page } else { build99Page }
         }
-        .frame(width: canvas.width, height: canvas.height, alignment: .topLeading)
+        // Inside the fixed frame: outside it, the padding would grow the page past the window.
         .safeAreaPadding(.bottom, TVScreenLayout.overscan.bottom)
+        .frame(width: canvas.width, height: canvas.height, alignment: .topLeading)
         .background(Color.white)
         .environment(\.colorScheme, .dark)
     }
