@@ -45,8 +45,11 @@ final class TVFocusReportServerTests: XCTestCase {
         XCTAssertEqual(response.value(forHTTPHeaderField: "Connection"), "close")
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: download.0) as? [String: Any])
         let events = try XCTUnwrap(json["events"] as? [[String: Any]])
-        XCTAssertEqual(events.count, 1)
-        XCTAssertEqual(events.first?["detail"] as? String, "sample-event")
+        // Enabling capture always records an intentional capture-start event first.
+        XCTAssertEqual(events.count, 2)
+        let details = events.compactMap { $0["detail"] as? String }
+        XCTAssertTrue(details.contains("capture-start; identifiers stable only within this capture"))
+        XCTAssertTrue(details.contains("sample-event"))
     }
 
     func testInvalidAuthenticationDoesNotExposeReport() async throws {
@@ -79,7 +82,10 @@ final class TVFocusReportServerTests: XCTestCase {
         let download = try await URLSession.shared.data(from: URL(string: base + String(html[path]))!)
         XCTAssertEqual((download.1 as? HTTPURLResponse)?.statusCode, 200)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: download.0) as? [String: Any])
-        XCTAssertEqual(try XCTUnwrap(json["events"] as? [Any]).count, 0)
+        let events = try XCTUnwrap(json["events"] as? [[String: Any]])
+        // No user events were recorded, but setEnabled(true) still emits capture-start.
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?["detail"] as? String, "capture-start; identifiers stable only within this capture")
     }
 
     func testExpiredSessionReturnsGoneWithoutReportBytes() async throws {
