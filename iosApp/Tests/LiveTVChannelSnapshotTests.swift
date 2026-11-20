@@ -480,6 +480,11 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
         model.reset(service: service, providerID: providerID,
                     catalogRevision: service.channelCatalogRevision,
                     query: "", category: nil, favoritesOnly: false)
+        // The root view and pushed browser can both refresh the same observation. This must not
+        // cancel the matching in-flight query and strand the loading state.
+        model.reset(service: service, providerID: providerID,
+                    catalogRevision: service.channelCatalogRevision,
+                    query: "", category: nil, favoritesOnly: false)
         await model.waitForCurrentQuery()
         XCTAssertEqual(model.totalCount, rowCount)
         XCTAssertEqual(model.channels.count, LiveTVPagedChannelModel.pageSize)
@@ -498,6 +503,53 @@ final class LiveTVChannelSnapshotTests: XCTestCase {
             XCTAssertLessThanOrEqual(model.channels.count, LiveTVPagedChannelModel.maximumRetainedChannels)
         }
         XCTAssertEqual(model.channels.first?.name, "Channel 0")
+    }
+
+    func testLiveTVSectionSequenceIsIsolatedAndEmptyFavoritesStayEmpty() async throws {
+        let service = makeService()
+        let providerID = try addProvider(to: service)
+        await service.refresh(providerID: providerID)
+        let model = LiveTVPagedChannelModel()
+
+        model.reset(service: service, providerID: providerID, catalogRevision: service.channelCatalogRevision,
+                    query: "", category: nil, favoritesOnly: false)
+        await model.waitForCurrentQuery()
+        XCTAssertEqual(model.totalCount, 2, "All Channels is the full catalog without choosing a category")
+        XCTAssertEqual(Set(model.channels.map(\.name)), ["News One", "Sport"])
+
+        model.reset(service: service, providerID: providerID, catalogRevision: service.channelCatalogRevision,
+                    query: "", category: "news", favoritesOnly: false)
+        await model.waitForCurrentQuery()
+        XCTAssertEqual(model.channels.map(\.name), ["News One"])
+        XCTAssertTrue(service.favoriteChannelIDs.isEmpty, "Category selection never mutates favorites")
+
+        model.reset(service: service, providerID: providerID, catalogRevision: service.channelCatalogRevision,
+                    query: "", category: nil, favoritesOnly: true)
+        await model.waitForCurrentQuery()
+        XCTAssertEqual(model.totalCount, 0, "An empty favorites collection remains empty")
+        XCTAssertTrue(model.channels.isEmpty)
+
+        let favorite = try XCTUnwrap(model.channels.first { $0.name == "Sport" })
+        service.toggleFavorite(favorite)
+        model.reset(service: service, providerID: providerID, catalogRevision: service.channelCatalogRevision,
+                    query: "", category: nil, favoritesOnly: true)
+        await model.waitForCurrentQuery()
+        XCTAssertEqual(model.channels.map(\.name), ["Sport"], "Favorites contains explicitly favorited channels only")
+
+        model.reset(service: service, providerID: providerID, catalogRevision: service.channelCatalogRevision,
+                    query: "", category: nil, favoritesOnly: false)
+        await model.waitForCurrentQuery()
+        XCTAssertEqual(model.totalCount, 2, "Returning to All Channels restores the full collection")
+
+        model.reset(service: service, providerID: providerID, catalogRevision: service.channelCatalogRevision,
+                    query: "", category: "Sports", favoritesOnly: false)
+        model.reset(service: service, providerID: providerID, catalogRevision: service.channelCatalogRevision,
+                    query: "", category: "news", favoritesOnly: false)
+        model.reset(service: service, providerID: providerID, catalogRevision: service.channelCatalogRevision,
+                    query: "", category: nil, favoritesOnly: false)
+        await model.waitForCurrentQuery()
+        XCTAssertEqual(model.channels.map(\.name), ["News One", "Sport"],
+                       "Rapid section switching cannot publish an older category result")
     }
 
     func testSourceChangeDoesNotDisplayAnotherV2GuideAndRemovalDoesNotRecreateIt() async throws {

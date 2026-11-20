@@ -648,6 +648,7 @@ final class KyroSportsHubStore {
             let groupingDate = now()
             let dayFetch = shouldFetchSingleDay(league: league, day: day, category: category)
             let result: KyroSportsProviderOutput
+            let providerInterval = KyroPerformanceDiagnostics.begin("Sports provider fetch", .sportsProviderFetch)
             if league == .nfl {
                 result = try await providerChain.fetchNFLWindow(now: groupingDate, force: force)
             } else if let leagueProvider {
@@ -668,6 +669,7 @@ final class KyroSportsHubStore {
             } else {
                 throw KyroSportsDataError.malformedResponse
             }
+            KyroPerformanceDiagnostics.end(providerInterval)
             guard isCurrent(league, token: token, generation: generation, day: day) else {
                 return abandon(league, token: token)
             }
@@ -690,6 +692,7 @@ final class KyroSportsHubStore {
                 currentWeek: (league == .nfl || league == .collegeFootball) ? result.week : nil,
                 currentSeason: result.season
             )
+            let groupingInterval = KyroPerformanceDiagnostics.begin("Sports event grouping", .sportsGrouping)
             let grouped = try await sportsDetachedValue {
                 KyroSportsSectioning.sections(
                     from: merged,
@@ -698,6 +701,7 @@ final class KyroSportsHubStore {
                     context: scheduleContext
                 )
             }
+            KyroPerformanceDiagnostics.end(groupingInterval)
             guard isCurrent(league, token: token, generation: generation, day: day) else {
                 return abandon(league, token: token)
             }

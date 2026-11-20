@@ -225,6 +225,17 @@ enum LiveTVCategoryNavigation {
     /// A filter page's choice is the new selection. Leaving with Back, a swipe or Cancel never
     /// calls this, so the selection stays as it was.
     static func filterSelection(for choice: LiveTVCategoryChoice) -> String? { choice.category }
+
+    /// A picker choice replaces the complete filter state. Category and Favorites are mutually
+    /// exclusive; carrying the previous flag across a choice silently produced an empty/intersected
+    /// result set and made section switches appear to retain the old collection.
+    static func browserFilters(for choice: LiveTVCategoryChoice) -> LiveTVBrowserFilters {
+        switch choice {
+        case .all: .channels
+        case .favorites: .favorites
+        case .category(let name): .category(name)
+        }
+    }
 }
 
 /// Live TV Home's pushed routes, as typed entries on the shell's `NavigationPath`. Home is the

@@ -329,15 +329,16 @@ final class LiveTVBrowseModel {
     }
 
     func applyBrowserCategoryChoice(_ choice: LiveTVCategoryChoice) {
-        let next = LiveTVCategoryNavigation.filterSelection(for: choice)
-        let changed = next != selectedCategory
+        let filters = LiveTVCategoryNavigation.browserFilters(for: choice)
+        let changed = filters.category != selectedCategory || filters.favoritesOnly != favoritesOnly
         if changed {
             // Clear before `selectedCategory` changes: LiveTVView's onChange calls updateSearch,
             // which must not re-apply a prior category's pending scroll restore.
             browsingContextToRestore = nil
             resetBrowserListPosition()
         }
-        selectedCategory = next
+        selectedCategory = filters.category
+        favoritesOnly = filters.favoritesOnly
         isShowingBrowserCategories = false
     }
 

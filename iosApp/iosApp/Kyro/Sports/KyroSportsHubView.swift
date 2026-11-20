@@ -85,6 +85,7 @@ struct KyroSportsHubView: View {
     private var playback: KyroSportsPlaybackCoordinator { liveTV.sportsPlayback }
     private var liveNow: KyroSportsLiveNowModel { liveTV.sportsLiveNow }
     @State private var liveNowOpenedAt: Double?
+    @State private var sportsHubOpenedAt: Double?
 
     /// Everything Live Now depends on: the live events (with scores), the provider, its catalog
     /// revision and its guide generation. A change re-reads cached evidence; only missing or
@@ -204,6 +205,10 @@ struct KyroSportsHubView: View {
         .accessibilityIdentifier("kyroSportsHub")
         .refreshable { await store.refresh() }
         .task {
+            sportsHubOpenedAt = KyroPerformanceClock.now()
+            if !store.scheduleGames.isEmpty {
+                recordSportsFirstEventIfReady()
+            }
             // Build 104: time from opening the hub to Live Now's first answer (device report).
             liveNowOpenedAt = KyroPerformanceClock.now()
             // Live Now re-reads when the prewarm ends however it ended (`liveNowTrigger` observes
@@ -218,6 +223,9 @@ struct KyroSportsHubView: View {
             guard status != .checking, let opened = liveNowOpenedAt else { return }
             liveNowOpenedAt = nil
             KyroPerformanceDiagnostics.record(.sportsLiveNowReady, milliseconds: (KyroPerformanceClock.now() - opened) * 1000)
+        }
+        .onChange(of: store.scheduleGames.isEmpty) { _, isEmpty in
+            if !isEmpty { recordSportsFirstEventIfReady() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .kyroSettingsDidRestore)) { _ in
             store.reloadDashboardModesFromPreferences()
@@ -489,6 +497,13 @@ struct KyroSportsHubView: View {
     private func cancelRefreshLoop() {
         refreshTask?.cancel()
         refreshTask = nil
+    }
+
+    private func recordSportsFirstEventIfReady() {
+        guard let opened = sportsHubOpenedAt else { return }
+        sportsHubOpenedAt = nil
+        KyroPerformanceDiagnostics.record(.sportsFirstVisibleEvent,
+                                          milliseconds: (KyroPerformanceClock.now() - opened) * 1000)
     }
 }
 

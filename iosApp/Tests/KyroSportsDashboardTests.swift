@@ -57,6 +57,15 @@ final class KyroSportsDashboardTests: XCTestCase {
 
     // MARK: Featured event
 
+    func testSportFilterOptionsAreStableAndBounded() {
+        let first = KyroSportsCategory.filterOrder
+        let second = KyroSportsCategory.filterOrder
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.count, KyroSportsCategory.allCases.count)
+        XCTAssertEqual(first.first, .all)
+        XCTAssertEqual(Set(first).count, first.count)
+    }
+
     func testFeaturedEventPrefersLiveOverUpcomingAndFinal() {
         let result = sections([
             game("final", .final, hoursFromNow: -30),
