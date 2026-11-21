@@ -443,8 +443,10 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertEqual(focusedLabel(app), rail, "Back from the pane returns to the rail")
     }
 
-    /// Opening a category and backing out, three times over with different cards: each opening
-    /// lands on the category's first channel, Back returns to the card and then to the chip.
+    /// Opening a category and backing out, six times over with six different cards (three going
+    /// right along the grid, three coming back left): each opening lands on the category's first
+    /// channel, Down moves within the channels, Back returns to the card, and Back again to the chip.
+    /// The intermittent failure this guards against opened onto a toolbar chip instead.
     func testCategoriesOpenRepeatedlyLandsOnTheFirstChannelEveryTime() {
         let app = launch(.livetv)
         XCTAssertTrue(waitForFocus(app, in: liveTVControls))
@@ -452,19 +454,24 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         remote.press(.select)
         settle()
         _ = press(.down, app, "into categories")
-        for round in 1...3 {
-            let card = press(.right, app, "category card \(round)")
+        var landed = 0
+        for round in 1...6 {
+            let card = press(round <= 3 ? .right : .left, app, "category card \(round)")
             remote.press(.select)
             settle(2.5)
             let channel = focusedLabel(app)
             log("category round \(round)", [card, channel])
+            if channel.hasPrefix("Watch Harness") { landed += 1 }
             XCTAssertTrue(channel.hasPrefix("Watch Harness"), "round \(round): opening \(card) lands on a channel, got \(channel)")
             let down = press(.down, app, "channel down \(round)")
-            XCTAssertTrue(down.hasPrefix("Watch Harness") || down == channel, "round \(round): channel navigation, got \(down)")
+            XCTAssertTrue(down.hasPrefix("Watch Harness"), "round \(round): Down stays within the channels, got \(down)")
+            let up = press(.up, app, "channel up \(round)")
+            XCTAssertEqual(up, channel, "round \(round): Up returns to the first channel")
             remote.press(.menu)
             settle(1.5)
             XCTAssertEqual(focusedLabel(app), card, "round \(round): Back returns to the card")
         }
+        log("category openings landing on a channel", ["\(landed) of 6"])
         remote.press(.menu)
         settle(1.5)
         XCTAssertEqual(focusedLabel(app), "Categories", "Back from the grid returns to the chip")
@@ -885,9 +892,9 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertFalse(isBarElement(down), "Down from Live TV enters the page, got \(down)")
     }
 
-    /// The real Search screen pushed from the real bar: type a letter, reach Live TV results from
-    /// the fixture provider, and Back returns to the bar's Search button.
-    func testShellSearchResultsAreReachableAndBackReturnsToTheBar() {
+    /// The real Search screen pushed from the real bar: the keyboard types, Down reaches the
+    /// filters, Up returns, and Back returns to the bar.
+    func testShellSearchKeyboardFiltersAndBackReturnToTheBar() {
         let app = launchShell()
         XCTAssertTrue(isBarElement(focusBar(app)))
         var label = focusedLabel(app)
@@ -897,19 +904,27 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertTrue(searchField(app).waitForExistence(timeout: 20), "Search screen shows")
         XCTAssertTrue(reachSearchKeyboard(app), "keyboard reachable; focus \(focusedLabel(app))")
         remote.press(.select)
-        settle(4)
+        settle(2)
+        XCTAssertEqual(searchText(app).count, 1, "Select types a character, got \(searchText(app))")
         capture("shell-search-typed")
-        var path = [focusedLabel(app)]
-        for _ in 0..<6 { path.append(press(.down, app, "shell search down")) }
-        log("shell search results", path + [searchText(app)])
-        XCTAssertFalse(path.contains("<none>"), "Focus is never lost: \(path)")
-        XCTAssertTrue(path.contains { $0.hasPrefix("Play Live TV channel") }, "A Live TV result is reachable: \(path)")
-        for _ in 0..<8 where focusedLabel(app) != "Keyboard" { _ = press(.up, app, "shell search up") }
+        let filters: Set<String> = ["All", "Movies & TV", "Live TV"]
+        let down = press(.down, app, "shell search filters")
+        XCTAssertTrue(filters.contains(down), "Down from the keyboard reaches the filters, got \(down)")
+        XCTAssertEqual(press(.up, app, "shell search keyboard"), "Keyboard", "Up returns to the keyboard")
         remote.press(.menu)
         settle(3)
         let after = focusedLabel(app)
-        log("shell search back", [after])
+        log("shell search back", [down, after])
         XCTAssertTrue(isBarElement(after), "Back from Search returns to the bar, got \(after)")
+    }
+
+    /// BLOCKED, reported as skipped and never as passing: the real shell reads the shared Live TV
+    /// service, which cannot reach the in-process fixture host, so the real shell's Search has no
+    /// Live TV results to reach. Populated results are covered on the fixture harness page
+    /// (testSearchPopulatedResultsAreReachableSelectableAndUpReturnsToNavigation) and Silo results
+    /// need a signed-in server.
+    func testShellSearchPopulatedResultsAreBlockedWithoutFixtureInjection() throws {
+        throw XCTSkip("BLOCKED: real-shell Search has no injectable result source without a signed-in server or a Debug hook in the shared Live TV service")
     }
 
     /// Rapid presses never strand focus.

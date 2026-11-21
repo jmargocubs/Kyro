@@ -153,12 +153,12 @@ struct TVLiveTVRootView: View {
     /// A category or All Channels was just opened from the grid; its placeholder holds focus
     /// until that category's own results land.
     @State private var pendingChannelEntry = false
+    /// The pending category's own results have landed; see `channelEntryHoldsAnchor`.
+    @State private var channelResultsLanded = false
     /// Back closed this category; the grid restores focus and scroll to it when it appears.
     @State private var pendingCategoryRestore: String?
     /// The last channel card focused in the current list, for re-entry with Down.
     @State private var lastContentChannel: String?
-    /// A channel focus claim whose card may not be on screen yet (see `channelCardMounted`).
-    @State private var pendingChannelClaim: (id: String, at: Date)?
     @State private var categoryCounts: [String: Int] = [:]
     @State private var allChannelsCount = 0
     @Namespace private var controlsScope
@@ -262,12 +262,14 @@ struct TVLiveTVRootView: View {
             }
         }
         .onChange(of: search.isSearching) { _, searching in
-            guard !searching, pendingChannelEntry else { return }
-            let target = TVLiveTVBrowseFocusPlanner.afterChannelResults(
-                currentFocus: focusedControl, firstChannelID: visibleMatches.first?.id)
-            // Clearing the flag removes the focused placeholder, so the channel claim waits for it.
-            pendingChannelEntry = false
-            if let target { claimFocusAfterTeardown(.target(target)) }
+            guard !searching, pendingChannelEntry, !channelResultsLanded else { return }
+            // Results are in. With none, the page shows its empty state and nothing waits for focus.
+            // With some, the placeholder stays as the anchor until focus has moved to the first card.
+            if visibleMatches.isEmpty || focusedControl != .placeholder {
+                endChannelEntry()
+            } else {
+                channelResultsLanded = true
+            }
         }
         .onChange(of: service.favoriteChannelIDs) { updateSearch() }
         .onChange(of: service.channelCatalogRevision) { refreshVisibleCatalog() }
@@ -289,9 +291,7 @@ struct TVLiveTVRootView: View {
             refreshVisibleCatalog()
         }
         .onChange(of: focusedControl) { _, target in
-            if let pending = pendingChannelClaim, let target {
-                if target == .channel(pending.id) || !target.isControlRow { pendingChannelClaim = nil }
-            }
+            channelEntryFocusChanged(target)
             if !showsGuide && !showsProviders, let target { focusBeforeCover = target }
             if case .channel(let id)? = target { lastContentChannel = id }
         }
@@ -326,7 +326,7 @@ struct TVLiveTVRootView: View {
         HStack(spacing: 14) {
             ForEach(TVLiveTVSection.allCases) { item in
                 Button {
-                    pendingChannelEntry = false
+                    endChannelEntry()
                     navigation.select(item)
                 } label: {
                     Label(item.title, systemImage: item.symbol)
@@ -408,7 +408,7 @@ struct TVLiveTVRootView: View {
     }
 
     private var showsChannelLoading: Bool {
-        pendingChannelEntry || (search.isSearching && visibleMatches.isEmpty)
+        (pendingChannelEntry && !channelResultsLanded) || (search.isSearching && visibleMatches.isEmpty)
     }
 
     @ViewBuilder
@@ -502,6 +502,7 @@ struct TVLiveTVRootView: View {
     /// loading placeholder (or straight to the first channel if results are already in) once the
     /// card's teardown has committed; see `claimFocusAfterTeardown`.
     private func openCategory(_ category: String?) {
+        channelResultsLanded = false
         pendingChannelEntry = true
         lastContentChannel = nil
         navigation.openCategory(category)
@@ -547,6 +548,14 @@ struct TVLiveTVRootView: View {
                     }
                 }
                 .tvEdgeToEdgeScroll(horizontalBleed: TVScreenLayout.pageHorizontalInset)
+                .overlay(alignment: .topLeading) {
+                    if channelEntryHoldsAnchor {
+                        // Holds focus (as the loading placeholder did) until the first card has it.
+                        Color.clear.frame(width: 1, height: 1)
+                            .focusable()
+                            .focused($focusedControl, equals: .placeholder)
+                    }
+                }
             }
         }
     }
@@ -649,7 +658,7 @@ struct TVLiveTVRootView: View {
         TVFocusDiagnostics.record("handler", "LiveTV", "back")
         switch TVLiveTVBrowseFocusPlanner.back(from: focusedControl, navigation: navigation) {
         case .closeCategory(let category):
-            pendingChannelEntry = false
+            endChannelEntry()
             pendingCategoryRestore = category
             _ = navigation.back()
         case .focusControls(let section):
@@ -676,14 +685,12 @@ struct TVLiveTVRootView: View {
             TVFocusDiagnostics.value("request", "LiveTV", "afterTeardownExecuted", handoff)
             switch handoff {
             case .target(let target):
-                if case .channel(let id) = target { pendingChannelClaim = (id, Date()) }
                 focusedControl = target
             case .channelEntry:
                 // Results can land before this turn: then the channels are already showing.
                 if showsChannelLoading {
                     focusedControl = .placeholder
                 } else if let first = visibleMatches.first {
-                    pendingChannelClaim = (first.id, Date())
                     focusedControl = .channel(first.id)
                 } else {
                     focusedControl = .section(navigation.section)
@@ -692,22 +699,38 @@ struct TVLiveTVRootView: View {
         }
     }
 
-    /// The claim above can run before the channel's card exists: when results replace the loading
-    /// placeholder, the grid mounts a turn later, the write finds nothing to focus, and the engine
-    /// settles on a toolbar chip (hosted run 44923768989). The card reports that it has mounted;
-    /// if its claim is still outstanding, focus is claimed once, then. Bounded: one claim, only
-    /// within two seconds of the original, and dropped as soon as focus reaches that channel or
-    /// moves to other content.
+    // MARK: Category entry handoff
+
+    /// Opening a category: its loading placeholder holds focus until the results land. The
+    /// placeholder then stays in the tree, zero-sized and invisible, as the focus anchor while the
+    /// channel grid mounts, and focus moves from it to the first channel in an ordinary move. The
+    /// placeholder is removed only after focus has left it. Removing the focused placeholder first
+    /// (the old order) made the engine repair focus onto a toolbar chip at the same instant as the
+    /// app's own claim, and the repair won intermittently (hosted runs 44872081993, 44923768989
+    /// and 44929375392).
+    private var channelEntryHoldsAnchor: Bool { pendingChannelEntry && channelResultsLanded }
+
+    private func endChannelEntry() {
+        pendingChannelEntry = false
+        channelResultsLanded = false
+    }
+
+    /// The first channel's card has mounted, so a focus move to it has a target.
     private func channelCardMounted(_ id: String) {
-        guard let pending = pendingChannelClaim, pending.id == id else { return }
-        pendingChannelClaim = nil
-        guard Date().timeIntervalSince(pending.at) < 2, !isTopMenuFocused else { return }
+        guard channelEntryHoldsAnchor, id == visibleMatches.first?.id else { return }
+        guard focusedControl == .placeholder else { endChannelEntry(); return }
         DispatchQueue.main.async {
-            guard !isTopMenuFocused, focusedControl != .channel(id),
-                  visibleMatches.contains(where: { $0.id == id }) else { return }
-            TVFocusDiagnostics.value("request", "LiveTV", "channelClaimAfterMount", id)
+            guard channelEntryHoldsAnchor, focusedControl == .placeholder,
+                  visibleMatches.first?.id == id else { return }
+            TVFocusDiagnostics.value("request", "LiveTV", "channelEntryHandoff", id)
             focusedControl = .channel(id)
         }
+    }
+
+    private func channelEntryFocusChanged(_ target: FocusTarget?) {
+        guard channelEntryHoldsAnchor, let target else { return }
+        // Focus reached a channel (done), or the user moved to the toolbar (leave them there).
+        if case .channel = target { endChannelEntry() } else if target.isControlRow { endChannelEntry() }
     }
 
     private func claimEntryFocus() {
