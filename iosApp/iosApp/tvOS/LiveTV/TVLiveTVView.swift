@@ -265,7 +265,13 @@ struct TVLiveTVRootView: View {
             guard !searching, pendingChannelEntry, !channelResultsLanded else { return }
             // Results are in. With none, the page shows its empty state and nothing waits for focus.
             // With some, the placeholder stays as the anchor until focus has moved to the first card.
-            if visibleMatches.isEmpty || (focusedControl != nil && focusedControl != .placeholder) {
+            // The binding can still report the category card that was just removed while
+            // SwiftUI is reconciling the grid. Treat that stale category identity as part of
+            // this handoff, not as proof that focus escaped. Only a real channel/control-row
+            // destination is allowed to release the loading anchor; otherwise the engine may
+            // repair the removed card directly to All Channels before our channel claim lands.
+            let focusEscapedEntry = focusedControl.map(isStableEntryFocus) ?? false
+            if visibleMatches.isEmpty || focusEscapedEntry {
                 endChannelEntry()
             } else {
                 channelResultsLanded = true
@@ -652,6 +658,12 @@ struct TVLiveTVRootView: View {
     }
 
     // MARK: Focus
+
+    private func isStableEntryFocus(_ target: FocusTarget) -> Bool {
+        if target.isControlRow { return true }
+        if case .channel = target { return true }
+        return false
+    }
 
     private func handleBack() {
         TVFocusDiagnostics.record("handler", "LiveTV", "back")
