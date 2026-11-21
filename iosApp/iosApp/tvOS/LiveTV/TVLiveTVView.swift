@@ -265,7 +265,7 @@ struct TVLiveTVRootView: View {
             guard !searching, pendingChannelEntry, !channelResultsLanded else { return }
             // Results are in. With none, the page shows its empty state and nothing waits for focus.
             // With some, the placeholder stays as the anchor until focus has moved to the first card.
-            if visibleMatches.isEmpty || focusedControl != .placeholder {
+            if visibleMatches.isEmpty || (focusedControl != nil && focusedControl != .placeholder) {
                 endChannelEntry()
             } else {
                 channelResultsLanded = true
@@ -717,9 +717,9 @@ struct TVLiveTVRootView: View {
     /// The first channel's card has mounted, so a focus move to it has a target.
     private func channelCardMounted(_ id: String) {
         guard channelEntryHoldsAnchor, id == visibleMatches.first?.id else { return }
-        guard focusedControl == .placeholder else { endChannelEntry(); return }
+        guard focusedControl == nil || focusedControl == .placeholder else { endChannelEntry(); return }
         DispatchQueue.main.async {
-            guard channelEntryHoldsAnchor, focusedControl == .placeholder,
+            guard channelEntryHoldsAnchor, focusedControl == nil || focusedControl == .placeholder,
                   visibleMatches.first?.id == id else { return }
             TVFocusDiagnostics.value("request", "LiveTV", "channelEntryHandoff", id)
             focusedControl = .channel(id)

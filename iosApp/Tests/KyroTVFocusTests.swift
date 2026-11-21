@@ -681,5 +681,12 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertEqual(TVKyroFocus.scale(for: .card, focused: true, reduceMotion: true), 1)
         XCTAssertGreaterThanOrEqual(TVKyroFocus.ringWidth, 4, "the ring must read from across the room")
     }
+
+    func testAPendingBarClaimCountsAsMenuOwnership() {
+        XCTAssertFalse(tvMenuOwnsFocus(barFocused: false, panelEntered: false))
+        XCTAssertTrue(tvMenuOwnsFocus(barFocused: false, panelEntered: false, barClaimPending: true),
+                      "A page re-mounting under a pop must not claim before the bar does")
+        XCTAssertTrue(tvMenuOwnsFocus(barFocused: true, panelEntered: false, barClaimPending: false))
+    }
 }
 #endif

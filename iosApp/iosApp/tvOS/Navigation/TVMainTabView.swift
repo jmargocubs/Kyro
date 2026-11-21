@@ -14,9 +14,13 @@ func tvVisibleRootsFocusRearm(
     return selectedRootWasRemoved ? .content : .none
 }
 
-/// Pages refuse entry claims only while chrome really holds focus.
-func tvMenuOwnsFocus(barFocused: Bool, panelEntered: Bool) -> Bool {
-    barFocused || panelEntered
+/// Pages refuse entry claims while chrome holds focus, and from the moment the shell has decided
+/// the bar is next. `barClaimPending` is that decision: a route pushed from the bar is on the
+/// stack, or has just popped, and the bar's own claim has not landed yet. Without it, a page that
+/// re-mounts under the pop (Home's loading placeholder) claims focus in the one-turn gap before
+/// the bar's claim, and wins it.
+func tvMenuOwnsFocus(barFocused: Bool, panelEntered: Bool, barClaimPending: Bool = false) -> Bool {
+    barFocused || panelEntered || barClaimPending
 }
 
 /// Dwell preview keeps the page available to the focus engine. An entered
@@ -135,6 +139,8 @@ struct TVMainTabView: View {
     /// their pops emit `detailReturnFocusRequest` so the exact launch row/card
     /// explicitly reclaims focus.
     @State private var barOwnsFocusOnPopToRoot = false
+    /// True from a bar-pushed route until the bar holds focus again; see `tvMenuOwnsFocus`.
+    @State private var barClaimPending = false
     /// The Siri request the pushed Search screen fills its field from;
     /// Search clears it.
     @State private var siriSearchRequest: AppRouter.SearchRequest?
@@ -297,7 +303,9 @@ struct TVMainTabView: View {
             // owner explicitly: the bar for bar-pushed routes, otherwise the
             // launch card through `detailReturnFocusRequest`.
             if isEmpty {
-                markContentOwnsFocus()
+                // A bar-pushed route's pop keeps the bar's claim pending: pages that re-mount
+                // under it must not claim before the bar does.
+                markContentOwnsFocus(preservingBarClaim: barOwnsFocusOnPopToRoot)
                 if barOwnsFocusOnPopToRoot {
                     barOwnsFocusOnPopToRoot = false
                     // Deferred one turn: the bar re-mounts in this same
@@ -311,6 +319,9 @@ struct TVMainTabView: View {
                     detailReturnFocusRequest += 1
                 }
             }
+        }
+        .onChange(of: isTopMenuFocused) { _, focused in
+            if focused { barClaimPending = false }
         }
         .onChange(of: isStartupSplashVisible) { _, isVisible in
             if !isVisible { contentFocusRequest += 1 }
@@ -456,7 +467,8 @@ struct TVMainTabView: View {
     /// optimistic flag, so a page claim is refused only while chrome really
     /// owns focus.
     private var menuOwnsFocus: Bool {
-        tvMenuOwnsFocus(barFocused: isTopMenuFocused, panelEntered: panelEntersFocus)
+        tvMenuOwnsFocus(barFocused: isTopMenuFocused, panelEntered: panelEntersFocus,
+                        barClaimPending: barClaimPending)
     }
 
     @ViewBuilder
@@ -1304,15 +1316,18 @@ struct TVMainTabView: View {
 
     /// An explicit hand-off to content: pages may claim from now on. It does
     /// not disable the bar or resign its focus.
-    private func markContentOwnsFocus() {
+    private func markContentOwnsFocus(preservingBarClaim: Bool = false) {
         isTopMenuFocused = false
+        if !preservingBarClaim { barClaimPending = false }
         // Content owns focus: no dropdown may stay a focus target over it.
         if !panelEntersFocus { focusedBarPanel = nil }
     }
 
     private func contentFocusDidMoveFromBar() {
         contentHandoffGeneration += 1
-        markContentOwnsFocus()
+        // Leaving the bar for the route it pushed is not a hand-off to content: the bar is still
+        // next when that route pops.
+        markContentOwnsFocus(preservingBarClaim: barOwnsFocusOnPopToRoot)
     }
 
     /// Push a route on behalf of a bar element (search button, profile /
@@ -1333,6 +1348,7 @@ struct TVMainTabView: View {
         }
 
         barOwnsFocusOnPopToRoot = true
+        barClaimPending = true
         router.navigate(to: route)
     }
 

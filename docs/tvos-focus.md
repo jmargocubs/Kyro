@@ -429,3 +429,22 @@ Unexpected signs:
 
 A failing test attaches the screen, the accessibility tree and `harness-journal`, a rolling record of the app's
 focus diagnostics and the engine's focus moves.
+
+## Focus Ownership Policy (claims versus the engine's repair)
+
+Three intermittent failures had one shape: two parties wrote focus in the same instant, and the focus
+engine's own repair (it runs when the focused view goes away) won. Rules that follow from them:
+
+1. **Never remove the focused view in the update that claims its replacement.** Keep the same view (same
+   identity, same position in the tree) as the focus holder until focus has actually moved, then remove it.
+   Live TV's category entry keeps its loading view, invisible, under the mounted channel grid; the first
+   channel's mount moves focus, and only then does the loading view go. Swapping in a different anchor view
+   in the same update still triggers the repair (hosted run 44934243918).
+2. **Ownership is stated, not inferred.** The shell passes pages one `isTopMenuFocused` value, and it includes
+   `barClaimPending`: true from a bar-pushed route (Search) until the bar holds focus again. A page that
+   re-mounts under the pop sees the bar as the owner and does not claim. Pages claim only when the shell has
+   said content owns focus.
+3. **Enable only the destination a move should reach.** When a section's `.defaultFocus` would be ignored
+   because another item lies in the path, disable the others while focus is elsewhere
+   (`TVTopMenuReachabilityPolicy`): the top bar from the page, the Live TV control row from its content, the
+   Settings rail from its pane and on entry.

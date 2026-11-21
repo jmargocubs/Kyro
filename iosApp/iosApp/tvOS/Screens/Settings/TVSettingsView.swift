@@ -104,7 +104,10 @@ struct TVSettingsView: View {
             await viewModel.loadSettings()
             await diagnosticsModel.load(profile: viewModel.activeProfile)
         }
+        .tvObserveFocus("SettingsRail", value: railFocus)
+        .tvObserveFocus("SettingsDetail", value: detailFocus)
         .onChange(of: railFocus) { _, focus in
+            TVFocusDiagnostics.value("state", "Settings", "railFocusWhileOwner", preferredFocusOwner == .rail)
             if let focus,
                !isModalPresented,
                !isRestoringDetailFocus,
@@ -321,14 +324,21 @@ struct TVSettingsView: View {
         tvSettingsRailIsInert(isModalPresented: isModalPresented, isRestoringPickerRow: pendingPickerFocus != nil)
     }
 
-    /// While focus is in the detail pane only the selected category accepts focus, so Left lands
-    /// on it. Left from the pane's first row went to the profile card beside it instead (hosted
-    /// run 44919483746); the rail's `.defaultFocus` is ignored when an item lies in the path.
-    /// With focus on the rail, or on neither pane, every row accepts it.
+    /// Which rail rows accept focus. Only the selected category does, plus the row a restore has
+    /// asked for (`preferredRailFocus` while the rail is the owner), unless the rail already holds
+    /// focus, in which case every row does so Up and Down walk it.
+    ///
+    /// This covers both ways into the rail. From the detail pane, Left lands on the selected
+    /// category; Left from the pane's first row used to reach the profile card beside it, because
+    /// the rail's `.defaultFocus` is ignored when an item lies in the path. And on entry, when neither
+    /// pane holds focus yet, focus lands on General: with every row enabled the engine sometimes
+    /// settled on the profile card, the first focusable row, before the entry claim landed (the
+    /// hosted Settings test saw the screen open on "K, Kyro, Signed in").
     private func railAccepts(_ item: RailItem) -> Bool {
-        TVTopMenuReachabilityPolicy.acceptsFocus(item, selected: .category(selectedCategory),
-                                                 barHoldsFocus: railFocus != nil || detailFocus == nil,
-                                                 claimTarget: nil)
+        TVTopMenuReachabilityPolicy.acceptsFocus(
+            item, selected: .category(selectedCategory),
+            barHoldsFocus: railFocus != nil,
+            claimTarget: preferredFocusOwner == .rail ? preferredRailFocus : nil)
     }
 
     private func enterDetailPane(for category: TVSettingsCategory) {

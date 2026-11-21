@@ -422,6 +422,8 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         let app = launch(.settings)
         XCTAssertTrue(waitFor(app, timeout: 25) { $0 != "<none>" && !$0.hasPrefix("Menu ") }, "Settings takes focus")
         var path = [focusedLabel(app)]
+        // Settings opens on General, never on the profile card beside it (hosted run 44934243918).
+        XCTAssertTrue(path[0].hasPrefix("General"), "Settings opens on the General rail entry, got \(path[0])")
         for _ in 0..<7 { path.append(press(.down, app, "settings rail down")) }
         log("settings rail down", path)
         XCTAssertGreaterThanOrEqual(Set(path).count, 4, "Down visits distinct rail entries: \(path)")
@@ -437,7 +439,16 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertFalse(paneEntry.hasPrefix("Menu "), "Right does not reach the top menu")
         let back = press(.left, app, "settings back to rail")
         XCTAssertEqual(back, rail, "Left returns to the rail entry the pane belongs to")
-        _ = press(.right, app, "settings pane again")
+        // Left from every one of the pane's first rows returns to the selected category, not the
+        // profile card that sits beside the top row.
+        var rows = [press(.right, app, "settings pane again")]
+        for row in 0..<3 {
+            let left = press(.left, app, "settings row \(row) left")
+            XCTAssertEqual(left, rail, "Left from pane row \(row) (\(rows.last ?? "")) returns to \(rail), got \(left)")
+            rows.append(press(.right, app, "settings row \(row) right"))
+            rows.append(press(.down, app, "settings row \(row + 1) down"))
+        }
+        log("settings pane rows", rows)
         remote.press(.menu)
         settle()
         XCTAssertEqual(focusedLabel(app), rail, "Back from the pane returns to the rail")
@@ -893,29 +904,36 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     }
 
     /// The real Search screen pushed from the real bar: the keyboard types, Down reaches the
-    /// filters, Up returns, and Back returns to the bar.
+    /// filters, Up returns, and Back returns to the bar. Three round trips, because the failure this
+    /// guards against was a race (Home's placeholder claiming focus before the bar did), and then
+    /// every top-level tab must still be reachable from where Back leaves focus.
     func testShellSearchKeyboardFiltersAndBackReturnToTheBar() {
         let app = launchShell()
         XCTAssertTrue(isBarElement(focusBar(app)))
-        var label = focusedLabel(app)
-        for _ in 0..<12 where label != "Search" { label = press(.left, app, "to search") }
-        XCTAssertEqual(label, "Search")
-        remote.press(.select)
-        XCTAssertTrue(searchField(app).waitForExistence(timeout: 20), "Search screen shows")
-        XCTAssertTrue(reachSearchKeyboard(app), "keyboard reachable; focus \(focusedLabel(app))")
-        remote.press(.select)
-        settle(2)
-        XCTAssertEqual(searchText(app).count, 1, "Select types a character, got \(searchText(app))")
-        capture("shell-search-typed")
-        let filters: Set<String> = ["All", "Movies & TV", "Live TV"]
-        let down = press(.down, app, "shell search filters")
-        XCTAssertTrue(filters.contains(down), "Down from the keyboard reaches the filters, got \(down)")
-        XCTAssertEqual(press(.up, app, "shell search keyboard"), "Keyboard", "Up returns to the keyboard")
-        remote.press(.menu)
-        settle(3)
-        let after = focusedLabel(app)
-        log("shell search back", [down, after])
-        XCTAssertTrue(isBarElement(after), "Back from Search returns to the bar, got \(after)")
+        for round in 1...3 {
+            var label = focusedLabel(app)
+            for _ in 0..<12 where label != "Search" { label = press(.left, app, "to search \(round)") }
+            XCTAssertEqual(label, "Search", "round \(round): Left reaches Search")
+            remote.press(.select)
+            XCTAssertTrue(searchField(app).waitForExistence(timeout: 20), "round \(round): Search screen shows")
+            XCTAssertTrue(reachSearchKeyboard(app), "round \(round): keyboard reachable; focus \(focusedLabel(app))")
+            remote.press(.select)
+            settle(2)
+            XCTAssertGreaterThanOrEqual(searchText(app).count, 1, "round \(round): Select types a character, got \(searchText(app))")
+            if round == 1 { capture("shell-search-typed") }
+            let filters: Set<String> = ["All", "Movies & TV", "Live TV"]
+            let down = press(.down, app, "shell search filters \(round)")
+            XCTAssertTrue(filters.contains(down), "round \(round): Down from the keyboard reaches the filters, got \(down)")
+            XCTAssertEqual(press(.up, app, "shell search keyboard \(round)"), "Keyboard", "round \(round): Up returns to the keyboard")
+            remote.press(.menu)
+            settle(3)
+            let after = focusedLabel(app)
+            log("shell search back \(round)", [down, after])
+            XCTAssertTrue(isBarElement(after), "round \(round): Back from Search returns to the bar, got \(after)")
+        }
+        for title in ["Sports", "Home", "Live TV"] {
+            XCTAssertTrue(moveToTab(title, app), "\(title) is reachable after returning from Search")
+        }
     }
 
     /// BLOCKED, reported as skipped and never as passing: the real shell reads the shared Live TV
