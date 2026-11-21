@@ -503,7 +503,7 @@ final class KyroSportsHubStore {
     /// so flipping chips does not re-download a warm cache.
     func loadIfNeeded() async {
         let day = calendar.startOfDay(for: selectedDay)
-        let needsLoad = selectedCategory.leagues.contains { league in
+        let leaguesNeedingLoad = selectedCategory.leagues.filter { league in
             let current = state(for: league)
             let dayKnown = current.loadedDays.contains(day)
             if current.phase == .offline {
@@ -517,8 +517,10 @@ final class KyroSportsHubStore {
                 && current.loadedAt.map { now().timeIntervalSince($0) < Self.freshnessInterval } == true
             return !(fresh && dayKnown)
         }
-        guard needsLoad else { return }
-        await load()
+        guard !leaguesNeedingLoad.isEmpty else { return }
+        // A single missing or expired league must not refetch every warm league
+        // when returning to All Sports or changing the selected day.
+        await load(leagues: leaguesNeedingLoad, force: false)
     }
 
     /// User-initiated refresh: the stale notice's button, retry buttons and
