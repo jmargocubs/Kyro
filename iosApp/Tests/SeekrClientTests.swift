@@ -2,6 +2,31 @@ import XCTest
 @testable import Silo
 
 final class SeekrClientTests: XCTestCase {
+    func testValidateKeyReportsServerValidationFailure() async {
+        let stub = StubURLProtocol.Handler()
+        let session = stub.makeSession()
+        stub.route(StubURLProtocol.path("/v1/keys/validate")) { request in
+            XCTAssertEqual(request.header("X-API-Key"), "sk_user_supplied")
+            return .json(#"{"valid":false}"#)
+        }
+        let client = SeekrClient(baseURL: URL(string: "https://api.seekr.tv")!, session: session,
+                                 apiKeyProvider: { "sk_user_supplied" })
+        let valid = await client.validateKey()
+        XCTAssertFalse(valid)
+    }
+
+    func testValidateKeyTreatsNetworkFailureAsFailure() async {
+        let stub = StubURLProtocol.Handler()
+        let session = stub.makeSession()
+        stub.route(StubURLProtocol.any) { _ in
+            throw URLError(.notConnectedToInternet)
+        }
+        let client = SeekrClient(baseURL: URL(string: "https://api.seekr.tv")!, session: session,
+                                 apiKeyProvider: { "sk_user_supplied" })
+        let valid = await client.validateKey()
+        XCTAssertFalse(valid)
+    }
+
     func testLookupBuildsMovieAndEpisodeQueryAndParsesSuccess() async throws {
         let stub = StubURLProtocol.Handler()
         let session = stub.makeSession()
