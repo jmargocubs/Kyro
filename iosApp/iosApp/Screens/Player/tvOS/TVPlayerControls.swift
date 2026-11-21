@@ -739,9 +739,7 @@ private struct TVScrubPreviewLayer: View {
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 320, height: 180)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            Text(PlayerTimeFormatter.formatHMS(
-                viewModel.scrubPreviewImageSourceTime ?? viewModel.scrubPreviewTime
-            ))
+            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
                 .font(.system(size: 24, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
                 .monospacedDigit()
