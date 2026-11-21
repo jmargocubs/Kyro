@@ -292,6 +292,14 @@ class PlayerViewModel {
     private var serverTrickplayTask: Task<Void, Never>?
     @ObservationIgnored
     private var serverTrickplayKey: String?
+    /// Fetches Seekr title-level scrub previews when enabled.
+    @ObservationIgnored
+    private var seekrPreviewTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var seekrPreviewKey: String?
+    /// Content key used to persist the manual Seekr sync offset.
+    @ObservationIgnored
+    private var seekrSyncTitleKey: String?
     var assSubtitles: ASSSubtitleSession { aetherPlaybackController.assSubtitles }
     var subtitleCueHold: SubtitleCueHold { aetherPlaybackController.cueHold }
     var aetherEngine: AetherEngine { aetherPlaybackController.engine }
@@ -312,6 +320,10 @@ class PlayerViewModel {
         pendingProtocolV3FirstFrameEpoch = nil
         pendingProtocolV3SeekReanchorPosition = nil
         pendingProtocolV3TrackChange = nil
+        // Seekr sheets are title-scoped. Always drop them on dispose so a
+        // replacement load cannot briefly scrub another title's tiles. Same-file
+        // replans reload via `loadSeekrPreviews` after activate.
+        clearSeekrPreviews()
         if forReplacement {
             aetherPlaybackController.prepareForReplacement()
         } else {
@@ -380,6 +392,192 @@ class PlayerViewModel {
             Task { await sheets.shutdown() }
         }
         scrubPreviewProvider.serverPreviews = nil
+    }
+
+    /// Loads Seekr scrub previews for the playing title when the user has
+    /// enabled them and external ids are available. Missing titles and
+    /// network failures leave playback unchanged.
+    private func loadSeekrPreviews(for prepared: PreparedPlayback) {
+        let durationSeconds = prepared.session.durationSeconds
+            ?? prepared.selectedVersion.duration
+            ?? duration
+        loadSeekrPreviews(watchDetail: prepared.watchDetail, durationSeconds: durationSeconds)
+    }
+
+    /// Mid-session enable path: use the active title without restarting playback.
+    private func reloadSeekrPreviewsForCurrentPlayback() {
+        guard let detail = currentWatchDetail else {
+            clearSeekrPreviews()
+            return
+        }
+        let durationSeconds = currentSelectedVersion?.duration ?? duration
+        loadSeekrPreviews(watchDetail: detail, durationSeconds: durationSeconds)
+    }
+
+    func applySeekrPreviewsEnabled(_ enabled: Bool) {
+        guard !isDisposed else { return }
+        if enabled {
+            reloadSeekrPreviewsForCurrentPlayback()
+        } else {
+            clearSeekrPreviews()
+            // Drop the displayed still only if its source was Seekr, so disabling
+            // Seekr does not clear an active cache, server, or extractor preview.
+            if scrubPreviewImageSource == .seekr {
+                scrubPreviewImage = nil
+                scrubPreviewImageSourceTime = nil
+                scrubPreviewImageSource = nil
+            }
+        }
+    }
+
+    func setScrubPreviewForTesting(
+        image: CGImage?,
+        sourceTime: Double?,
+        source: AetherScrubPreviewProvider.Source?
+    ) {
+        self.scrubPreviewImage = image
+        self.scrubPreviewImageSourceTime = sourceTime
+        self.scrubPreviewImageSource = source
+    }
+
+    private func loadSeekrPreviews(watchDetail: WatchDetail, durationSeconds: Double?) {
+        guard SeekrPreviewSettings.shared.previewsEnabled else {
+            clearSeekrPreviews()
+            return
+        }
+        guard SeekrCredentials.apiKey() != nil else {
+            clearSeekrPreviews()
+            return
+        }
+        let resolvedDuration = durationSeconds ?? duration
+        let durationMs = Int64((max(resolvedDuration, 0) * 1_000).rounded())
+        guard durationMs > 0 else {
+            clearSeekrPreviews()
+            return
+        }
+        let contentId = watchDetail.contentId
+        let key = "seekr:\(contentId)#\(durationMs)"
+        guard key != seekrPreviewKey else { return }
+        clearSeekrPreviews()
+        seekrPreviewKey = key
+        seekrPreviewTask = Task { [weak self] in
+            guard let content = await self?.resolveSeekrContent(for: watchDetail) else {
+                await MainActor.run {
+                    if let self, self.seekrPreviewKey == key { self.seekrPreviewKey = nil }
+                }
+                return
+            }
+            guard !Task.isCancelled else { return }
+            // Re-check the toggle after the network hop so a mid-flight disable
+            // never installs sheets.
+            let stillEnabled = await MainActor.run {
+                SeekrPreviewSettings.shared.previewsEnabled && self?.seekrPreviewKey == key
+            }
+            guard stillEnabled, !Task.isCancelled else { return }
+            let outcome = await SeekrClient.shared.loadTrack(content: content, durationMs: durationMs)
+            guard !Task.isCancelled else { return }
+            switch outcome {
+            case let .success(track):
+                let titleKey = content.cacheKey
+                let install: (offset: Int64, currentTime: Double, allowed: Bool) = await MainActor.run {
+                    guard let self,
+                          !self.isDisposed,
+                          SeekrPreviewSettings.shared.previewsEnabled,
+                          self.seekrPreviewKey == key,
+                          self.currentWatchDetail?.contentId == contentId else {
+                        return (0, 0, false)
+                    }
+                    let offset = Int64(SeekrPreviewSettings.shared.syncOffsetMs(forTitleKey: titleKey))
+                    return (offset, self.currentTime, true)
+                }
+                guard install.allowed else {
+                    return
+                }
+                let sheets = SeekrPreviewSheets(track: track, offsetMs: install.offset)
+                let installed = await MainActor.run { () -> Bool in
+                    guard let self,
+                          !self.isDisposed,
+                          SeekrPreviewSettings.shared.previewsEnabled,
+                          self.seekrPreviewKey == key,
+                          self.currentWatchDetail?.contentId == contentId else {
+                        return false
+                    }
+                    self.seekrSyncTitleKey = titleKey
+                    self.scrubPreviewProvider.seekrPreviews = sheets
+                    return true
+                }
+                if installed {
+                    await sheets.warm(aroundSourceSeconds: install.currentTime)
+                } else {
+                    await sheets.shutdown()
+                }
+            case .failure:
+                // Still frames and server trickplay remain the fallback.
+                await MainActor.run {
+                    if let self, self.seekrPreviewKey == key { self.seekrPreviewKey = nil }
+                }
+            }
+        }
+    }
+
+    /// Resolves TMDB/IMDb identifiers for Seekr. Episodes need the series'
+    /// ids plus season/episode from the watch detail.
+    private func resolveSeekrContent(for detail: WatchDetail) async -> SeekrContent? {
+        let contentId = detail.contentId
+        if detail.type == "episode",
+           let season = detail.seasonNumber,
+           let episode = detail.episodeNumber {
+            let seriesId = detail.seriesId ?? contentId
+            // Episode TMDB/IMDb ids are per-episode; Seekr needs the show ids.
+            if let series = try? await SiloAPI.shared.itemDetail(contentId: seriesId) {
+                let content = SeekrContent.episode(
+                    showTmdbId: series.tmdbId.flatMap { Int($0) },
+                    showImdbId: series.imdbId,
+                    season: season,
+                    episode: episode
+                )
+                if content.isValid { return content }
+            }
+            return nil
+        }
+
+        if let item = try? await SiloAPI.shared.itemDetail(contentId: contentId) {
+            let content = SeekrContent.movie(
+                tmdbId: item.tmdbId.flatMap { Int($0) },
+                imdbId: item.imdbId
+            )
+            if content.isValid { return content }
+        }
+        return nil
+    }
+
+    private func clearSeekrPreviews() {
+        seekrPreviewTask?.cancel()
+        seekrPreviewTask = nil
+        seekrPreviewKey = nil
+        seekrSyncTitleKey = nil
+        if let sheets = scrubPreviewProvider.seekrPreviews {
+            Task { await sheets.shutdown() }
+        }
+        scrubPreviewProvider.seekrPreviews = nil
+    }
+
+    /// True when Seekr sheets are installed for the current title.
+    var hasSeekrPreviews: Bool { scrubPreviewProvider.seekrPreviews != nil }
+
+    /// Manual Seekr preview sync for the current title, in milliseconds.
+    var seekrPreviewSyncOffsetMs: Int {
+        get {
+            guard let key = seekrSyncTitleKey else { return 0 }
+            return SeekrPreviewSettings.shared.syncOffsetMs(forTitleKey: key)
+        }
+        set {
+            guard let key = seekrSyncTitleKey else { return }
+            SeekrPreviewSettings.shared.setSyncOffsetMs(newValue, forTitleKey: key)
+            let sheets = scrubPreviewProvider.seekrPreviews
+            let offset = Int64(newValue)
+            Task { await sheets?.updateOffsetMs(offset) }
+        }
     }
 
     var isPlaying = false
@@ -598,6 +796,7 @@ class PlayerViewModel {
     /// vend an independent reader keep the existing time-only affordance.
     var scrubPreviewImage: CGImage?
     private(set) var scrubPreviewImageSourceTime: Double?
+    private(set) var scrubPreviewImageSource: AetherScrubPreviewProvider.Source?
     /// True while the iOS touch-and-hold fast-forward gesture is engaged.
     /// The temporary rate is applied straight to the backend and never
     /// persisted, so releasing always restores `settings.playbackSpeed`.
@@ -1454,6 +1653,7 @@ class PlayerViewModel {
     /// Re-applies subtitle styling when the user edits the system's
     /// Subtitles & Captioning preferences mid-playback.
     private var systemCaptionObserverToken: NSObjectProtocol?
+    private var seekrPreviewsEnabledObserverToken: NSObjectProtocol?
     @ObservationIgnored private var externalPlaybackTask: Task<Void, Never>?
     /// Provider-owned media (IPTV VOD) this player opened directly. Non-nil routes the engine's
     /// startup, end and failure events away from Silo's session, replan and progress logic.
@@ -1508,6 +1708,7 @@ class PlayerViewModel {
             guard let self else { return }
             self.scrubPreviewImage = preview?.image
             self.scrubPreviewImageSourceTime = preview?.sourceTime
+            self.scrubPreviewImageSource = preview?.source
         }
         subtitleSync.onTimingChanged = { [weak self] key in
             self?.refetchSubtitleCues(syncKey: key)
@@ -1592,6 +1793,17 @@ class PlayerViewModel {
                 self.prefsForCurrentItem = self.systemCaptionPrefsSnapshot()
                 self.prefsResolvedForCurrentItem = false
                 self.applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
+            }
+        }
+        seekrPreviewsEnabledObserverToken = NotificationCenter.default.addObserver(
+            forName: SeekrPreviewSettings.previewsEnabledDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let enabled = note.userInfo?["enabled"] as? Bool
+                ?? SeekrPreviewSettings.shared.previewsEnabled
+            Task { @MainActor [weak self] in
+                self?.applySeekrPreviewsEnabled(enabled)
             }
         }
         #if !os(macOS)
@@ -4446,6 +4658,7 @@ class PlayerViewModel {
         establishedAetherLoadEpoch = loadEpoch
         scrubPreviewProvider.activate(spec)
         loadServerTrickplay(for: prepared)
+        loadSeekrPreviews(for: prepared)
         adoptAetherInventory()
         reapplyAetherGain()
 
@@ -5286,6 +5499,7 @@ class PlayerViewModel {
         scrubPreviewProvider.endInteraction()
         scrubPreviewImage = nil
         scrubPreviewImageSourceTime = nil
+        scrubPreviewImageSource = nil
         seekOriginTime = nil
         seekTargetTime = nil
         watchPartyHeldSeek = nil
@@ -8889,6 +9103,10 @@ class PlayerViewModel {
             NotificationCenter.default.removeObserver(systemCaptionObserverToken)
             self.systemCaptionObserverToken = nil
         }
+        if let seekrPreviewsEnabledObserverToken {
+            NotificationCenter.default.removeObserver(seekrPreviewsEnabledObserverToken)
+            self.seekrPreviewsEnabledObserverToken = nil
+        }
         if let foregroundExitObserverToken {
             NotificationCenter.default.removeObserver(foregroundExitObserverToken)
             self.foregroundExitObserverToken = nil
@@ -9007,6 +9225,9 @@ class PlayerViewModel {
             isDisposed = true
             if let systemCaptionObserverToken {
                 NotificationCenter.default.removeObserver(systemCaptionObserverToken)
+            }
+            if let seekrPreviewsEnabledObserverToken {
+                NotificationCenter.default.removeObserver(seekrPreviewsEnabledObserverToken)
             }
             if let outputRouteObserverToken {
                 NotificationCenter.default.removeObserver(outputRouteObserverToken)

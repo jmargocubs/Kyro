@@ -15,9 +15,17 @@ import Foundation
 /// file, not only what has been buffered, and need no decode.
 @MainActor
 final class AetherScrubPreviewProvider {
+    enum Source: Equatable, Sendable {
+        case cache
+        case server
+        case seekr
+        case extractor
+    }
+
     struct Preview {
         let image: CGImage
         let sourceTime: Double
+        let source: Source
     }
 
     var onPreview: ((Preview?) -> Void)?
@@ -26,6 +34,10 @@ final class AetherScrubPreviewProvider {
     /// the playback item. They outlive load generations: a replan or quality
     /// switch plays the same file.
     var serverPreviews: ServerTrickplaySheets?
+
+    /// Seekr title-level scrub previews. Used when enabled and when the
+    /// server has no trickplay (or its sheet is not yet available).
+    var seekrPreviews: SeekrPreviewSheets?
 
     private static let requestDebounce: Duration = .milliseconds(80)
     private static let thumbnailWidth = 480
@@ -132,7 +144,7 @@ final class AetherScrubPreviewProvider {
         let playerTime: Double?
         if case let .local(time) = spec.timeline.seekDisposition(forSourceTime: sourceTime) {
             playerTime = time
-        } else if serverPreviews != nil {
+        } else if serverPreviews != nil || seekrPreviews != nil {
             playerTime = nil
         } else {
             pendingRequest = nil
@@ -195,9 +207,12 @@ final class AetherScrubPreviewProvider {
 
             // Cache-backed stills come first: they are local, exact, and
             // answer quickly with nil when the segment is not resident. The
-            // server's previews cover the rest of the file. A second network
-            // reader is the last resort, after the server's previews.
+            // server's previews cover the rest of the file. Seekr covers
+            // titles the server has not published trickplay for. A second
+            // network reader is the last resort.
             var image: CGImage?
+            var previewSourceTime = request.sourceTime
+            var previewSource: Source?
             if engine.supportsCacheBackedStills, let playerTime = request.playerTime {
                 // Do not fall through to a second network reader: that
                 // breaks single-connection/debrid sources.
@@ -205,6 +220,9 @@ final class AetherScrubPreviewProvider {
                     atSeconds: playerTime,
                     maxWidth: Self.thumbnailWidth
                 )
+                if image != nil {
+                    previewSource = .cache
+                }
             }
             if image == nil, let serverPreviews {
                 // On the software path the extractor answers a target in the
@@ -215,6 +233,24 @@ final class AetherScrubPreviewProvider {
                     atSourceTime: request.sourceTime,
                     waitingForDownload: !extractorAnswers
                 )
+                if image != nil {
+                    previewSource = .server
+                }
+            }
+            if image == nil, let seekrPreviews {
+                // Never wait on Seekr inside the scrub worker. A download wait
+                // would stall the single worker and delay cache/server/extractor
+                // answers for later targets. Warming and retryWhenSheetArrives
+                // fill sheets in the background.
+                if let seekr = await seekrPreviews.thumbnail(
+                    atSourceTime: request.sourceTime,
+                    waitingForDownload: false
+                ) {
+                    image = seekr.image
+                    // Label the frame with the cue's actual timestamp.
+                    previewSourceTime = seekr.cueStartSeconds
+                    previewSource = .seekr
+                }
             }
             if image == nil, !engine.supportsCacheBackedStills,
                let playerTime = request.playerTime, let extractor = request.extractor {
@@ -222,20 +258,23 @@ final class AetherScrubPreviewProvider {
                     at: playerTime,
                     maxWidth: Self.thumbnailWidth
                 )
+                if image != nil {
+                    previewSource = .extractor
+                }
             }
 
             guard sessionGeneration == request.sessionGeneration,
                   requestGeneration == request.requestGeneration else {
                 continue
             }
-            guard let image else {
+            guard let image, let previewSource else {
                 // A target outside the loaded stream must not keep the
                 // previous target's still (see `request(atSourceTime:)`).
                 if request.playerTime == nil { onPreview?(nil) }
                 if !request.isRetry { retryWhenSheetArrives(request) }
                 continue
             }
-            onPreview?(Preview(image: image, sourceTime: request.sourceTime))
+            onPreview?(Preview(image: image, sourceTime: previewSourceTime, source: previewSource))
         }
     }
 
@@ -244,14 +283,25 @@ final class AetherScrubPreviewProvider {
     /// target when it is held, unless a newer target or session has
     /// replaced it.
     private func retryWhenSheetArrives(_ request: PendingRequest) {
-        guard let sheets = serverPreviews else { return }
-        Task { @MainActor [weak self] in
-            guard await sheets.awaitSheet(atSourceTime: request.sourceTime),
-                  let self,
-                  self.serverPreviews === sheets,
-                  self.sessionGeneration == request.sessionGeneration,
-                  self.requestGeneration == request.requestGeneration else { return }
-            self.request(atSourceTime: request.sourceTime, isRetry: true)
+        if let sheets = serverPreviews {
+            Task { @MainActor [weak self] in
+                guard await sheets.awaitSheet(atSourceTime: request.sourceTime),
+                      let self,
+                      self.serverPreviews === sheets,
+                      self.sessionGeneration == request.sessionGeneration,
+                      self.requestGeneration == request.requestGeneration else { return }
+                self.request(atSourceTime: request.sourceTime, isRetry: true)
+            }
+        }
+        if let sheets = seekrPreviews {
+            Task { @MainActor [weak self] in
+                guard await sheets.awaitSheet(atSourceTime: request.sourceTime),
+                      let self,
+                      self.seekrPreviews === sheets,
+                      self.sessionGeneration == request.sessionGeneration,
+                      self.requestGeneration == request.requestGeneration else { return }
+                self.request(atSourceTime: request.sourceTime, isRetry: true)
+            }
         }
     }
 

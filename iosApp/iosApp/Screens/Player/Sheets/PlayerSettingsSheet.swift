@@ -46,6 +46,7 @@ struct PlayerSettingsSheet: View {
             List {
                 videoSection
                 subtitlesSection
+                seekrPreviewSection
                 sessionSection
                 advancedSection
             }
@@ -161,6 +162,28 @@ struct PlayerSettingsSheet: View {
                         display: { formatMs($0) }
                     )
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var seekrPreviewSection: some View {
+        if viewModel.hasSeekrPreviews {
+            Section {
+                RangeSpinner(
+                    title: "Preview Sync",
+                    value: Binding(
+                        get: { viewModel.seekrPreviewSyncOffsetMs },
+                        set: { viewModel.seekrPreviewSyncOffsetMs = $0 }
+                    ),
+                    range: -120_000...120_000,
+                    step: 500,
+                    display: { formatMs($0) }
+                )
+            } header: {
+                Text("Thumbnail Previews")
+            } footer: {
+                Text("Nudge scrub thumbnails when this release differs from the preview source. Defaults to zero; never auto-derived from duration.")
             }
         }
     }
