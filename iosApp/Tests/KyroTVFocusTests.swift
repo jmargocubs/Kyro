@@ -415,6 +415,64 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertEqual(tvVisibleRootsFocusRearm(menuOwnedFocus: true, isShowingRoot: false, selectedRootWasRemoved: true), .none)
     }
 
+    // MARK: Navigation recovery: dropdown focus contract
+
+    func testOnlyTheFocusedTabsDropdownAcceptsFocus() {
+        // Down into a dropdown is native, so the dropdown under the focused tab must be a focus
+        // target before it is visible, and no other dropdown may be one.
+        XCTAssertTrue(TVTopMenuPanelFocusPolicy.isEligible("movies", focusedBarPanel: "movies",
+                                                           openPanel: nil, panelEntered: false))
+        XCTAssertFalse(TVTopMenuPanelFocusPolicy.isEligible("series", focusedBarPanel: "movies",
+                                                            openPanel: "series", panelEntered: false),
+                       "a stale preview of another tab is never a Down target")
+        XCTAssertFalse(TVTopMenuPanelFocusPolicy.isEligible("movies", focusedBarPanel: nil,
+                                                            openPanel: nil, panelEntered: false),
+                       "with content focused, no dropdown sits in the focus graph over the page")
+        XCTAssertTrue(TVTopMenuPanelFocusPolicy.isEligible("movies", focusedBarPanel: nil,
+                                                           openPanel: "movies", panelEntered: true),
+                       "an entered dropdown keeps focus after the tab lost it")
+        XCTAssertFalse(TVTopMenuPanelFocusPolicy.isEligible("series", focusedBarPanel: "series",
+                                                            openPanel: "movies", panelEntered: true),
+                       "while one dropdown is entered, no other is eligible")
+    }
+
+    func testClosedDropdownsLeaveTheFocusGraph() {
+        // Live TV: closed dropdowns stay mounted over the control row and must not absorb Right.
+        for panel in ["movies", "series", "forYou", "profile"] {
+            XCTAssertFalse(TVTopMenuPanelFocusPolicy.participatesInFocus(panel, focusedBarPanel: nil,
+                                                                         openPanel: nil, panelEntered: false),
+                           "\(panel) is out of the focus graph while closed and ineligible")
+        }
+        XCTAssertTrue(TVTopMenuPanelFocusPolicy.participatesInFocus("movies", focusedBarPanel: nil,
+                                                                    openPanel: "movies", panelEntered: false),
+                      "an open preview stays enabled, so it never redraws as disabled")
+    }
+
+    func testDropdownFocusArrivalEntersExactlyOnce() {
+        XCTAssertEqual(TVTopMenuPanelFocusPolicy.panelReportedFocus(hasFocus: true, panelEntered: false), .enter)
+        XCTAssertEqual(TVTopMenuPanelFocusPolicy.panelReportedFocus(hasFocus: true, panelEntered: true), .none,
+                       "repeated reports while entered change nothing")
+        XCTAssertEqual(TVTopMenuPanelFocusPolicy.panelReportedFocus(hasFocus: false, panelEntered: true), .none,
+                       "a transient nil never closes an entered dropdown")
+        XCTAssertEqual(TVTopMenuPanelFocusPolicy.panelReportedFocus(hasFocus: false, panelEntered: false), .none)
+    }
+
+    func testPreviewFollowsActualBarFocus() {
+        // The reported device symptom: Movies still looked open while Series had focus.
+        XCTAssertTrue(TVTopMenuPanelFocusPolicy.closesStalePreview(openPanel: "movies", panelEntered: false,
+                                                                   focusedElementPanel: "series"))
+        XCTAssertTrue(TVTopMenuPanelFocusPolicy.closesStalePreview(openPanel: "movies", panelEntered: false,
+                                                                   focusedElementPanel: nil),
+                      "moving to Live TV or Search closes it")
+        XCTAssertFalse(TVTopMenuPanelFocusPolicy.closesStalePreview(openPanel: "movies", panelEntered: false,
+                                                                    focusedElementPanel: "movies"))
+        XCTAssertFalse(TVTopMenuPanelFocusPolicy.closesStalePreview(openPanel: "movies", panelEntered: true,
+                                                                    focusedElementPanel: "series"),
+                       "an entered dropdown closes only through an explicit exit")
+        XCTAssertFalse(TVTopMenuPanelFocusPolicy.closesStalePreview(openPanel: String?.none, panelEntered: false,
+                                                                    focusedElementPanel: "series"))
+    }
+
     // MARK: Build 103 review: bar focus loss and ownership (pure policy, not the view)
 
     func testBarTransitionUsesOnlyItsOwnSourceAndConsumesOnce() {

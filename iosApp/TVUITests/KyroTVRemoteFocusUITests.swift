@@ -56,6 +56,84 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         assertNeverMenu(path + back)
     }
 
+    /// Navigation recovery: the shell keeps its dropdowns mounted over the page. Closed ones must
+    /// not take part in focus, or the row beneath them loses Right. Walks the row both ways, then
+    /// repeats the reported device path: select Categories, then Right to every later control.
+    func testLiveTVControlRowTraversesUnderClosedDropdowns() {
+        let app = launch(.livetv, dropdowns: true)
+        XCTAssertTrue(waitForFocus(app, in: liveTVControls), "Live TV starts on its control row")
+        var path = [focusedLabel(app)]
+        for _ in 0..<5 { path.append(press(.right, app, "dropdowns right")) }
+        log("livetv under dropdowns right", path)
+        XCTAssertEqual(Array(path.prefix(5)), liveTVControls, "Right visits each control under closed dropdowns")
+        var back = [path.last ?? ""]
+        for _ in 0..<5 { back.append(press(.left, app, "dropdowns left")) }
+        log("livetv under dropdowns left", back)
+        XCTAssertEqual(Array(back.suffix(5)), liveTVControls.reversed(), "Left retraces the row")
+
+        XCTAssertEqual(press(.right, app, "to categories"), "Categories")
+        remote.press(.select)
+        settle()
+        let afterCategories = (0..<3).map { _ in press(.right, app, "from selected categories right") }
+        log("livetv right from selected categories", afterCategories)
+        XCTAssertEqual(afterCategories, ["Favorites", "TV Guide", "Providers"],
+                       "Right leaves a selected Categories chip")
+        assertNeverMenu(path + back + afterCategories)
+    }
+
+    /// The pre-refactor shell kept closed dropdowns in the focus graph. Recorded, not asserted,
+    /// so a run shows whether the simulator's engine reproduces the device's stuck Right.
+    func testLiveTVControlRowUnderUngatedDropdownsForComparison() {
+        let app = launch(.livetv, dropdowns: true, ungatedPanels: true)
+        guard waitForFocus(app, in: liveTVControls) else { return }
+        var path = [focusedLabel(app)]
+        for _ in 0..<5 { path.append(press(.right, app, "ungated right")) }
+        log("livetv under ungated dropdowns right", path)
+    }
+
+    /// Movies tab → Down enters the dropdown at once (no dwell wait), Right opens the sections,
+    /// and Browse, Collections and the IPTV provider are each selectable. Entry and exit repeat.
+    func testMoviesDropdownEntersOnDownAndReachesEveryChoice() {
+        let app = launch(.livetv, dropdowns: true)
+        XCTAssertTrue(waitForFocus(app, in: liveTVControls), "Live TV starts on its control row")
+
+        // Browse: tab → Down → Right (Recommended) → Down (Collections) → Down (Browse) → Select.
+        XCTAssertTrue(focusMoviesTab(app), "Up then Right reaches Menu Movies")
+        XCTAssertTrue(isDropdown(press(.down, app, "movies down")), "Down enters the dropdown")
+        _ = press(.right, app, "sections")
+        _ = press(.down, app, "collections")
+        _ = press(.down, app, "browse")
+        remote.press(.select)
+        XCTAssertTrue(selection(app, "Browse"), "Browse is selectable")
+
+        // Collections.
+        XCTAssertTrue(focusMoviesTab(app), "back to Menu Movies")
+        XCTAssertTrue(isDropdown(press(.down, app, "movies down")))
+        _ = press(.right, app, "sections")
+        _ = press(.down, app, "collections")
+        remote.press(.select)
+        XCTAssertTrue(selection(app, "Collections"), "Collections is selectable")
+
+        // IPTV provider: the row below the library.
+        XCTAssertTrue(focusMoviesTab(app), "back to Menu Movies")
+        XCTAssertTrue(isDropdown(press(.down, app, "movies down")))
+        _ = press(.down, app, "provider row")
+        remote.press(.select)
+        XCTAssertTrue(selection(app, "Provider Harness VOD"), "The IPTV provider is selectable")
+
+        // Repeated entry and exit: Up past the first row returns to the tab every time.
+        XCTAssertTrue(focusMoviesTab(app), "back to Menu Movies")
+        for round in 1...3 {
+            XCTAssertTrue(isDropdown(press(.down, app, "enter \(round)")), "entry \(round)")
+            XCTAssertEqual(press(.up, app, "exit \(round)"), "Menu Movies", "exit \(round) returns to the tab")
+        }
+        // Back from inside the dropdown also returns to the tab.
+        XCTAssertTrue(isDropdown(press(.down, app, "enter for back")))
+        XCTAssertEqual(press(.menu, app, "back from dropdown"), "Menu Movies")
+        // Sideways from the tab is never captured by the dropdown below it.
+        XCTAssertEqual(press(.left, app, "tab left"), "Menu Live TV")
+    }
+
     /// Evidence for the Build 99 investigation: the same walk with `tvEdgeToEdgeScroll` disabled.
     /// Recorded, not asserted, so the run reports both paths side by side.
     func testLiveTVControlRowWithoutEdgeToEdgeGeometryForComparison() {
@@ -280,10 +358,13 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
 
     private enum Page: String { case livetv, movies, sports }
 
-    private func launch(_ page: Page, edgeToEdge: Bool = true) -> XCUIApplication {
+    private func launch(_ page: Page, edgeToEdge: Bool = true, dropdowns: Bool = false,
+                        ungatedPanels: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-kyroTVFocusHarness", page.rawValue, "-kyro.c3.introduction.completed", "YES"]
         if !edgeToEdge { app.launchArguments.append("-kyroTVFocusHarnessNoEdgeToEdge") }
+        if dropdowns { app.launchArguments.append("-kyroTVFocusHarnessDropdowns") }
+        if ungatedPanels { app.launchArguments.append("-kyroTVFocusHarnessUngatedPanels") }
         app.launch()
         currentApp = app
         return app
@@ -377,6 +458,30 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    /// From anywhere on the Live TV page: Up until the menu, then Right to Movies.
+    private func focusMoviesTab(_ app: XCUIApplication) -> Bool {
+        var label = focusedLabel(app)
+        for _ in 0..<4 where !label.hasPrefix("Menu ") { label = press(.up, app, "to menu") }
+        for _ in 0..<3 where label != "Menu Movies" { label = press(.right, app, "to movies tab") }
+        return label == "Menu Movies"
+    }
+
+    private func isDropdown(_ label: String) -> Bool {
+        label == "cascade.movies" || label.localizedCaseInsensitiveContains("libraries")
+    }
+
+    private func selection(_ app: XCUIApplication, _ value: String) -> Bool {
+        let text = app.staticTexts["harness-selection"]
+        guard text.waitForExistence(timeout: 5) else { return false }
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if text.label == "Harness selection: \(value)" { return true }
+            settle(0.3)
+        }
+        print("KYRO-FOCUS selection was: \(text.label)")
+        return false
     }
 
     private func assertNeverMenu(_ labels: [String], file: StaticString = #filePath, line: UInt = #line) {

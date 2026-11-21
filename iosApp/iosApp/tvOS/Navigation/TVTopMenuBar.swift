@@ -191,10 +191,11 @@ struct TVTopMenuBar: View {
     /// A bar element rested under focus for the dwell interval, or focus
     /// left every dwellable element (`nil` → close any open panel). §5.3.
     let onDwell: (TVTopMenuPanel?) -> Void
-    /// D-pad down on a panel-bearing element (library tab or avatar): the
-    /// host opens its panel if needed and hands focus in (§5.3). Takes the
-    /// element so the host routes to the right panel.
-    let onEnterPanel: (TVTopMenuPanel) -> Void
+    /// The dropdown offered by the element that actually holds bar focus, or
+    /// nil. Reported on every bar focus change, whatever the menu ownership
+    /// flag says: that dropdown is the one Down enters natively
+    /// (`TVTopMenuPanelFocusPolicy`).
+    var onFocusedPanelChanged: (TVTopMenuPanel?) -> Void = { _ in }
     /// Press on the profile avatar opens the profile panel and enters it
     /// immediately; dwell only previews it.
     let onProfilePressed: () -> Void
@@ -319,6 +320,13 @@ struct TVTopMenuBar: View {
                 lastBarFocus = newValue
                 refocusAfterClose = false
                 ignoreNextFocusLoss = false
+                // Dropdowns follow actual focus, never the ownership flag:
+                // the focused element's dropdown becomes the eligible Down
+                // target, a stale preview closes, and the dwell restarts.
+                // A passive preview never blocks a page claim, and the dwell
+                // fires only if focus is still here when it elapses.
+                onFocusedPanelChanged(dwellTarget(for: newValue))
+                scheduleDwell(for: newValue)
                 // Ownership follows intent, not mere arrival: a user move or
                 // the bar's own request. A system repair or initial
                 // resolution that lands on the always-enabled bar leaves the
@@ -327,12 +335,10 @@ struct TVTopMenuBar: View {
                 requestedFocus = nil
                 guard owned || isMenuFocused else {
                     TVFocusDiagnostics.value("state", "TopMenu", "systemArrivalLeftUnowned", newValue)
-                    dwellTask?.cancel()
                     return
                 }
                 pendingBarFocusLoss = false
                 isMenuFocused = !panelEntersFocus
-                scheduleDwell(for: newValue)
                 return
             }
             // Entered mode: the panel claimed focus; stay passive (see
@@ -362,33 +368,40 @@ struct TVTopMenuBar: View {
         case .userArrival:
             guard !panelEntersFocus else { return }
             isMenuFocused = true
-            if let actualItem {
-                lastBarFocus = actualItem
-                scheduleDwell(for: actualItem)
-            }
+            if let actualItem { lastBarFocus = actualItem }
         case .downFromBar:
-            guard !panelEntersFocus, isMenuFocused || pendingBarFocusLoss else { return }
-            guard let actualItem else { return }
-            lastBarFocus = actualItem
+            // Down is native: from a panel-bearing element the engine lands
+            // in its eligible dropdown, which reports focus and is entered by
+            // the host; from any other element it lands on the page. Neither
+            // case is decided here, and nothing writes focus. Only ownership
+            // is released.
             pendingBarFocusLoss = false
             refocusAfterClose = false
-            dwellTask?.cancel()
+            guard !panelEntersFocus else { return }
             isMenuFocused = false
-            if let panel = dwellTarget(for: actualItem) {
-                onEnterPanel(panel)
-            } else {
+            if let actualItem { lastBarFocus = actualItem }
+            if dwellTarget(for: actualItem) == nil {
+                onFocusedPanelChanged(nil)
                 onContentFocusHandoff()
             }
         case .otherDeparture:
             let wasOwned = isMenuFocused || pendingBarFocusLoss
             pendingBarFocusLoss = false
-            guard wasOwned, !panelEntersFocus, let actualItem else { return }
+            guard !panelEntersFocus else { return }
+            guard wasOwned, let actualItem else {
+                // A system move (a page claim) took focus off the bar. Close
+                // a passive preview so it never lingers over the page.
+                onFocusedPanelChanged(nil)
+                if openPanel != nil { onDwell(nil) }
+                return
+            }
             lastBarFocus = actualItem
             if openPanel != nil || refocusAfterClose {
                 refocusAfterClose = false
                 claimBarFocus(actualItem)
             } else {
                 isMenuFocused = false
+                onFocusedPanelChanged(nil)
                 scheduleDwell(for: nil)
                 onContentFocusHandoff()
             }
@@ -745,7 +758,9 @@ struct TVTopMenuBar: View {
         // the new element's dwell. Once the panel is expected to own focus,
         // ignore top-bar repairs: tvOS may briefly re-home to Home while
         // the panel row focus claim is being applied.
-        if let openPanel, !panelEntersFocus, let item, !item.matches(panel: openPanel) {
+        if let item, TVTopMenuPanelFocusPolicy.closesStalePreview(
+            openPanel: openPanel, panelEntered: panelEntersFocus,
+            focusedElementPanel: dwellTarget(for: item)) {
             onDwell(nil)
             // Closing the panel removes its overlay, which perturbs focus and
             // drops the tab we just moved to; flag it so the nil-drop re-pins.
@@ -800,16 +815,6 @@ private enum TVTopMenuFocus: Hashable {
     case search
     case settings
     case profile
-
-    /// Whether this focused element is the anchor of the given open panel —
-    /// i.e. focus is still "on" that panel's tab/avatar, not a sibling.
-    func matches(panel: TVTopMenuPanel) -> Bool {
-        switch (self, panel) {
-        case let (.root(a), .root(b)): return a == b
-        case (.profile, .profile): return true
-        default: return false
-        }
-    }
 }
 
 /// Capsule chrome for top-bar tabs and the search button (§5.1):
@@ -1041,7 +1046,10 @@ private enum TVForYouAction: Hashable {
 /// tab, matching the top-bar dwell/down focus contract used by library
 /// cascades.
 struct TVForYouDropdown: View {
-    let entersPanel: Bool
+    /// Rows are real focus targets: the For You tab holds bar focus (Down
+    /// lands on a row natively) or the panel is entered. Otherwise they are
+    /// passive labels.
+    let acceptsFocus: Bool
     let focusEntryGeneration: Int
     let onPanelFocusChanged: (Bool) -> Void
     let onClose: () -> Void
@@ -1062,16 +1070,16 @@ struct TVForYouDropdown: View {
             .onChange(of: focusedAction) { _, newValue in
                 onPanelFocusChanged(newValue != nil)
             }
-            .onChange(of: entersPanel) { _, entered in
+            .onChange(of: acceptsFocus) { _, entered in
                 if !entered { focusedAction = nil }
             }
             .onAppear {
-                if entersPanel { applyEntryGeneration(focusEntryGeneration) }
+                if acceptsFocus { applyEntryGeneration(focusEntryGeneration) }
             }
     }
 
     private func applyEntryGeneration(_ generation: Int) {
-        guard entersPanel,
+        guard acceptsFocus,
               generation > 0,
               generation != lastAppliedEntryGeneration else { return }
         lastAppliedEntryGeneration = generation
@@ -1121,7 +1129,7 @@ struct TVForYouDropdown: View {
             Spacer(minLength: 0)
         }
 
-        if entersPanel {
+        if acceptsFocus {
             Button(action: action) {
                 label
             }
@@ -1181,8 +1189,9 @@ struct TVProfileDropdown: View {
     /// Display name of the active server, shown under the profile name in
     /// the §5.8 mono header style.
     let serverHost: String?
-    /// Whether focus has entered the panel.
-    let entersPanel: Bool
+    /// Rows are real focus targets: the avatar holds bar focus (Down lands on
+    /// a row natively) or the panel is entered. Otherwise passive labels.
+    let acceptsFocus: Bool
     /// Bumped by the host when focus should enter — lands on the first row.
     let focusEntryGeneration: Int
     /// Reports whether any row currently holds focus, so the host can drop
@@ -1202,24 +1211,24 @@ struct TVProfileDropdown: View {
 
     var body: some View {
         panel
-            // Dwell previews render passive labels; rows become focusable
-            // only after the host explicitly hands focus into the panel.
+            // Rows are passive labels until the panel can take focus: its
+            // avatar is focused or the panel is entered.
             .onChange(of: focusEntryGeneration) { _, generation in
                 applyEntryGeneration(generation)
             }
             .onChange(of: focusedAction) { _, newValue in
                 onPanelFocusChanged(newValue != nil)
             }
-            .onChange(of: entersPanel) { _, entered in
+            .onChange(of: acceptsFocus) { _, entered in
                 if !entered { focusedAction = nil }
             }
             .onAppear {
-                if entersPanel { applyEntryGeneration(focusEntryGeneration) }
+                if acceptsFocus { applyEntryGeneration(focusEntryGeneration) }
             }
     }
 
     private func applyEntryGeneration(_ generation: Int) {
-        guard entersPanel,
+        guard acceptsFocus,
               generation > 0,
               generation != lastAppliedEntryGeneration else { return }
         lastAppliedEntryGeneration = generation
@@ -1313,7 +1322,7 @@ struct TVProfileDropdown: View {
             Spacer(minLength: 0)
         }
 
-        if entersPanel {
+        if acceptsFocus {
             Button(action: action) {
                 label
             }

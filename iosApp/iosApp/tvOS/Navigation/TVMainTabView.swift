@@ -115,6 +115,10 @@ struct TVMainTabView: View {
     @State private var panelEntersFocus = false
     @State private var panelFocusEntryGeneration = 0
     @State private var panelHasFocus = false
+    /// The dropdown under the bar element that actually holds focus, reported
+    /// on every bar focus change. It is the one dropdown Down can enter
+    /// natively (`TVTopMenuPanelFocusPolicy`).
+    @State private var focusedBarPanel: TVTopMenuPanel?
     @State private var controlReceiver = TVControlReceiver.shared
     /// Bar element to re-focus after Menu-ing out of a panel — its own
     /// anchor, so focus returns to the dwelled tab/avatar (§7).
@@ -183,7 +187,7 @@ struct TVMainTabView: View {
                     onSearch: { navigateFromBar(.search) },
                     onSettings: { navigateFromBar(.settings) },
                     onDwell: handleDwell(_:),
-                    onEnterPanel: enterPanelFor,
+                    onFocusedPanelChanged: { focusedBarPanel = $0 },
                     onProfilePressed: openProfilePanelImmediately,
                     onContentFocusHandoff: contentFocusDidMoveFromBar,
                     onExit: personalRoot != nil
@@ -636,8 +640,14 @@ struct TVMainTabView: View {
             leading: leading
         )
         let isActive = openPanel == panel
+        let isEligible = TVTopMenuPanelFocusPolicy.isEligible(
+            panel, focusedBarPanel: focusedBarPanel,
+            openPanel: openPanel, panelEntered: panelEntersFocus)
+        let participates = TVTopMenuPanelFocusPolicy.participatesInFocus(
+            panel, focusedBarPanel: focusedBarPanel,
+            openPanel: openPanel, panelEntered: panelEntersFocus)
 
-        return panelBody(for: panel, isActive: isActive)
+        return panelBody(for: panel, isActive: isActive, isEligible: isEligible)
             .padding(.leading, leading)
             .padding(.top, SiloTheme.Skyline.dropdownTopInset)
             .opacity(isActive ? 1 : 0)
@@ -646,6 +656,10 @@ struct TVMainTabView: View {
                 anchor: UnitPoint(x: anchorX, y: 0)
             )
             .allowsHitTesting(isActive)
+            // A closed, ineligible dropdown leaves the focus graph. Dropdowns
+            // stay mounted over the page; an invisible focus section there
+            // can absorb directional moves on the rows beneath it (Live TV).
+            .disabled(!participates)
             .accessibilityHidden(!isActive)
             .animation(
                 reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.topMenuPanelOpenDuration),
@@ -713,28 +727,31 @@ struct TVMainTabView: View {
     }
 
     @ViewBuilder
-    private func panelBody(for panel: TVTopMenuPanel, isActive: Bool) -> some View {
+    private func panelBody(for panel: TVTopMenuPanel, isActive: Bool, isEligible: Bool) -> some View {
         switch panel {
         case .root(let root):
             switch root {
             case .libraryType(let type):
-                cascadePanel(for: type, isActive: isActive)
+                cascadePanel(for: type, panel: panel, isActive: isActive, isEligible: isEligible)
             case .libraryShortcut(let libraryId, let label):
                 shortcutCascadePanel(
                     for: .libraryShortcut(libraryId: libraryId, label: label),
-                    isActive: isActive
+                    panel: panel,
+                    isActive: isActive,
+                    isEligible: isEligible
                 )
             case .recommendations:
-                forYouPanel(isActive: isActive)
+                forYouPanel(panel: panel, isEligible: isEligible)
             case .home, .liveTV, .sports, .calendar, .requests:
                 EmptyView()
             }
         case .profile:
-            profilePanel(isActive: isActive)
+            profilePanel(isEligible: isEligible)
         }
     }
 
-    private func cascadePanel(for type: TVLibraryTabType, isActive: Bool) -> some View {
+    private func cascadePanel(for type: TVLibraryTabType, panel: TVTopMenuPanel,
+                              isActive: Bool, isEligible: Bool) -> some View {
         let providerRows = TVCascadeProviderRow.rows(for: vodProviders(for: type))
         let currentProviderRow = activeSource(for: type).providerID.flatMap { id in
             providerRows.first(where: { $0.providerID == id })?.rowID
@@ -745,13 +762,14 @@ struct TVMainTabView: View {
             providers: providerRows,
             currentScopeId: currentProviderRow ?? activeLibrary(for: type)?.id,
             entersPanel: isActive && panelEntersFocus,
+            isEligible: isEligible,
             focusEntryGeneration: panelFocusEntryGeneration,
             onCommitLibrary: { commitScope(type: type, library: $0, pill: nil) },
             onCommitSection: { commitScope(type: type, library: $0, pill: $1) },
             onCommitProvider: { commitProvider(type: type, providerID: $0) },
             onPreviewLibrary: { prefetchLibrarySectionsIfNeeded($0) },
             onClose: { closePanel() },
-            onPanelFocusChanged: { handlePanelFocusChanged($0) },
+            onPanelFocusChanged: { handlePanelFocusChanged(panel, hasFocus: $0) },
             onExitToContent: { exitPanelToContent() }
         )
     }
@@ -759,7 +777,9 @@ struct TVMainTabView: View {
     @ViewBuilder
     private func shortcutCascadePanel(
         for root: TVRootDestination,
-        isActive: Bool
+        panel: TVTopMenuPanel,
+        isActive: Bool,
+        isEligible: Bool
     ) -> some View {
         if case .libraryShortcut(let libraryId, _) = root,
            let library = libraries.first(where: { $0.id == libraryId }),
@@ -769,22 +789,23 @@ struct TVMainTabView: View {
                 libraries: [library],
                 currentScopeId: library.id,
                 entersPanel: isActive && panelEntersFocus,
+                isEligible: isEligible,
                 focusEntryGeneration: panelFocusEntryGeneration,
                 onCommitLibrary: { commitShortcut(root: root, library: $0, pill: nil) },
                 onCommitSection: { commitShortcut(root: root, library: $0, pill: $1) },
                 onPreviewLibrary: { prefetchLibrarySectionsIfNeeded($0) },
                 onClose: { closePanel() },
-                onPanelFocusChanged: { handlePanelFocusChanged($0) },
+                onPanelFocusChanged: { handlePanelFocusChanged(panel, hasFocus: $0) },
                 onExitToContent: { exitPanelToContent() }
             )
         }
     }
 
-    private func forYouPanel(isActive: Bool) -> some View {
+    private func forYouPanel(panel: TVTopMenuPanel, isEligible: Bool) -> some View {
         TVForYouDropdown(
-            entersPanel: isActive && panelEntersFocus,
+            acceptsFocus: isEligible,
             focusEntryGeneration: panelFocusEntryGeneration,
-            onPanelFocusChanged: { handlePanelFocusChanged($0) },
+            onPanelFocusChanged: { handlePanelFocusChanged(panel, hasFocus: $0) },
             onClose: { closePanel() },
             onExitToContent: { exitPanelToContent() },
             onWatchlist: { closePanel(then: { navigateFromBar(.watchlist) }) },
@@ -793,15 +814,15 @@ struct TVMainTabView: View {
         )
     }
 
-    private func profilePanel(isActive: Bool) -> some View {
+    private func profilePanel(isEligible: Bool) -> some View {
         TVProfileDropdown(
             profileName: currentProfile?.name ?? "Profile",
             avatar: currentProfile?.avatarEmoji,
             avatarImageUrl: currentProfile?.avatarImageUrl,
             serverHost: ServerRegistry.shared.activeServer?.displayName,
-            entersPanel: isActive && panelEntersFocus,
+            acceptsFocus: isEligible,
             focusEntryGeneration: panelFocusEntryGeneration,
-            onPanelFocusChanged: { handlePanelFocusChanged($0) },
+            onPanelFocusChanged: { handlePanelFocusChanged(.profile, hasFocus: $0) },
             onSwitchProfile: { closePanel(then: switchProfile) },
             onWatchlist: { closePanel(then: { navigateFromBar(.watchlist) }) },
             onFavorites: { closePanel(then: { navigateFromBar(.favorites) }) },
@@ -825,8 +846,9 @@ struct TVMainTabView: View {
 
     /// Open (or switch) the anchored panel as a passive preview after dwell.
     /// Focus intentionally stays on the bar element so left/right navigation
-    /// can continue across library tabs. D-pad-down or profile press uses
-    /// `openPanelAndEnter` to move focus into the rows.
+    /// can continue across library tabs. Down enters natively (the panel is
+    /// eligible while its tab is focused); a profile press uses
+    /// `openPanelAndEnter`.
     private func handleDwell(_ panel: TVTopMenuPanel?) {
         guard let panel else {
             closePanel()
@@ -839,8 +861,8 @@ struct TVMainTabView: View {
     /// in below the bar but focus stays on the tab/avatar. This is the dwell
     /// (focus-rest) path — opening on a *settled* focus, with no in-flight
     /// move command, is what lets the tab keep its focus ring without a focus
-    /// escape. D-pad-down instead uses `openPanelAndEnter`, which claims a
-    /// panel row so the move has a destination.
+    /// escape. Down needs no claim: the eligible panel is the engine's native
+    /// destination below the tab, visible or not.
     private func openPanelPreview(_ panel: TVTopMenuPanel) {
         guard panel != openPanel else { return }
 
@@ -861,33 +883,13 @@ struct TVMainTabView: View {
         enterOpenPanel()
     }
 
-    /// Manually refresh panel row focus, used when d-pad-down arrives while
-    /// the matching panel is already open.
+    /// Hand focus into an already open panel (profile press while its
+    /// preview is showing).
     private func enterOpenPanel() {
         guard openPanel != nil else { return }
         panelEntersFocus = true
         panelHasFocus = true
         panelFocusEntryGeneration += 1
-    }
-
-    /// Route a d-pad-down on a panel-bearing bar element (§5.3): open its
-    /// panel if it isn't already, then move focus into it. The bar no longer
-    /// toggles the down handler on `openPanel`, so this can't run while the
-    /// focused tab is being rebuilt.
-    private func enterPanelFor(_ panel: TVTopMenuPanel) {
-        // A d-pad-down is a focus *move* — the engine must send focus
-        // somewhere. So down opens the panel (if a dwell hasn't already) AND
-        // hands focus into a row in one motion: claiming a panel row via
-        // @FocusState gives the move a destination, which stops focus from
-        // escaping down into the page content behind it (which is still Home
-        // — focusing a tab doesn't switch the page). The bar's
-        // `!panelHasFocus` release-guard keeps the tab's focus from emptying
-        // out mid-handoff, so this lands cleanly with no Home flash.
-        if openPanel != panel {
-            openPanelAndEnter(panel)
-            return
-        }
-        enterOpenPanel()
     }
 
     /// Open an anchored panel and hand focus into it in the same state
@@ -916,6 +918,8 @@ struct TVMainTabView: View {
         }
         panelEntersFocus = false
         panelHasFocus = false
+        // The bar reports the panel again when focus lands back on its tab.
+        focusedBarPanel = nil
 
         // Restore the panel's tab/avatar before the action so a route push
         // can take focus and dismissing a confirmation returns to the bar.
@@ -925,11 +929,29 @@ struct TVMainTabView: View {
         action?()
     }
 
+    /// A dropdown received or lost focus. Arrival is how Down enters a
+    /// dropdown: the engine moved focus into the eligible panel natively, so
+    /// the host only records the entered state (shows it, disables the page,
+    /// makes the bar inert). It never writes focus here.
+    ///
     /// Focus telemetry must not close an entered panel. SwiftUI can report a
     /// transient nil while it updates its focus graph; ownership changes only
     /// through the explicit menu boundary and selection actions.
-    private func handlePanelFocusChanged(_ hasFocus: Bool) {
-        panelHasFocus = hasFocus
+    private func handlePanelFocusChanged(_ panel: TVTopMenuPanel, hasFocus: Bool) {
+        TVFocusDiagnostics.value("state", "Shell", "panelReportedFocus", hasFocus)
+        switch TVTopMenuPanelFocusPolicy.panelReportedFocus(hasFocus: hasFocus,
+                                                            panelEntered: panelEntersFocus) {
+        case .enter:
+            panelEntersFocus = true
+            panelHasFocus = true
+            if openPanel != panel {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
+                    openPanel = panel
+                }
+            }
+        case .none:
+            panelHasFocus = hasFocus
+        }
     }
 
     private func closePanelForContentHandoff() {
@@ -1284,6 +1306,8 @@ struct TVMainTabView: View {
     /// not disable the bar or resign its focus.
     private func markContentOwnsFocus() {
         isTopMenuFocused = false
+        // Content owns focus: no dropdown may stay a focus target over it.
+        if !panelEntersFocus { focusedBarPanel = nil }
     }
 
     private func contentFocusDidMoveFromBar() {

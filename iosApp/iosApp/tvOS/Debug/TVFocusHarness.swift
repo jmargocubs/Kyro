@@ -15,6 +15,12 @@ import SwiftUI
 ///
 /// `-kyroTVFocusHarnessNoEdgeToEdge` turns `tvEdgeToEdgeScroll` into a no-op, so the same run can
 /// compare focus with and without the Build 99 scroll geometry.
+///
+/// `-kyroTVFocusHarnessDropdowns` gives "Menu Movies" the shell's real dropdown: a mounted
+/// `TVCascadeSelector` (one library, one IPTV provider) and a closed `TVForYouDropdown`, both laid
+/// over the page's top control row the way the shell's persistent panels are, and both driven by
+/// `TVTopMenuPanelFocusPolicy`. `-kyroTVFocusHarnessUngatedPanels` keeps closed dropdowns in the
+/// focus graph (the pre-refactor shell) so a run can compare the two.
 struct TVFocusHarnessModifier: ViewModifier {
     static let argument = "-kyroTVFocusHarness"
 
@@ -64,16 +70,113 @@ private struct TVFocusHarnessShell: View {
     private let menuItems = ["Home", "Live TV", "Movies"]
     /// The stand-in's selected item: where Up from any page lands.
     private let selectedMenuItem = "Live TV"
-    private var menuOwnsFocus: Bool { menuFocus != nil }
+    private var menuOwnsFocus: Bool { menuFocus != nil || panelEntered }
+
+    private let dropdowns = CommandLine.arguments.contains("-kyroTVFocusHarnessDropdowns")
+    private let ungatedPanels = CommandLine.arguments.contains("-kyroTVFocusHarnessUngatedPanels")
+    private static let moviesPanel = "Movies"
+    @State private var openPanel: String?
+    @State private var panelEntered = false
+    @State private var focusedBarPanel: String?
+    @State private var dwellTask: Task<Void, Never>?
+    @State private var lastSelection = "none"
 
     var body: some View {
         ZStack(alignment: .top) {
             Color.siloBackground.ignoresSafeArea()
             pageContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .disabled(tvPanelDisablesUnderlyingContent(isOpen: openPanel != nil, isEntered: panelEntered))
             menu
+            if dropdowns { dropdownLayer }
         }
         .ignoresSafeArea(edges: [.top, .horizontal])
+    }
+
+    // MARK: Dropdowns (same contract as the shell)
+
+    private var dropdownLayer: some View {
+        let isOpen = openPanel == Self.moviesPanel
+        let eligible = TVTopMenuPanelFocusPolicy.isEligible(
+            Self.moviesPanel, focusedBarPanel: focusedBarPanel, openPanel: openPanel, panelEntered: panelEntered)
+        let participates = TVTopMenuPanelFocusPolicy.participatesInFocus(
+            Self.moviesPanel, focusedBarPanel: focusedBarPanel, openPanel: openPanel, panelEntered: panelEntered)
+        return ZStack(alignment: .topLeading) {
+            TVCascadeSelector(
+                type: .movies,
+                libraries: [TVFocusHarnessFixture.library],
+                providers: TVCascadeProviderRow.rows(for: [TVFocusHarnessFixture.vodProvider]),
+                currentScopeId: TVFocusHarnessFixture.library.id,
+                entersPanel: isOpen && panelEntered,
+                isEligible: eligible,
+                focusEntryGeneration: 0,
+                onCommitLibrary: { commitSelection("Library \($0.name)") },
+                onCommitSection: { commitSelection($1.title) },
+                onCommitProvider: { _ in commitSelection("Provider \(TVFocusHarnessFixture.vodProvider.name)") },
+                onClose: closePanelToMenu,
+                onPanelFocusChanged: { hasFocus in
+                    if TVTopMenuPanelFocusPolicy.panelReportedFocus(hasFocus: hasFocus, panelEntered: panelEntered) == .enter {
+                        panelEntered = true
+                        openPanel = Self.moviesPanel
+                    }
+                },
+                onExitToContent: { commitSelection("Content") }
+            )
+            .opacity(isOpen ? 1 : 0)
+            .allowsHitTesting(isOpen)
+            .disabled(ungatedPanels ? false : !participates)
+            .padding(.leading, 520)
+
+            // A closed dropdown that is never eligible here: it only has to sit over the row.
+            TVForYouDropdown(acceptsFocus: false, focusEntryGeneration: 0, onPanelFocusChanged: { _ in },
+                             onClose: {}, onExitToContent: {}, onWatchlist: {}, onFavorites: {},
+                             onRecommendations: {})
+                .opacity(0)
+                .allowsHitTesting(false)
+                .disabled(!ungatedPanels)
+                .padding(.leading, 900)
+        }
+        .padding(.top, SiloTheme.Skyline.dropdownTopInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .overlay(alignment: .bottomLeading) {
+            Text("Harness selection: \(lastSelection)")
+                .font(.system(size: 20))
+                .accessibilityIdentifier("harness-selection")
+                .padding(40)
+        }
+        .onExitCommand { if panelEntered { closePanelToMenu() } }
+    }
+
+    private func menuFocusChanged(_ item: String?) {
+        guard dropdowns, !panelEntered, let item else { return }
+        let panel = item == Self.moviesPanel ? Self.moviesPanel : nil
+        focusedBarPanel = panel
+        if TVTopMenuPanelFocusPolicy.closesStalePreview(openPanel: openPanel, panelEntered: panelEntered,
+                                                        focusedElementPanel: panel) {
+            openPanel = nil
+        }
+        dwellTask?.cancel()
+        guard let panel else { return }
+        dwellTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(Int(SiloTheme.Skyline.cascadeDwellMilliseconds)))
+            guard !Task.isCancelled, menuFocus == item else { return }
+            openPanel = panel
+        }
+    }
+
+    private func closePanelToMenu() {
+        openPanel = nil
+        panelEntered = false
+        focusedBarPanel = nil
+        menuFocus = Self.moviesPanel
+    }
+
+    private func commitSelection(_ label: String) {
+        lastSelection = label
+        openPanel = nil
+        panelEntered = false
+        focusedBarPanel = nil
+        contentFocusRequest += 1
     }
 
     @ViewBuilder
@@ -106,6 +209,8 @@ private struct TVFocusHarnessShell: View {
         .frame(maxWidth: .infinity)
         .defaultFocus($menuFocus, selectedMenuItem, priority: .userInitiated)
         .focusSection()
+        .disabled(tvTopMenuIsInert(panelEntered: panelEntered))
+        .onChange(of: menuFocus) { _, item in menuFocusChanged(item) }
     }
 
     /// Back from a page's top level: one explicit claim, no deferral.
@@ -141,6 +246,8 @@ enum TVFocusHarnessFixture {
                                            xmltvURL: "https://\(host)/guide.xml")
         return service
     }
+
+    static let library = Library(id: 9101, name: "Harness Movies", type: "movie", sortOrder: 0)
 
     static var vodProvider: LiveTVProvider {
         var provider = LiveTVProvider(id: UUID(uuidString: "6B1D2C9E-0F4A-4C1B-9A57-3E1F0D0C0A99")!,

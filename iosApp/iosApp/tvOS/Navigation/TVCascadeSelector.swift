@@ -74,8 +74,11 @@ struct TVCascadeProviderRow: Identifiable, Equatable {
 ///
 /// Focus contract (the hard part — see §5.3/§7):
 /// - The host (`TVMainTabView`) keeps focus on the *tab* while dwell only
-///   previews the panel. D-pad **down** flips `entersPanel` true and bumps
-///   `focusEntryGeneration`, landing on the current-scope library row.
+///   previews the panel. While the tab holds focus the composite is
+///   `isEligible`, so D-pad **down** (click or swipe) moves focus into it
+///   natively; it highlights the current-scope library row and reports focus,
+///   and the host marks it entered (`TVTopMenuPanelFocusPolicy`). A profile-
+///   style explicit entry still bumps `focusEntryGeneration`.
 /// - **Up/down** rolls libraries; the flyout follows. **Right** enters the
 ///   flyout (first section); **left** returns to the library row.
 /// - **Press** on a library row commits that scope → Browse landing.
@@ -97,6 +100,9 @@ struct TVCascadeSelector: View {
     let currentScopeId: Int?
     /// Whether focus has entered the panel.
     let entersPanel: Bool
+    /// Whether the composite is a focus destination although not entered yet:
+    /// its tab holds bar focus, so Down lands here natively.
+    var isEligible = false
     /// Bumped by the host the moment focus should enter the panel — lands
     /// on the current-scope library row.
     let focusEntryGeneration: Int
@@ -187,8 +193,10 @@ struct TVCascadeSelector: View {
         }
         .onDisappear { flyoutFollowTask?.cancel() }
         .contentShape(Rectangle())
-        .focusable(entersPanel)
+        .focusable(entersPanel || isEligible)
         .focused($panelFocused)
+        // Lets hosted Siri Remote tests see that the composite holds focus.
+        .accessibilityIdentifier("cascade.\(type.rawValue)")
         .tvObserveFocus("Cascade", value: panelFocused)
         .onChange(of: focus) { _, value in TVFocusDiagnostics.value("state", "Cascade", "highlightNotEngineFocus", value) }
         .onTapGesture(perform: commitFocusedSelection)
@@ -451,20 +459,24 @@ struct TVCascadeSelector: View {
               generation > 0,
               generation != lastAppliedEntryGeneration else { return }
         lastAppliedEntryGeneration = generation
+        if seedEntryHighlight() { claimPanelFocus() }
+    }
+
+    /// The row an entry lands on: the first section of a single library
+    /// (§5.3), else the current-scope row, else the first row. Returns false
+    /// when there is no row. Writes the internal highlight only, never focus.
+    @discardableResult
+    private func seedEntryHighlight() -> Bool {
         if isSingleLibrary, let library = libraries.first {
-            // Single-level: land on the first section (§5.3).
             onPreviewLibrary(library)
             focus = .section(library.id, pills.first ?? .recommended)
-            claimPanelFocus()
-        } else {
-            // Two-level: land on the current-scope row, else the first.
-            let target = currentScopeId.flatMap { rowIDs.contains($0) ? $0 : nil } ?? rowIDs.first
-            if let target {
-                focus = .library(target)
-                flyoutAnchorId = target
-                claimPanelFocus()
-            }
+            return true
         }
+        let target = currentScopeId.flatMap { rowIDs.contains($0) ? $0 : nil } ?? rowIDs.first
+        guard let target else { return false }
+        focus = .library(target)
+        flyoutAnchorId = target
+        return true
     }
 
     private func handleFocusChange(_ newValue: Focus?) {
@@ -481,6 +493,9 @@ struct TVCascadeSelector: View {
     }
 
     private func handlePanelFocusedChange(_ isFocused: Bool) {
+        // A native Down arrival has no highlight yet: seed the entry row
+        // before reporting, so the host enters a panel with a visible row.
+        if isFocused, focus == nil { seedEntryHighlight() }
         onPanelFocusChanged(isFocused && focus != nil)
     }
 

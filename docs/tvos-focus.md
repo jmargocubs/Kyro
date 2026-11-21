@@ -186,6 +186,11 @@ it. `TVLiveTVBrowseFocusPlanner` holds the rules; the view applies them.
 - The page has no directional handler. Up from the control row reaches the top
   menu natively. Do not add per-chip `onMoveCommand` handlers or a Down
   interceptor.
+- Nothing else may sit in the focus graph over the row. The shell's closed
+  dropdowns (Movies, Series, For You, Profile) are mounted over it and are
+  disabled while closed; a focus section or container there can swallow Right.
+  `KyroTVRemoteFocusUITests.testLiveTVControlRowTraversesUnderClosedDropdowns`
+  walks the row under them, including from a selected Categories chip.
 - Back goes up one level: a category's channels → the category grid (restoring
   that card and the scroll anchor) → the control row, on the selected section →
   the top menu. One `onExitCommand` on the page decides by the focused target.
@@ -203,21 +208,58 @@ so Up from any page's top row, by click or swipe, lands on the selected tab
 without a page handler. Down is native everywhere: the page's entry section
 declares its target with `.userInitiated` default focus (Home rows, Live TV,
 Sports, Calendar, Requests, Browse grid from its control row). No bar element
-has a Down `onMoveCommand`. When a user's Down leaves a panel-bearing element
-(Movies, Series, For You, Profile, cascade shortcuts), the bar's focus-loss
-decision opens and enters that panel, so clicks and swipes behave the same and
-the panel has one Down owner. The bar is inert only while an entered panel
-owns focus.
+has a Down `onMoveCommand`. Down from a panel-bearing element enters its
+dropdown natively (see "Top Menu Dropdowns"). The bar is inert only while an
+entered panel owns focus.
 
-The bar receives only transition-specific updates (`TVFocusMovementTracker`)
-whose UIKit previous or next focus view falls within a specific bar button's
-non-focusable geometry marker in the same window. The source button is taken
-from that update, not from a possibly lagging SwiftUI focus binding.
-It does not reuse a global last heading or assume notification/SwiftUI callback
-ordering. An unmatched update is neutral:
+## Top Menu Dropdowns
 
-- A confirmed Down from a bar view enters its panel, or hands focus to content
-  when that element has no panel. A Down elsewhere cannot be reused here.
+`TVTopMenuPanelFocusPolicy` is the contract for every dropdown: Movies and
+Series cascades (Silo libraries, their Recommended/Collections/Browse
+sections, and IPTV providers), library shortcuts, For You and Profile. Each
+rule has one owner:
+
+- **Actual bar focus decides eligibility.** Every change of the bar's
+  `focusedItem` reports the focused element's dropdown to the shell
+  (`onFocusedPanelChanged`). That dropdown, and only that one, is a focus
+  target, whether or not its dwell preview is visible yet. Previews open after
+  the dwell and close when focus moves to another element on the same signal.
+  None of this is gated by the menu ownership flag.
+- **The engine moves focus in.** The eligible dropdown sits directly below its
+  tab, so Down lands in it natively, by click or swipe, with or without the
+  preview showing. No handler, tracker or focus write is involved.
+- **The dropdown reports arrival; the shell enters it.** The panel's focus
+  report makes it open and entered: the page becomes ineligible and the bar
+  inert. A cascade that receives focus this way highlights the current scope's
+  row first.
+- **Closed dropdowns leave the focus graph.** Dropdowns stay mounted (inserting
+  one used to drop bar focus), so a closed, ineligible one is `.disabled`. An
+  invisible panel must never sit in the focus graph over the page: the Movies,
+  Series and For You panels lie over the Live TV control row.
+- **Explicit exits close.** Back, Up past the first row, Down past the last row
+  and selections close the dropdown and name the next owner (see below).
+
+Before this contract, Down from a tab landed on the page first; the shell then
+matched UIKit's focus update to the tab by geometry and, only if the bar's
+ownership flag was still set, opened the panel, disabled the page and pulled
+focus back. Previews also opened and closed only while that flag was set. A
+transient `nil` binding cleared the flag, after which dropdowns stopped
+opening, a stale one stayed open while another tab had focus, and Down went to
+the page.
+
+## Top Menu Ownership Tracking
+
+Ownership (`isTopMenuFocused`) only arbitrates page focus claims; it no longer
+drives dropdowns. The bar receives transition-specific updates
+(`TVFocusMovementTracker`) whose UIKit previous or next focus view falls within
+a specific bar button's non-focusable geometry marker in the same window. The
+source button is taken from that update, not from a possibly lagging SwiftUI
+focus binding. It does not reuse a global last heading or assume
+notification/SwiftUI callback ordering. An unmatched update is neutral:
+
+- A confirmed Down from a bar view only releases ownership; the engine has
+  already chosen the dropdown or the page. From an element without a dropdown
+  it also hands focus to content.
 - A confirmed non-directional departure while a preview opens or closes
   re-pins the tab. A binding-only `nil` with no matching UIKit update does not
   invent a movement or a panel entry.
@@ -225,6 +267,8 @@ ordering. An unmatched update is neutral:
   makes the menu the owner. A system arrival (launch, pop to root, panel
   teardown, cover dismissal) leaves ownership with the page, so the page's
   entry or detail-return claim still lands. No gate disables the bar.
+- A departure the bar did not own (a page claim) closes a passive preview and
+  clears dropdown eligibility, so nothing lingers over the page.
 
 `isTopMenuFocused` mirrors that ownership; nothing sets it optimistically.
 Explicit hand-offs (tab selection, panel exit to content) clear it so the page
@@ -244,7 +288,7 @@ The top menu has three conceptual states:
 - `closed`: no panel is visible; focus belongs to content or the bar.
 - `preview`: a dwell-open panel is visible, but the bar still owns focus and
   the panel is passive.
-- `entered`: the user pressed Down or otherwise entered the panel; the panel
+- `entered`: focus arrived in the panel (Down, or a profile press); the panel
   owns focus and the bar is inert until the panel closes.
 
 An entered panel must also make the underlying page **ineligible for focus**.

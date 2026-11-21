@@ -126,8 +126,10 @@ struct TVLiveTVGuideNavigationState: Equatable {
 /// Focus topology (docs/tvos-focus.md, "Live TV"): two native focus sections, the control row
 /// and the content region. Each names where focus enters it with `defaultFocus` at
 /// `.userInitiated` priority, so Down from every chip lands on the same content target and Up
-/// from any card returns to the selected section's chip. The only directional handler is the
-/// row's Up boundary to the top menu. Focus is written programmatically only when the focused
+/// from any card returns to the selected section's chip. The page has no directional handler:
+/// Up from the row reaches the top menu natively, and Left/Right along the row are the engine's
+/// alone. The shell keeps closed top-menu dropdowns out of the focus graph, because they lie over
+/// this row (`TVTopMenuPanelFocusPolicy`). Focus is written programmatically only when the focused
 /// control is removed (a category opens or closes, a channel is hidden) or a cover is dismissed.
 struct TVLiveTVRootView: View {
     @Bindable var service: LiveTVService
