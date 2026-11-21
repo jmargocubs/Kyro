@@ -8,7 +8,7 @@ import SwiftUI
 struct TVDisabledAppearance: ViewModifier {
     @Environment(\.isEnabled) private var isEnabled
     func body(content: Content) -> some View {
-        content.opacity(isEnabled ? 1 : 0.45)
+        content.opacity(isEnabled || !dimsWhenDisabled ? 1 : 0.45)
     }
 }
 
@@ -136,10 +136,14 @@ struct TVKyroChipStyle: ButtonStyle {
     var fontSize: CGFloat = 24
     var minHeight: CGFloat = 58
     var horizontalPadding: CGFloat = 24
+    /// False for a chip that is disabled only to keep it out of the focus graph (Live TV's control
+    /// row while focus is in the content), which must not look unavailable.
+    var dimsWhenDisabled = true
 
     func makeBody(configuration: Configuration) -> some View {
         StyledBody(configuration: configuration, isSelected: isSelected, isDestructive: isDestructive,
-                   fontSize: fontSize, minHeight: minHeight, horizontalPadding: horizontalPadding)
+                   fontSize: fontSize, minHeight: minHeight, horizontalPadding: horizontalPadding,
+                   dimsWhenDisabled: dimsWhenDisabled)
     }
 
     private struct StyledBody: View {
@@ -149,6 +153,7 @@ struct TVKyroChipStyle: ButtonStyle {
         let fontSize: CGFloat
         let minHeight: CGFloat
         let horizontalPadding: CGFloat
+        let dimsWhenDisabled: Bool
         @Environment(\.isFocused) private var isFocused
         @Environment(\.isEnabled) private var isEnabled
         @Environment(\.accessibilityReduceMotion) private var reduceMotion

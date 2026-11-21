@@ -84,6 +84,17 @@ enum TVLiveTVBrowseFocusPlanner {
         .section(navigation.section)
     }
 
+    /// Whether a control-row item accepts focus. While focus is in the content, only the selected
+    /// section's chip does, so Up lands on it (Favorites' empty page went to Search channels, hosted
+    /// run 44876546150: the section's `.defaultFocus` is ignored when an item lies in the path).
+    /// On the row, or while focus is unset, every item does, so Left and Right walk the row.
+    static func controlAcceptsFocus(_ target: TVLiveTVBrowseFocus, currentFocus: TVLiveTVBrowseFocus?,
+                                    navigation: TVLiveTVBrowseNavigation) -> Bool {
+        TVTopMenuReachabilityPolicy.acceptsFocus(target, selected: controlEntry(navigation),
+                                                 barHoldsFocus: currentFocus?.isControlRow ?? true,
+                                                 claimTarget: nil)
+    }
+
     static func back(from focus: TVLiveTVBrowseFocus?,
                      navigation: TVLiveTVBrowseNavigation) -> TVLiveTVBackAction {
         guard let focus, !focus.isControlRow else { return .topMenu }

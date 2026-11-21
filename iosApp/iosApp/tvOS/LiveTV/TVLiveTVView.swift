@@ -326,21 +326,24 @@ struct TVLiveTVRootView: View {
                 } label: {
                     Label(item.title, systemImage: item.symbol)
                 }
-                .buttonStyle(TVKyroChipStyle(isSelected: navigation.section == item))
+                .buttonStyle(TVKyroChipStyle(isSelected: navigation.section == item, dimsWhenDisabled: false))
                 .focused($focusedControl, equals: .section(item))
+                .disabled(!controlAccepts(.section(item)))
             }
 
             Button { guideCategory = navigation.selectedCategory; showsGuide = true } label: {
                 Label("TV Guide", systemImage: "calendar.day.timeline.left")
             }
-            .buttonStyle(TVKyroChipStyle())
+            .buttonStyle(TVKyroChipStyle(dimsWhenDisabled: false))
             .focused($focusedControl, equals: .guide)
+            .disabled(!controlAccepts(.guide))
 
             Button { showsProviders = true } label: {
                 Label("Providers", systemImage: "antenna.radiowaves.left.and.right")
             }
-            .buttonStyle(TVKyroChipStyle(isSelected: service.providers.isEmpty))
+            .buttonStyle(TVKyroChipStyle(isSelected: service.providers.isEmpty, dimsWhenDisabled: false))
             .focused($focusedControl, equals: .providers)
+            .disabled(!controlAccepts(.providers))
 
             Spacer(minLength: 20)
 
@@ -355,6 +358,7 @@ struct TVLiveTVRootView: View {
             .frame(width: 330, height: 54)
             .background(.ultraThinMaterial, in: Capsule())
             .focused($focusedControl, equals: .search)
+            .disabled(!controlAccepts(.search))
         }
         .defaultFocus($focusedControl, TVLiveTVBrowseFocusPlanner.controlEntry(navigation),
                       priority: .userInitiated)
@@ -362,6 +366,10 @@ struct TVLiveTVRootView: View {
         .focusScope(controlsScope)
         // No directional handler: Up from the row reaches the top menu's
         // focus section natively, for clicks and swipes alike.
+    }
+
+    private func controlAccepts(_ target: FocusTarget) -> Bool {
+        TVLiveTVBrowseFocusPlanner.controlAcceptsFocus(target, currentFocus: focusedControl, navigation: navigation)
     }
 
     /// The content region: the second native focus section. It always fills the width below the

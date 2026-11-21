@@ -431,6 +431,14 @@ private struct TVXtreamVODDetailView: View {
     @State private var season = 1
     @State private var playback: XtreamVODPlayback?
 
+    /// The watch state lives in UserDefaults, which SwiftUI cannot observe. Reading `revision`
+    /// (bumped on every save) is what re-renders the labels: without it, Select on Add Favorite
+    /// saved the change but the button kept saying "Add Favorite" (hosted run 44876546150).
+    private var watchState: XtreamVODWatchState {
+        _ = vod.revision
+        return vod.watchState(for: item)
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -441,11 +449,11 @@ private struct TVXtreamVODDetailView: View {
                 if let summary = detail?.summary ?? item.summary { Text(summary).font(.system(size: 25)) }
                 if let genre = detail?.genre ?? item.genre { Text(genre).font(.system(size: 21)) }
                 HStack(spacing: 18) {
-                    Button(vod.watchState(for: item).favorite ? "Remove Favorite" : "Add Favorite") {
-                        vod.setFavorite(!vod.watchState(for: item).favorite, for: item)
+                    Button(watchState.favorite ? "Remove Favorite" : "Add Favorite") {
+                        vod.setFavorite(!watchState.favorite, for: item)
                     }.buttonStyle(TVKyroChipStyle())
                     if item.kind == .movie {
-                        Button(vod.watchState(for: item).position > 0 ? "Resume Movie" : "Play Movie") {
+                        Button(watchState.position > 0 ? "Resume Movie" : "Play Movie") {
                             play(nil)
                         }.buttonStyle(TVKyroChipStyle(isSelected: true))
                     }

@@ -12,6 +12,9 @@ enum TVFocusDiagnostics {
         #if DEBUG || KYRO_FOCUS_DIAGNOSTICS
         guard Thread.isMainThread else { return }
         MainActor.assumeIsolated {
+            #if DEBUG
+            TVFocusHarnessProbe.shared.append("\(kind) \(component) \(site)")
+            #endif
             TVRemoteFocusInspector.shared.record(String(describing: kind), String(describing: component), String(describing: site))
         }
         #endif
@@ -21,6 +24,9 @@ enum TVFocusDiagnostics {
         #if DEBUG || KYRO_FOCUS_DIAGNOSTICS
         guard Thread.isMainThread else { return }
         MainActor.assumeIsolated {
+            #if DEBUG
+            TVFocusHarnessProbe.shared.append("\(kind) \(component) \(site) \(String(describing: value).prefix(60))")
+            #endif
             let inspector = TVRemoteFocusInspector.shared
             guard inspector.enabled else { return }
             inspector.record(String(describing: kind), String(describing: component),

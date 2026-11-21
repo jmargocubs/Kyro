@@ -176,5 +176,30 @@ final class KyroTVLiveTVBrowseFocusTests: XCTestCase {
             XCTAssertNil(TVLiveTVBrowseFocusPlanner.afterChannelResults(currentFocus: .channel("a"), firstChannelID: "a"))
         }
     }
+
+    // MARK: Up from the content reaches the selected chip
+
+    func testFromContentOnlyTheSelectedChipAcceptsFocus() {
+        let content: [TVLiveTVBrowseFocus?] = [.placeholder, .channel("a"), .category("News"), .retry]
+        for section in TVLiveTVSection.allCases {
+            let state = navigation(section)
+            for focus in content {
+                let accepting = controlRow.filter {
+                    TVLiveTVBrowseFocusPlanner.controlAcceptsFocus($0, currentFocus: focus, navigation: state)
+                }
+                XCTAssertEqual(accepting, [.section(section)], "\(section) from \(String(describing: focus))")
+            }
+        }
+    }
+
+    func testOnTheRowOrWithoutFocusEveryControlAcceptsFocus() {
+        let state = navigation(.favorites)
+        for focus in controlRow + [nil] {
+            for target in controlRow {
+                XCTAssertTrue(TVLiveTVBrowseFocusPlanner.controlAcceptsFocus(target, currentFocus: focus, navigation: state),
+                              "\(target) from \(String(describing: focus))")
+            }
+        }
+    }
 }
 #endif

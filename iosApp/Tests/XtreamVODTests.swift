@@ -51,6 +51,24 @@ final class XtreamVODTests: XCTestCase {
         return id
     }
 
+    /// The detail view's Favorite label refreshes from `revision`; the watch state itself lives in
+    /// UserDefaults, which SwiftUI cannot observe. A save that did not bump it left "Add Favorite"
+    /// on screen after Select.
+    func testSettingAFavoriteSavesItAndBumpsTheObservedRevision() throws {
+        let item = XtreamVODItem(providerID: UUID(), kind: .movie, remoteID: 7, title: "Fixture",
+                                 category: "Fixtures", poster: nil, fileExtension: "mp4",
+                                 summary: nil, genre: nil, rating: nil)
+        let before = vod.revision
+        XCTAssertFalse(vod.watchState(for: item).favorite)
+        vod.setFavorite(true, for: item)
+        XCTAssertTrue(vod.watchState(for: item).favorite)
+        XCTAssertGreaterThan(vod.revision, before)
+        let afterOn = vod.revision
+        vod.setFavorite(false, for: item)
+        XCTAssertFalse(vod.watchState(for: item).favorite)
+        XCTAssertGreaterThan(vod.revision, afterOn)
+    }
+
     func testVODIsOptInAndKindsCanBeEnabledIndependently() async throws {
         let id = try live.saveXtreamConfiguration(name: "Opt in", serverURL: "https://vod.test",
                                                    username: "viewer", password: "fake-secret")

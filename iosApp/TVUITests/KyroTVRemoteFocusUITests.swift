@@ -31,6 +31,12 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
             let tree = XCTAttachment(string: app.debugDescription)
             tree.name = "failure-accessibility-tree"
             issue.add(tree)
+            let journal = app.descendants(matching: .any)["harness-journal"]
+            if journal.exists {
+                let text = XCTAttachment(string: journal.label)
+                text.name = "failure-focus-journal"
+                issue.add(text)
+            }
         }
         super.record(issue)
     }

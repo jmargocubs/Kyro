@@ -1,5 +1,7 @@
 #if os(tvOS) && DEBUG
 import SwiftUI
+import UIKit
+import Observation
 
 /// Debug builds only: `-kyroTVFocusHarness livetv|movies|sports` opens a real tvOS root page over
 /// offline fixtures, under a stand-in top menu, so hosted UI tests can drive the focus engine with
@@ -34,6 +36,7 @@ struct TVFocusHarnessModifier: ViewModifier {
             .task {
                 guard let raw = Self.value(after: Self.argument),
                       let requested = TVFocusHarnessPage(rawValue: raw) else { return }
+                TVFocusHarnessProbe.shared.start()
                 TVScreenLayout.debugDisablesEdgeToEdge =
                     CommandLine.arguments.contains("-kyroTVFocusHarnessNoEdgeToEdge")
                 // Stage Movies before the page is presented, so it mounts once with its catalog
@@ -98,6 +101,7 @@ private struct TVFocusHarnessShell: View {
             if dropdowns { dropdownLayer }
         }
         .ignoresSafeArea(edges: [.top, .horizontal])
+        .overlay(alignment: .bottomTrailing) { TVFocusHarnessJournalView() }
     }
 
     // MARK: Dropdowns (same contract as the shell)
@@ -370,5 +374,48 @@ private final class TVFocusHarnessURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+/// A rolling record of the app's focus diagnostics and the engine's focus moves, readable from UI
+/// tests through one accessibility element. The hosted job has no way to export the in-app
+/// inspector, so a failing test attaches this text instead. Passive: it writes no focus state.
+@MainActor @Observable
+final class TVFocusHarnessProbe {
+    static let shared = TVFocusHarnessProbe()
+    private(set) var lines: [String] = []
+    private var started = Date()
+    @ObservationIgnored private var observer: NSObjectProtocol?
+
+    func start() {
+        guard observer == nil else { return }
+        started = Date()
+        observer = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main) { note in
+            MainActor.assumeIsolated {
+                let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+                let next = context?.nextFocusedItem as? NSObject
+                let label = (next as? UIAccessibilityIdentification)?.accessibilityIdentifier
+                    ?? next?.accessibilityLabel ?? String(describing: type(of: next as Any))
+                TVFocusHarnessProbe.shared.append("focus -> \(label ?? "nil")")
+            }
+        }
+    }
+
+    func append(_ line: String) {
+        let t = Date().timeIntervalSince(started)
+        lines.append(String(format: "%7.2f ", t) + line)
+        if lines.count > 120 { lines.removeFirst(lines.count - 120) }
+    }
+}
+
+private struct TVFocusHarnessJournalView: View {
+    private let probe = TVFocusHarnessProbe.shared
+    var body: some View {
+        Color.clear.frame(width: 2, height: 2)
+            .accessibilityElement()
+            .accessibilityLabel(probe.lines.suffix(60).joined(separator: "\n"))
+            .accessibilityIdentifier("harness-journal")
+            .allowsHitTesting(false)
+    }
 }
 #endif
