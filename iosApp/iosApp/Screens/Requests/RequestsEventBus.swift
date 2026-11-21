@@ -31,5 +31,8 @@ final class RequestsEventBus {
         lastUpdate = nil
         lastTitleState = nil
         RequestDetailCache.shared.clear()
+        #if os(iOS)
+        KyroIPTVMetadataEnrichment.shared.clear()
+        #endif
     }
 }

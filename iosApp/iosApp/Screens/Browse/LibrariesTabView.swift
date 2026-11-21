@@ -311,6 +311,17 @@ private struct LibrarySourceVisibility: ViewModifier {
     }
 }
 
+enum UnifiedBrowseChrome {
+    /// Independent of the selected tab and active Silo library by design.
+    static func title(for category: PrimaryMenuBuiltin?) -> String? {
+        switch category {
+        case .movies: "Movies"
+        case .series: "Series"
+        default: nil
+        }
+    }
+}
+
 /// Root of the Libraries tab.
 ///
 /// Mirrors the Plex/Android flow: the tab lands directly on the active
@@ -542,17 +553,11 @@ struct LibrariesTabView: View {
         }
     }
 
-    /// The selector names whichever source is on screen: the Silo library, or the alternate
-    /// source (the IPTV provider) with its own caption.
+    /// Unified Movies and Series keep one chrome identity across all three tabs. The selected
+    /// Silo library is still used by Recommended and Collections, but is not a page heading.
     private func selectorLabel(activeLibrary: Library?) -> (title: String, caption: String) {
-        if selectedTab == .library, unifiedCatalog != nil {
-            #if os(iOS)
-            let hasIPTV = IPTVVODPreference.isEnabled() &&
-                LiveTVService.shared.providers.contains { $0.kind == .xtream }
-            return (category == .series ? "All Series" : "All Movies", hasIPTV ? "Silo + IPTV" : "Silo")
-            #else
-            return (category == .series ? "All Series" : "All Movies", "Silo")
-            #endif
+        if unifiedCatalog != nil, let title = UnifiedBrowseChrome.title(for: category) {
+            return (title, "")
         }
         if showsAlternate, let alternateSource {
             return (alternateSource.name, alternateSource.selectorCaption)
@@ -574,6 +579,7 @@ struct LibrariesTabView: View {
 
     private func headerStack(activeLibrary: Library?, scrollsTabs: Bool) -> some View {
         let label = selectorLabel(activeLibrary: activeLibrary)
+        let stableUnifiedHeader = unifiedCatalog != nil && UnifiedBrowseChrome.title(for: category) != nil
         return VStack(alignment: .leading, spacing: 0) {
             if hostedHeader != nil {
                 // The shell's Kyro header is the only pinned chrome. The selector is the first
@@ -582,8 +588,8 @@ struct LibrariesTabView: View {
                     LibrarySelectorButton(
                         title: label.title,
                         caption: label.caption,
-                        canSwitch: selectedTab != .library && canSwitchLibraries,
-                        onTap: { if selectedTab != .library { showPicker = true } }
+                        canSwitch: canSwitchLibraries && (stableUnifiedHeader || selectedTab != .library),
+                        onTap: { if stableUnifiedHeader || selectedTab != .library { showPicker = true } }
                     )
                     Spacer(minLength: 8)
                 }
@@ -593,8 +599,8 @@ struct LibrariesTabView: View {
             LibrariesTopBar(
                 title: label.title,
                 caption: label.caption,
-                canSwitch: selectedTab != .library && canSwitchLibraries,
-                onLibraryTap: { if selectedTab != .library { showPicker = true } },
+                canSwitch: canSwitchLibraries && (stableUnifiedHeader || selectedTab != .library),
+                onLibraryTap: { if stableUnifiedHeader || selectedTab != .library { showPicker = true } },
                 onSearch: { router.navigate(to: .search) },
                 onOpenSettings: { router.navigate(to: .settings) },
                 onOpenRequests: { router.navigate(to: .requestsHub) },

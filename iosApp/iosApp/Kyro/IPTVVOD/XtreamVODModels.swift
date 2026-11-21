@@ -85,6 +85,13 @@ struct XtreamVODDetail: Sendable {
     let rating: String?
     let duration: TimeInterval?
     let episodes: [XtreamVODEpisode]
+    /// Detail-only external ID; never loaded for the whole catalog.
+    var tmdbID: Int? = nil
+    var releaseYear: Int? = nil
+    var director: String? = nil
+    var cast: String? = nil
+    var writers: String? = nil
+    var trailerURL: URL? = nil
 }
 
 struct XtreamVODImportCount: Equatable, Sendable {
@@ -331,9 +338,36 @@ enum XtreamVODParser {
             }
             episodes.sort { ($0.season, $0.number, $0.remoteID) < ($1.season, $1.number, $1.remoteID) }
         }
-        return .init(summary: clean(info["plot"] as? String), genre: clean(info["genre"] as? String),
+        var result = XtreamVODDetail(summary: clean(info["plot"] as? String), genre: clean(info["genre"] as? String),
                      rating: (info["rating"] as? String) ?? (info["rating"] as? NSNumber)?.stringValue,
                      duration: duration, episodes: episodes)
+        result.tmdbID = (info["tmdb_id"] as? NSNumber)?.intValue
+            ?? (info["tmdb_id"] as? String).flatMap(Int.init)
+            ?? (info["tmdb"] as? NSNumber)?.intValue
+            ?? (info["tmdb"] as? String).flatMap(Int.init)
+        if let date = clean((info["releasedate"] as? String) ?? (info["release_date"] as? String)),
+           date.count >= 4 {
+            result.releaseYear = Int(date.prefix(4))
+        }
+        result.director = clean(info["director"] as? String)
+        result.cast = clean((info["cast"] as? String) ?? (info["actors"] as? String), limit: 1024)
+        result.writers = clean((info["writers"] as? String) ?? (info["writer"] as? String))
+        result.trailerURL = verifiedTrailerURL(info["youtube_trailer"] as? String)
+        return result
+    }
+
+    static func verifiedTrailerURL(_ raw: String?) -> URL? {
+        guard let raw = clean(raw, limit: 256) else { return nil }
+        let url: URL?
+        if raw.count == 11, raw.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) {
+            url = URL(string: "https://www.youtube.com/watch?v=\(raw)")
+        } else {
+            url = URL(string: raw)
+        }
+        guard let url, url.scheme == "https", url.user == nil, url.password == nil,
+              let host = url.host?.lowercased(),
+              ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"].contains(host) else { return nil }
+        return url
     }
 
     static func clean(_ value: String?, limit: Int = 512) -> String? {

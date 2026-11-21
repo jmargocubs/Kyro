@@ -154,17 +154,16 @@ struct KyroUnifiedBrowseView: View {
     }
 
     private func open(_ card: UnifiedCatalogCard) {
-        func request(_ item: XtreamVODItem) -> KyroIPTVDetailRequest? {
-            liveTV.providers.first { $0.id == item.providerID }
-                .map { KyroIPTVDetailRequest(item: item, providerName: $0.name) }
+        func request(_ item: XtreamVODItem) -> KyroIPTVDetailRequest {
+            let name = liveTV.providers.first { $0.id == item.providerID }?.name ?? "Unavailable provider"
+            return KyroIPTVDetailRequest(item: item, providerName: name)
         }
         switch UnifiedDetailTarget(card: card) {
         case let .silo(contentID, libraryID, _, alternates):
             router.presentUnifiedSiloDetail(contentId: contentID, libraryId: libraryID,
-                                            alternates: alternates.compactMap(request))
+                                            alternates: alternates.map(request))
         case let .iptv(item, alternates):
-            guard let primary = request(item) else { return }
-            router.presentIPTVDetail(primary, alternates: alternates.compactMap(request))
+            router.presentIPTVDetail(request(item), alternates: alternates.map(request))
         }
     }
 

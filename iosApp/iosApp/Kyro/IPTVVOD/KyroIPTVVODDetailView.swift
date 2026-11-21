@@ -13,6 +13,7 @@ import SwiftUI
 struct KyroIPTVVODDetailView: View {
     let item: XtreamVODItem
     let providerName: String
+    @Environment(AppRouter.self) private var router
     /// Closes the detail card. Nil draws no Close button.
     var onClose: (() -> Void)? = nil
     /// Pushed over another title's detail (a matched title's alternate source): the leading
@@ -21,6 +22,8 @@ struct KyroIPTVVODDetailView: View {
 
     private let service = XtreamVODService.shared
     @State private var detail: XtreamVODDetail?
+    @State private var enriched: RequestMediaDetail?
+    @State private var isFavorite = false
     @State private var detailFailed: String?
     @State private var playbackError: String?
     @State private var playback: ExternalPlaybackRequest?
@@ -31,7 +34,7 @@ struct KyroIPTVVODDetailView: View {
 
     var body: some View {
         PhoneDetailPageSurface(
-            backdropURL: item.poster,
+            backdropURL: presentation.backdropURL ?? item.poster,
             backdropThumbhash: nil,
             enablesArtworkGlass: true
         ) {
@@ -41,6 +44,41 @@ struct KyroIPTVVODDetailView: View {
                     if item.kind == .series {
                         episodesSection
                             .padding(.horizontal, SiloTheme.safePadding)
+                    }
+                    if !presentation.castNames.isEmpty || detail?.writers != nil {
+                        VStack(alignment: .leading, spacing: 12) {
+                            PhoneSectionHeader(title: "Cast & Crew")
+                            if !presentation.castNames.isEmpty {
+                                Text(presentation.castNames.joined(separator: " · "))
+                                    .font(.siloBody)
+                                    .foregroundColor(.siloSecondaryText)
+                            }
+                            if let writers = detail?.writers {
+                                Text("Written by \(writers)")
+                                    .font(.siloCaption)
+                                    .foregroundColor(.siloSecondaryText)
+                            }
+                        }
+                        .padding(.horizontal, SiloTheme.padding)
+                    }
+                    if let trailerURL = detail?.trailerURL {
+                        Link(destination: trailerURL) {
+                            Label("Watch Trailer", systemImage: "play.rectangle")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(.siloOnSurface)
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(.ultraThinMaterial, in: Capsule())
+                        }
+                        .padding(.horizontal, SiloTheme.padding)
+                    }
+                    if let enriched, let recommendations = enriched.recommendations, !recommendations.isEmpty {
+                        VStack(alignment: .leading, spacing: RequestsUI.headerSpacing) {
+                            RequestsSectionHeader(title: "More like this")
+                            RequestCardRail(items: Array(recommendations.prefix(12))) { result in
+                                RequestMediaCard(result: result, onTap: { router.openRequestResult(result) })
+                            }
+                        }
+                        .padding(.horizontal, SiloTheme.padding)
                     }
                 }
                 .padding(.bottom, 40)
@@ -65,12 +103,15 @@ struct KyroIPTVVODDetailView: View {
             )
         }
         .task(id: item.id) {
+            isFavorite = service.watchState(for: item).favorite
             do {
                 let loaded = try await service.detail(for: item)
                 detail = loaded
                 if selectedSeason == nil { selectedSeason = resumeEpisode(in: loaded)?.season ?? loaded.seasons.first }
+                enriched = await KyroIPTVMetadataEnrichment.shared.detail(for: item, providerDetail: loaded)
             } catch {
                 detailFailed = (error as? LocalizedError)?.errorDescription ?? "Details are unavailable."
+                enriched = await KyroIPTVMetadataEnrichment.shared.detail(for: item, providerDetail: nil)
             }
         }
         .fullScreenCover(item: $playback) { request in
@@ -90,42 +131,29 @@ struct KyroIPTVVODDetailView: View {
         PhoneDetailHero(
             title: item.title,
             logoUrl: nil,
-            posterUrl: item.poster,
+            posterUrl: presentation.posterURL,
             posterThumbhash: nil,
-            backdropUrl: item.poster,
+            backdropUrl: presentation.backdropURL,
             backdropThumbhash: nil,
-            eyebrow: "IPTV · \(providerName)".uppercased(),
-            sourceTokens: [],
-            ratingChip: ratingChip,
-            overview: detail?.summary ?? item.summary,
-            factsLine: factsLine,
+            eyebrow: nil,
+            sourceTokens: presentation.genres,
+            ratingChip: presentation.contentRating ?? presentation.providerRatingChip,
+            overview: presentation.synopsis,
+            factsLine: presentation.facts,
+            ratings: presentation.ratings,
+            creditText: presentation.creditText,
             overlayData: nil,
             enablesArtworkParallax: true,
-            artworkStyle: .cover(aspectRatio: 2.0 / 3.0, placeholderSymbol: item.kind == .movie ? "film" : "tv"),
+            artworkStyle: presentation.backdropURL == nil
+                ? .cover(aspectRatio: 2.0 / 3.0, placeholderSymbol: item.kind == .movie ? "film" : "tv")
+                : .backdrop,
             actions: { actions },
             belowOverview: { EmptyView() }
         )
     }
 
-    private var ratingChip: String? {
-        guard let raw = detail?.rating ?? item.rating, let value = Double(raw), value > 0 else { return nil }
-        return String(format: "★ %.1f", value)
-    }
-
-    private var factsLine: [PhoneHeroFactToken] {
-        var tokens: [PhoneHeroFactToken] = []
-        if let year = XtreamVODTitle.year(in: item.title) { tokens.append(.text(String(year))) }
-        if let duration = detail?.duration, duration > 0,
-           let runtime = MediaTextFormatting.runtime(minutes: Int((duration / 60).rounded())) {
-            tokens.append(.text(runtime))
-        }
-        if let genre = (detail?.genre ?? item.genre)?.split(separator: ",").first {
-            tokens.append(.text(genre.trimmingCharacters(in: .whitespaces)))
-        }
-        if item.kind == .series, let count = detail?.episodes.count, count > 0 {
-            tokens.append(.text(count == 1 ? "1 episode" : "\(count) episodes"))
-        }
-        return tokens
+    private var presentation: KyroIPTVDetailPresentation {
+        KyroIPTVDetailPresentation(item: item, provider: detail, metadata: enriched)
     }
 
     // MARK: Actions
@@ -167,6 +195,13 @@ struct KyroIPTVVODDetailView: View {
                     .font(.siloCaption)
                     .foregroundColor(.siloErrorInk)
                     .multilineTextAlignment(.center)
+            }
+            PhoneLabeledActionRow {
+                PhoneLabeledAction(icon: "heart", iconActive: "heart.fill", isActive: isFavorite,
+                                   label: "Favorite", accessibilityLabelOverride: isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+                    isFavorite.toggle()
+                    service.setFavorite(isFavorite, for: item)
+                }
             }
         }
         .frame(maxWidth: .infinity)
@@ -331,5 +366,161 @@ struct KyroIPTVVODDetailView: View {
 
 private extension XtreamVODDetail {
     var seasons: [Int] { Array(Set(episodes.map(\.season))).sorted() }
+}
+
+/// The IPTV page projects provider and optional TMDB facts into the same hero contract used by
+/// Silo and Requests. Playback identity is deliberately absent from this presentation model.
+struct KyroIPTVDetailPresentation {
+    let item: XtreamVODItem
+    let provider: XtreamVODDetail?
+    let metadata: RequestMediaDetail?
+
+    var posterURL: String? { RequestImageURL.build(metadata?.posterPath, size: .poster) ?? item.poster }
+    var backdropURL: String? { RequestImageURL.build(metadata?.backdropPath, size: .backdrop) }
+    var synopsis: String? { provider?.summary ?? item.summary ?? metadata?.overview }
+    var contentRating: String? { metadata?.contentRating }
+    var providerRatingChip: String? {
+        guard metadata == nil, let raw = provider?.rating ?? item.rating,
+              let score = Double(raw), score > 0 else { return nil }
+        return String(format: "★ %.1f", score)
+    }
+    var genres: [String] {
+        if let genres = metadata?.genres, !genres.isEmpty { return Array(genres.prefix(3)) }
+        guard let raw = provider?.genre ?? item.genre else { return [] }
+        let names = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        return Array(names.filter { !$0.isEmpty }.prefix(3))
+    }
+    var facts: [PhoneHeroFactToken] {
+        var parts: [String] = []
+        if let year = provider?.releaseYear ?? XtreamVODTitle.year(in: item.title) ?? metadata?.year {
+            parts.append(String(year))
+        }
+        if item.kind == .movie {
+            let minutes = provider?.duration.map { Int(($0 / 60).rounded()) } ?? metadata?.runtime
+            if let runtime = MediaTextFormatting.runtime(minutes: minutes) { parts.append(runtime) }
+        } else if let episodes = provider?.episodes, !episodes.isEmpty {
+            parts.append("\(episodes.count) episode\(episodes.count == 1 ? "" : "s")")
+        } else if let count = metadata?.numberOfEpisodes, count > 0 {
+            parts.append("\(count) episodes")
+        }
+        return parts.map(PhoneHeroFactToken.text)
+    }
+    var ratings: [DisplayRating] {
+        return DisplayRating.tmdb(metadata?.voteAverage).map { [$0] } ?? []
+    }
+    var creditText: String? {
+        if let director = metadata?.director, !director.isEmpty { return "Directed by \(director)" }
+        if let director = provider?.director, !director.isEmpty { return "Directed by \(director)" }
+        if let creators = metadata?.creators, !creators.isEmpty {
+            return "Created by \(creators.prefix(2).joined(separator: ", "))"
+        }
+        return nil
+    }
+    var castNames: [String] {
+        guard let raw = provider?.cast else { return [] }
+        return Array(raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }.prefix(12))
+    }
+}
+
+/// Conservative, on-demand matching. An external ID wins only within the same media type;
+/// title lookup requires an exact normalized title and year and exactly one candidate.
+enum KyroIPTVMetadataMatch {
+    static func searchTitle(_ title: String, year: Int?) -> String {
+        guard let year else { return title }
+        for suffix in [" (\(year))", " [\(year)]", " - \(year)"] where title.hasSuffix(suffix) {
+            return String(title.dropLast(suffix.count))
+        }
+        return title
+    }
+
+    static func uniqueID(item: XtreamVODItem, providerDetail: XtreamVODDetail?,
+                         candidates: [RequestMediaResult]) -> Int? {
+        let type: RequestMediaType = item.kind == .movie ? .movie : .series
+        if let id = providerDetail?.tmdbID, id > 0 { return id }
+        guard let year = providerDetail?.releaseYear ?? XtreamVODTitle.year(in: item.title),
+              !UnifiedCatalogKeys.normalizedTitle(item.title, year: year).isEmpty else { return nil }
+        let title = UnifiedCatalogKeys.normalizedTitle(item.title, year: year)
+        let matches = candidates.filter {
+            $0.mediaType == type && $0.year == year &&
+            UnifiedCatalogKeys.normalizedTitle($0.title, year: $0.year) == title
+        }
+        return matches.count == 1 ? matches[0].tmdbId : nil
+    }
+}
+
+/// Uses the existing profile-scoped Silo/TMDB request endpoints; no app API key or catalog-wide
+/// scan. Results are bounded in memory, duplicate opens share one task, and failures stay local.
+@MainActor
+final class KyroIPTVMetadataEnrichment {
+    static let shared = KyroIPTVMetadataEnrichment()
+    private let search: @MainActor (String, RequestMediaType) async throws -> RequestMediaPage
+    private let load: @MainActor (RequestMediaType, Int) async throws -> RequestMediaDetail
+    private var cached: [String: RequestMediaDetail] = [:]
+    private var order: [String] = []
+    private var pending: [String: Task<RequestMediaDetail?, Never>] = [:]
+    private var nextRequestAt = Date.distantPast
+    private var generation = 0
+
+    init(search: @MainActor @escaping (String, RequestMediaType) async throws -> RequestMediaPage = {
+        try await SiloAPI.shared.requestsSearch(query: $0, mediaType: $1, page: 1)
+    }, load: @MainActor @escaping (RequestMediaType, Int) async throws -> RequestMediaDetail = {
+        try await SiloAPI.shared.requestsDetail(mediaType: $0, tmdbId: $1)
+    }) {
+        self.search = search
+        self.load = load
+    }
+
+    func clear() {
+        generation &+= 1
+        pending.values.forEach { $0.cancel() }
+        pending.removeAll()
+        cached.removeAll()
+        order.removeAll()
+    }
+
+    func detail(for item: XtreamVODItem, providerDetail: XtreamVODDetail?) async -> RequestMediaDetail? {
+        let key = "\(AuthService.shared.profileId ?? "local"):\(item.id)"
+        if let detail = cached[key] { return detail }
+        if let task = pending[key] { return await task.value }
+        let session = generation
+        let task = Task<RequestMediaDetail?, Never> { [weak self] in
+            guard let self else { return nil }
+            let type: RequestMediaType = item.kind == .movie ? .movie : .series
+            let id: Int
+            if let externalID = providerDetail?.tmdbID, externalID > 0 {
+                id = externalID
+            } else {
+                guard (providerDetail?.releaseYear ?? XtreamVODTitle.year(in: item.title)) != nil else { return nil }
+                await pace()
+                guard !Task.isCancelled,
+                      let page = try? await search(
+                        KyroIPTVMetadataMatch.searchTitle(item.title,
+                            year: providerDetail?.releaseYear ?? XtreamVODTitle.year(in: item.title)), type),
+                      let match = KyroIPTVMetadataMatch.uniqueID(item: item, providerDetail: providerDetail,
+                                                                  candidates: page.results) else { return nil }
+                id = match
+            }
+            await pace()
+            guard !Task.isCancelled,
+                  let result = try? await load(type, id),
+                  result.mediaType == type, session == generation else { return nil }
+            cached[key] = result
+            order.removeAll { $0 == key }
+            order.append(key)
+            if order.count > 80 { cached.removeValue(forKey: order.removeFirst()) }
+            return result
+        }
+        pending[key] = task
+        let result = await task.value
+        pending.removeValue(forKey: key)
+        return result
+    }
+
+    private func pace() async {
+        let delay = max(0, nextRequestAt.timeIntervalSinceNow)
+        nextRequestAt = Date().addingTimeInterval(delay + 0.5)
+        if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+    }
 }
 #endif

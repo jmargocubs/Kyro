@@ -63,5 +63,20 @@ final class IPTVDetailPresentationTests: XCTestCase {
         XCTAssertNil(router.presentedItemDetail)
         XCTAssertTrue(router.visibleItemDetailRoutes.isEmpty)
     }
+
+    func testMatchedSourcesKeepEveryProviderAndBackReturnsToPrimary() throws {
+        let router = AppRouter()
+        let first = request(.movie, id: 7)
+        let second = request(.movie, id: 8)
+        router.presentUnifiedSiloDetail(contentId: "silo-movie", libraryId: 3,
+                                        alternates: [first, second])
+        XCTAssertEqual(router.presentedItemDetail?.alternates.count, 2)
+        XCTAssertEqual(router.presentedItemDetail?.contentId, "silo-movie")
+        router.openAlternateIPTVDetail(second)
+        XCTAssertEqual(router.itemDetailPath.count, 1)
+        router.goBackInItemDetail()
+        XCTAssertTrue(router.itemDetailPath.isEmpty)
+        XCTAssertEqual(router.presentedItemDetail?.alternates.count, 2)
+    }
 }
 #endif
