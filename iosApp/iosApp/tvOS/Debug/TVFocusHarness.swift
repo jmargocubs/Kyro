@@ -60,7 +60,7 @@ struct TVFocusHarnessModifier: ViewModifier {
 }
 
 enum TVFocusHarnessPage: String, Identifiable {
-    case livetv, movies, series, sports
+    case livetv, movies, series, sports, settings
     var id: String { rawValue }
 }
 
@@ -69,6 +69,8 @@ private struct TVFocusHarnessShell: View {
 
     @State private var service = TVFocusHarnessFixture.makeLiveTVService()
     @State private var vodProvider = TVFocusHarnessFixture.vodProvider
+    /// Only Settings reads it: the real screen, offline, with no signed-in session behind it.
+    @State private var router = AppRouter()
     @State private var contentFocusRequest = 1
     @FocusState private var menuFocus: String?
 
@@ -209,6 +211,10 @@ private struct TVFocusHarnessShell: View {
         case .sports:
             TVSportsHubView(service: service, focusRequest: contentFocusRequest,
                             isTopMenuFocused: menuOwnsFocus)
+        case .settings:
+            TVSettingsView()
+                .environment(router)
+                .padding(.top, TVTopMenuLayout.contentTopInset)
         }
     }
 

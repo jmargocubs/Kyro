@@ -410,6 +410,36 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
                        file: file, line: line)
     }
 
+    // MARK: Settings
+
+    /// The real Settings screen, offline: Down walks the rail one entry at a time, Right enters
+    /// the pane of the category it rests on, Left returns to that same category, and Back from
+    /// the pane returns to the rail. No server data is needed to reach any of these.
+    func testSettingsRailWalksAndPaneEntersAndReturns() {
+        let app = launch(.settings)
+        XCTAssertTrue(waitFor(app, timeout: 25) { $0 != "<none>" && !$0.hasPrefix("Menu ") }, "Settings takes focus")
+        var path = [focusedLabel(app)]
+        for _ in 0..<7 { path.append(press(.down, app, "settings rail down")) }
+        log("settings rail down", path)
+        XCTAssertGreaterThanOrEqual(Set(path).count, 4, "Down visits distinct rail entries: \(path)")
+        assertNeverMenu(path)
+
+        // Walk back up to the entry focus started on (Up past it would reach the top menu).
+        var rail = focusedLabel(app)
+        for _ in 0..<8 where rail != path[0] { rail = press(.up, app, "settings rail up") }
+        XCTAssertEqual(rail, path[0], "Up retraces the rail to where focus started")
+        let paneEntry = press(.right, app, "settings into pane")
+        log("settings pane", [rail, paneEntry])
+        XCTAssertNotEqual(paneEntry, rail, "Right leaves the rail for the pane")
+        XCTAssertFalse(paneEntry.hasPrefix("Menu "), "Right does not reach the top menu")
+        let back = press(.left, app, "settings back to rail")
+        XCTAssertEqual(back, rail, "Left returns to the rail entry the pane belongs to")
+        _ = press(.right, app, "settings pane again")
+        remote.press(.menu)
+        settle()
+        XCTAssertEqual(focusedLabel(app), rail, "Back from the pane returns to the rail")
+    }
+
     // MARK: Sports
 
     /// The two Sports chip rows are fixed in code (`KyroSportsCategory.filterOrder` and
@@ -471,7 +501,7 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
 
     // MARK: Helpers
 
-    private enum Page: String { case livetv, movies, series, sports }
+    private enum Page: String { case livetv, movies, series, sports, settings }
 
     private func launch(_ page: Page, edgeToEdge: Bool = true, dropdowns: Bool = false,
                         ungatedPanels: Bool = false) -> XCUIApplication {
