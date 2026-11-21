@@ -443,6 +443,33 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertEqual(focusedLabel(app), rail, "Back from the pane returns to the rail")
     }
 
+    /// Opening a category and backing out, three times over with different cards: each opening
+    /// lands on the category's first channel, Back returns to the card and then to the chip.
+    func testCategoriesOpenRepeatedlyLandsOnTheFirstChannelEveryTime() {
+        let app = launch(.livetv)
+        XCTAssertTrue(waitForFocus(app, in: liveTVControls))
+        XCTAssertEqual(press(.right, app, "to categories"), "Categories")
+        remote.press(.select)
+        settle()
+        _ = press(.down, app, "into categories")
+        for round in 1...3 {
+            let card = press(.right, app, "category card \(round)")
+            remote.press(.select)
+            settle(2.5)
+            let channel = focusedLabel(app)
+            log("category round \(round)", [card, channel])
+            XCTAssertTrue(channel.hasPrefix("Watch Harness"), "round \(round): opening \(card) lands on a channel, got \(channel)")
+            let down = press(.down, app, "channel down \(round)")
+            XCTAssertTrue(down.hasPrefix("Watch Harness") || down == channel, "round \(round): channel navigation, got \(down)")
+            remote.press(.menu)
+            settle(1.5)
+            XCTAssertEqual(focusedLabel(app), card, "round \(round): Back returns to the card")
+        }
+        remote.press(.menu)
+        settle(1.5)
+        XCTAssertEqual(focusedLabel(app), "Categories", "Back from the grid returns to the chip")
+    }
+
     // MARK: Sports
 
     /// The two Sports chip rows are fixed in code (`KyroSportsCategory.filterOrder` and
@@ -619,12 +646,21 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertEqual(first.count, 1, "Select types the highlighted key, field shows \(first)")
         XCTAssertEqual(second.count, 2, "Right moves to the next key and Select types it, field shows \(second)")
         XCTAssertNotEqual(second.last, second.first, "Right moved the highlight to a different key: \(second)")
-        var path = [focusedLabel(app)]
-        for button in [XCUIRemote.Button.down, .down, .up, .up] { path.append(press(button, app, "search keyboard exit")) }
-        log("search keyboard down/up", path)
-        XCTAssertFalse(path[1] == "Keyboard" && path[2] == "Keyboard", "Down leaves the keyboard: \(path)")
-        XCTAssertFalse(path.contains("<none>"), "Focus is never lost: \(path)")
-        XCTAssertEqual(path.last, "Keyboard", "Up retraces to the keyboard: \(path)")
+        // Down leaves the keyboard for the filters, Up returns, and a further Up leaves it for the menu.
+        let filters: Set<String> = ["All", "Movies & TV", "Live TV"]
+        let toFilters = press(.down, app, "keyboard down")
+        XCTAssertTrue(filters.contains(toFilters), "Down from the keyboard reaches the filters, got \(toFilters)")
+        let backToKeyboard = press(.up, app, "filters up")
+        XCTAssertEqual(backToKeyboard, "Keyboard", "Up from the filters returns to the keyboard")
+        let toMenu = press(.up, app, "keyboard up")
+        XCTAssertTrue(toMenu.hasPrefix("Menu "), "Up from the keyboard reaches the navigation controls, got \(toMenu)")
+        let intoKeyboard = press(.down, app, "menu down")
+        XCTAssertEqual(intoKeyboard, "Keyboard", "Down from the menu re-enters the keyboard")
+        log("search keyboard moves", [toFilters, backToKeyboard, toMenu, intoKeyboard])
+        // The keyboard still types after the round trip.
+        remote.press(.select)
+        settle(2)
+        XCTAssertEqual(searchText(app).count, 3, "Select still types after leaving and re-entering: \(searchText(app))")
         remote.press(.menu)
         settle(2)
         let afterBack = focusedLabel(app)
@@ -632,33 +668,38 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertNotEqual(afterBack, "<none>", "Back from the keyboard leaves focus on a usable element")
     }
 
-    /// A populated search: below the keyboard come the filter control and the Live TV results,
-    /// all reachable, and Up retraces to the stand-in menu.
-    func testSearchPopulatedResultsAreReachableAndUpReturnsToNavigation() {
+    /// A populated search: the fixture channels are the Live TV results. They are reachable below
+    /// the keyboard and filters, Select asks Live TV to play the chosen channel, focus stays usable,
+    /// and Up retraces to the stand-in menu.
+    func testSearchPopulatedResultsAreReachableSelectableAndUpReturnsToNavigation() {
         let app = launch(.search, searchSeed: "Harness")
         XCTAssertTrue(reachSearchKeyboard(app), "keyboard reachable; focus \(focusedLabel(app))")
-        settle(4)
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Play Live TV channel'")).firstMatch
+            .waitForExistence(timeout: 30), "The fixture channels appear as Live TV results")
+        settle(1)
         capture("search-populated")
         var path = [focusedLabel(app)]
         for _ in 0..<8 { path.append(press(.down, app, "search results down")) }
         log("search results down", path)
-        let filters: Set<String> = ["All", "Movies & TV", "Live TV"]
-        let below = path.dropFirst().filter { $0 != "Keyboard" && !filters.contains($0) && !$0.hasPrefix("Menu ") && $0 != "<none>" }
-        XCTAssertFalse(below.isEmpty, "Down reaches a result below the filters: \(path)")
         XCTAssertFalse(path.contains("<none>"), "Focus is never lost: \(path)")
+        let results = path.filter { $0.hasPrefix("Play Live TV channel") }
+        XCTAssertGreaterThanOrEqual(Set(results).count, 2, "Down walks several results: \(path)")
         capture("search-result-focused")
         let result = focusedLabel(app)
+        XCTAssertTrue(result.hasPrefix("Play Live TV channel"), "Focus rests on a result, got \(result)")
+        let name = result.replacingOccurrences(of: "Play Live TV channel ", with: "").components(separatedBy: ", ").first ?? ""
         remote.press(.select)
         settle(3)
         capture("search-result-selected")
-        log("search result select", [result, focusedLabel(app)])
-        remote.press(.menu)
-        settle(3)
-        XCTAssertNotEqual(focusedLabel(app), "<none>", "Back after Select leaves usable focus")
+        let marker = app.descendants(matching: .any)["harness-playback"]
+        XCTAssertTrue(marker.waitForExistence(timeout: 5))
+        XCTAssertTrue(marker.label.contains(name), "Select asks Live TV to play \(name), marker: \(marker.label)")
+        XCTAssertEqual(focusedLabel(app), result, "Focus stays on the selected result")
         var up = [focusedLabel(app)]
         for _ in 0..<14 where !(up.last ?? "").hasPrefix("Menu ") { up.append(press(.up, app, "search up")) }
         log("search up", up)
         XCTAssertTrue((up.last ?? "").hasPrefix("Menu "), "Up reaches the navigation controls: \(up)")
+        XCTAssertNotEqual(press(.down, app, "menu down again"), "<none>", "Navigation still works afterwards")
     }
 
     /// An empty search has nothing to select; the page stays navigable and focus is never lost.
@@ -700,19 +741,53 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         return label
     }
 
-    /// Moves along the bar to the tab titled `title`, one press at a time.
-    private func moveToTab(_ title: String, _ app: XCUIApplication) -> Bool {
+    /// The 1-based position the bar itself reports ("Live TV, tab, 4 of 5" is 4). The order of
+    /// accessibility query results is not the bar's order, so positions come from the labels.
+    private func tabIndex(_ label: String) -> Int? {
+        guard let range = label.range(of: ", tab, "),
+              let first = label[range.upperBound...].split(separator: " ").first else { return nil }
+        return Int(first)
+    }
+
+    /// Moves along the bar to the tab titled `title`, one press at a time, and checks every press:
+    /// each Left or Right must land exactly one tab over. Every step is logged (focused tab,
+    /// destination, direction pressed, the element focused afterwards, and whether it is in the bar),
+    /// so a failure shows whether the helper or the app went wrong.
+    private func moveToTab(_ title: String, _ app: XCUIApplication,
+                           file: StaticString = #filePath, line: UInt = #line) -> Bool {
         let tabs = tabLabels(app)
-        guard let target = tabs.firstIndex(where: { tabTitle($0) == title }) else { return false }
-        for _ in 0..<(tabs.count + 3) {
+        guard let targetLabel = tabs.first(where: { tabTitle($0) == title }), let target = tabIndex(targetLabel) else {
+            print("KYRO-FOCUS tabnav: no \(title) tab among \(tabs)")
+            return false
+        }
+        for step in 0..<(tabs.count + 4) {
             let label = focusedLabel(app)
             if tabTitle(label) == title, label.contains(", tab, ") { return true }
-            guard let current = tabs.firstIndex(where: { tabTitle($0) == tabTitle(label) }) else {
-                _ = press(.right, app, "toward \(title)")
+            let direction: XCUIRemote.Button
+            var expected: Int?
+            if let current = tabIndex(label) {
+                direction = current < target ? .right : .left
+                expected = current + (current < target ? 1 : -1)
+            } else if label == "Search" {
+                direction = .right
+            } else if label == "Settings" || label == "Profile" {
+                direction = .left
+            } else if label == "<none>" {
+                print("KYRO-FOCUS tabnav step \(step): no focus, waiting")
+                settle(1)
                 continue
+            } else {
+                direction = .up
             }
-            let direction: XCUIRemote.Button = current < target ? .right : .left
-            _ = press(direction, app, "toward \(title)")
+            remote.press(direction)
+            settle()
+            let after = focusedLabel(app)
+            print("KYRO-FOCUS tabnav step \(step): at \(label) -> \(title) (\(tabIndex(label).map(String.init) ?? "-")->\(target)) pressed \(direction) -> \(after) inBar=\(isBarElement(after))")
+            if let expected, let landed = tabIndex(after) {
+                XCTAssertEqual(landed, expected, "\(direction) from \(label) moves one tab, landed on \(after)", file: file, line: line)
+            } else if expected != nil, !isBarElement(after) {
+                XCTFail("\(direction) from \(label) left the bar for \(after)", file: file, line: line)
+            }
         }
         return tabTitle(focusedLabel(app)) == title
     }
@@ -749,7 +824,7 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     /// closes onto the tab. Twice round, so repeated switching is covered.
     func testShellSwitchingTabsEntersContentAndReturnsToTheActiveTab() {
         let app = launchShell()
-        let wanted = ["Live TV", "Movies", "Series", "Home"]
+        let wanted = ["Live TV", "Movies", "Series", "Home", "Sports"]
         let titles = tabLabels(app).map(tabTitle)
         log("shell switch tabs", titles)
         XCTAssertTrue(titles.contains("Live TV"), "Live TV tab exists: \(titles)")
@@ -810,6 +885,33 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertFalse(isBarElement(down), "Down from Live TV enters the page, got \(down)")
     }
 
+    /// The real Search screen pushed from the real bar: type a letter, reach Live TV results from
+    /// the fixture provider, and Back returns to the bar's Search button.
+    func testShellSearchResultsAreReachableAndBackReturnsToTheBar() {
+        let app = launchShell()
+        XCTAssertTrue(isBarElement(focusBar(app)))
+        var label = focusedLabel(app)
+        for _ in 0..<12 where label != "Search" { label = press(.left, app, "to search") }
+        XCTAssertEqual(label, "Search")
+        remote.press(.select)
+        XCTAssertTrue(searchField(app).waitForExistence(timeout: 20), "Search screen shows")
+        XCTAssertTrue(reachSearchKeyboard(app), "keyboard reachable; focus \(focusedLabel(app))")
+        remote.press(.select)
+        settle(4)
+        capture("shell-search-typed")
+        var path = [focusedLabel(app)]
+        for _ in 0..<6 { path.append(press(.down, app, "shell search down")) }
+        log("shell search results", path + [searchText(app)])
+        XCTAssertFalse(path.contains("<none>"), "Focus is never lost: \(path)")
+        XCTAssertTrue(path.contains { $0.hasPrefix("Play Live TV channel") }, "A Live TV result is reachable: \(path)")
+        for _ in 0..<8 where focusedLabel(app) != "Keyboard" { _ = press(.up, app, "shell search up") }
+        remote.press(.menu)
+        settle(3)
+        let after = focusedLabel(app)
+        log("shell search back", [after])
+        XCTAssertTrue(isBarElement(after), "Back from Search returns to the bar, got \(after)")
+    }
+
     /// Rapid presses never strand focus.
     func testShellRapidDirectionalPressesKeepFocus() {
         let app = launchShell()
@@ -827,6 +929,10 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertNotEqual(right, "<none>")
         XCTAssertNotEqual(left, "<none>")
         XCTAssertNotEqual(end, "<none>", "Focus survives rapid input")
+        // After the rapid input, one press at a time still reaches both ends of the bar.
+        XCTAssertTrue(isBarElement(focusBar(app)))
+        XCTAssertTrue(moveToTab("Home", app), "Home is reachable after rapid input")
+        XCTAssertTrue(moveToTab("Sports", app), "Sports is reachable after rapid input")
     }
 
     /// Search and Settings open from the real bar and Back returns to the bar.

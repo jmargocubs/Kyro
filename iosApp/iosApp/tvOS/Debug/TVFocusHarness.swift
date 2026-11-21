@@ -116,6 +116,25 @@ private struct TVFocusHarnessShell: View {
         }
         .ignoresSafeArea(edges: [.top, .horizontal])
         .overlay(alignment: .bottomTrailing) { TVFocusHarnessJournalView() }
+        .overlay(alignment: .bottomLeading) {
+            // What Select on a Search result asked Live TV to play. Search has no player host here.
+            if page == .search {
+                Text(playbackMarker)
+                    .font(.system(size: 14))
+                    .accessibilityIdentifier("harness-playback")
+                    .padding(8)
+            }
+        }
+        .task {
+            // Live TV loads its own channels; Search has no page that does, so load the fixture's
+            // playlist and guide for it the way the Live TV page would.
+            if page == .search { await service.prepareSelectedProvider() }
+        }
+    }
+
+    private var playbackMarker: String {
+        if case .presented(let channel, _) = service.presentation.phase { return "Harness playback: \(channel.name)" }
+        return "Harness playback: none"
     }
 
     // MARK: Dropdowns (same contract as the shell)
@@ -325,6 +344,8 @@ enum TVFocusHarnessFixture {
             _ = try? live.saveConfiguration(name: "Harness TV", playlistURL: "https://\(host)/playlist.m3u",
                                             xmltvURL: "https://\(host)/guide.xml")
         }
+        // Channels in the shared catalog, so the shell's Search has Live TV results to show.
+        await live.prepareSelectedProvider()
     }
 
     static let library = Library(id: 9101, name: "Harness Movies", type: "movie", sortOrder: 0)

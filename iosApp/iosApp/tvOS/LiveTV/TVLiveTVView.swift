@@ -157,6 +157,8 @@ struct TVLiveTVRootView: View {
     @State private var pendingCategoryRestore: String?
     /// The last channel card focused in the current list, for re-entry with Down.
     @State private var lastContentChannel: String?
+    /// A channel focus claim whose card may not be on screen yet (see `channelCardMounted`).
+    @State private var pendingChannelClaim: (id: String, at: Date)?
     @State private var categoryCounts: [String: Int] = [:]
     @State private var allChannelsCount = 0
     @Namespace private var controlsScope
@@ -287,6 +289,9 @@ struct TVLiveTVRootView: View {
             refreshVisibleCatalog()
         }
         .onChange(of: focusedControl) { _, target in
+            if let pending = pendingChannelClaim, let target {
+                if target == .channel(pending.id) || !target.isControlRow { pendingChannelClaim = nil }
+            }
             if !showsGuide && !showsProviders, let target { focusBeforeCover = target }
             if case .channel(let id)? = target { lastContentChannel = id }
         }
@@ -537,6 +542,7 @@ struct TVLiveTVRootView: View {
                                 hide: { hideChannel(channel) },
                                 showInformation: { infoChannel = channel }
                             )
+                            .onAppear { channelCardMounted(channel.id) }
                         }
                     }
                 }
@@ -670,15 +676,37 @@ struct TVLiveTVRootView: View {
             TVFocusDiagnostics.value("request", "LiveTV", "afterTeardownExecuted", handoff)
             switch handoff {
             case .target(let target):
+                if case .channel(let id) = target { pendingChannelClaim = (id, Date()) }
                 focusedControl = target
             case .channelEntry:
                 // Results can land before this turn: then the channels are already showing.
                 if showsChannelLoading {
                     focusedControl = .placeholder
+                } else if let first = visibleMatches.first {
+                    pendingChannelClaim = (first.id, Date())
+                    focusedControl = .channel(first.id)
                 } else {
-                    focusedControl = visibleMatches.first.map { .channel($0.id) } ?? .section(navigation.section)
+                    focusedControl = .section(navigation.section)
                 }
             }
+        }
+    }
+
+    /// The claim above can run before the channel's card exists: when results replace the loading
+    /// placeholder, the grid mounts a turn later, the write finds nothing to focus, and the engine
+    /// settles on a toolbar chip (hosted run 44923768989). The card reports that it has mounted;
+    /// if its claim is still outstanding, focus is claimed once, then. Bounded: one claim, only
+    /// within two seconds of the original, and dropped as soon as focus reaches that channel or
+    /// moves to other content.
+    private func channelCardMounted(_ id: String) {
+        guard let pending = pendingChannelClaim, pending.id == id else { return }
+        pendingChannelClaim = nil
+        guard Date().timeIntervalSince(pending.at) < 2, !isTopMenuFocused else { return }
+        DispatchQueue.main.async {
+            guard !isTopMenuFocused, focusedControl != .channel(id),
+                  visibleMatches.contains(where: { $0.id == id }) else { return }
+            TVFocusDiagnostics.value("request", "LiveTV", "channelClaimAfterMount", id)
+            focusedControl = .channel(id)
         }
     }
 
