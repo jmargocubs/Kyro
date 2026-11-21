@@ -262,6 +262,20 @@ final class KyroSportsHubStoreTests: XCTestCase {
         XCTAssertGreaterThan(transport.requestCount(), first)
     }
 
+    func testReentryReusesFreshScoresButExplicitRefreshStillFetches() async throws {
+        let transport = try loadedTransport()
+        let store = makeStore(transport: transport)
+        await store.loadIfNeeded()
+        let initialRequests = transport.requestCount()
+        XCTAssertGreaterThan(initialRequests, 0)
+
+        await store.loadIfNeeded() // Returning to the hub must use the warm snapshot.
+        XCTAssertEqual(transport.requestCount(), initialRequests)
+
+        await store.refresh() // Freshness must never suppress a user refresh.
+        XCTAssertGreaterThan(transport.requestCount(), initialRequests)
+    }
+
     // MARK: - Empty
 
     func testEmptyScoresAndScheduleProduceLoadedWithoutSections() async {

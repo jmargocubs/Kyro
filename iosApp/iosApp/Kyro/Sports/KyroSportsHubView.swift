@@ -60,6 +60,7 @@ struct KyroSportsHubView: View {
     /// Keeps the pinned event's score current while the feed shows another sport or day.
     @State private var pinnedRefresher = KyroSportsPinnedEventRefresher()
     @State private var refreshTask: Task<Void, Never>?
+    @State private var selectionLoadTask: Task<Void, Never>?
     /// The event's stream screen: Find streams, or the fallback when one-tap playback found
     /// nothing that plays.
     @State private var discovery: KyroSportsStreamDiscovery?
@@ -238,18 +239,12 @@ struct KyroSportsHubView: View {
         .onChange(of: store.selectedCategory) { _, _ in
             feedCoordinator.contentReplaced()
             cancelRefreshLoop()
-            Task {
-                await store.loadIfNeeded()
-                startRefreshLoopIfNeeded()
-            }
+            loadSelection()
         }
         .onChange(of: store.selectedDay) { _, _ in
             feedCoordinator.contentReplaced()
             cancelRefreshLoop()
-            Task {
-                await store.loadIfNeeded()
-                startRefreshLoopIfNeeded()
-            }
+            loadSelection()
         }
         .onChange(of: store.refreshInterval) { _, _ in
             startRefreshLoopIfNeeded()
@@ -257,6 +252,8 @@ struct KyroSportsHubView: View {
         .onAppear { liveTV.presentation.inlineHostAppeared() }
         .onDisappear {
             cancelRefreshLoop()
+            selectionLoadTask?.cancel()
+            selectionLoadTask = nil
             liveNow.cancel()
             // A player covering the hub is not leaving it; an attempt still connecting is, and
             // an inline stream ends with the hub rather than play on with nothing to show it.
@@ -478,6 +475,17 @@ struct KyroSportsHubView: View {
     }
 
     // MARK: Refresh loop
+
+    /// A rapid sport/date switch must not leave an older selection's unstructured
+    /// load running after the new one has been requested or after leaving the hub.
+    private func loadSelection() {
+        selectionLoadTask?.cancel()
+        selectionLoadTask = Task { @MainActor in
+            await store.loadIfNeeded()
+            guard !Task.isCancelled else { return }
+            startRefreshLoopIfNeeded()
+        }
+    }
 
     /// Start a single coalesced refresh loop when the page wants one. Each tick
     /// re-reads `refreshInterval`, so a game going final ends the loop and a
