@@ -8,7 +8,7 @@ import SwiftUI
 struct TVDisabledAppearance: ViewModifier {
     @Environment(\.isEnabled) private var isEnabled
     func body(content: Content) -> some View {
-        content.opacity(isEnabled || !dimsWhenDisabled ? 1 : 0.45)
+        content.opacity(isEnabled ? 1 : 0.45)
     }
 }
 
@@ -177,7 +177,7 @@ struct TVKyroChipStyle: ButtonStyle {
                         .padding(TVKyroFocus.ringWidth)
                 }
             }
-            .opacity(isEnabled ? 1 : 0.45)
+            .opacity(isEnabled || !dimsWhenDisabled ? 1 : 0.45)
             .scaleEffect(TVKyroFocus.scale(for: .chip, focused: isFocused, reduceMotion: reduceMotion)
                          * (configuration.isPressed ? 0.97 : 1))
             .shadow(color: .black.opacity(isFocused ? 0.5 : 0), radius: 12, y: 6)
