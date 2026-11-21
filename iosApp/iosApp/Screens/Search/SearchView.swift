@@ -7,6 +7,7 @@ struct SearchView: View {
     @State private var liveTVVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit
     @State private var programVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit
     #if os(iOS)
+    @State private var vodSearch: KyroVODSearchModel
     /// The program whose Guide detail sheet is up, resolved at tap time.
     @State private var programDetail: SearchProgramDetail?
     /// Set by the sheet's Watch button; played only after the sheet has gone and the program is
@@ -61,6 +62,9 @@ struct SearchView: View {
             liveTVSource: .live(service: liveTVService),
             programs: programs
         ))
+        #if os(iOS)
+        _vodSearch = State(initialValue: KyroVODSearchModel(liveTV: liveTVService))
+        #endif
         self.usesTVTopMenuInset = usesTVTopMenuInset
         #if os(iOS)
         self.showsPrograms = programSearchEnabled
@@ -132,7 +136,21 @@ struct SearchView: View {
         }
         .onDisappear {
             coordinator.cancelForDismissal()
+            #if os(iOS)
+            vodSearch.cancel()
+            #endif
         }
+        #if os(iOS)
+        .task(id: "\(viewModel.query)|\(XtreamVODService.shared.catalogRevision)|\(liveTVService.providers.map(\.id))") {
+            guard !viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                vodSearch.cancel()
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            await vodSearch.search(viewModel.query)
+        }
+        #endif
         .onChange(of: router.authState) { _, _ in
             coordinator.synchronizeSiloIdentity()
         }
@@ -183,6 +201,9 @@ struct SearchView: View {
             get: { viewModel.query },
             set: { value in
                 viewModel.query = value
+                #if os(iOS)
+                vodSearch.cancel()
+                #endif
                 liveTVVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit
                 programVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit
                 coordinator.onQueryChanged(value)
@@ -271,7 +292,8 @@ struct SearchView: View {
         let isCombined = selectedFilter == .all
         let visibleItems = isCombined ? Array(viewModel.results.prefix(6)) : viewModel.results
         let hasMoreTitles = viewModel.hasMore || viewModel.total > visibleItems.count
-        let contentCount = viewModel.results.count + viewModel.people.count + requestsViewModel.results.count
+        let contentCount = viewModel.results.count + viewModel.people.count + visibleRequestResults.count
+            + iptvOnlyTitles.count
 
         return VStack(alignment: .leading, spacing: SiloTheme.padding) {
             sectionHeader(
@@ -288,8 +310,20 @@ struct SearchView: View {
                 if !visibleItems.isEmpty {
                     titleResults(items: visibleItems, showsPagination: !isCombined)
                 }
-                if !requestsViewModel.results.isEmpty {
-                    RequestSearchSectionView(viewModel: requestsViewModel)
+                #if os(iOS)
+                if !matchedIPTVTitles.isEmpty { matchedIPTVSourceControls }
+                #endif
+            }
+                #if os(iOS)
+                if !iptvOnlyTitles.isEmpty { iptvVODResults }
+                if vodSearch.phase == .loading {
+                    sourceMessage("Searching IPTV Movies & Series…", symbol: "magnifyingglass")
+                } else if vodSearch.phase == .incomplete {
+                    sourceMessage("Some IPTV catalogs are incomplete. Request suggestions are hidden until all sources are available.", symbol: "exclamationmark.triangle")
+                }
+                #endif
+                if !visibleRequestResults.isEmpty {
+                    RequestSearchSectionView(viewModel: requestsViewModel, visibleResults: visibleRequestResults)
                 }
                 if contentCount == 0 {
                     siloEmptyOrStatus
@@ -297,9 +331,95 @@ struct SearchView: View {
                           let message = coordinator.siloState.message {
                     sourceMessage(message, symbol: "exclamationmark.triangle")
                 }
+        }
+    }
+
+    private var visibleRequestResults: [RequestMediaResult] {
+        #if os(iOS)
+        let local = currentVODItems.map(UnifiedVODEntry.init(iptv:))
+        return UnifiedVODCatalog.requestableResults(
+            requestsViewModel.results, local: local,
+            siloReady: coordinator.isSiloIdentityCurrent && coordinator.siloState.phase == .loaded,
+            vodReady: vodSearch.phase == .complete && vodSearch.isCurrent(query: viewModel.query)
+        )
+        #else
+        return requestsViewModel.results
+        #endif
+    }
+
+    private var iptvOnlyTitles: [UnifiedVODTitle] {
+        #if os(iOS)
+        let entries = viewModel.results.filter { $0.type == "movie" || $0.type == "series" }
+            .map(UnifiedVODEntry.init(silo:)) + currentVODItems.map(UnifiedVODEntry.init(iptv:))
+        return UnifiedVODCatalog.aggregate(entries).filter { $0.siloItem == nil }
+        #else
+        return []
+        #endif
+    }
+
+    #if os(iOS)
+    private var currentVODItems: [XtreamVODItem] {
+        vodSearch.isCurrent(query: viewModel.query) ? vodSearch.items : []
+    }
+
+    private var matchedIPTVTitles: [UnifiedVODTitle] {
+        let entries = viewModel.results.filter { $0.type == "movie" || $0.type == "series" }
+            .map(UnifiedVODEntry.init(silo:)) + currentVODItems.map(UnifiedVODEntry.init(iptv:))
+        return UnifiedVODCatalog.aggregate(entries).filter { $0.siloItem != nil && !$0.iptvItems.isEmpty }
+    }
+
+    private var matchedIPTVSourceControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(matchedIPTVTitles) { title in
+                HStack {
+                    Text(title.title).lineLimit(1)
+                    Spacer()
+                    Menu("IPTV Sources") {
+                        ForEach(title.iptvItems) { source in
+                            if let provider = liveTVService.providers.first(where: { $0.id == source.providerID }) {
+                                Button(provider.name) {
+                                    router.presentIPTVDetail(KyroIPTVDetailRequest(item: source, providerName: provider.name))
+                                }
+                            }
+                        }
+                    }
+                }
+                .font(.siloCaption)
             }
         }
     }
+    #endif
+
+    #if os(iOS)
+    private var iptvVODResults: some View {
+        VStack(alignment: .leading, spacing: SiloTheme.padding) {
+            PhoneSectionHeader(title: "IPTV Movies & Series")
+            ForEach(iptvOnlyTitles.prefix(selectedFilter == .all ? 6 : 100)) { title in
+                if let item = title.iptvItems.first,
+                   let provider = liveTVService.providers.first(where: { $0.id == item.providerID }) {
+                    HStack {
+                        MediaCard(title: item.title, posterUrl: item.poster ?? "",
+                                  mediaType: item.kind == .movie ? "movie" : "series",
+                                  year: XtreamVODTitle.year(in: item.title), action: {
+                            router.presentIPTVDetail(KyroIPTVDetailRequest(item: item, providerName: provider.name))
+                        })
+                        if title.iptvItems.count > 1 {
+                            Menu("Sources") {
+                                ForEach(title.iptvItems) { source in
+                                    if let provider = liveTVService.providers.first(where: { $0.id == source.providerID }) {
+                                        Button(provider.name) {
+                                            router.presentIPTVDetail(KyroIPTVDetailRequest(item: source, providerName: provider.name))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #endif
 
     @ViewBuilder
     private var siloEmptyOrStatus: some View {

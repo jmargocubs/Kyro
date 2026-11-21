@@ -456,36 +456,42 @@ private struct SeekrSettingsSection: View {
             .foregroundStyle(Color.siloOnSurface)
             .tint(.siloSwitchOn)
 
-            SecureField(hasStoredKey ? "API key saved — enter to replace" : "Seekr API key", text: $key)
+            if let status {
+                Label(status, systemImage: status.hasPrefix("Connection successful") ? "checkmark.circle" : "info.circle")
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+            }
+
+            SecureField(hasStoredKey ? "Enter a new API key to replace" : "Seekr API key", text: $key)
                 .textContentType(.password)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .onChange(of: key) { _, _ in status = "Connection not tested for this key." }
 
-            HStack {
-                Button("Save Key") {
-                    guard SeekrCredentials.store(key) else {
-                        status = "Enter a valid API key first."
-                        return
-                    }
-                    key = ""
-                    status = "Key saved securely."
+            Button("Save Key") {
+                guard SeekrCredentials.store(key) else {
+                    status = "Enter a valid API key first."
+                    return
                 }
-                .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                Button("Test Connection") {
-                    testConnection()
-                }
-                .disabled(testing || (key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !hasStoredKey))
+                key = ""
+                status = "Key saved securely. Connection not tested."
             }
+            .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            Button("Test Connection") {
+                testConnection()
+            }
+            .disabled(testing || (key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !hasStoredKey))
 
             if hasStoredKey {
                 Button("Remove Key", role: .destructive) { confirmRemoval = true }
             }
 
             Link("Get a Seekr API Key", destination: URL(string: "https://seekr.tv")!)
+                .font(.footnote)
+                .foregroundStyle(Color.siloSecondaryText)
 
             if testing { ProgressView("Testing connection…") }
-            if let status { Text(status).font(.footnote).foregroundStyle(Color.siloSecondaryText) }
         } header: {
             Text("Seekr")
                 .foregroundStyle(Color.siloSecondaryText)
@@ -494,7 +500,10 @@ private struct SeekrSettingsSection: View {
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
-        .task { if !hasStoredKey { SeekrPreviewSettings.shared.setPreviewsEnabled(false) } }
+        .task {
+            if !hasStoredKey { SeekrPreviewSettings.shared.setPreviewsEnabled(false) }
+            status = hasStoredKey ? "Connection not tested on this device." : nil
+        }
         .confirmationDialog("Remove Seekr API key?", isPresented: $confirmRemoval, titleVisibility: .visible) {
             Button("Remove Key", role: .destructive) {
                 SeekrCredentials.clear()
@@ -516,7 +525,10 @@ private struct SeekrSettingsSection: View {
             let valid = await SeekrClient(apiKeyProvider: { value }).validateKey()
             await MainActor.run {
                 testing = false
-                status = valid ? "Connection successful." : "Connection failed. Check the key and try again."
+                guard key.trimmingCharacters(in: .whitespacesAndNewlines) == candidate else { return }
+                status = valid
+                    ? (candidate.isEmpty ? "Connection successful for saved key." : "Connection successful for entered key. Save it to use previews.")
+                    : "Connection failed. Check the key and try again."
             }
         }
     }

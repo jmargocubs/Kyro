@@ -7,10 +7,11 @@ import SwiftUI
 /// untouched on servers without requests.
 struct RequestSearchSectionView: View {
     let viewModel: RequestSearchSectionViewModel
+    let visibleResults: [RequestMediaResult]
     @Environment(AppRouter.self) private var router
 
     var body: some View {
-        if !viewModel.results.isEmpty {
+        if !visibleResults.isEmpty {
             VStack(alignment: .leading, spacing: RequestsUI.headerSpacing) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -26,7 +27,7 @@ struct RequestSearchSectionView: View {
                         .foregroundColor(.siloSecondaryText)
                 }
 
-                RequestCardRail(items: viewModel.results) { result in
+                RequestCardRail(items: visibleResults) { result in
                     RequestMediaCard(result: result, onTap: { router.openRequestResult(result) })
                 }
             }
