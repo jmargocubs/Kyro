@@ -323,6 +323,7 @@ struct LibrariesTabView: View {
     let libraryAuthority: MainTabLibraryAuthority?
     let onLibrariesLoaded: ((MainTabLibraryAuthority?, [Library]) -> Void)?
     let alternateSource: LibraryAlternateSource?
+    let unifiedCatalog: (([Library]) -> AnyView)?
 
     @State private var libraries: [Library] = []
     /// Which source is shown and which alternate source's page stays mounted.
@@ -373,13 +374,15 @@ struct LibrariesTabView: View {
         fixedLibraryId: Int? = nil,
         libraryAuthority: MainTabLibraryAuthority? = nil,
         onLibrariesLoaded: ((MainTabLibraryAuthority?, [Library]) -> Void)? = nil,
-        alternateSource: LibraryAlternateSource? = nil
+        alternateSource: LibraryAlternateSource? = nil,
+        unifiedCatalog: (([Library]) -> AnyView)? = nil
     ) {
         self.category = category
         self.fixedLibraryId = fixedLibraryId
         self.libraryAuthority = libraryAuthority
         self.onLibrariesLoaded = onLibrariesLoaded
         self.alternateSource = alternateSource
+        self.unifiedCatalog = unifiedCatalog
         let storageKey = librarySelectionStorageKey(
             category: category,
             fixedLibraryId: fixedLibraryId,
@@ -401,7 +404,7 @@ struct LibrariesTabView: View {
 
     var body: some View {
         Group {
-            if activeLibrary != nil || showsAlternate {
+            if activeLibrary != nil || showsAlternate || unifiedCatalog != nil {
                 loadedContent(activeLibrary: activeLibrary)
             } else if let error, visibleLibraries.isEmpty {
                 ErrorView(state: error, onRetry: { Task { await loadLibraries() } })
@@ -479,12 +482,23 @@ struct LibrariesTabView: View {
         // with these controls, so they scroll with the posters. They carry no glass of their own:
         // only the shell's Kyro header is pinned, and it draws the scroll glass.
         ZStack {
-            if let activeLibrary {
+            if selectedTab == .library, let unifiedCatalog {
+                unifiedCatalog(visibleLibraries)
+            }
+            if selectedTab != .library, activeLibrary == nil, unifiedCatalog != nil {
+                LibraryPageScrollContainer {
+                    EmptyStateView(icon: "square.stack.3d.up",
+                                   title: "No Silo libraries available",
+                                   subtitle: "Recommended and Collections use Silo libraries.")
+                        .frame(minHeight: 320)
+                }
+            }
+            if let activeLibrary, selectedTab != .library || unifiedCatalog == nil {
                 tabContent(activeLibrary: activeLibrary)
                     // Forces the whole tab subtree to reset when switching
                     // libraries, so stale content never flashes on screen.
                     .id("\(activeLibrary.id):\(videoScope(for: activeLibrary)?.rawValue ?? "all")")
-                    .modifier(LibrarySourceVisibility(isVisible: !showsAlternate))
+                    .modifier(LibrarySourceVisibility(isVisible: !showsAlternate && !(selectedTab == .library && unifiedCatalog != nil)))
             }
             if let alternateSource, showsAlternate || sourceState.mountsAlternate(alternateSource.id) {
                 alternateSource.content()
@@ -531,10 +545,22 @@ struct LibrariesTabView: View {
     /// The selector names whichever source is on screen: the Silo library, or the alternate
     /// source (the IPTV provider) with its own caption.
     private func selectorLabel(activeLibrary: Library?) -> (title: String, caption: String) {
+        if selectedTab == .library, unifiedCatalog != nil {
+            #if os(iOS)
+            let hasIPTV = IPTVVODPreference.isEnabled() &&
+                LiveTVService.shared.providers.contains { $0.kind == .xtream }
+            return (category == .series ? "All Series" : "All Movies", hasIPTV ? "Silo + IPTV" : "Silo")
+            #else
+            return (category == .series ? "All Series" : "All Movies", "Silo")
+            #endif
+        }
         if showsAlternate, let alternateSource {
             return (alternateSource.name, alternateSource.selectorCaption)
         }
         if let activeLibrary {
+            if unifiedCatalog != nil {
+                return (activeLibrary.name, "Silo · \(LibrarySelectorButton.typeLabel(for: activeLibrary))")
+            }
             return (activeLibrary.name, LibrarySelectorButton.typeLabel(for: activeLibrary))
         }
         return ("Libraries", "")
@@ -556,8 +582,8 @@ struct LibrariesTabView: View {
                     LibrarySelectorButton(
                         title: label.title,
                         caption: label.caption,
-                        canSwitch: canSwitchLibraries,
-                        onTap: { showPicker = true }
+                        canSwitch: selectedTab != .library && canSwitchLibraries,
+                        onTap: { if selectedTab != .library { showPicker = true } }
                     )
                     Spacer(minLength: 8)
                 }
@@ -567,8 +593,8 @@ struct LibrariesTabView: View {
             LibrariesTopBar(
                 title: label.title,
                 caption: label.caption,
-                canSwitch: canSwitchLibraries,
-                onLibraryTap: { showPicker = true },
+                canSwitch: selectedTab != .library && canSwitchLibraries,
+                onLibraryTap: { if selectedTab != .library { showPicker = true } },
                 onSearch: { router.navigate(to: .search) },
                 onOpenSettings: { router.navigate(to: .settings) },
                 onOpenRequests: { router.navigate(to: .requestsHub) },

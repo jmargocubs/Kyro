@@ -77,6 +77,11 @@ struct UnifiedVODTitle: Identifiable {
     var title: String { entries[0].title }
     var siloItem: BrowseItem? { entries.compactMap(\.siloItem).first }
     var iptvItems: [XtreamVODItem] { entries.compactMap(\.iptvItem) }
+    /// The existing Silo detail is primary when present; IPTV-only cards keep their
+    /// provider-qualified identity. Other entries remain available on the title.
+    var primaryEntry: UnifiedVODEntry? {
+        entries.first(where: { $0.origin == .silo }) ?? entries.first
+    }
     /// Episodes are intentionally not fetched during title matching. The caller can supply the
     /// currently resolved keys for individual sources; an unknown source is never inferred to
     /// contain an episode merely because another source does.
@@ -93,6 +98,18 @@ struct UnifiedVODEpisodeKey: Hashable {
 }
 
 enum UnifiedVODCatalog {
+    /// Append a source page without duplicate records and retain a bounded browsing window.
+    /// Offset/cursor state stays with each source, so trimming never rewinds pagination.
+    static func appendPage(_ page: [UnifiedVODEntry], to current: [UnifiedVODEntry],
+                           maximum: Int) -> (entries: [UnifiedVODEntry], trimmed: Bool) {
+        var result = current
+        var known = Set(current.map(\.id))
+        for entry in page where known.insert(entry.id).inserted { result.append(entry) }
+        let excess = max(0, result.count - max(1, maximum))
+        if excess > 0 { result.removeFirst(excess) }
+        return (result, excess > 0)
+    }
+
     /// Discovery is supplementary: fail closed until both local catalogs have finished, then
     /// remove every result known playable in IPTV. The server already filters its own library.
     static func requestableResults(_ results: [RequestMediaResult], local: [UnifiedVODEntry],
@@ -127,9 +144,11 @@ enum UnifiedVODCatalog {
             } else { key = "record:\(entry.id)" }
             let candidates = buckets[key] ?? [entry]
             let uniqueOrigins = Set(candidates.map(\.origin)).count == candidates.count
-            let compatible = candidates.allSatisfy { other in
-                !conflictingIdentifiers(entry, other) &&
-                (other.id == entry.id || sharedIdentifier(entry, other) || safeTitleYear(entry, other))
+            let compatible = candidates.allSatisfy { left in
+                candidates.allSatisfy { right in
+                    !conflictingIdentifiers(left, right) &&
+                    (left.id == right.id || sharedIdentifier(left, right) || safeTitleYear(left, right))
+                }
             }
             let merged = uniqueOrigins && compatible ? candidates : [entry]
             groups.append(UnifiedVODTitle(entries: merged))
