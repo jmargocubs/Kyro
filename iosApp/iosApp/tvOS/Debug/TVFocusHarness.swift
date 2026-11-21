@@ -396,7 +396,7 @@ final class TVFocusHarnessProbe {
                 let next = context?.nextFocusedItem as? NSObject
                 let label = (next as? UIAccessibilityIdentification)?.accessibilityIdentifier
                     ?? next?.accessibilityLabel ?? String(describing: type(of: next as Any))
-                TVFocusHarnessProbe.shared.append("focus -> \(label ?? "nil")")
+                TVFocusHarnessProbe.shared.append("focus -> \(label)")
             }
         }
     }
