@@ -219,6 +219,10 @@ struct TVTopMenuBar: View {
     /// Set when the bar deliberately clears its own binding (watchdog reset,
     /// stale-binding reclaim), so that nil is never read as a user's Down.
     @State private var ignoreNextFocusLoss = false
+    /// True only until UIKit reports the bar departure. The report can arrive
+    /// before or after SwiftUI clears the binding; neither order is assumed.
+    @State private var pendingBarFocusLoss = false
+    @State private var movementObserverID = UUID()
     /// The element whose panel the user just explicitly closed (Menu/Back).
     /// Focus returns to it, but the dwell timer must NOT auto-reopen the panel
     /// they just dismissed — that's the "closes then immediately reopens"
@@ -251,6 +255,7 @@ struct TVTopMenuBar: View {
         .padding(.top, SiloTheme.Skyline.barTopInset)
         .frame(maxWidth: .infinity, alignment: .top)
         .ignoresSafeArea(edges: [.top, .horizontal])
+        .background(TVBarFocusRegion())
         // The bar dims only while focus is down in the content zone (§5.1).
         // An open panel keeps it fully lit — focus has merely descended into
         // the dropdown, and dimming the bar there greys out the panel's own
@@ -316,16 +321,14 @@ struct TVTopMenuBar: View {
                 // the bar's own request. A system repair or initial
                 // resolution that lands on the always-enabled bar leaves the
                 // page free to complete its pending entry or return claim.
-                let owned = tvTopMenuArrivalTakesOwnership(
-                    userMoved: TVFocusMovementTracker.lastMoveWasDirectional,
-                    matchesBarRequest: requestedFocus == newValue
-                )
+                let owned = requestedFocus == newValue
                 requestedFocus = nil
-                guard owned else {
+                guard owned || isMenuFocused else {
                     TVFocusDiagnostics.value("state", "TopMenu", "systemArrivalLeftUnowned", newValue)
                     dwellTask?.cancel()
                     return
                 }
+                pendingBarFocusLoss = false
                 isMenuFocused = !panelEntersFocus
                 scheduleDwell(for: newValue)
                 return
@@ -339,45 +342,50 @@ struct TVTopMenuBar: View {
             }
             let ignored = ignoreNextFocusLoss
             ignoreNextFocusLoss = false
-            let loss = ignored ? .handOffToContent : tvTopMenuFocusLoss(
-                movedDown: TVFocusMovementTracker.lastMoveWasDown,
-                lastElementHasPanel: dwellTarget(for: lastBarFocus) != nil,
-                explicitHandOff: !isMenuFocused,
-                previewOpen: openPanel != nil,
-                refocusAfterSidewaysClose: refocusAfterClose
-            )
-            switch loss {
-            case .repin:
-                // Opening or closing a preview overlay perturbs the focus graph
-                // and drops the bar's @FocusState with no user move. Re-pin in
-                // the same transaction; deferring leaves a frame where tvOS
-                // repairs focus to Home (the flash).
-                if let target = lastBarFocus {
-                    refocusAfterClose = false
-                    TVFocusDiagnostics.value("request", "TopMenu", "repinAfterNil", target)
-                    claimBarFocus(target)
-                    return
-                }
-            case .enterPanel:
-                // The user's Down left a panel-bearing element. The panel is
-                // the destination for clicks and swipes alike; this is the
-                // only Down owner (no `onMoveCommand` on the tab).
-                refocusAfterClose = false
-                dwellTask?.cancel()
-                if let panel = dwellTarget(for: lastBarFocus) {
-                    TVFocusDiagnostics.value("request", "TopMenu", "downEntersPanel", panel)
-                    isMenuFocused = false
-                    onEnterPanel(panel)
-                    return
-                }
-            case .handOffToContent:
-                break
-            }
+            pendingBarFocusLoss = !ignored && isMenuFocused
             isMenuFocused = false
-            scheduleDwell(for: nil)
-            onContentFocusHandoff()
+            dwellTask?.cancel()
         }
-        .onDisappear { dwellTask?.cancel() }
+        .onAppear { TVFocusMovementTracker.setHandler(owner: movementObserverID, handleFocusTransition) }
+        .onDisappear {
+            dwellTask?.cancel()
+            TVFocusMovementTracker.removeHandler(owner: movementObserverID)
+        }
+    }
+
+    private func handleFocusTransition(_ transition: TVBarFocusTransition) {
+        TVFocusDiagnostics.value("state", "TopMenu", "scopedTransition", transition)
+        switch transition {
+        case .userArrival:
+            guard !panelEntersFocus else { return }
+            isMenuFocused = true
+            if let focusedItem { scheduleDwell(for: focusedItem) }
+        case .downFromBar:
+            guard !panelEntersFocus, isMenuFocused || pendingBarFocusLoss else { return }
+            pendingBarFocusLoss = false
+            refocusAfterClose = false
+            dwellTask?.cancel()
+            isMenuFocused = false
+            if let panel = dwellTarget(for: focusedItem ?? lastBarFocus) {
+                onEnterPanel(panel)
+            } else {
+                onContentFocusHandoff()
+            }
+        case .otherDeparture:
+            let wasOwned = isMenuFocused || pendingBarFocusLoss
+            pendingBarFocusLoss = false
+            guard wasOwned, !panelEntersFocus else { return }
+            if (openPanel != nil || refocusAfterClose), let target = lastBarFocus {
+                refocusAfterClose = false
+                claimBarFocus(target)
+            } else {
+                isMenuFocused = false
+                scheduleDwell(for: nil)
+                onContentFocusHandoff()
+            }
+        case .unrelated:
+            break
+        }
     }
 
     // MARK: - Clusters
@@ -488,7 +496,7 @@ struct TVTopMenuBar: View {
         })
         // No Down handler: Down is a native move. When it leaves a
         // panel-bearing tab, the focus-loss decision enters that tab's panel
-        // (see `tvTopMenuFocusLoss`), so clicks and swipes behave the same and
+        // (see `handleFocusTransition`), so clicks and swipes behave the same and
         // the panel has exactly one Down owner.
         // Panel-bearing tabs publish their bounds so the shell can center the
         // anchored dropdown under them (§5.3); other tabs have no panel.

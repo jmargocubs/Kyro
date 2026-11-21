@@ -25,6 +25,16 @@ func tvPanelDisablesUnderlyingContent(isOpen: Bool, isEntered: Bool) -> Bool {
     isOpen && isEntered
 }
 
+func tvQueuedContentHandoffIsCurrent<T: Equatable>(scheduledGeneration: Int,
+                                                   currentGeneration: Int,
+                                                   scheduledDestination: T,
+                                                   currentDestination: T,
+                                                   isShowingRoot: Bool,
+                                                   menuOwnsFocus: Bool) -> Bool {
+    scheduledGeneration == currentGeneration && scheduledDestination == currentDestination
+        && isShowingRoot && !menuOwnsFocus
+}
+
 #if os(tvOS)
 import SwiftUI
 
@@ -135,6 +145,7 @@ struct TVMainTabView: View {
     /// d-pad entry"). Starts at 1 so the initial Home content focuses on
     /// first appear.
     @State private var contentFocusRequest = 1
+    @State private var contentHandoffGeneration = 0
     /// Card-pushed detail routes return to their exact Skyline owner instead
     /// of relying on NavigationStack's best-effort focus restoration.
     @State private var detailReturnFocusRequest = 0
@@ -174,7 +185,7 @@ struct TVMainTabView: View {
                     onDwell: handleDwell(_:),
                     onEnterPanel: enterPanelFor,
                     onProfilePressed: openProfilePanelImmediately,
-                    onContentFocusHandoff: markContentOwnsFocus,
+                    onContentFocusHandoff: contentFocusDidMoveFromBar,
                     onExit: personalRoot != nil
                         ? returnFromPersonalRootInMenu
                         : (selectedRoot == .home ? nil : returnToHomeInMenu)
@@ -270,13 +281,14 @@ struct TVMainTabView: View {
             openRequestedSearch()
             await uiCustomization.refresh()
             controlReceiver.start(router: router)
-            TVFocusDiagnostics.installExportGesture()
+            TVFocusDiagnostics.installExportGesture(router: router)
             await loadCurrentProfile()
         }
         .task(id: currentLibraryAuthority) {
             await loadLibraries(for: currentLibraryAuthority)
         }
         .onChange(of: router.path.isEmpty) { _, isEmpty in
+            contentHandoffGeneration += 1
             // Returning from a pushed route re-mounts the bar. Choose the next
             // owner explicitly: the bar for bar-pushed routes, otherwise the
             // launch card through `detailReturnFocusRequest`.
@@ -1192,6 +1204,8 @@ struct TVMainTabView: View {
     // MARK: - Root selection & focus
 
     private func selectRoot(_ root: TVRootDestination) {
+        contentHandoffGeneration += 1
+        let generation = contentHandoffGeneration
         let isReselect = root == selectedRoot
         router.popToRoot()
 
@@ -1222,6 +1236,12 @@ struct TVMainTabView: View {
             // bump one turn so the page observes `menuOwnsFocus == false`
             // before it claims; a fresh tab claims in onAppear anyway.
             DispatchQueue.main.async {
+                guard tvQueuedContentHandoffIsCurrent(
+                    scheduledGeneration: generation, currentGeneration: contentHandoffGeneration,
+                    scheduledDestination: root, currentDestination: selectedRoot,
+                    isShowingRoot: router.path.isEmpty && personalRoot == nil,
+                    menuOwnsFocus: menuOwnsFocus
+                ) else { return }
                 contentFocusRequest += 1
             }
         } else {
@@ -1247,12 +1267,14 @@ struct TVMainTabView: View {
     }
 
     private func returnToHomeInMenu() {
+        contentHandoffGeneration += 1
         selectedRoot = .home
         panelReturnFocus = nil
         topMenuFocusRequest += 1
     }
 
     private func returnFromPersonalRootInMenu() {
+        contentHandoffGeneration += 1
         withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.normalDuration)) {
             personalRoot = nil
         }
@@ -1264,11 +1286,17 @@ struct TVMainTabView: View {
         isTopMenuFocused = false
     }
 
+    private func contentFocusDidMoveFromBar() {
+        contentHandoffGeneration += 1
+        markContentOwnsFocus()
+    }
+
     /// Push a route on behalf of a bar element (search button, profile /
     /// For You panel rows). Marks the stack so popping back to root hands
     /// focus to the bar instead of letting the engine free-resolve into
     /// the row band.
     private func navigateFromBar(_ route: Route) {
+        contentHandoffGeneration += 1
         switch route {
         case .watchlist:
             showPersonalRoot(.watchlist)
@@ -1318,6 +1346,8 @@ struct TVMainTabView: View {
     }
 
     private func showPersonalRoot(_ destination: TVPersonalRootDestination) {
+        contentHandoffGeneration += 1
+        let generation = contentHandoffGeneration
         router.popToRoot()
         barOwnsFocusOnPopToRoot = false
         markContentOwnsFocus()
@@ -1328,6 +1358,9 @@ struct TVMainTabView: View {
         panelEntersFocus = false
         panelHasFocus = false
         DispatchQueue.main.async {
+            guard generation == contentHandoffGeneration,
+                  personalRoot == destination,
+                  router.path.isEmpty, !menuOwnsFocus else { return }
             contentFocusRequest += 1
         }
     }

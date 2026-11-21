@@ -417,33 +417,50 @@ final class KyroTVFocusTests: XCTestCase {
 
     // MARK: Build 103 review: bar focus loss and ownership (pure policy, not the view)
 
-    func testNativeDownFromATabWithAnOpenPreviewEntersThePanelInsteadOfRepinning() {
-        // The review's passive-preview trap: a user's Down was read as a
-        // spurious loss and focus was pinned back to the tab.
-        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: true, lastElementHasPanel: true, explicitHandOff: false,
-                                          previewOpen: true, refocusAfterSidewaysClose: false), .enterPanel)
-        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: true, lastElementHasPanel: true, explicitHandOff: false,
-                                          previewOpen: false, refocusAfterSidewaysClose: false), .enterPanel,
-                       "Down before the dwell still enters the panel, for clicks and swipes alike")
-        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: true, lastElementHasPanel: false, explicitHandOff: false,
-                                          previewOpen: false, refocusAfterSidewaysClose: false), .handOffToContent)
+    func testBarTransitionUsesOnlyItsOwnSourceAndConsumesOnce() {
+        var gate = TVBarFocusTransitionGate()
+        XCTAssertEqual(gate.consume(sequence: 1, sourceInBar: false, destinationInBar: false,
+                                    isDown: true, isDirectional: true), .unrelated,
+                       "a Down elsewhere cannot open a panel")
+        XCTAssertEqual(gate.consume(sequence: 2, sourceInBar: true, destinationInBar: false,
+                                    isDown: false, isDirectional: false), .otherDeparture,
+                       "an unmatched restoration is not a user Down")
+        XCTAssertEqual(gate.consume(sequence: 2, sourceInBar: true, destinationInBar: false,
+                                    isDown: true, isDirectional: true), .unrelated,
+                       "the same update cannot be reused")
+        XCTAssertEqual(gate.consume(sequence: 3, sourceInBar: true, destinationInBar: false,
+                                    isDown: true, isDirectional: true), .downFromBar)
+        XCTAssertEqual(gate.consume(sequence: 4, sourceInBar: false, destinationInBar: true,
+                                    isDown: false, isDirectional: true), .userArrival)
     }
 
-    func testOverlayPerturbationWithoutAUserMoveStillRepins() {
-        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: false, lastElementHasPanel: true, explicitHandOff: false,
-                                          previewOpen: true, refocusAfterSidewaysClose: false), .repin)
-        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: false, lastElementHasPanel: false, explicitHandOff: false,
-                                          previewOpen: false, refocusAfterSidewaysClose: true), .repin)
-        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: false, lastElementHasPanel: true, explicitHandOff: true,
-                                          previewOpen: true, refocusAfterSidewaysClose: false), .handOffToContent,
-                       "a page claim after tab selection is let go, never re-pinned")
+    func testQueuedContentHandoffRejectsChangedDestinationOrGeneration() {
+        XCTAssertTrue(tvQueuedContentHandoffIsCurrent(scheduledGeneration: 2, currentGeneration: 2,
+                                                      scheduledDestination: "movies", currentDestination: "movies",
+                                                      isShowingRoot: true, menuOwnsFocus: false))
+        XCTAssertFalse(tvQueuedContentHandoffIsCurrent(scheduledGeneration: 2, currentGeneration: 3,
+                                                       scheduledDestination: "movies", currentDestination: "movies",
+                                                       isShowingRoot: true, menuOwnsFocus: false))
+        XCTAssertFalse(tvQueuedContentHandoffIsCurrent(scheduledGeneration: 2, currentGeneration: 2,
+                                                       scheduledDestination: "movies", currentDestination: "series",
+                                                       isShowingRoot: true, menuOwnsFocus: false))
+        XCTAssertFalse(tvQueuedContentHandoffIsCurrent(scheduledGeneration: 2, currentGeneration: 2,
+                                                       scheduledDestination: "movies", currentDestination: "movies",
+                                                       isShowingRoot: true, menuOwnsFocus: true))
     }
 
-    func testSystemArrivalOnTheBarDoesNotTakeMenuOwnership() {
-        // Launch, pop to root, panel teardown: the page's claim must still land.
-        XCTAssertFalse(tvTopMenuArrivalTakesOwnership(userMoved: false, matchesBarRequest: false))
-        XCTAssertTrue(tvTopMenuArrivalTakesOwnership(userMoved: true, matchesBarRequest: false))
-        XCTAssertTrue(tvTopMenuArrivalTakesOwnership(userMoved: false, matchesBarRequest: true))
+    func testBrowseDetailReturnKeepsDeepCardAndFallsBackWhenRemoved() {
+        var state = TVBrowseDetailReturnState()
+        state.open(itemId: "deep", detailDepth: 2)
+        XCTAssertNil(state.targetAfterPop(to: 2, availableIDs: ["first", "deep"]))
+        XCTAssertEqual(state.targetAfterPop(to: 1, availableIDs: ["first", "deep"]), "deep")
+        XCTAssertNil(state.targetAfterPop(to: 1, availableIDs: ["first", "deep"]),
+                     "return is consumed once")
+        state.open(itemId: "removed", detailDepth: 2)
+        XCTAssertEqual(state.targetAfterPop(to: 1, availableIDs: ["first"]), "first")
+        state.open(itemId: "old", detailDepth: 2)
+        state.cancel()
+        XCTAssertNil(state.targetAfterPop(to: 1, availableIDs: ["new"]))
     }
 
     func testMatchingOrStaleBindingNeverFalselyClaimsOwnership() {

@@ -25,6 +25,12 @@ struct TVCatalogGrid: View {
     var cardWidth: CGFloat = SiloTheme.posterCardWidth
     var prefersDefaultFocusOnFirstItem: Bool = false
     var focusRequest: Int = 0
+    /// Explicit detail-return claim, issued only after the parent has scrolled
+    /// the target row into view. Ordinary directional entry never uses it.
+    var detailReturnRequest: Int = 0
+    var detailReturnItemId: String? = nil
+    var resultSetKey: CatalogFilterState? = nil
+    var onCardFocusChange: ((String?) -> Void)? = nil
     /// Opt-in default focus (Browse). `.firstCardFromControls` while the
     /// control row above has focus: Down lands on the first card.
     /// `.lastFocusedCard` otherwise: a system restore (Back from a detail
@@ -39,6 +45,8 @@ struct TVCatalogGrid: View {
     /// The card that last held focus in this grid, kept while focus is on a
     /// pushed detail page. Cleared when the result set is replaced.
     @State private var lastFocusedItemId: String?
+    @State private var pendingDetailReturnItemId: String?
+    @State private var lastDetailReturnRequest = 0
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(\.browseLibraryId) private var playbackLibraryId
     @Environment(\.allowsDirectPlayback) private var allowsDirectPlayback
@@ -98,7 +106,7 @@ struct TVCatalogGrid: View {
                             contentId: item.contentId
                         )
                         .frame(maxWidth: .infinity)
-                        .onAppear { onCellAppear(index: rowStart + column) }
+                        .onAppear { onCellAppear(index: rowStart + column, itemId: item.contentId) }
                     }
                     // Keep ragged-row cards in their column positions by
                     // filling the empty slots with equally flexible spacers.
@@ -127,14 +135,28 @@ struct TVCatalogGrid: View {
             }
         ))
         .onChange(of: focusedItemId) { _, itemId in
-            if let itemId { lastFocusedItemId = itemId }
+            onCardFocusChange?(itemId)
+            if let itemId {
+                lastFocusedItemId = itemId
+                pendingDetailReturnItemId = nil
+            }
         }
         // A new first item means a new result set (filter, sort, letter
         // jump); pagination keeps it. The remembered card may be gone.
         .onChange(of: items.first?.contentId) { _, _ in lastFocusedItemId = nil }
+        .onChange(of: resultSetKey) { _, _ in
+            lastFocusedItemId = nil
+            pendingDetailReturnItemId = nil
+        }
+        .onChange(of: items.map(\.contentId)) { _, ids in
+            if let lastFocusedItemId, !ids.contains(lastFocusedItemId) {
+                self.lastFocusedItemId = nil
+            }
+        }
         .focusSection()
         .onAppear { applyFocusRequest(focusRequest) }
         .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
+        .onChange(of: detailReturnRequest) { _, request in applyDetailReturn(request) }
         // Only the first item matters: a pending request lands once it exists.
         .onChange(of: items.first?.contentId) { _, _ in applyFocusRequest(focusRequest) }
 
@@ -153,7 +175,10 @@ struct TVCatalogGrid: View {
         Array(items[rowStart..<min(rowStart + resolvedColumnCount, items.count)])
     }
 
-    private func onCellAppear(index: Int) {
+    private func onCellAppear(index: Int, itemId: String) {
+        if pendingDetailReturnItemId == itemId {
+            focusedItemId = itemId
+        }
         guard hasMore else { return }
         let threshold = items.count - (prefetchRowsRemaining * resolvedColumnCount)
         if index >= threshold {
@@ -178,6 +203,21 @@ struct TVCatalogGrid: View {
         guard let firstItemId = items.first?.contentId else { return }
         lastAppliedFocusRequest = request
         focusedItemId = firstItemId
+    }
+
+    private func applyDetailReturn(_ request: Int) {
+        guard request > 0, request != lastDetailReturnRequest,
+              let detailReturnItemId,
+              items.contains(where: { $0.contentId == detailReturnItemId }) else { return }
+        lastDetailReturnRequest = request
+        pendingDetailReturnItemId = detailReturnItemId
+        focusedItemId = nil
+        // Succeeds if already laid out; otherwise the cell's onAppear claims
+        // it when the parent's non-animated scroll mounts the lazy row.
+        DispatchQueue.main.async {
+            guard pendingDetailReturnItemId == detailReturnItemId else { return }
+            focusedItemId = detailReturnItemId
+        }
     }
 }
 /// Attached only for grids that opt in (`entryFocus` is nil or non-nil per
@@ -223,5 +263,30 @@ func tvCatalogGridDefaultFocus(
         return firstItemId.map { TVCatalogGridDefaultFocus(itemId: $0, isUserEntry: true) }
     case .lastFocusedCard:
         return (lastFocusedItemId ?? firstItemId).map { TVCatalogGridDefaultFocus(itemId: $0, isUserEntry: false) }
+    }
+}
+
+/// A detail return belongs to one opened card and one stack depth. A result
+/// set change cancels it; removal of that card falls back to the first card.
+struct TVBrowseDetailReturnState: Equatable {
+    private(set) var openedItemId: String?
+    private(set) var detailDepth: Int?
+
+    mutating func open(itemId: String, detailDepth: Int) {
+        openedItemId = itemId
+        self.detailDepth = detailDepth
+    }
+
+    mutating func cancel() {
+        openedItemId = nil
+        detailDepth = nil
+    }
+
+    mutating func targetAfterPop(to depth: Int, availableIDs: [String]) -> String? {
+        guard let detailDepth, depth < detailDepth else { return nil }
+        let target = openedItemId.flatMap { availableIDs.contains($0) ? $0 : nil }
+            ?? availableIDs.first
+        cancel()
+        return target
     }
 }

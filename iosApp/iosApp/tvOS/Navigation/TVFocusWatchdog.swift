@@ -26,44 +26,6 @@ func tvFocusRepairAction(attempt: Int, isShowingRoot: Bool) -> TVFocusRepairActi
     return attempt <= 1 ? .contentHandoff : .topMenu
 }
 
-/// How the top bar treats the moment its focus binding drops to nil.
-enum TVTopMenuFocusLoss: Equatable {
-    /// Focus really left the bar: let it go and tell the shell content owns it.
-    case handOffToContent
-    /// The user moved Down from a panel-bearing element: open and enter its panel.
-    case enterPanel
-    /// Opening or closing a preview overlay perturbed focus with no user move:
-    /// put focus back on the element the user is on.
-    case repin
-}
-
-/// A user's Down is never mistaken for a spurious loss: before Build 103 a
-/// native Down from a tab with an open preview was re-pinned to the tab, so
-/// swipes (and clicks the handler missed) could not leave it. Down from a
-/// panel-bearing tab enters its panel for clicks and swipes alike; Down from
-/// any other element goes to the page.
-func tvTopMenuFocusLoss(
-    movedDown: Bool,
-    lastElementHasPanel: Bool,
-    explicitHandOff: Bool,
-    previewOpen: Bool,
-    refocusAfterSidewaysClose: Bool
-) -> TVTopMenuFocusLoss {
-    if movedDown { return lastElementHasPanel ? .enterPanel : .handOffToContent }
-    if explicitHandOff { return .handOffToContent }
-    if previewOpen || refocusAfterSidewaysClose { return .repin }
-    return .handOffToContent
-}
-
-/// Focus arriving on a bar element makes the menu the owner only when the user
-/// moved it there or the bar itself asked for it. System-initiated arrivals —
-/// launch, pop to root, panel teardown, cover dismissal — leave ownership with
-/// the page, so the page's pending entry or return claim still lands instead
-/// of being refused because the always-enabled bar happened to win a repair.
-func tvTopMenuArrivalTakesOwnership(userMoved: Bool, matchesBarRequest: Bool) -> Bool {
-    userMoved || matchesBarRequest
-}
-
 /// What `requestMenuFocus` does for a target.
 enum TVTopMenuFocusClaim: Equatable {
     case claim
@@ -79,16 +41,38 @@ func tvTopMenuFocusClaim(bindingMatchesTarget: Bool, barOwnsFocus: Bool) -> TVTo
     return barOwnsFocus ? .alreadyFocused : .reclaimStale
 }
 
+/// A focus update is useful to the top bar only when UIKit identifies the
+/// actual source or destination as part of that bar. No heading is cached for
+/// a later SwiftUI callback: notification and FocusState ordering is not a
+/// platform contract.
+enum TVBarFocusTransition: Equatable {
+    case downFromBar
+    case userArrival
+    case otherDeparture
+    case unrelated
+}
+
+struct TVBarFocusTransitionGate {
+    private var lastConsumedSequence = 0
+
+    mutating func consume(sequence: Int, sourceInBar: Bool, destinationInBar: Bool,
+                          isDown: Bool, isDirectional: Bool) -> TVBarFocusTransition {
+        guard sequence > lastConsumedSequence else { return .unrelated }
+        lastConsumedSequence = sequence
+        if sourceInBar && !destinationInBar {
+            return isDown ? .downFromBar : .otherDeparture
+        }
+        if !sourceInBar && destinationInBar && isDirectional { return .userArrival }
+        return .unrelated
+    }
+}
+
 #if os(tvOS)
 import SwiftUI
 import UIKit
 
 /// Reads and nudges the live focus engine for the app's key window.
-///
-/// SwiftUI exposes no way to ask "does anything on screen currently hold
-/// focus?", and `@FocusState` is not an answer: the engine can drop focus
-/// without writing `nil` back into a binding, which is exactly the wedge this
-/// watchdog exists to catch. `UIFocusSystem` is the only source of truth.
+/// SwiftUI's FocusState can stay non-nil after the engine drops focus.
 enum TVFocusSystemProbe {
     @MainActor
     private static var keyWindow: UIWindow? {
@@ -99,9 +83,6 @@ enum TVFocusSystemProbe {
             .first(where: \.isKeyWindow)
     }
 
-    /// The focused item's *type* name, or `nil` when nothing is focused. Only
-    /// the type is returned: a focused item's description can carry item
-    /// titles, and breadcrumbs must stay free of library content.
     @MainActor
     static func focusedItemTypeName() -> String? {
         focusedItem().map { String(describing: type(of: $0)) }
@@ -116,9 +97,6 @@ enum TVFocusSystemProbe {
     @MainActor
     static var keyWindowScreen: UIScreen? { keyWindow?.windowScene?.screen }
 
-    /// Ask the engine to re-resolve focus from the window root. Used only on
-    /// pushed routes, where the tvOS shell owns no focus target it could
-    /// legitimately pin.
     @MainActor
     static func requestFocusUpdate() {
         guard let window = keyWindow else { return }
@@ -128,19 +106,36 @@ enum TVFocusSystemProbe {
     }
 }
 
-/// Records the heading of the latest focus update. The observer runs
-/// synchronously when UIKit posts the update (`queue: nil`), which is before
-/// SwiftUI's next graph update applies `@FocusState` changes and runs
-/// `onChange`. The top bar uses it to tell a user's move (a heading) from a
-/// programmatic claim or an engine repair (no heading).
 @MainActor
 enum TVFocusMovementTracker {
-    private(set) static var lastHeading: UIFocusHeading = []
     private static var observer: NSObjectProtocol?
+    private static weak var barRegion: UIView?
+    private static var sequence = 0
+    private static var gate = TVBarFocusTransitionGate()
+    private static var onBarTransition: ((TVBarFocusTransition) -> Void)?
+    private static var handlerOwner: UUID?
 
-    static var lastMoveWasDown: Bool { lastHeading.contains(.down) }
-    static var lastMoveWasDirectional: Bool {
-        !lastHeading.intersection([.up, .down, .left, .right]).isEmpty
+    static func setHandler(owner: UUID, _ handler: @escaping (TVBarFocusTransition) -> Void) {
+        handlerOwner = owner
+        onBarTransition = handler
+    }
+
+    static func removeHandler(owner: UUID) {
+        guard handlerOwner == owner else { return }
+        handlerOwner = nil
+        onBarTransition = nil
+    }
+
+    static func setBarRegion(_ view: UIView?) { barRegion = view }
+    static func removeBarRegion(_ view: UIView) {
+        if barRegion === view { barRegion = nil }
+    }
+
+    private static func isInsideBar(_ view: UIView?) -> Bool {
+        guard let view, let barRegion, let window = barRegion.window,
+              view.window === window else { return false }
+        let frame = view.convert(view.bounds, to: barRegion)
+        return barRegion.bounds.contains(CGPoint(x: frame.midX, y: frame.midY))
     }
 
     static func install() {
@@ -150,10 +145,44 @@ enum TVFocusMovementTracker {
         ) { note in
             guard Thread.isMainThread else { return }
             MainActor.assumeIsolated {
-                let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
-                lastHeading = context?.focusHeading ?? []
+                guard let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext else { return }
+                sequence += 1
+                let heading = context.focusHeading
+                let transition = gate.consume(
+                    sequence: sequence,
+                    sourceInBar: isInsideBar(context.previouslyFocusedView),
+                    destinationInBar: isInsideBar(context.nextFocusedView),
+                    isDown: heading.contains(.down),
+                    isDirectional: !heading.intersection([.up, .down, .left, .right]).isEmpty
+                )
+                if transition != .unrelated { onBarTransition?(transition) }
             }
         }
+    }
+}
+
+/// The marker measures the bar in its window without becoming a focus item or
+/// intercepting a press. A focus item not represented by a UIView is unmatched.
+private final class TVBarFocusRegionView: UIView {
+    override var canBecomeFocused: Bool { false }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            TVFocusMovementTracker.removeBarRegion(self)
+        } else {
+            TVFocusMovementTracker.setBarRegion(self)
+        }
+    }
+}
+
+struct TVBarFocusRegion: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let view = TVBarFocusRegionView()
+        view.isUserInteractionEnabled = false
+        return view
+    }
+    func updateUIView(_ uiView: UIView, context: Context) {
+        TVFocusMovementTracker.setBarRegion(uiView)
     }
 }
 

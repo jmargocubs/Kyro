@@ -33,9 +33,9 @@ enum TVFocusDiagnostics {
 extension TVFocusDiagnostics {
     /// Installs the focus-independent export gesture (hold Play/Pause) in
     /// diagnostic builds. Compiles to nothing in ordinary Release builds.
-    @MainActor static func installExportGesture() {
+    @MainActor static func installExportGesture(router: AppRouter) {
         #if DEBUG || KYRO_FOCUS_DIAGNOSTICS
-        TVDiagnosticExportGesture.shared.install()
+        TVDiagnosticExportGesture.shared.install(router: router)
         #endif
     }
 }
@@ -345,8 +345,10 @@ final class TVDiagnosticExportGesture: NSObject, UIGestureRecognizerDelegate {
     static let holdDuration: TimeInterval = 3
     private var recognizers: [UILongPressGestureRecognizer] = []
     private var observer: NSObjectProtocol?
+    private weak var router: AppRouter?
 
-    func install() {
+    func install(router: AppRouter) {
+        self.router = router
         attach()
         guard observer == nil else { return }
         observer = NotificationCenter.default.addObserver(forName: UIWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] _ in
@@ -391,10 +393,17 @@ final class TVDiagnosticExportGesture: NSObject, UIGestureRecognizerDelegate {
 
     private func isEligible(_ window: UIWindow?) -> Bool {
         guard let window else { return false }
+        let routeHasPlayer = router?.visiblePushedRoutes.last.map { route in
+            switch route {
+            case .player, .playerWithFile: return true
+            default: return false
+            }
+        } ?? false
         return tvDiagnosticExportHoldIsEligible(
             presentsController: Self.presentsController(window.rootViewController),
             liveTVPlaybackActive: LiveTVService.shared.presentation.phase != .idle,
-            videoPlayerMounted: TVPlayerPresence.isActive || Self.videoPlayerIsMounted(in: window)
+            videoPlayerMounted: routeHasPlayer || router?.presentedPlayer != nil
+                || TVPlayerPresence.isActive || Self.videoPlayerIsMounted(in: window)
         )
     }
 

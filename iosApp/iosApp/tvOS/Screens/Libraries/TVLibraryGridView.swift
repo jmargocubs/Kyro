@@ -39,6 +39,11 @@ struct TVLibraryGridView: View {
     /// then the native Down target (replaces the old Down claim).
     @State private var controlRowHasFocus = false
     @State private var lastShellFocusRequest = 0
+    @State private var detailReturnState = TVBrowseDetailReturnState()
+    @State private var detailReturnGeneration = 0
+    @State private var detailReturnRequest = 0
+    @State private var detailReturnItemId: String?
+    @State private var gridFocusedItemId: String?
     @State private var shuffleLauncher = ShuffleLauncher()
 
     @Environment(AppRouter.self) private var router
@@ -122,6 +127,11 @@ struct TVLibraryGridView: View {
             }
             await viewModel.loadFacetsIfNeeded()
         }
+        .onChange(of: viewModel.filter) { _, _ in
+            detailReturnGeneration += 1
+            detailReturnState.cancel()
+            detailReturnItemId = nil
+        }
         .onDisappear { viewModel.cancelPosterPrefetch() }
     }
 
@@ -155,6 +165,7 @@ struct TVLibraryGridView: View {
     // MARK: - Grid column
 
     private var gridColumn: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 32) {
                 if showsHeader {
@@ -214,12 +225,18 @@ struct TVLibraryGridView: View {
                         isLoading: viewModel.isLoading,
                         hasMore: viewModel.hasMore,
                         onItemTap: { item in
+                            detailReturnGeneration += 1
+                            detailReturnState.open(itemId: item.contentId, detailDepth: router.path.count + 1)
                             router.navigate(to: .itemDetail(browseItem: item, libraryId: libraryId))
                         },
                         onNearEnd: { _ in
                             Task { await viewModel.loadMoreIfNeeded() }
                         },
                         entryFocus: controlRowHasFocus ? .firstCardFromControls : .lastFocusedCard,
+                        detailReturnRequest: detailReturnRequest,
+                        detailReturnItemId: detailReturnItemId,
+                        resultSetKey: viewModel.filter,
+                        onCardFocusChange: { gridFocusedItemId = $0 },
                         onRowVisibilityChange: { range, isVisible in
                             viewModel.setPosterRowVisibility(range, isVisible: isVisible)
                         }
@@ -233,6 +250,35 @@ struct TVLibraryGridView: View {
         // added 48 pt of padding).
         .tvEdgeToEdgeScroll(topRoom: 0)
         .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: noteShellFocusRequest))
+        .onChange(of: router.path.count) { _, depth in
+            let ids = viewModel.items.map(\.contentId)
+            let openedItemID = detailReturnState.openedItemId
+            guard let target = detailReturnState.targetAfterPop(to: depth, availableIDs: ids),
+                  let index = ids.firstIndex(of: target) else { return }
+            let generation = detailReturnGeneration
+            let columns = AdaptiveColumns.tvPosterCount(
+                standardCount: 6,
+                posterSize: UICustomizationPreferences.shared.cardPresentation.posterSize
+            )
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo((index / columns) * columns, anchor: .center)
+            }
+            DispatchQueue.main.async {
+                guard generation == detailReturnGeneration,
+                      router.path.count == depth,
+                      !isTopMenuFocused, !controlRowHasFocus,
+                      gridFocusedItemId == nil || gridFocusedItemId == target
+                          || gridFocusedItemId == openedItemID else { return }
+                let currentIDs = viewModel.items.map(\.contentId)
+                guard let currentTarget = currentIDs.contains(target) ? target : currentIDs.first else { return }
+                if currentTarget != target { proxy.scrollTo(0, anchor: .top) }
+                detailReturnItemId = currentTarget
+                detailReturnRequest += 1
+            }
+        }
+        }
     }
 
     // MARK: - Focus routing

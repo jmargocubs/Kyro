@@ -209,12 +209,16 @@ decision opens and enters that panel, so clicks and swipes behave the same and
 the panel has one Down owner. The bar is inert only while an entered panel
 owns focus.
 
-The bar reads the heading of each focus update (`TVFocusMovementTracker`) to
-tell a user's move from a programmatic claim or an engine repair:
+The bar receives only transition-specific updates (`TVFocusMovementTracker`)
+whose UIKit previous or next focus view falls within the bar's window region.
+It does not reuse a global last heading or assume notification/SwiftUI callback
+ordering. An unmatched update is neutral:
 
-- Losing focus with a Down heading is never treated as a spurious loss.
-- Losing focus with no heading while a preview overlay opens or closes
-  re-pins the tab, as before.
+- A confirmed Down from a bar view enters its panel, or hands focus to content
+  when that element has no panel. A Down elsewhere cannot be reused here.
+- A confirmed non-directional departure while a preview opens or closes
+  re-pins the tab. A binding-only `nil` with no matching UIKit update does not
+  invent a movement or a panel entry.
 - Arriving with a user heading, or on an element the bar itself requested,
   makes the menu the owner. A system arrival (launch, pop to root, panel
   teardown, cover dismissal) leaves ownership with the page, so the page's
