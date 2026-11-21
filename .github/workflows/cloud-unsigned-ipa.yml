@@ -40,7 +40,7 @@ on:
         required: true
         type: string
       marketing_version:
-        description: 'MARKETING_VERSION to stamp'
+        description: 'Base major.minor marketing version (patch becomes the build number, e.g. 1.0.0 + build 105 → 1.0.105)'
         required: true
         type: string
         default: '1.0.0'
@@ -69,7 +69,7 @@ jobs:
       REF: ${{ inputs.ref }}
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       BUILD: ${{ inputs.build_number }}
-      VERSION: ${{ inputs.marketing_version }}
+      BASE_VERSION: ${{ inputs.marketing_version }}
       USE_CACHE: ${{ inputs.use_cache }}
     steps:
       - name: Validate inputs
@@ -79,7 +79,14 @@ jobs:
           [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "ref has invalid characters"; exit 1; }
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{7,40}$ ]] || { echo "expected_sha must be 7-40 lowercase hex"; exit 1; }
           [[ "$BUILD" =~ ^[0-9]{1,6}$ ]] || { echo "build_number must be digits"; exit 1; }
-          [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "marketing_version must look like 1.0.0"; exit 1; }
+          [[ "$BASE_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "marketing_version must look like 1.0.0"; exit 1; }
+          # Signing apps show CFBundleShortVersionString. Use major.minor.<build>
+          # (1.0.0 + 105 → 1.0.105). Idempotent if the input is already aligned.
+          IFS=. read -r MAJOR MINOR _PATCH <<<"$BASE_VERSION"
+          VERSION="${MAJOR}.${MINOR}.${BUILD}"
+          echo "Base marketing version: $BASE_VERSION"
+          echo "Visible marketing version: $VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "QUEUE_PICKED_UP=$(date +%s)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v4
