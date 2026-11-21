@@ -77,6 +77,8 @@ struct TVXtreamVODView: View {
     @State private var selected: XtreamVODItem?
     @State private var entryRequest = 0
     @State private var pendingEntryClaim = false
+    /// The first-title claim just made, kept briefly so a claim the engine lost can be made again once.
+    @State private var entryClaim: (id: String, at: Date)?
     @FocusState private var focused: Field?
 
     /// Adaptive: Build 98 fixed seven 200 pt columns, leaving about 156 pt unused at the right of
@@ -192,6 +194,7 @@ struct TVXtreamVODView: View {
         // and leave room for the focused card's lift (Build 98 clipped 24 pt inside the page).
         .tvEdgeToEdgeScroll(horizontalBleed: max(horizontalInset, TVScreenLayout.focusRoom))
         .onChange(of: focused) { _, field in
+            reassertLostEntryClaim(field)
             guard case .card(let id)? = field, let index = items.firstIndex(where: { $0.id == id }) else { return }
             if TVXtreamVODFocusPlanner.shouldLoadMore(focusedIndex: index, loadedCount: items.count,
                                                        hasMore: hasMore, isLoading: isLoading) {
@@ -233,10 +236,28 @@ struct TVXtreamVODView: View {
         case .firstCard(let id):
             TVFocusDiagnostics.value("request", "IPTV-VOD", "entryCard", Field.card(id))
             focused = .card(id); pendingEntryClaim = false
+            entryClaim = (id, Date())
         case .mode(let option):
             TVFocusDiagnostics.value("request", "IPTV-VOD", "entryMode", Field.mode(option))
             focused = .mode(option); pendingEntryClaim = false
         case .wait: pendingEntryClaim = true
+        }
+    }
+
+    /// The claim above can land before the grid has laid its cards out (the page reloads right as
+    /// it opens): the engine then settles on the first control, Search, and the page opens on the
+    /// wrong element (hosted run 44919483746: Search movies instead of the first poster). When
+    /// focus moves from the claim to a control within a moment of it, with no top menu involved,
+    /// the claim is made once more one turn later. Later moves are the user's and are left alone.
+    private func reassertLostEntryClaim(_ field: Field?) {
+        guard let claim = entryClaim else { return }
+        if case .card? = field { entryClaim = nil; return }
+        guard Date().timeIntervalSince(claim.at) < 1.5, !isTopMenuFocused, field != nil else { return }
+        entryClaim = nil
+        TVFocusDiagnostics.value("request", "IPTV-VOD", "entryCardReasserted", Field.card(claim.id))
+        DispatchQueue.main.async {
+            guard !isTopMenuFocused, items.contains(where: { $0.id == claim.id }) else { return }
+            focused = .card(claim.id)
         }
     }
 

@@ -170,12 +170,16 @@ enum TVSettingsOptions {
 struct TVSettingsRailRowStyle: ButtonStyle {
     var isSelected: Bool = false
     var isDestructive: Bool = false
+    /// False while a row is disabled only to keep it out of the focus graph (focus is in the
+    /// detail pane), which must not look unavailable.
+    var dimsWhenDisabled: Bool = true
 
     func makeBody(configuration: Configuration) -> some View {
         TVSettingsRailRowBody(
             configuration: configuration,
             isSelected: isSelected,
-            isDestructive: isDestructive
+            isDestructive: isDestructive,
+            dimsWhenDisabled: dimsWhenDisabled
         )
     }
 }
@@ -184,7 +188,9 @@ private struct TVSettingsRailRowBody: View {
     let configuration: ButtonStyleConfiguration
     let isSelected: Bool
     let isDestructive: Bool
+    let dimsWhenDisabled: Bool
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         configuration.label
@@ -202,7 +208,7 @@ private struct TVSettingsRailRowBody: View {
                 radius: 18,
                 y: 8
             )
-            .tvDisabledAppearance()
+            .opacity(isEnabled || !dimsWhenDisabled ? 1 : 0.45)
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 

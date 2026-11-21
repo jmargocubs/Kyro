@@ -564,114 +564,114 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         let was = focusedValue(app)
         remote.press(.select)
         settle(1.5)
-        XCTAssertEqual(focusedLabel(app), toggle, "Select keeps focus on the toggle")
+        let title = toggle.components(separatedBy: ", ").first ?? toggle
+        XCTAssertTrue(focusedLabel(app).hasPrefix(title), "Select keeps focus on the toggle, got \(focusedLabel(app))")
         XCTAssertNotEqual(focusedValue(app), was, "Select flips \(toggle)")
         remote.press(.select)
         settle(1.5)
         XCTAssertEqual(focusedValue(app), was, "Select flips it back")
         remote.press(.left)
         settle(1)
-        XCTAssertTrue(focusedLabel(app).hasPrefix("Playback"), "Left returns to the Playback rail entry")
+        XCTAssertTrue(focusedLabel(app).hasPrefix("Playback"), "Left returns to the Playback rail entry, got \(focusedLabel(app))")
     }
 
     // MARK: Search (production SearchView, offline)
 
     private func searchField(_ app: XCUIApplication) -> XCUIElement { app.searchFields.firstMatch }
 
-    private func keyboardKeyHasFocus(_ app: XCUIApplication) -> Bool {
-        app.keys.matching(NSPredicate(format: "hasFocus == true")).firstMatch.exists
+    private func searchText(_ app: XCUIApplication) -> String {
+        let value = (searchField(app).value as? String) ?? ""
+        return value.hasPrefix("Search movies") ? "" : value
     }
 
-    /// Down from the stand-in menu until the production search field holds focus.
-    private func reachSearchField(_ app: XCUIApplication) -> Bool {
-        let field = searchField(app)
-        guard field.waitForExistence(timeout: 40) else { return false }
-        for _ in 0..<6 {
-            if field.hasFocus { return true }
-            let label = focusedLabel(app)
-            if label.hasPrefix("Menu ") || label == "<none>" { _ = press(.down, app, "to search field") }
-            else { _ = press(.up, app, "back toward search field") }
+    /// The tvOS search screen is a query line, an always-open keyboard, a filter control and the
+    /// results. Down from the stand-in menu lands on the keyboard.
+    private func reachSearchKeyboard(_ app: XCUIApplication) -> Bool {
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 40) || app.keys.firstMatch.waitForExistence(timeout: 5) else {
+            return false
         }
-        return field.hasFocus
+        settle(1.5)
+        for _ in 0..<5 {
+            let label = focusedLabel(app)
+            if label == "Keyboard" { return true }
+            _ = press(.down, app, "to search keyboard")
+        }
+        return focusedLabel(app) == "Keyboard"
     }
 
-    /// The real SearchView: the field takes focus, Select opens the tvOS keyboard, the remote moves
-    /// across its keys and types, and Back closes it with usable focus left behind.
-    func testSearchFieldOpensTheKeyboardTypesAndBackRestoresFocus() {
+    /// The real SearchView: Down from navigation reaches the keyboard, the remote moves across keys
+    /// and Select types them, and Down/Up/Back keep focus on usable elements.
+    func testSearchKeyboardTypesWithTheRemoteAndFocusMovesOutAndBack() {
         let app = launch(.search)
-        XCTAssertTrue(reachSearchField(app), "Down from the menu reaches the search field; focus \(focusedLabel(app))")
-        capture("search-field-focused")
-        let field = searchField(app)
+        XCTAssertTrue(reachSearchKeyboard(app), "Down from the menu reaches the keyboard; focus \(focusedLabel(app))")
+        capture("search-keyboard-focused")
+        XCTAssertEqual(searchText(app), "", "The query starts empty")
         remote.press(.select)
         settle(2)
-        capture("search-keyboard")
-        let keyboard = app.keyboards.firstMatch
-        XCTAssertTrue(keyboard.waitForExistence(timeout: 10) || app.keys.firstMatch.exists, "Select opens the keyboard")
+        let first = searchText(app)
+        remote.press(.right)
+        settle(0.6)
+        remote.press(.select)
+        settle(2)
+        let second = searchText(app)
+        log("search typed", [first, second])
+        capture("search-typed")
+        XCTAssertEqual(first.count, 1, "Select types the highlighted key, field shows \(first)")
+        XCTAssertEqual(second.count, 2, "Right moves to the next key and Select types it, field shows \(second)")
+        XCTAssertNotEqual(second.last, second.first, "Right moved the highlight to a different key: \(second)")
         var path = [focusedLabel(app)]
-        for button in [XCUIRemote.Button.right, .right, .down, .left, .up] { path.append(press(button, app, "keyboard")) }
-        log("search keyboard", path)
-        XCTAssertGreaterThanOrEqual(Set(path).count, 3, "Remote presses move across the keyboard: \(path)")
-        XCTAssertTrue(keyboardKeyHasFocus(app) || path.contains { !$0.hasPrefix("Menu ") && $0 != "<none>" },
-                      "Focus stays on the keyboard: \(path)")
-        assertNeverMenu(path)
-        remote.press(.select)
-        settle(2)
-        let value = (field.value as? String) ?? ""
-        log("search typed", [value])
-        XCTAssertFalse(value.isEmpty || value.hasPrefix("Search movies"), "Select on a key types it, field shows \(value)")
+        for button in [XCUIRemote.Button.down, .down, .up, .up] { path.append(press(button, app, "search keyboard exit")) }
+        log("search keyboard down/up", path)
+        XCTAssertFalse(path[1] == "Keyboard" && path[2] == "Keyboard", "Down leaves the keyboard: \(path)")
+        XCTAssertFalse(path.contains("<none>"), "Focus is never lost: \(path)")
+        XCTAssertEqual(path.last, "Keyboard", "Up retraces to the keyboard: \(path)")
         remote.press(.menu)
         settle(2)
-        let after = focusedLabel(app)
-        log("search after back", [after])
-        XCTAssertNotEqual(after, "<none>", "Back from the keyboard leaves focus on a usable element")
-        XCTAssertFalse(keyboardKeyHasFocus(app), "Back closes the keyboard")
+        let afterBack = focusedLabel(app)
+        log("search back", [afterBack])
+        XCTAssertNotEqual(afterBack, "<none>", "Back from the keyboard leaves focus on a usable element")
     }
 
-    /// A populated search: results are reachable below the field, Select acts on one (a channel
-    /// opens playback, which needs a real stream and is not asserted), and Up retraces to the
-    /// stand-in menu through the field.
-    func testSearchPopulatedResultsAreReachableSelectableAndUpReturnsToNavigation() {
+    /// A populated search: below the keyboard come the filter control and the Live TV results,
+    /// all reachable, and Up retraces to the stand-in menu.
+    func testSearchPopulatedResultsAreReachableAndUpReturnsToNavigation() {
         let app = launch(.search, searchSeed: "Harness")
-        XCTAssertTrue(reachSearchField(app), "search field reachable; focus \(focusedLabel(app))")
+        XCTAssertTrue(reachSearchKeyboard(app), "keyboard reachable; focus \(focusedLabel(app))")
         settle(4)
-        var path = [focusedLabel(app)]
-        for _ in 0..<6 {
-            path.append(press(.down, app, "search down"))
-            let label = path.last ?? ""
-            if label != path[0], !searchField(app).hasFocus, !label.hasPrefix("Menu "), label != "<none>" { break }
-        }
-        log("search results down", path)
         capture("search-populated")
-        let result = path.last ?? "<none>"
-        XCTAssertFalse(result.hasPrefix("Menu ") || result == "<none>" || searchField(app).hasFocus,
-                       "Down reaches a result or control below the field: \(path)")
-        let moved = press(.right, app, "search right")
-        log("search result right", [result, moved])
+        var path = [focusedLabel(app)]
+        for _ in 0..<8 { path.append(press(.down, app, "search results down")) }
+        log("search results down", path)
+        let filters: Set<String> = ["All", "Movies & TV", "Live TV"]
+        let below = path.dropFirst().filter { $0 != "Keyboard" && !filters.contains($0) && !$0.hasPrefix("Menu ") && $0 != "<none>" }
+        XCTAssertFalse(below.isEmpty, "Down reaches a result below the filters: \(path)")
+        XCTAssertFalse(path.contains("<none>"), "Focus is never lost: \(path)")
+        capture("search-result-focused")
+        let result = focusedLabel(app)
         remote.press(.select)
         settle(3)
         capture("search-result-selected")
-        let afterSelect = focusedLabel(app)
+        log("search result select", [result, focusedLabel(app)])
         remote.press(.menu)
         settle(3)
-        let afterBack = focusedLabel(app)
-        log("search select/back", [afterSelect, afterBack])
-        XCTAssertNotEqual(afterBack, "<none>", "Back after selecting a result leaves usable focus")
-        var up = [afterBack]
-        for _ in 0..<8 where !(up.last ?? "").hasPrefix("Menu ") { up.append(press(.up, app, "search up")) }
+        XCTAssertNotEqual(focusedLabel(app), "<none>", "Back after Select leaves usable focus")
+        var up = [focusedLabel(app)]
+        for _ in 0..<14 where !(up.last ?? "").hasPrefix("Menu ") { up.append(press(.up, app, "search up")) }
         log("search up", up)
         XCTAssertTrue((up.last ?? "").hasPrefix("Menu "), "Up reaches the navigation controls: \(up)")
     }
 
-    /// An empty search: nothing to select, yet the page stays navigable and never loses focus.
+    /// An empty search has nothing to select; the page stays navigable and focus is never lost.
     func testSearchEmptyResultsStayNavigable() {
         let app = launch(.search, searchSeed: "zzzzqqqq")
-        XCTAssertTrue(reachSearchField(app), "search field reachable; focus \(focusedLabel(app))")
+        XCTAssertTrue(reachSearchKeyboard(app), "keyboard reachable; focus \(focusedLabel(app))")
         settle(4)
         capture("search-empty")
         var path = [focusedLabel(app)]
-        for button in [XCUIRemote.Button.down, .down, .up, .up, .up, .down] { path.append(press(button, app, "search empty")) }
+        for button in [XCUIRemote.Button.down, .down, .down, .up, .up, .up, .up] { path.append(press(button, app, "search empty")) }
         log("search empty", path)
         XCTAssertFalse(path.contains("<none>"), "Focus is never lost on an empty search: \(path)")
+        XCTAssertTrue((path.last ?? "").hasPrefix("Menu ") || path.last == "Keyboard", "Up returns to the keyboard or menu: \(path)")
     }
 
     // MARK: Production shell (TVMainTabView, offline)
@@ -744,36 +744,48 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         capture("shell-bar")
     }
 
-    /// Each tab: Select shows it, Down enters its content or dropdown, and Up (or Back from a
-    /// dropdown) returns to that same tab. Twice round, so repeated switching is covered.
+    /// Each tab: Select shows it and hands focus to its content, Up (round 1) or Back (round 2)
+    /// returns to that same tab, and Down from a Movies/Series tab enters its dropdown, which Back
+    /// closes onto the tab. Twice round, so repeated switching is covered.
     func testShellSwitchingTabsEntersContentAndReturnsToTheActiveTab() {
         let app = launchShell()
         let wanted = ["Live TV", "Movies", "Series", "Home"]
         let titles = tabLabels(app).map(tabTitle)
         log("shell switch tabs", titles)
         XCTAssertTrue(titles.contains("Live TV"), "Live TV tab exists: \(titles)")
-        XCTAssertTrue(isBarElement(focusBar(app)))
         for round in 1...2 {
             for title in wanted where titles.contains(title) {
+                _ = focusBar(app)
                 XCTAssertTrue(moveToTab(title, app), "round \(round): reach \(title) tab, at \(focusedLabel(app))")
                 remote.press(.select)
-                settle(2.5)
-                XCTAssertTrue(focusedLabel(app).contains(", tab, "), "round \(round): Select keeps focus on the \(title) tab")
-                let down = press(.down, app, "\(title) down")
-                capture("shell-\(title)-down-\(round)")
-                if title == "Home", isBarElement(down) {
+                settle(3)
+                let inContent = focusedLabel(app)
+                capture("shell-\(title)-selected-\(round)")
+                log("shell \(title) round \(round) select", [inContent])
+                if title == "Live TV" {
+                    XCTAssertTrue(liveTVControls.contains(inContent) || inContent.hasPrefix("Watch Harness") || inContent == "Set Up Provider",
+                                  "round \(round): Select hands focus to the Live TV page, got \(inContent)")
+                }
+                if title == "Home", isBarElement(inContent) {
                     // The real Home loads from the server, which this offline shell has not got.
-                    print("KYRO-FOCUS BLOCKED Home content: no focusable element offline, Down stayed on \(down)")
+                    print("KYRO-FOCUS BLOCKED Home content: no focusable element offline, focus stayed on \(inContent)")
                     continue
                 }
-                XCTAssertFalse(isBarElement(down), "round \(round): Down from \(title) leaves the bar, got \(down)")
                 if title == "Movies" || title == "Series" {
-                    // The dropdown owns focus; Back closes it and returns to its own tab.
+                    // Back from the page, then Down from the tab enters the dropdown; Back closes it.
+                    _ = focusBar(app)
+                    XCTAssertEqual(tabTitle(focusedLabel(app)), title, "round \(round): Up from \(title) content reaches its own tab, got \(focusedLabel(app))")
+                    settle(1.2)
+                    let down = press(.down, app, "\(title) dropdown down")
+                    capture("shell-\(title)-dropdown-\(round)")
+                    XCTAssertFalse(isBarElement(down), "round \(round): Down from the \(title) tab leaves the bar, got \(down)")
                     remote.press(.menu)
                     settle(1.5)
+                } else if round == 1 {
+                    _ = focusBar(app)
                 } else {
-                    var presses = 0
-                    while !isBarElement(focusedLabel(app)), presses < 8 { _ = press(.up, app, "\(title) up"); presses += 1 }
+                    // Back from a page's top level goes to the bar.
+                    for _ in 0..<4 where !isBarElement(focusedLabel(app)) { remote.press(.menu); settle(1.2) }
                 }
                 let back = focusedLabel(app)
                 XCTAssertEqual(tabTitle(back), title, "round \(round): returns to the \(title) tab, got \(back)")

@@ -264,8 +264,9 @@ struct TVSettingsView: View {
                     .opacity(0.5)
             }
         }
-        .buttonStyle(TVSettingsRailRowStyle())
+        .buttonStyle(TVSettingsRailRowStyle(dimsWhenDisabled: railIsInert))
         .focused($railFocus, equals: .profile)
+        .disabled(!railAccepts(.profile))
     }
 
     private func categoryRow(_ category: TVSettingsCategory) -> some View {
@@ -291,9 +292,11 @@ struct TVSettingsView: View {
             }
         }
         .buttonStyle(TVSettingsRailRowStyle(
-            isSelected: category == selectedCategory && railFocus != .signOut
+            isSelected: category == selectedCategory && railFocus != .signOut,
+            dimsWhenDisabled: railIsInert
         ))
         .focused($railFocus, equals: .category(category))
+        .disabled(!railAccepts(.category(category)))
     }
 
     private var signOutRow: some View {
@@ -309,8 +312,23 @@ struct TVSettingsView: View {
                 Spacer(minLength: 0)
             }
         }
-        .buttonStyle(TVSettingsRailRowStyle(isDestructive: true))
+        .buttonStyle(TVSettingsRailRowStyle(isDestructive: true, dimsWhenDisabled: railIsInert))
         .focused($railFocus, equals: .signOut)
+        .disabled(!railAccepts(.signOut))
+    }
+
+    private var railIsInert: Bool {
+        tvSettingsRailIsInert(isModalPresented: isModalPresented, isRestoringPickerRow: pendingPickerFocus != nil)
+    }
+
+    /// While focus is in the detail pane only the selected category accepts focus, so Left lands
+    /// on it. Left from the pane's first row went to the profile card beside it instead (hosted
+    /// run 44919483746); the rail's `.defaultFocus` is ignored when an item lies in the path.
+    /// With focus on the rail, or on neither pane, every row accepts it.
+    private func railAccepts(_ item: RailItem) -> Bool {
+        TVTopMenuReachabilityPolicy.acceptsFocus(item, selected: .category(selectedCategory),
+                                                 barHoldsFocus: railFocus != nil || detailFocus == nil,
+                                                 claimTarget: nil)
     }
 
     private func enterDetailPane(for category: TVSettingsCategory) {
