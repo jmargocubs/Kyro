@@ -94,6 +94,12 @@ struct TVSportsHubView: View {
         }
         .padding(.horizontal, TVScreenLayout.pageHorizontalInset)
         .padding(.top, TVTopMenuLayout.contentTopInset)
+        // Native entry: Down from the top menu lands on the selected mode chip,
+        // the same target the shell's selection hand-off claims, instead of
+        // whatever control sits under the focused tab. The feed's only
+        // outside neighbour is the top menu, so this applies to that entry.
+        .defaultFocus($focus, .mode(mode), priority: .userInitiated)
+        .focusSection()
     }
 
     private var header: some View {

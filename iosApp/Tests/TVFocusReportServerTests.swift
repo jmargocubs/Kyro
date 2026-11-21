@@ -163,6 +163,17 @@ final class TVFocusReportServerTests: XCTestCase {
         XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("kept-across-background"))
     }
 
+    func testPlayPauseHoldIsOfferedOnlyOutsidePlaybackAndPresentations() {
+        XCTAssertTrue(tvDiagnosticExportHoldIsEligible(presentsController: false, liveTVPlaybackActive: false,
+                                                       videoPlayerMounted: false))
+        XCTAssertFalse(tvDiagnosticExportHoldIsEligible(presentsController: true, liveTVPlaybackActive: false,
+                                                        videoPlayerMounted: false), "covers, sheets, Guide")
+        XCTAssertFalse(tvDiagnosticExportHoldIsEligible(presentsController: false, liveTVPlaybackActive: true,
+                                                        videoPlayerMounted: false), "inline Live TV and PiP")
+        XCTAssertFalse(tvDiagnosticExportHoldIsEligible(presentsController: false, liveTVPlaybackActive: false,
+                                                        videoPlayerMounted: true), "pushed player route")
+    }
+
     private func downloadReport() async throws -> [String: Any] {
         let base = try await readyAddress()
         var authentication = URLRequest(url: URL(string: base + "/authenticate")!)

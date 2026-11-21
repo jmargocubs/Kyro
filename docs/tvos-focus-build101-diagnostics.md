@@ -139,7 +139,11 @@ intended movement separately; do not include credentials or media titles.
    **Without navigating (Build 103):** hold **Play/Pause for 3 seconds** anywhere
    outside playback, sheets and covers (including the Guide). The QR code and
    one-time code appear in a window that cannot take focus. Nothing is shared
-   until you hold the button; a short press is unaffected.
+   until you hold the button. Outside playback, Play/Pause reaches the focused
+   view when it is released, so a short press still works and a hold is
+   cancelled before a card can act on it. The hold is not offered, and adds
+   no delay, while a video player is mounted, Live TV plays (full screen,
+   inline or Picture in Picture), or any cover or sheet is presented.
 3. Scan the displayed QR with iPhone Camera and open in Safari. The QR holds only
    the LAN HTTP address: no report, authorization code, credential or file URL.
    Alternatively type the displayed address into Safari.

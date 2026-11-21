@@ -26,6 +26,59 @@ func tvFocusRepairAction(attempt: Int, isShowingRoot: Bool) -> TVFocusRepairActi
     return attempt <= 1 ? .contentHandoff : .topMenu
 }
 
+/// How the top bar treats the moment its focus binding drops to nil.
+enum TVTopMenuFocusLoss: Equatable {
+    /// Focus really left the bar: let it go and tell the shell content owns it.
+    case handOffToContent
+    /// The user moved Down from a panel-bearing element: open and enter its panel.
+    case enterPanel
+    /// Opening or closing a preview overlay perturbed focus with no user move:
+    /// put focus back on the element the user is on.
+    case repin
+}
+
+/// A user's Down is never mistaken for a spurious loss: before Build 103 a
+/// native Down from a tab with an open preview was re-pinned to the tab, so
+/// swipes (and clicks the handler missed) could not leave it. Down from a
+/// panel-bearing tab enters its panel for clicks and swipes alike; Down from
+/// any other element goes to the page.
+func tvTopMenuFocusLoss(
+    movedDown: Bool,
+    lastElementHasPanel: Bool,
+    explicitHandOff: Bool,
+    previewOpen: Bool,
+    refocusAfterSidewaysClose: Bool
+) -> TVTopMenuFocusLoss {
+    if movedDown { return lastElementHasPanel ? .enterPanel : .handOffToContent }
+    if explicitHandOff { return .handOffToContent }
+    if previewOpen || refocusAfterSidewaysClose { return .repin }
+    return .handOffToContent
+}
+
+/// Focus arriving on a bar element makes the menu the owner only when the user
+/// moved it there or the bar itself asked for it. System-initiated arrivals —
+/// launch, pop to root, panel teardown, cover dismissal — leave ownership with
+/// the page, so the page's pending entry or return claim still lands instead
+/// of being refused because the always-enabled bar happened to win a repair.
+func tvTopMenuArrivalTakesOwnership(userMoved: Bool, matchesBarRequest: Bool) -> Bool {
+    userMoved || matchesBarRequest
+}
+
+/// What `requestMenuFocus` does for a target.
+enum TVTopMenuFocusClaim: Equatable {
+    case claim
+    /// The element already holds focus and the bar owns it: nothing to do.
+    case alreadyFocused
+    /// The binding still holds the target although the bar no longer owns
+    /// focus: the binding is stale, and writing the same value is a no-op.
+    case reclaimStale
+}
+
+func tvTopMenuFocusClaim(bindingMatchesTarget: Bool, barOwnsFocus: Bool) -> TVTopMenuFocusClaim {
+    guard bindingMatchesTarget else { return .claim }
+    return barOwnsFocus ? .alreadyFocused : .reclaimStale
+}
+
 #if os(tvOS)
 import SwiftUI
 import UIKit
@@ -72,6 +125,35 @@ enum TVFocusSystemProbe {
         TVFocusDiagnostics.record("request", "Watchdog", "windowSetNeedsFocusUpdate")
         window.setNeedsFocusUpdate()
         window.updateFocusIfNeeded()
+    }
+}
+
+/// Records the heading of the latest focus update. The observer runs
+/// synchronously when UIKit posts the update (`queue: nil`), which is before
+/// SwiftUI's next graph update applies `@FocusState` changes and runs
+/// `onChange`. The top bar uses it to tell a user's move (a heading) from a
+/// programmatic claim or an engine repair (no heading).
+@MainActor
+enum TVFocusMovementTracker {
+    private(set) static var lastHeading: UIFocusHeading = []
+    private static var observer: NSObjectProtocol?
+
+    static var lastMoveWasDown: Bool { lastHeading.contains(.down) }
+    static var lastMoveWasDirectional: Bool {
+        !lastHeading.intersection([.up, .down, .left, .right]).isEmpty
+    }
+
+    static func install() {
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification, object: nil, queue: nil
+        ) { note in
+            guard Thread.isMainThread else { return }
+            MainActor.assumeIsolated {
+                let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+                lastHeading = context?.focusHeading ?? []
+            }
+        }
     }
 }
 

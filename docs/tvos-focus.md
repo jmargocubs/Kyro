@@ -200,17 +200,33 @@ The bar is one native focus section that stays enabled while page content
 has focus (Build 103). It declares
 `.defaultFocus($focusedItem, .root(selectedRoot), priority: .userInitiated)`,
 so Up from any page's top row, by click or swipe, lands on the selected tab
-without a page handler. Down from a tab without a panel is native too: the
-page's entry section declares its target with `.userInitiated` default focus
-while the bar owns focus. Only panel-bearing tabs keep a Down handler, which
-enters the panel. The bar is inert only while an entered panel owns focus.
+without a page handler. Down is native everywhere: the page's entry section
+declares its target with `.userInitiated` default focus (Home rows, Live TV,
+Sports, Calendar, Requests, Browse grid from its control row). No bar element
+has a Down `onMoveCommand`. When a user's Down leaves a panel-bearing element
+(Movies, Series, For You, Profile, cascade shortcuts), the bar's focus-loss
+decision opens and enters that panel, so clicks and swipes behave the same and
+the panel has one Down owner. The bar is inert only while an entered panel
+owns focus.
 
-`isTopMenuFocused` mirrors the bar's real `@FocusState`; nothing sets it
-optimistically. Explicit hand-offs (tab selection, panel exit to content)
-clear it early so the page may claim, but never resign the tab's focus first:
-the page's claim moves focus out of the bar in one step. `requestMenuFocus` is
-one claim with no timed retry, and a request for the element that already has
-focus does nothing.
+The bar reads the heading of each focus update (`TVFocusMovementTracker`) to
+tell a user's move from a programmatic claim or an engine repair:
+
+- Losing focus with a Down heading is never treated as a spurious loss.
+- Losing focus with no heading while a preview overlay opens or closes
+  re-pins the tab, as before.
+- Arriving with a user heading, or on an element the bar itself requested,
+  makes the menu the owner. A system arrival (launch, pop to root, panel
+  teardown, cover dismissal) leaves ownership with the page, so the page's
+  entry or detail-return claim still lands. No gate disables the bar.
+
+`isTopMenuFocused` mirrors that ownership; nothing sets it optimistically.
+Explicit hand-offs (tab selection, panel exit to content) clear it so the page
+may claim, and never resign the tab's focus first: the page's claim moves
+focus out of the bar in one step. `requestMenuFocus` is one claim with no
+timed retry. A request for the element that already holds focus does nothing
+and does not claim ownership; a binding that still holds the target after the
+bar lost ownership is cleared and re-claimed once on the next turn.
 
 Before Build 103 the bar was disabled whenever content had focus, and each
 page reached it through its own Up `onMoveCommand`. Pages and states without

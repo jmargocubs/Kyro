@@ -35,7 +35,9 @@ struct TVLibraryGridView: View {
     @State private var selectedPrefix: String? = nil
     @State private var openPanel: TVBrowsePanel? = nil
     @State private var controlFocusRequest = 0
-    @State private var gridFocusRequest = 0
+    /// True while Sort/Filter/Shuffle holds focus: the grid's first card is
+    /// then the native Down target (replaces the old Down claim).
+    @State private var controlRowHasFocus = false
     @State private var lastShellFocusRequest = 0
     @State private var shuffleLauncher = ShuffleLauncher()
 
@@ -169,6 +171,7 @@ struct TVLibraryGridView: View {
                     sortDirection: viewModel.filter.sort.directionLabel(for: viewModel.filter.effectiveOrder),
                     filterCount: viewModel.filter.activeFacetCount,
                     focusRequest: controlFocusRequest,
+                    onFocusChange: { controlRowHasFocus = $0 },
                     onSort: { openPanel = .sort },
                     onFilter: { openPanel = .filter },
                     onShuffle: canShuffle ? {
@@ -216,7 +219,7 @@ struct TVLibraryGridView: View {
                         onNearEnd: { _ in
                             Task { await viewModel.loadMoreIfNeeded() }
                         },
-                        focusRequest: gridFocusRequest,
+                        entryFocusPriority: controlRowHasFocus ? .userInitiated : .automatic,
                         onRowVisibilityChange: { range, isVisible in
                             viewModel.setPosterRowVisibility(range, isVisible: isVisible)
                         }
@@ -241,10 +244,6 @@ struct TVLibraryGridView: View {
         controlFocusRequest += 1
     }
 
-    private func claimGridFocus() {
-        guard !viewModel.items.isEmpty else { return }
-        gridFocusRequest += 1
-    }
 
     // MARK: - Empty state
 

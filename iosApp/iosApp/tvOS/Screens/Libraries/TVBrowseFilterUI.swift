@@ -16,6 +16,9 @@ struct TVBrowseControlRow: View {
     let sortDirection: String
     let filterCount: Int
     var focusRequest: Int = 0
+    /// Reports whether a control in the row holds focus, so the grid below
+    /// can make its first card the native Down target while it does.
+    var onFocusChange: ((Bool) -> Void)? = nil
     let onSort: () -> Void
     let onFilter: () -> Void
     /// Shuffles the whole library; nil where Shuffle isn't offered.
@@ -74,6 +77,7 @@ struct TVBrowseControlRow: View {
         .focusSection()
         .onAppear { applyFocusRequest(focusRequest) }
         .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
+        .onChange(of: focusedControl != nil) { _, hasFocus in onFocusChange?(hasFocus) }
     }
 
     private func applyFocusRequest(_ request: Int) {

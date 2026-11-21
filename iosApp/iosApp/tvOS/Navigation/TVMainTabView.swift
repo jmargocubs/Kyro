@@ -212,6 +212,9 @@ struct TVMainTabView: View {
         .ignoresSafeArea(edges: [.top, .horizontal])
         .tint(.siloOnSurface)
         .tvObserveFocus("Shell", value: selectedRoot)
+        // Before any focus moves: the bar reads the heading of each update to
+        // tell a user's move from a programmatic claim or engine repair.
+        .onAppear { TVFocusMovementTracker.install() }
         .onChange(of: selectedRoot) { _, value in TVFocusDiagnostics.value("state", "Shell", "rootIdentity", value) }
         .onChange(of: openPanel) { _, value in TVFocusDiagnostics.value("state", "Shell", "openPanel", value) }
         .onChange(of: panelEntersFocus) { _, value in TVFocusDiagnostics.value("state", "Shell", "panelEntered", value) }

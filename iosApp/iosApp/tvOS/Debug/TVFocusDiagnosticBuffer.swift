@@ -2,7 +2,7 @@ import Foundation
 
 /// Value-only, bounded storage. Callers supply structural identifiers, never media/user text.
 struct TVFocusDiagnosticBuffer {
-    struct Event: Codable, Equatable {
+    struct Event: Codable, Equatable, Sendable {
         let sequence: Int
         let uptime: TimeInterval
         let timestamp: Date
@@ -45,8 +45,8 @@ struct TVFocusDiagnosticBuffer {
 /// The exported report. It holds only the sanitized ring, so the same value is
 /// safe to persist and to serve. Schema 2 adds `state` and `savedAt`; schema 1
 /// readers that only read `events` and `dropped` keep working.
-struct TVFocusCaptureArchive: Codable, Equatable {
-    enum State: String, Codable { case recording, stopped }
+struct TVFocusCaptureArchive: Codable, Equatable, Sendable {
+    enum State: String, Codable, Sendable { case recording, stopped }
 
     var schema = 2
     let build: String
@@ -79,7 +79,7 @@ struct TVFocusCaptureArchive: Codable, Equatable {
 }
 
 /// Which saved capture an export reads.
-enum TVFocusCaptureSlot: String, CaseIterable {
+enum TVFocusCaptureSlot: String, CaseIterable, Sendable {
     /// The capture that is recording now, or the most recent one that stopped.
     case latest
     /// The capture that "Start fresh capture" replaced. Kept so a fresh start
@@ -90,7 +90,7 @@ enum TVFocusCaptureSlot: String, CaseIterable {
 /// Two files in Application Support. Only sanitized archives are written; a
 /// corrupt or unreadable file reads as absent instead of throwing into the UI.
 /// The capped ring keeps each file well under 200 KB.
-struct TVFocusCaptureStore {
+struct TVFocusCaptureStore: Sendable {
     static let maximumFileBytes = 1_000_000
     let directory: URL
 

@@ -415,6 +415,49 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertEqual(tvVisibleRootsFocusRearm(menuOwnedFocus: true, isShowingRoot: false, selectedRootWasRemoved: true), .none)
     }
 
+    // MARK: Build 103 review: bar focus loss and ownership (pure policy, not the view)
+
+    func testNativeDownFromATabWithAnOpenPreviewEntersThePanelInsteadOfRepinning() {
+        // The review's passive-preview trap: a user's Down was read as a
+        // spurious loss and focus was pinned back to the tab.
+        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: true, lastElementHasPanel: true, explicitHandOff: false,
+                                          previewOpen: true, refocusAfterSidewaysClose: false), .enterPanel)
+        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: true, lastElementHasPanel: true, explicitHandOff: false,
+                                          previewOpen: false, refocusAfterSidewaysClose: false), .enterPanel,
+                       "Down before the dwell still enters the panel, for clicks and swipes alike")
+        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: true, lastElementHasPanel: false, explicitHandOff: false,
+                                          previewOpen: false, refocusAfterSidewaysClose: false), .handOffToContent)
+    }
+
+    func testOverlayPerturbationWithoutAUserMoveStillRepins() {
+        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: false, lastElementHasPanel: true, explicitHandOff: false,
+                                          previewOpen: true, refocusAfterSidewaysClose: false), .repin)
+        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: false, lastElementHasPanel: false, explicitHandOff: false,
+                                          previewOpen: false, refocusAfterSidewaysClose: true), .repin)
+        XCTAssertEqual(tvTopMenuFocusLoss(movedDown: false, lastElementHasPanel: true, explicitHandOff: true,
+                                          previewOpen: true, refocusAfterSidewaysClose: false), .handOffToContent,
+                       "a page claim after tab selection is let go, never re-pinned")
+    }
+
+    func testSystemArrivalOnTheBarDoesNotTakeMenuOwnership() {
+        // Launch, pop to root, panel teardown: the page's claim must still land.
+        XCTAssertFalse(tvTopMenuArrivalTakesOwnership(userMoved: false, matchesBarRequest: false))
+        XCTAssertTrue(tvTopMenuArrivalTakesOwnership(userMoved: true, matchesBarRequest: false))
+        XCTAssertTrue(tvTopMenuArrivalTakesOwnership(userMoved: false, matchesBarRequest: true))
+    }
+
+    func testMatchingOrStaleBindingNeverFalselyClaimsOwnership() {
+        XCTAssertEqual(tvTopMenuFocusClaim(bindingMatchesTarget: false, barOwnsFocus: false), .claim)
+        XCTAssertEqual(tvTopMenuFocusClaim(bindingMatchesTarget: true, barOwnsFocus: true), .alreadyFocused)
+        XCTAssertEqual(tvTopMenuFocusClaim(bindingMatchesTarget: true, barOwnsFocus: false), .reclaimStale,
+                       "a stale binding is cleared and re-claimed, not reported as owned")
+    }
+
+    func testSettingsDetailRestoreIsAbandonedAfterBackToTheRail() {
+        XCTAssertTrue(tvSettingsDetailRestoreIsCurrent(scheduled: 3, current: 3))
+        XCTAssertFalse(tvSettingsDetailRestoreIsCurrent(scheduled: 3, current: 4))
+    }
+
     // MARK: Build 103: one owner per press
 
     func testRowEntryRetryNeverPullsFocusBackAfterAMove() {

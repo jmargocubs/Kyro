@@ -235,7 +235,7 @@ final class TVRemoteFocusInspector: ObservableObject {
     private func writeArchive(state: TVFocusCaptureArchive.State, to slot: TVFocusCaptureSlot, synchronously: Bool) {
         guard let store else { return }
         let snapshot = archive(state: state)
-        let write = { _ = try? store.save(snapshot.encoded(), to: slot) }
+        let write: @Sendable () -> Void = { _ = try? store.save(snapshot.encoded(), to: slot) }
         if synchronously { persistQueue.sync(execute: write) } else { persistQueue.async(execute: write) }
     }
 
@@ -325,10 +325,20 @@ final class TVRemoteFocusInspector: ObservableObject {
 /// appear in a window that can never take focus, so nothing has to be
 /// navigated. It is an explicit gesture: nothing is shared automatically.
 ///
-/// The recognizer never cancels or delays presses, so a short Play/Pause
-/// still reaches cards and players unchanged. It declines to begin while any
-/// view controller is presented (players, sheets), so it never competes with
-/// playback controls. Play/Pause is not a system-reserved press.
+/// Conflict rules (Build 103 review):
+/// - Outside playback, the recognizer *delays* Play/Pause delivery
+///   (`delaysTouchesBegan/Ended`, which UIKit applies to presses too) until it
+///   fails. A short press fails it on release and is then delivered, so a
+///   card's `onPlayPauseCommand` still runs. A 3-second hold is recognized
+///   instead, and `cancelsTouchesInView` cancels the press, so the views
+///   never see it and the focused card does not activate.
+/// - During playback it never receives the press at all
+///   (`shouldReceive press:` returns false), so players, inline Live TV and
+///   Picture in Picture get Play/Pause immediately with no added latency.
+///   The same applies while any view controller is presented (covers,
+///   sheets, the Guide).
+/// Play/Pause is not a system-reserved press. Delivery order is a device
+/// check: see the Build 103 acceptance list.
 @MainActor
 final class TVDiagnosticExportGesture: NSObject, UIGestureRecognizerDelegate {
     static let shared = TVDiagnosticExportGesture()
@@ -352,9 +362,9 @@ final class TVDiagnosticExportGesture: NSObject, UIGestureRecognizerDelegate {
             recognizer.allowedPressTypes = [NSNumber(value: UIPress.PressType.playPause.rawValue)]
             recognizer.allowedTouchTypes = []
             recognizer.minimumPressDuration = Self.holdDuration
-            recognizer.cancelsTouchesInView = false
-            recognizer.delaysTouchesBegan = false
-            recognizer.delaysTouchesEnded = false
+            recognizer.cancelsTouchesInView = true
+            recognizer.delaysTouchesBegan = true
+            recognizer.delaysTouchesEnded = true
             recognizer.delegate = self
             window.addGestureRecognizer(recognizer)
             recognizers.append(recognizer)
@@ -369,12 +379,47 @@ final class TVDiagnosticExportGesture: NSObject, UIGestureRecognizerDelegate {
     nonisolated func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 
-    nonisolated func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        MainActor.assumeIsolated {
-            guard let window = gestureRecognizer.view as? UIWindow else { return false }
-            return window.rootViewController?.presentedViewController == nil
-        }
+    /// Not receiving the press is what keeps playback free of delay: a
+    /// recognizer that declines here never delays or cancels it.
+    nonisolated func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
+        MainActor.assumeIsolated { isEligible(gestureRecognizer.view as? UIWindow) }
     }
+
+    nonisolated func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        MainActor.assumeIsolated { isEligible(gestureRecognizer.view as? UIWindow) }
+    }
+
+    private func isEligible(_ window: UIWindow?) -> Bool {
+        guard let window else { return false }
+        return tvDiagnosticExportHoldIsEligible(
+            presentsController: Self.presentsController(window.rootViewController),
+            liveTVPlaybackActive: LiveTVService.shared.presentation.phase != .idle,
+            videoPlayerMounted: Self.videoPlayerIsMounted(in: window)
+        )
+    }
+
+    /// The video player (cover or pushed `.player` route) attaches its
+    /// touch-surface recognizer to the window while mounted and removes it
+    /// when it leaves, so its presence is a reliable "player on screen" test.
+    private static func videoPlayerIsMounted(in window: UIWindow) -> Bool {
+        window.gestureRecognizers?.contains { $0 is TouchSurfaceContactGestureRecognizer } ?? false
+    }
+
+    /// Any presented controller anywhere under the root, not only the root's:
+    /// SwiftUI can present a cover from a nested hosting controller.
+    private static func presentsController(_ controller: UIViewController?, depth: Int = 0) -> Bool {
+        guard let controller, depth < 12 else { return false }
+        if controller.presentedViewController != nil { return true }
+        return controller.children.contains { presentsController($0, depth: depth + 1) }
+    }
+}
+
+/// The hold is offered only with no presented controller, no Live TV playback
+/// (presented, inline, restoring or Picture in Picture) and no video player
+/// mounted (including the pushed `.player` route, which is not presented).
+func tvDiagnosticExportHoldIsEligible(presentsController: Bool, liveTVPlaybackActive: Bool,
+                                      videoPlayerMounted: Bool) -> Bool {
+    !presentsController && !liveTVPlaybackActive && !videoPlayerMounted
 }
 
 private final class TVInspectorWindow: UIWindow {

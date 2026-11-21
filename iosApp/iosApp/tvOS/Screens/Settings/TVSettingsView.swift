@@ -30,6 +30,11 @@ struct TVSettingsView: View {
     /// Settings enters through General once per visit. Returning from a page
     /// pushed from Settings (inspector, Manage Servers) keeps the user's place.
     @State private var hasEnteredSettings = false
+    /// Bumped whenever focus ownership moves to the rail (Back, sign-out
+    /// restore). A detail restore that was scheduled earlier checks it after
+    /// each suspension point and gives up, so it can never pull focus back
+    /// into the pane after the user left it.
+    @State private var detailRestoreGeneration = 0
     @State private var preferredFocusOwner: FocusOwner = .rail
     @State private var preferredRailFocus: RailItem = .category(.general)
     @State private var preferredDetailFocus: TVSettingsDetailFocus = .top
@@ -324,8 +329,13 @@ struct TVSettingsView: View {
     /// no timer, so Left and Back work immediately.
     private func restoreDetailFocus(to target: TVSettingsDetailFocus) {
         isRestoringDetailFocus = true
+        let generation = detailRestoreGeneration
         Task { @MainActor in
             await Task.yield()
+            guard tvSettingsDetailRestoreIsCurrent(scheduled: generation, current: detailRestoreGeneration) else {
+                isRestoringDetailFocus = false
+                return
+            }
             resetFocus(in: settingsFocusScope)
             resetFocus(in: detailFocusScope)
             detailFocus = target
@@ -347,6 +357,12 @@ struct TVSettingsView: View {
 
     private func returnFocusToRail() {
         guard !isModalPresented else { return }
+        // Back is the owner now: cancel any detail restore still in flight.
+        detailRestoreGeneration += 1
+        isRestoringDetailFocus = false
+        // A picker row restore keeps the rail inert; Back ends it now so the
+        // rail write below lands on an enabled rail.
+        pendingPickerFocus = nil
         preferredFocusOwner = .rail
         preferredRailFocus = .category(selectedCategory)
         detailFocus = nil
@@ -364,6 +380,7 @@ struct TVSettingsView: View {
 
     private func restoreSignOutFocus() {
         guard isRestoringRailFocus else { return }
+        detailRestoreGeneration += 1
         // Restore after the confirmation's focus subtree has left, ignoring
         // transient rail focus while the dismissal animation completes.
         Task { @MainActor in
@@ -447,13 +464,24 @@ struct TVSettingsView: View {
         railFocus = nil
         detailFocus = nil
         resetFocus(in: settingsFocusScope)
+        let generation = detailRestoreGeneration
         Task { @MainActor in
             await Task.yield()
+            guard tvSettingsDetailRestoreIsCurrent(scheduled: generation, current: detailRestoreGeneration) else {
+                pendingPickerFocus = nil
+                isRestoringDetailFocus = false
+                return
+            }
             railFocus = nil
             resetFocus(in: settingsFocusScope)
             await Task.yield()
             detailFocus = nil
             await Task.yield()
+            guard tvSettingsDetailRestoreIsCurrent(scheduled: generation, current: detailRestoreGeneration) else {
+                pendingPickerFocus = nil
+                isRestoringDetailFocus = false
+                return
+            }
             detailFocus = target
             pendingPickerFocus = nil
             await Task.yield()
@@ -778,3 +806,7 @@ func tvSettingsShouldResetFocusOnAppear(hasEnteredBefore: Bool) -> Bool { !hasEn
 func tvSettingsRailIsInert(isModalPresented: Bool, isRestoringPickerRow: Bool) -> Bool {
     isModalPresented || isRestoringPickerRow
 }
+
+/// A scheduled detail-pane restore applies only if focus ownership has not
+/// moved to the rail since it was scheduled.
+func tvSettingsDetailRestoreIsCurrent(scheduled: Int, current: Int) -> Bool { scheduled == current }

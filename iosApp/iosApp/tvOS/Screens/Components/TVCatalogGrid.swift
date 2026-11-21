@@ -25,6 +25,11 @@ struct TVCatalogGrid: View {
     var cardWidth: CGFloat = SiloTheme.posterCardWidth
     var prefersDefaultFocusOnFirstItem: Bool = false
     var focusRequest: Int = 0
+    /// Opt-in native entry: the first card is the grid's default focus at
+    /// this priority. Browse passes `.userInitiated` while its control row
+    /// has focus, so Down from the row lands on the first card. Nil leaves
+    /// other grids' entry unchanged.
+    var entryFocusPriority: DefaultFocusEvaluationPriority? = nil
     var onRowVisibilityChange: ((Range<Int>, Bool) -> Void)? = nil
 
     @Namespace private var gridFocusNamespace
@@ -110,6 +115,8 @@ struct TVCatalogGrid: View {
             }
         }
         .focusScope(gridFocusNamespace)
+        .modifier(TVCatalogGridEntryFocus(binding: $focusedItemId, firstItemId: items.first?.contentId,
+                                          priority: entryFocusPriority))
         .focusSection()
         .onAppear { applyFocusRequest(focusRequest) }
         .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
@@ -156,6 +163,22 @@ struct TVCatalogGrid: View {
         guard let firstItemId = items.first?.contentId else { return }
         lastAppliedFocusRequest = request
         focusedItemId = firstItemId
+    }
+}
+/// Attached only for grids that opt in (`entryFocusPriority` is constant per
+/// caller), so other grids keep their structure and entry behaviour.
+private struct TVCatalogGridEntryFocus: ViewModifier {
+    let binding: FocusState<String?>.Binding
+    let firstItemId: String?
+    let priority: DefaultFocusEvaluationPriority?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let priority, let firstItemId {
+            content.defaultFocus(binding, firstItemId, priority: priority)
+        } else {
+            content
+        }
     }
 }
 #endif
