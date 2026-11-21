@@ -58,7 +58,16 @@ struct UnifiedVODEntry: Identifiable {
     }
 
     var normalizedTitle: String {
-        var value = title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        UnifiedCatalogKeys.normalizedTitle(title, year: year, locale: .current)
+    }
+}
+
+/// The title keys the unified Movies/Series index stores. Search keeps `UnifiedVODEntry`'s
+/// current-locale normalization; the persisted index uses a fixed (nil) locale so keys written
+/// under one device language still compare equal after the language changes.
+enum UnifiedCatalogKeys {
+    static func normalizedTitle(_ title: String, year: Int?, locale: Locale? = nil) -> String {
+        var value = title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: locale)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let year {
             for suffix in [" (\(year))", " [\(year)]", " - \(year)"] where value.hasSuffix(suffix) {
@@ -68,6 +77,29 @@ struct UnifiedVODEntry: Identifiable {
         }
         return value.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")
     }
+
+    /// Byte-ordered (SQLite BINARY) sort key: normalized title, then year. U+0001 sorts below a
+    /// space, so "arrival" (any year) precedes "arrival ii". Titles with no letters or digits keep
+    /// their folded raw text so they still sort deterministically.
+    static func sortKey(title: String, year: Int?) -> String {
+        let normalized = normalizedTitle(title, year: year)
+        let base = normalized.isEmpty
+            ? title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            : normalized
+        return base + "\u{1}" + String(format: "%04d", min(max(year ?? 0, 0), 9999))
+    }
+
+    /// Non-empty only when a title is eligible for title+year matching (the policy
+    /// `UnifiedVODCatalog.aggregate` applies to search results). Matching entries always share a
+    /// sort key, so every match group is contiguous in index order.
+    static func matchKey(title: String, year: Int?) -> String {
+        guard let year else { return "" }
+        let normalized = normalizedTitle(title, year: year)
+        return normalized.isEmpty ? "" : normalized + "\u{1}" + String(year)
+    }
+
+    static func siloEntryKey(libraryID: Int, contentID: String) -> String { "s:\(libraryID):\(contentID)" }
+    static func iptvEntryKey(providerID: UUID, remoteID: Int) -> String { "i:\(providerID.uuidString):\(remoteID)" }
 }
 
 struct UnifiedVODTitle: Identifiable {
@@ -98,18 +130,6 @@ struct UnifiedVODEpisodeKey: Hashable {
 }
 
 enum UnifiedVODCatalog {
-    /// Append a source page without duplicate records and retain a bounded browsing window.
-    /// Offset/cursor state stays with each source, so trimming never rewinds pagination.
-    static func appendPage(_ page: [UnifiedVODEntry], to current: [UnifiedVODEntry],
-                           maximum: Int) -> (entries: [UnifiedVODEntry], trimmed: Bool) {
-        var result = current
-        var known = Set(current.map(\.id))
-        for entry in page where known.insert(entry.id).inserted { result.append(entry) }
-        let excess = max(0, result.count - max(1, maximum))
-        if excess > 0 { result.removeFirst(excess) }
-        return (result, excess > 0)
-    }
-
     /// Discovery is supplementary: fail closed until both local catalogs have finished, then
     /// remove every result known playable in IPTV. The server already filters its own library.
     static func requestableResults(_ results: [RequestMediaResult], local: [UnifiedVODEntry],

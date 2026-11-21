@@ -779,6 +779,11 @@ final class AuthService: @unchecked Sendable {
         CurrentProfileStore.shared.reset()
         SubtitleProvidersStore.shared.reset()
         RequestsEventBus.shared.reset()
+        #if os(iOS)
+        // The unified Movies/Series grid mirrors this identity's Silo catalog on disk. Stop its
+        // walks and delete every mirrored title before the next identity can browse.
+        SiloCatalogMirror.shared.invalidateIdentity()
+        #endif
         #if os(tvOS)
         ItemDetailCache.shared.clearAll()
         if !preservingTrailerReturn {

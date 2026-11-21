@@ -5,7 +5,7 @@ import SQLite3
 /// Provider-scoped, paged catalog. A refresh remains invisible until its generation is promoted.
 actor XtreamVODCatalogStore {
     private var database: OpaquePointer?
-    private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     /// The catalog is re-downloadable, so a purgeable cache is appropriate on iOS.
     static func defaultDirectory(fileManager: FileManager = .default) -> URL {
@@ -65,6 +65,9 @@ actor XtreamVODCatalogStore {
               INSERT INTO vod_title_fts(rowid,title) VALUES(new.rowid,new.title);
             END;
             """)
+        // Build 110 unified Movies/Series index. Additive tables only: vod_items, its FTS index
+        // and triggers are untouched, so Universal Search reads exactly what it read before.
+        try initialize(Self.unifiedCatalogSchema)
         var version: Int32 = 0
         var versionStatement: OpaquePointer?
         if sqlite3_prepare_v2(openedDatabase, "PRAGMA user_version", -1, &versionStatement, nil) == SQLITE_OK,
@@ -93,11 +96,11 @@ actor XtreamVODCatalogStore {
         database = nil
     }
 
-    private func execute(_ sql: String) throws {
+    func execute(_ sql: String) throws {
         guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else { throw XtreamVODError.storage }
     }
 
-    private func prepare(_ sql: String) throws -> OpaquePointer {
+    func prepare(_ sql: String) throws -> OpaquePointer {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
             throw XtreamVODError.storage
@@ -105,7 +108,7 @@ actor XtreamVODCatalogStore {
         return statement
     }
 
-    private func bind(_ value: String?, at index: Int32, in statement: OpaquePointer) {
+    func bind(_ value: String?, at index: Int32, in statement: OpaquePointer) {
         if let value { sqlite3_bind_text(statement, index, value, -1, Self.transient) }
         else { sqlite3_bind_null(statement, index) }
     }
@@ -218,12 +221,13 @@ actor XtreamVODCatalogStore {
     }
 
     func discard(providerID: UUID, kind: XtreamVODKind, generation: String) {
-        if let anchors = try? prepare("DELETE FROM vod_page_anchors WHERE provider=? AND kind=? AND generation=?") {
-            bind(providerID.uuidString, at: 1, in: anchors)
-            bind(kind.rawValue, at: 2, in: anchors)
-            bind(generation, at: 3, in: anchors)
-            sqlite3_step(anchors)
-            sqlite3_finalize(anchors)
+        for table in ["vod_page_anchors", "unified_iptv_keys"] {
+            guard let rows = try? prepare("DELETE FROM \(table) WHERE provider=? AND kind=? AND generation=?") else { continue }
+            bind(providerID.uuidString, at: 1, in: rows)
+            bind(kind.rawValue, at: 2, in: rows)
+            bind(generation, at: 3, in: rows)
+            sqlite3_step(rows)
+            sqlite3_finalize(rows)
         }
         guard let statement = try? prepare("DELETE FROM vod_items WHERE provider=? AND kind=? AND generation=?") else { return }
         defer { sqlite3_finalize(statement) }
@@ -234,7 +238,7 @@ actor XtreamVODCatalogStore {
     }
 
     func remove(providerID: UUID) {
-        for table in ["vod_active", "vod_page_anchors", "vod_items"] {
+        for table in ["vod_active", "vod_page_anchors", "unified_iptv_keys", "vod_items"] {
             guard let statement = try? prepare("DELETE FROM \(table) WHERE provider=?") else { continue }
             bind(providerID.uuidString, at: 1, in: statement)
             sqlite3_step(statement)
@@ -245,6 +249,12 @@ actor XtreamVODCatalogStore {
     /// A process can die after staging but before promotion. Prune only inactive generations;
     /// active rows remain readable throughout recovery. Call before starting a new refresh.
     func pruneOrphanedGenerations() async throws {
+        try execute("""
+            DELETE FROM unified_iptv_keys WHERE NOT EXISTS (
+              SELECT 1 FROM vod_active a WHERE a.provider=unified_iptv_keys.provider
+                AND a.kind=unified_iptv_keys.kind AND a.generation=unified_iptv_keys.generation
+            )
+            """)
         try execute("""
             DELETE FROM vod_page_anchors WHERE NOT EXISTS (
               SELECT 1 FROM vod_active a WHERE a.provider=vod_page_anchors.provider

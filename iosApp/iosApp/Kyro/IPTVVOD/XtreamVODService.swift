@@ -128,6 +128,9 @@ final class XtreamVODService {
         get async { try? await openStore() }
     }
 
+    /// The catalog database the Build 110 unified Movies/Series index lives in.
+    func unifiedStore() async -> XtreamVODCatalogStore? { await readableStore }
+
     /// Starts one refresh of the provider's selected catalogs and waits for it. Every outcome other
     /// than `.alreadyRunning` publishes visible `progress` before returning.
     @discardableResult
@@ -256,6 +259,10 @@ final class XtreamVODService {
                 }
                 stage = .promotion
                 try await store.buildPageAnchors(providerID: providerID, kind: kind, generation: generation)
+                try Task.checkCancellation()
+                // Unified Movies/Series keys for the staged generation, so it becomes browsable
+                // in the same promotion that makes it searchable (never a mixed generation).
+                try await store.buildUnifiedKeys(providerID: providerID, kind: kind, generation: generation)
                 try Task.checkCancellation()
                 try await store.promote(providerID: providerID, kind: kind, generation: generation)
                 revision &+= 1

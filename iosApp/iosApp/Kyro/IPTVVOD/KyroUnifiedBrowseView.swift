@@ -1,6 +1,8 @@
 #if os(iOS)
 import SwiftUI
 
+/// The one Movies or Series library grid (Build 110): Silo and IPTV titles in one catalog-wide
+/// alphabetical order, confident matches shown once. See `KyroUnifiedBrowseModel`.
 struct KyroUnifiedBrowseView: View {
     let kind: XtreamVODKind
     let libraries: [Library]
@@ -8,56 +10,87 @@ struct KyroUnifiedBrowseView: View {
     @AppStorage(IPTVVODPreference.key) private var vodEnabled = false
     @State private var model = KyroUnifiedBrowseModel()
     @State private var gridWidth: CGFloat = 0
+    @State private var scrolledCardID: String?
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.verticalSizeClass) private var vSize
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.libraryPageScrollControls) private var controls
     @Environment(AppRouter.self) private var router
 
     private let liveTV = LiveTVService.shared
     private let service = XtreamVODService.shared
+    private let mirror = SiloCatalogMirror.shared
 
-    private var refreshIdentity: String {
-        "\(kind.rawValue):\(libraries.map(\.id)):\(liveTV.providers.map(\.id)):\(vodEnabled):\(service.catalogRevision)"
+    private var configurationIdentity: String {
+        "\(kind.rawValue):\(libraries.map(\.id)):\(liveTV.providers.filter { $0.kind == .xtream }.map(\.id)):\(vodEnabled)"
     }
 
+    /// Changes when an IPTV generation or a Silo snapshot was published or removed.
+    private var indexRevision: String { "\(service.catalogRevision):\(mirror.revision)" }
+
     var body: some View {
-        LibraryPageScrollContainer {
-            VStack(spacing: SiloTheme.padding) {
-                if model.hadSourceFailure {
-                    Text("Some Silo libraries are unavailable. Available titles are shown.")
-                        .font(.siloCaption)
-                        .foregroundColor(.siloSecondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+        // The page's own scroll container (like `LibraryPageScrollContainer`, which it cannot
+        // extend without touching shared code) so the grid can keep its scroll position by card
+        // identity while pages are added or trimmed at either end.
+        ScrollView(.vertical) {
+            VStack(spacing: 0) {
+                if let controls { controls }
+                VStack(spacing: SiloTheme.padding) {
+                    status
+                    if model.cards.isEmpty && model.hasLoaded && !model.isLoading {
+                        EmptyStateView(icon: kind == .movie ? "film" : "tv",
+                                       title: model.isSyncingSilo || model.isIndexingIPTV
+                                           ? "Preparing your library" : "No titles available",
+                                       subtitle: model.isSyncingSilo || model.isIndexingIPTV
+                                           ? "Titles appear as soon as they are indexed."
+                                           : "Check your Silo libraries or IPTV catalog settings.")
+                            .frame(minHeight: 280)
+                    } else {
+                        grid
+                    }
                 }
-                if model.windowWasTrimmed {
-                    Text("Showing the newest browsing window. Reopen Library to start again.")
-                        .font(.siloCaption)
-                        .foregroundColor(.siloSecondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if model.titles.isEmpty && model.hasLoaded {
-                    EmptyStateView(icon: kind == .movie ? "film" : "tv",
-                                   title: "No titles available",
-                                   subtitle: "Check your Silo libraries or IPTV catalog settings.")
-                        .frame(minHeight: 280)
-                } else {
-                    grid
-                }
+                .padding(.horizontal, SiloTheme.padding)
+                .environment(\.libraryPageScrollControls, nil)
             }
-            .padding(.horizontal, SiloTheme.padding)
         }
+        .scrollPosition(id: $scrolledCardID, anchor: .top)
+        .reportsPageChromeScroll()
         .siloPageBackground()
-        .task(id: refreshIdentity) {
+        .onChange(of: scrolledCardID) { _, id in model.anchorCardID = id }
+        .task(id: configurationIdentity) {
             await model.configure(kind: kind, libraries: libraries,
-                                  providers: liveTV.providers, vodEnabled: vodEnabled,
-                                  catalogRevision: service.catalogRevision)
+                                  providers: liveTV.providers, vodEnabled: vodEnabled)
         }
-        .refreshable {
-            await model.refresh(kind: kind, libraries: libraries,
-                                providers: liveTV.providers, vodEnabled: vodEnabled,
-                                catalogRevision: service.catalogRevision)
+        .onChange(of: indexRevision) { _, _ in
+            Task { await model.indexDidChange() }
         }
+        .refreshable { await model.refresh() }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        if model.storeUnavailable {
+            statusLine("The local catalog is unavailable. Pull to retry.", progress: false)
+        } else if model.isIndexingIPTV {
+            statusLine("Indexing IPTV titles…", progress: true)
+        } else if model.isSyncingSilo {
+            statusLine("Updating Silo titles…", progress: true)
+        } else if model.siloSyncFailed {
+            statusLine("Some Silo titles could not be updated. Showing the last synced catalog.", progress: false)
+        }
+    }
+
+    private func statusLine(_ text: String, progress: Bool) -> some View {
+        HStack(spacing: 8) {
+            if progress { ProgressView().controlSize(.small).tint(.siloSecondaryText) }
+            Text(text)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private var grid: some View {
@@ -69,93 +102,87 @@ struct KyroUnifiedBrowseView: View {
             posterSize: uiCustomization.cardPresentation.posterSize,
             forcesThreeColumnsOnPhone: true
         )
-        let titles = model.titles
+        let cards = model.cards
+        let columns = layout.columns.count
         return VStack(spacing: 0) {
+            if model.hasMoreBefore {
+                ProgressView().tint(.siloOnSurface).padding()
+                    .onAppear { Task { await model.loadPrevious() } }
+            }
             LazyVGrid(columns: layout.columns, spacing: PosterGridLayout.rowSpacing) {
-                if titles.isEmpty && !model.hasLoaded {
-                    ForEach(0..<(layout.columns.count * 4), id: \.self) { _ in PosterSkeletonCard() }
+                if cards.isEmpty && !model.hasLoaded {
+                    ForEach(0..<(columns * 4), id: \.self) { _ in PosterSkeletonCard() }
                 }
-                ForEach(UnifiedIndexedTitles(titles: titles)) { entry in
-                    card(entry.title, width: layout.cardWidthOverride,
-                         rowTitles: rowTitles(at: entry.index, columns: layout.columns.count, titles: titles))
+                ForEach(UnifiedIndexedCards(cards: cards)) { entry in
+                    card(entry.card, width: layout.cardWidthOverride,
+                         rowTitles: rowTitles(at: entry.index, columns: columns, cards: cards))
                         .frame(maxWidth: .infinity)
                         .onAppear {
-                            if entry.index >= titles.count - 6 && model.hasMore {
+                            if entry.index >= cards.count - columns * 4 && model.hasMoreAfter {
                                 Task { await model.loadMore() }
+                            } else if entry.index < columns * 4 && model.hasMoreBefore {
+                                Task { await model.loadPrevious() }
                             }
                         }
                 }
             }
+            .scrollTargetLayout()
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
                 if abs(width - gridWidth) >= 0.5 { gridWidth = width }
             }
-            if model.isLoading && !titles.isEmpty {
+            .onChange(of: columns, initial: true) { _, count in model.setColumns(count) }
+            if model.hasMoreAfter && !cards.isEmpty {
                 ProgressView().tint(.siloOnSurface).padding()
             }
         }
     }
 
-    private func card(_ title: UnifiedVODTitle, width: CGFloat?, rowTitles: [String]?) -> some View {
-        let silo = title.siloItem
-        let iptv = title.iptvItems.first
-        let provider = iptv.flatMap { item in liveTV.providers.first { $0.id == item.providerID } }
+    private func card(_ card: UnifiedCatalogCard, width: CGFloat?, rowTitles: [String]?) -> some View {
+        let silo = model.siloItem(for: card)
         return MediaCard(
-            title: title.title,
-            posterUrl: silo?.posterUrl ?? iptv?.poster ?? "",
+            title: silo?.title ?? card.title,
+            posterUrl: silo?.posterUrl ?? card.poster ?? "",
             thumbhash: silo?.posterThumbhash,
             mediaType: kind == .movie ? "movie" : "series",
-            year: silo?.year ?? title.entries.first?.year,
+            year: silo?.year ?? card.year,
             userState: silo?.userState,
-            action: {
-                if let silo {
-                    router.navigate(to: .itemDetail(browseItem: silo, libraryId: model.libraryID(for: silo)))
-                } else if let iptv, let provider {
-                    router.presentIPTVDetail(KyroIPTVDetailRequest(item: iptv, providerName: provider.name))
-                }
-            },
+            action: { open(card) },
             cardWidthOverride: width,
             rowTitles: rowTitles
         )
-        // Keep MediaCard's favorite/watch-state context menu intact. This small, interim
-        // secondary action exposes retained IPTV identities without changing playback routing.
-        .overlay(alignment: .topTrailing) {
-            if silo != nil && !title.iptvItems.isEmpty {
-                Menu {
-                    ForEach(title.iptvItems) { item in
-                        if let provider = liveTV.providers.first(where: { $0.id == item.providerID }) {
-                            Button("Open IPTV · \(provider.name)") {
-                                router.presentIPTVDetail(KyroIPTVDetailRequest(item: item, providerName: provider.name))
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title3)
-                        .foregroundColor(.siloOnSurface)
-                        .padding(6)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-                .accessibilityLabel("IPTV details for \(title.title)")
-                .padding(6)
-            }
+        .accessibilityHint(card.members.count > 1 ? "Available from \(card.members.count) sources" : "")
+    }
+
+    private func open(_ card: UnifiedCatalogCard) {
+        func request(_ item: XtreamVODItem) -> KyroIPTVDetailRequest? {
+            liveTV.providers.first { $0.id == item.providerID }
+                .map { KyroIPTVDetailRequest(item: item, providerName: $0.name) }
+        }
+        switch UnifiedDetailTarget(card: card) {
+        case let .silo(contentID, libraryID, _, alternates):
+            router.presentUnifiedSiloDetail(contentId: contentID, libraryId: libraryID,
+                                            alternates: alternates.compactMap(request))
+        case let .iptv(item, alternates):
+            guard let primary = request(item) else { return }
+            router.presentIPTVDetail(primary, alternates: alternates.compactMap(request))
         }
     }
 
-    private func rowTitles(at index: Int, columns: Int, titles: [UnifiedVODTitle]) -> [String] {
-        let start = index - index % columns
-        return titles[start..<min(start + columns, titles.count)].map(\.title)
+    private func rowTitles(at index: Int, columns: Int, cards: [UnifiedCatalogCard]) -> [String] {
+        let start = index - index % max(columns, 1)
+        return cards[start..<min(start + columns, cards.count)].map(\.title)
     }
 }
 
-private struct UnifiedIndexedTitles: RandomAccessCollection {
+private struct UnifiedIndexedCards: RandomAccessCollection {
     struct Entry: Identifiable {
         let index: Int
-        let title: UnifiedVODTitle
-        var id: String { title.id }
+        let card: UnifiedCatalogCard
+        var id: String { card.id }
     }
-    let titles: [UnifiedVODTitle]
-    var startIndex: Int { titles.startIndex }
-    var endIndex: Int { titles.endIndex }
-    subscript(position: Int) -> Entry { Entry(index: position, title: titles[position]) }
+    let cards: [UnifiedCatalogCard]
+    var startIndex: Int { cards.startIndex }
+    var endIndex: Int { cards.endIndex }
+    subscript(position: Int) -> Entry { Entry(index: position, card: cards[position]) }
 }
 #endif

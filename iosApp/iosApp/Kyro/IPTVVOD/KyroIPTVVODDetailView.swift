@@ -15,6 +15,9 @@ struct KyroIPTVVODDetailView: View {
     let providerName: String
     /// Closes the detail card. Nil draws no Close button.
     var onClose: (() -> Void)? = nil
+    /// Pushed over another title's detail (a matched title's alternate source): the leading
+    /// control reads as Back and `onClose` pops this page instead of closing the card.
+    var isPushedAlternate = false
 
     private let service = XtreamVODService.shared
     @State private var detail: XtreamVODDetail?
@@ -54,8 +57,8 @@ struct KyroIPTVVODDetailView: View {
                 title: item.title,
                 isScrollGlassEnabled: true,
                 scrollState: scrollState,
-                leadingSystemName: onClose == nil ? nil : "xmark",
-                leadingAccessibilityLabel: onClose == nil ? nil : "Close details",
+                leadingSystemName: onClose == nil ? nil : (isPushedAlternate ? "chevron.left" : "xmark"),
+                leadingAccessibilityLabel: onClose == nil ? nil : (isPushedAlternate ? "Back" : "Close details"),
                 onLeadingTap: { onClose?() },
                 trailingSystemName: nil,
                 onTrailingTap: nil

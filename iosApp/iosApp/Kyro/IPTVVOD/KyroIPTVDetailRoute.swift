@@ -19,8 +19,8 @@ struct XtreamVODWatchState: Codable, Equatable {
 /// itself a `Button`, so the inner button took every tap (Build 102: the press highlight showed
 /// and its empty action ran) or, with hit testing turned off on the label (Builds 100 and 101),
 /// nothing took the tap at all. The link never fired in either build.
-struct KyroIPTVDetailRequest: Equatable {
-    enum Page: Equatable {
+struct KyroIPTVDetailRequest: Hashable {
+    enum Page: Hashable {
         /// Hero with Play / Resume / Start Over.
         case movie
         /// Hero with Play or Resume for the next episode, seasons and the episode list.

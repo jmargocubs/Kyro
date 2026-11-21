@@ -178,6 +178,9 @@ final class AppRouter {
         /// Set when an IPTV poster opens a provider title (`presentIPTVDetail`); `contentId` is
         /// then only a page identity.
         let iptv: KyroIPTVDetailRequest?
+        /// The other IPTV sources of a matched unified title (Build 110). The root page stays the
+        /// existing Silo or IPTV detail; each alternate opens its own IPTV detail inside the card.
+        var alternates: [KyroIPTVDetailRequest] = []
         #endif
         /// Presented as large as the window instead of as a page sheet: a
         /// window-sized sheet on iPad, a full-screen cover on iPhone, where
@@ -776,10 +779,30 @@ final class AppRouter {
     /// Opens a provider (IPTV) title in the detail card a Silo title opens in: the same sheet,
     /// pull-down dismissal and Close button, with the provider's own detail page as its root. A
     /// poster tap replaces any open card, as `presentItemDetail` does from a page.
-    func presentIPTVDetail(_ request: KyroIPTVDetailRequest) {
+    func presentIPTVDetail(_ request: KyroIPTVDetailRequest, alternates: [KyroIPTVDetailRequest] = []) {
         recordScreenBreadcrumb(target: "iptvDetail", action: "present")
         itemDetailPath = NavigationPath()
-        openItemDetail(ItemDetailPresentation(iptv: request))
+        var presentation = ItemDetailPresentation(iptv: request)
+        presentation.alternates = alternates
+        openItemDetail(presentation)
+    }
+
+    /// Opens a unified (Build 110) Silo title in the existing Silo detail, carrying every matched
+    /// IPTV source. Playback routing is unchanged: Silo plays from the Silo page, each IPTV source
+    /// from its own IPTV page.
+    func presentUnifiedSiloDetail(contentId: String, libraryId: Int?, alternates: [KyroIPTVDetailRequest]) {
+        recordScreenBreadcrumb(target: "itemDetail", action: "present")
+        itemDetailPath = NavigationPath()
+        var presentation = ItemDetailPresentation(contentId: contentId, libraryId: libraryId)
+        presentation.alternates = alternates
+        openItemDetail(presentation)
+    }
+
+    /// Pushes an alternate IPTV source inside the open card; Back returns to the matched title.
+    func openAlternateIPTVDetail(_ request: KyroIPTVDetailRequest) {
+        guard presentedItemDetail != nil else { return presentIPTVDetail(request) }
+        recordScreenBreadcrumb(target: "iptvDetail", action: "push")
+        itemDetailPath.append(request)
     }
     #endif
 

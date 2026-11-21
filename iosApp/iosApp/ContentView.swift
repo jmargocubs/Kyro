@@ -3835,6 +3835,11 @@ private struct ItemDetailSheet: View {
         NavigationStack(path: $router.itemDetailPath) {
             GeometryReader { geometry in
                 rootPage
+                    // A matched unified title (Build 110) lists its other IPTV sources under the
+                    // existing page; no shared detail view changes.
+                    .modifier(KyroAlternateSourcesInset(alternates: presentation.alternates,
+                                                         bottomInset: geometry.safeAreaInsets.bottom,
+                                                         onOpen: router.openAlternateIPTVDetail))
                     .frame(
                         width: geometry.size.width,
                         height: geometry.size.height + geometry.safeAreaInsets.bottom
@@ -3849,6 +3854,17 @@ private struct ItemDetailSheet: View {
                         .environment(\.detailPullBackAction, {
                             withAnimation { router.goBackInItemDetail() }
                         })
+                }
+                .navigationDestination(for: KyroIPTVDetailRequest.self) { request in
+                    KyroIPTVVODDetailView(
+                        item: request.item,
+                        providerName: request.providerName,
+                        onClose: { withAnimation { router.goBackInItemDetail() } },
+                        isPushedAlternate: true
+                    )
+                    .environment(\.detailPullBackAction, {
+                        withAnimation { router.goBackInItemDetail() }
+                    })
                 }
                 .toolbarBackground(.hidden, for: .navigationBar)
         }

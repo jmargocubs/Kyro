@@ -34,22 +34,6 @@ final class UnifiedVODCatalogTests: XCTestCase {
         XCTAssertTrue(afterRemoval[0].iptvItems.isEmpty)
     }
 
-    func testPageOverlapIsDeduplicatedAndRefreshIsStable() {
-        let silo = entry("silo:1", .silo)
-        let iptv = entry("iptv:1", .iptv(first))
-        let other = entry("iptv:2", .iptv(second))
-        let first = UnifiedVODCatalog.appendPage([silo, iptv], to: [], maximum: 3)
-        let next = UnifiedVODCatalog.appendPage([iptv, other], to: first.entries, maximum: 3)
-        XCTAssertEqual(next.entries.map(\.id), [silo.id, iptv.id, other.id])
-        XCTAssertFalse(next.trimmed)
-        XCTAssertEqual(UnifiedVODCatalog.appendPage([silo, iptv], to: [], maximum: 3).entries.map(\.id),
-                       first.entries.map(\.id))
-        let trimmed = UnifiedVODCatalog.appendPage([entry("extra", .silo, .movie, "Other", 2020)],
-                                                   to: next.entries, maximum: 3)
-        XCTAssertTrue(trimmed.trimmed)
-        XCTAssertEqual(trimmed.entries.count, 3)
-    }
-
     func testAmbiguousSameProviderDuplicateStaysSeparate() {
         let titles = UnifiedVODCatalog.aggregate([
             entry("silo:1", .silo), entry("silo:2", .silo), entry("iptv:1", .iptv(first))
