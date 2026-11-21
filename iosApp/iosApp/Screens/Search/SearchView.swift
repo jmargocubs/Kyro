@@ -112,6 +112,12 @@ struct SearchView: View {
         .siloSearchable(text: searchText, prompt: "Search movies, series, and live TV...")
         #if os(iOS)
         .searchFocused($isSearchFieldFocused)
+        .onSubmit(of: .search) {
+            // The keyboard Search action submits the current query; it must not clear
+            // local IPTV results or wait for another text change to trigger the search.
+            let query = viewModel.query
+            Task { await vodSearch.search(query) }
+        }
         .task {
             // A Siri search shows its results; the keyboard would cover them.
             guard seededQuery == nil else { return }
@@ -143,7 +149,7 @@ struct SearchView: View {
         #if os(iOS)
         .task(id: "\(viewModel.query)|\(XtreamVODService.shared.catalogRevision)|\(liveTVService.providers.map(\.id))") {
             guard !viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                vodSearch.cancel()
+                vodSearch.cancel(clearResults: true)
                 return
             }
             try? await Task.sleep(for: .milliseconds(300))
@@ -202,7 +208,7 @@ struct SearchView: View {
             set: { value in
                 viewModel.query = value
                 #if os(iOS)
-                vodSearch.cancel()
+                vodSearch.cancel(clearResults: true)
                 #endif
                 liveTVVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit
                 programVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit

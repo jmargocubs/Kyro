@@ -166,6 +166,28 @@ enum UnifiedVODCatalog {
 
 enum VODPlaybackPreference: String, CaseIterable { case automatic, askEveryTime }
 
+/// Gives each local VOD query a monotonically increasing identity so a cancelled or
+/// superseded asynchronous catalog read cannot publish into a newer search.
+struct VODSearchRequestTracker {
+    private(set) var generation = 0
+    private(set) var activeQuery: String?
+
+    mutating func begin(_ query: String) -> Int {
+        generation &+= 1
+        activeQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return generation
+    }
+
+    mutating func cancel() {
+        generation &+= 1
+        activeQuery = nil
+    }
+
+    func accepts(_ token: Int, query: String) -> Bool {
+        token == generation && activeQuery == query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 enum VODPlaybackPolicy {
     /// A pre-start decision only. The existing coordinator remains authoritative once playback starts.
     static func order(preference: VODPlaybackPreference = .automatic,

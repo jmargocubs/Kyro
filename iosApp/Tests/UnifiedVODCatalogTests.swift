@@ -79,5 +79,40 @@ final class UnifiedVODCatalogTests: XCTestCase {
         XCTAssertEqual(UnifiedVODCatalog.requestableResults(requests, local: [playable],
             siloReady: true, vodReady: true).map(\.title), ["Dune"])
     }
+
+    func testSearchSubmissionAndKeyboardDismissalKeepCompletedQueryIdentity() {
+        // Submission and keyboard dismissal do not start a new query or invalidate its token.
+        var tracker = VODSearchRequestTracker()
+        let submitted = tracker.begin(" Fraidy ")
+        XCTAssertTrue(tracker.accepts(submitted, query: "Fraidy"))
+        XCTAssertTrue(tracker.accepts(submitted, query: " Fraidy "))
+    }
+
+    func testRapidQueryChangeRejectsStaleIPTVResponse() {
+        var tracker = VODSearchRequestTracker()
+        let movieQuery = tracker.begin("Fraidy")
+        let seriesQuery = tracker.begin("Fraidy series")
+        XCTAssertFalse(tracker.accepts(movieQuery, query: "Fraidy"))
+        XCTAssertTrue(tracker.accepts(seriesQuery, query: "Fraidy series"))
+    }
+
+    func testCancellationAndReopeningUseFreshSearchIdentity() {
+        var tracker = VODSearchRequestTracker()
+        let beforeDismissal = tracker.begin("Fraidy")
+        tracker.cancel()
+        XCTAssertFalse(tracker.accepts(beforeDismissal, query: "Fraidy"))
+        let reopened = tracker.begin("Fraidy")
+        XCTAssertTrue(tracker.accepts(reopened, query: "Fraidy"))
+        XCTAssertFalse(tracker.accepts(beforeDismissal, query: "Fraidy"))
+    }
+
+    func testMovieAndSeriesQueriesHaveIndependentFreshResults() {
+        var tracker = VODSearchRequestTracker()
+        let movie = tracker.begin("Fraidy")
+        XCTAssertTrue(tracker.accepts(movie, query: "Fraidy"))
+        let series = tracker.begin("Fraidy series")
+        XCTAssertFalse(tracker.accepts(movie, query: "Fraidy"))
+        XCTAssertTrue(tracker.accepts(series, query: "Fraidy series"))
+    }
 }
 #endif

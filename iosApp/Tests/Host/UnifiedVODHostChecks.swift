@@ -67,6 +67,14 @@ enum UnifiedVODHostChecks {
         assert(VODPlaybackPolicy.order(sources: [iptv, silo], failedIDs: [silo.id]).map(\.id) == [iptv.id])
         assert(VODPlaybackPolicy.order(sources: [iptv, silo], usableIDs: [iptv.id]).map(\.id) == [iptv.id])
         assert(VODPlaybackPolicy.order(sources: [iptv, silo], playbackStarted: true).isEmpty)
+        var tracker = VODSearchRequestTracker()
+        let typing = tracker.begin("Fraidy")
+        assert(tracker.accepts(typing, query: " Fraidy ")) // submit/keyboard dismissal preserve identity
+        let submitted = tracker.begin("Fraidy series")
+        assert(!tracker.accepts(typing, query: "Fraidy")) // stale movie response cannot overwrite
+        assert(tracker.accepts(submitted, query: "Fraidy series"))
+        tracker.cancel()
+        assert(!tracker.accepts(submitted, query: "Fraidy series"))
         print("Unified VOD host checks passed")
     }
 }

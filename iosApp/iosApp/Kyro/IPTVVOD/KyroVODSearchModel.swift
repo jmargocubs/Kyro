@@ -12,7 +12,7 @@ final class KyroVODSearchModel {
     private(set) var completedQuery = ""
     private(set) var completedRevision = -1
     private(set) var completedProviderIDs: [UUID] = []
-    private var generation = 0
+    private var requestTracker = VODSearchRequestTracker()
     private let service: XtreamVODService
     private let liveTV: LiveTVService
 
@@ -21,19 +21,34 @@ final class KyroVODSearchModel {
         self.liveTV = liveTV ?? .shared
     }
 
-    func cancel() {
-        generation &+= 1
-        items = []
-        phase = .idle
-        completedQuery = ""
+    /// Invalidates in-flight work without erasing a completed query when Search is merely
+    /// dismissed. A query edit uses `clearResults: true` so old results cannot be mistaken
+    /// for results belonging to the new text.
+    func cancel(clearResults: Bool = false) {
+        requestTracker.cancel()
+        if clearResults {
+            items = []
+            phase = .idle
+            completedQuery = ""
+            completedRevision = -1
+            completedProviderIDs = []
+        } else if phase == .loading {
+            phase = .idle
+        }
     }
 
     func search(_ query: String) async {
-        generation &+= 1
-        let token = generation
-        items = []
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { phase = .idle; return }
+        let token = requestTracker.begin(trimmed)
+        guard !trimmed.isEmpty else {
+            items = []
+            phase = .idle
+            completedQuery = ""
+            return
+        }
+        // Keep a still-current completed result set visible while the same query is
+        // refreshed (for example, when the keyboard Search button is pressed).
+        // Query edits already clear results in SearchView's binding setter.
         phase = .loading
         let revision = service.catalogRevision
         let providers = liveTV.providers.filter { $0.kind == .xtream }
@@ -50,13 +65,13 @@ final class KyroVODSearchModel {
         for provider in providers {
             if service.refreshedAt(providerID: provider.id) == nil { incomplete = true }
             for kind in XtreamVODKind.allCases {
-                guard !Task.isCancelled, token == generation else { return }
+                guard !Task.isCancelled, requestTracker.accepts(token, query: trimmed) else { return }
                 // A provider-level refresh can succeed for only one kind. No active rows for the
                 // other kind are not evidence that the title is absent.
                 if await service.count(providerID: provider.id, kind: kind) == 0 { incomplete = true }
-                guard !Task.isCancelled, token == generation else { return }
+                guard !Task.isCancelled, requestTracker.accepts(token, query: trimmed) else { return }
                 let page = await service.page(providerID: provider.id, kind: kind, query: trimmed)
-                guard !Task.isCancelled, token == generation else { return }
+                guard !Task.isCancelled, requestTracker.accepts(token, query: trimmed) else { return }
                 found.append(contentsOf: page)
                 // Store paging is capped at 100; don't claim a complete result set at that edge.
                 if page.count == 100 { incomplete = true }
