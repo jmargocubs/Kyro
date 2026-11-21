@@ -404,7 +404,7 @@ enum PlaybackSettingsLayout {
             case .playerControls:
                 ["Skip Back", "Skip Forward"]
             case .advanced:
-                ["Seek Cache", "Buffer Ahead", "Lossless Multichannel Audio", "TrueHD Atmos and DTS:X",
+                ["Seek Cache", "Thumbnail Previews", "Buffer Ahead", "Lossless Multichannel Audio", "TrueHD Atmos and DTS:X",
                  "Deinterlacing", "Deinterlacing Field Rate", "Reset"]
             }
         }
@@ -414,8 +414,8 @@ enum PlaybackSettingsLayout {
     static let spoilerProtectionTitle = "Spoiler Protection"
     static let videoSkipTitle = "Video Skip Intervals"
     static let audiobookSkipTitle = "Audiobook Skip Intervals"
-    static let advancedEntryFooter = "Seek cache, buffering, lossless audio, and deinterlacing. The defaults suit most devices."
-    static let advancedPageFooter = "Change these only to fix a playback problem on this device."
+    static let advancedEntryFooter = "Seek cache, thumbnail previews, buffering, lossless audio, and deinterlacing. The defaults suit most devices."
+    static let advancedPageFooter = "Change these only to fix a playback problem on this device. Thumbnail Previews use Seekr when a key is configured; playback still works when they are off or unavailable."
     static let advancedAudioFooter = "If surround plays as stereo, turn off Lossless Multichannel Audio. With TrueHD Atmos and DTS:X on, those tracks keep their height channels but play as compressed audio."
 }
 
@@ -444,6 +444,10 @@ struct PlaybackAdvancedSettingsSections: View {
     var body: some View {
         Section {
             Toggle("Seek Cache", isOn: $viewModel.seekCacheEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
+
+            Toggle("Thumbnail Previews", isOn: $viewModel.seekrThumbnailPreviewsEnabled)
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
 

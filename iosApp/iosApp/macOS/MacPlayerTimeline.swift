@@ -105,7 +105,9 @@ struct MacPlayerTimeline: View {
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 192, height: 108)
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
+            Text(PlayerTimeFormatter.formatHMS(
+                viewModel.scrubPreviewImageSourceTime ?? viewModel.scrubPreviewTime
+            ))
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
                 .monospacedDigit()
