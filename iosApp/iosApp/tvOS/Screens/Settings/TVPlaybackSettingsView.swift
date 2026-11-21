@@ -209,6 +209,14 @@ struct TVPlaybackSettingsPane: View {
             viewModel.seekCacheEnabled = value
         }
 
+        TVSettingsToggleRow(
+            title: "Thumbnail Previews",
+            isOn: viewModel.seekrThumbnailPreviewsEnabled
+        ) {
+            let value = !viewModel.seekrThumbnailPreviewsEnabled
+            viewModel.seekrThumbnailPreviewsEnabled = value
+        }
+
         TVSettingsPickerRow(
             title: "Buffer Ahead",
             value: viewModel.bufferAhead.label

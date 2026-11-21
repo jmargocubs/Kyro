@@ -910,11 +910,11 @@ private struct MobilePlayerTimeline: View {
                     .frame(width: 176, height: 99)
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
-            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
+            Text(PlayerTimeFormatter.formatHMS(scrubPreviewLabelTime))
                 .font(.system(size: 19, weight: .bold))
                 .foregroundStyle(.white)
                 .monospacedDigit()
-            if let chapter = chapterTitle(at: viewModel.scrubPreviewTime) {
+            if let chapter = chapterTitle(at: scrubPreviewLabelTime) {
                 Text(chapter)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.65))
@@ -929,6 +929,12 @@ private struct MobilePlayerTimeline: View {
         .padding(7)
         .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .fixedSize()
+    }
+
+    /// Prefer the preview frame's actual cue time when Seekr (or another
+    /// provider) published one; otherwise the scrub target.
+    private var scrubPreviewLabelTime: Double {
+        viewModel.scrubPreviewImageSourceTime ?? viewModel.scrubPreviewTime
     }
 
     private func chapterTitle(at time: Double) -> String? {

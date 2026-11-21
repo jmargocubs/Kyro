@@ -153,6 +153,12 @@ final class SettingsViewModel {
         set { PlayerSettings.shared.setSeekCacheEnabled(newValue) }
     }
 
+    /// Device-local Seekr scrub thumbnail previews.
+    var seekrThumbnailPreviewsEnabled: Bool {
+        get { SeekrPreviewSettings.shared.previewsEnabled }
+        set { SeekrPreviewSettings.shared.setPreviewsEnabled(newValue) }
+    }
+
     /// Local — it describes this device's audio sink, not the profile.
     var losslessAudioEnabled: Bool {
         get { PlayerSettings.shared.losslessAudioEnabled }

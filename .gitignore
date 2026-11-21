@@ -79,3 +79,7 @@ docs/tvos-player/*
 !docs/livetv/
 docs/livetv/*
 !docs/livetv/epg-cache-format.md
+
+# Local Seekr credentials (never commit)
+iosApp/Signing/SeekrSecrets.xcconfig
+iosApp/Signing/SeekrAPIKey
