@@ -458,6 +458,38 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertFalse(tvSettingsDetailRestoreIsCurrent(scheduled: 3, current: 4))
     }
 
+    // MARK: Build 103 final review: Browse detail return and player presence
+
+    func testBrowseDownFromControlsEntersTheFirstCard() {
+        XCTAssertEqual(tvCatalogGridDefaultFocus(mode: .firstCardFromControls, firstItemId: "first", lastFocusedItemId: "row20"),
+                       TVCatalogGridDefaultFocus(itemId: "first", isUserEntry: true))
+    }
+
+    func testBrowseBackFromDetailRestoresTheOpenedCardNotTheFirst() {
+        // The review's R1: an automatic first-card default could win the
+        // system restore after a pop. The default is the last focused card.
+        XCTAssertEqual(tvCatalogGridDefaultFocus(mode: .lastFocusedCard, firstItemId: "first", lastFocusedItemId: "row20"),
+                       TVCatalogGridDefaultFocus(itemId: "row20", isUserEntry: false))
+        XCTAssertEqual(tvCatalogGridDefaultFocus(mode: .lastFocusedCard, firstItemId: "first", lastFocusedItemId: nil),
+                       TVCatalogGridDefaultFocus(itemId: "first", isUserEntry: false),
+                       "a new result set falls back to the first card")
+        XCTAssertNil(tvCatalogGridDefaultFocus(mode: .lastFocusedCard, firstItemId: nil, lastFocusedItemId: nil))
+    }
+
+    func testPlayerPresenceSpansOverlappingPlayersAndNeverGoesNegative() {
+        var presence = TVPlayerPresenceCounter()
+        XCTAssertFalse(presence.isActive)
+        presence.begin()                    // pushed .player appears (loading)
+        XCTAssertTrue(presence.isActive)
+        presence.begin()                    // replacement player mounts first
+        presence.end()                      // old one disappears
+        XCTAssertTrue(presence.isActive, "still active while the replacement plays")
+        presence.end()
+        XCTAssertFalse(presence.isActive)
+        presence.end()
+        XCTAssertEqual(presence.count, 0, "an unmatched disappear never goes negative")
+    }
+
     // MARK: Build 103: one owner per press
 
     func testRowEntryRetryNeverPullsFocusBackAfterAMove() {

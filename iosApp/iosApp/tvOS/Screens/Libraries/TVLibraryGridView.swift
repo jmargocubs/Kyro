@@ -219,7 +219,7 @@ struct TVLibraryGridView: View {
                         onNearEnd: { _ in
                             Task { await viewModel.loadMoreIfNeeded() }
                         },
-                        entryFocusPriority: controlRowHasFocus ? .userInitiated : .automatic,
+                        entryFocus: controlRowHasFocus ? .firstCardFromControls : .lastFocusedCard,
                         onRowVisibilityChange: { range, isVisible in
                             viewModel.setPosterRowVisibility(range, isVisible: isVisible)
                         }

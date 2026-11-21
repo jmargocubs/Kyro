@@ -394,13 +394,13 @@ final class TVDiagnosticExportGesture: NSObject, UIGestureRecognizerDelegate {
         return tvDiagnosticExportHoldIsEligible(
             presentsController: Self.presentsController(window.rootViewController),
             liveTVPlaybackActive: LiveTVService.shared.presentation.phase != .idle,
-            videoPlayerMounted: Self.videoPlayerIsMounted(in: window)
+            videoPlayerMounted: TVPlayerPresence.isActive || Self.videoPlayerIsMounted(in: window)
         )
     }
 
-    /// The video player (cover or pushed `.player` route) attaches its
-    /// touch-surface recognizer to the window while mounted and removes it
-    /// when it leaves, so its presence is a reliable "player on screen" test.
+    /// Secondary check only. The player's controls attach this recognizer,
+    /// but they are not mounted while the player loads or hold-seeks, so the
+    /// primary signal is `TVPlayerPresence`, which spans the whole lifecycle.
     private static func videoPlayerIsMounted(in window: UIWindow) -> Bool {
         window.gestureRecognizers?.contains { $0 is TouchSurfaceContactGestureRecognizer } ?? false
     }

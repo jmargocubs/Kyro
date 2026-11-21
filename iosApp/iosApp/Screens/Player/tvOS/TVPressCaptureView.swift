@@ -653,4 +653,25 @@ final class PressCaptureUIView: UIView {
         }
     }
 }
+/// Counts mounted video players. A count, not a flag: replacing a player
+/// (`.id(payload.id)`, or a route replaced by another player) can mount the
+/// new one before the old one disappears.
+struct TVPlayerPresenceCounter: Equatable {
+    private(set) var count = 0
+    var isActive: Bool { count > 0 }
+    mutating func begin() { count += 1 }
+    mutating func end() { count = max(0, count - 1) }
+}
+
+/// Explicit player lifecycle signal: `PlayerView` (cover or pushed `.player`
+/// route) begins on appear and ends on disappear, so it covers loading,
+/// buffering, seeking, playback and the dismissal transition. Read by the
+/// diagnostic Play/Pause shortcut; nothing in playback depends on it.
+@MainActor
+enum TVPlayerPresence {
+    private static var counter = TVPlayerPresenceCounter()
+    static var isActive: Bool { counter.isActive }
+    static func begin() { counter.begin() }
+    static func end() { counter.end() }
+}
 #endif

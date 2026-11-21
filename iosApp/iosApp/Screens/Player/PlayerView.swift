@@ -424,6 +424,10 @@ struct PlayerView: View {
                 viewModel.togglePlayPause()
             }
         }
+        // Lifecycle signal only (diagnostic Play/Pause shortcut stays off for
+        // the player's whole lifetime). Does not affect playback.
+        .onAppear { TVPlayerPresence.begin() }
+        .onDisappear { TVPlayerPresence.end() }
         // Menu button: step seek-session → HUD → buffering pill → (loading:
         // dismiss) → intro pill → overlay → dismiss.
         // Matches the Infuse / Apple TV pattern. Runs at the shell level

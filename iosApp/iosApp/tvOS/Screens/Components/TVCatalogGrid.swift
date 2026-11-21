@@ -25,16 +25,20 @@ struct TVCatalogGrid: View {
     var cardWidth: CGFloat = SiloTheme.posterCardWidth
     var prefersDefaultFocusOnFirstItem: Bool = false
     var focusRequest: Int = 0
-    /// Opt-in native entry: the first card is the grid's default focus at
-    /// this priority. Browse passes `.userInitiated` while its control row
-    /// has focus, so Down from the row lands on the first card. Nil leaves
-    /// other grids' entry unchanged.
-    var entryFocusPriority: DefaultFocusEvaluationPriority? = nil
+    /// Opt-in default focus (Browse). `.firstCardFromControls` while the
+    /// control row above has focus: Down lands on the first card.
+    /// `.lastFocusedCard` otherwise: a system restore (Back from a detail
+    /// page) returns to the card that was opened, not the first one. Nil
+    /// leaves other grids' entry unchanged.
+    var entryFocus: TVCatalogGridEntryFocusMode? = nil
     var onRowVisibilityChange: ((Range<Int>, Bool) -> Void)? = nil
 
     @Namespace private var gridFocusNamespace
     @FocusState private var focusedItemId: String?
     @State private var lastAppliedFocusRequest = 0
+    /// The card that last held focus in this grid, kept while focus is on a
+    /// pushed detail page. Cleared when the result set is replaced.
+    @State private var lastFocusedItemId: String?
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(\.browseLibraryId) private var playbackLibraryId
     @Environment(\.allowsDirectPlayback) private var allowsDirectPlayback
@@ -115,8 +119,19 @@ struct TVCatalogGrid: View {
             }
         }
         .focusScope(gridFocusNamespace)
-        .modifier(TVCatalogGridEntryFocus(binding: $focusedItemId, firstItemId: items.first?.contentId,
-                                          priority: entryFocusPriority))
+        .modifier(TVCatalogGridEntryFocus(
+            binding: $focusedItemId,
+            target: entryFocus.flatMap {
+                tvCatalogGridDefaultFocus(mode: $0, firstItemId: items.first?.contentId,
+                                          lastFocusedItemId: lastFocusedItemId)
+            }
+        ))
+        .onChange(of: focusedItemId) { _, itemId in
+            if let itemId { lastFocusedItemId = itemId }
+        }
+        // A new first item means a new result set (filter, sort, letter
+        // jump); pagination keeps it. The remembered card may be gone.
+        .onChange(of: items.first?.contentId) { _, _ in lastFocusedItemId = nil }
         .focusSection()
         .onAppear { applyFocusRequest(focusRequest) }
         .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
@@ -165,20 +180,48 @@ struct TVCatalogGrid: View {
         focusedItemId = firstItemId
     }
 }
-/// Attached only for grids that opt in (`entryFocusPriority` is constant per
+/// Attached only for grids that opt in (`entryFocus` is nil or non-nil per
 /// caller), so other grids keep their structure and entry behaviour.
 private struct TVCatalogGridEntryFocus: ViewModifier {
     let binding: FocusState<String?>.Binding
-    let firstItemId: String?
-    let priority: DefaultFocusEvaluationPriority?
+    let target: TVCatalogGridDefaultFocus?
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if let priority, let firstItemId {
-            content.defaultFocus(binding, firstItemId, priority: priority)
+        if let target {
+            content.defaultFocus(binding, target.itemId,
+                                 priority: target.isUserEntry ? .userInitiated : .automatic)
         } else {
             content
         }
     }
 }
 #endif
+
+/// Which card a Browse-style grid prefers as default focus.
+enum TVCatalogGridEntryFocusMode: Equatable {
+    /// The control row above has focus: Down enters on the first card.
+    case firstCardFromControls
+    /// Any other time: system restoration returns to the last focused card.
+    case lastFocusedCard
+}
+
+struct TVCatalogGridDefaultFocus: Equatable {
+    let itemId: String
+    /// `.userInitiated` priority: applies to the user's Down from the
+    /// controls. Otherwise `.automatic`, which never redirects a user move.
+    let isUserEntry: Bool
+}
+
+func tvCatalogGridDefaultFocus(
+    mode: TVCatalogGridEntryFocusMode,
+    firstItemId: String?,
+    lastFocusedItemId: String?
+) -> TVCatalogGridDefaultFocus? {
+    switch mode {
+    case .firstCardFromControls:
+        return firstItemId.map { TVCatalogGridDefaultFocus(itemId: $0, isUserEntry: true) }
+    case .lastFocusedCard:
+        return (lastFocusedItemId ?? firstItemId).map { TVCatalogGridDefaultFocus(itemId: $0, isUserEntry: false) }
+    }
+}
