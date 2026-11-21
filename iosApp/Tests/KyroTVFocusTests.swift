@@ -463,6 +463,33 @@ final class KyroTVFocusTests: XCTestCase {
         XCTAssertNil(state.targetAfterPop(to: 1, availableIDs: ["new"]))
     }
 
+    func testBrowseReturnClaimRejectsInterruptedAndRemovedTargets() {
+        let claim = TVBrowseFocusReturnClaim(generation: 4, itemId: "deep")
+        let ids = ["first", "deep"]
+        XCTAssertTrue(claim.canClaim(generation: 4, target: "deep", ownsFocus: true, availableIDs: ids),
+                      "normal Back and a deep lazy-cell appearance may restore the card")
+        XCTAssertFalse(claim.canClaim(generation: 5, target: nil, ownsFocus: false, availableIDs: ids),
+                       "a queued claim cannot survive a move to Sort/Filter or the top bar")
+        XCTAssertFalse(claim.canClaim(generation: 4, target: "deep", ownsFocus: false, availableIDs: ids),
+                       "a lazy cell cannot claim after ownership is lost")
+        XCTAssertFalse(claim.canClaim(generation: 4, target: "first", ownsFocus: true, availableIDs: ids))
+        XCTAssertFalse(claim.canClaim(generation: 4, target: "deep", ownsFocus: true, availableIDs: ["first"]),
+                       "a removed card cannot be claimed")
+        let fallback = TVBrowseFocusReturnClaim(generation: 5, itemId: "first")
+        XCTAssertTrue(fallback.canClaim(generation: 5, target: "first", ownsFocus: true, availableIDs: ["first"]))
+
+        let owner = TVBrowseFocusReturnOwner()
+        owner.activate(generation: 4, target: "deep")
+        XCTAssertTrue(owner.canClaim(claim, availableIDs: ids))
+        owner.cancel(generation: 5) // Sort/Filter or top-bar focus arrived.
+        XCTAssertFalse(owner.canClaim(claim, availableIDs: ids), "queued closure must read live cancellation")
+        XCTAssertFalse(owner.canClaim(claim, availableIDs: ids), "late lazy-cell appearance must also fail")
+        owner.activate(generation: 6, target: "first")
+        XCTAssertFalse(owner.canClaim(claim, availableIDs: ids), "a newer return cannot revive the old claim")
+        XCTAssertTrue(owner.canClaim(TVBrowseFocusReturnClaim(generation: 6, itemId: "first"),
+                                     availableIDs: ["first"]))
+    }
+
     func testMatchingOrStaleBindingNeverFalselyClaimsOwnership() {
         XCTAssertEqual(tvTopMenuFocusClaim(bindingMatchesTarget: false, barOwnsFocus: false), .claim)
         XCTAssertEqual(tvTopMenuFocusClaim(bindingMatchesTarget: true, barOwnsFocus: true), .alreadyFocused)

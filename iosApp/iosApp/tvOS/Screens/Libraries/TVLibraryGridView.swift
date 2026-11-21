@@ -43,6 +43,8 @@ struct TVLibraryGridView: View {
     @State private var detailReturnGeneration = 0
     @State private var detailReturnRequest = 0
     @State private var detailReturnItemId: String?
+    @State private var detailReturnOwnerDepth: Int?
+    @State private var detailReturnOwner = TVBrowseFocusReturnOwner()
     @State private var gridFocusedItemId: String?
     @State private var shuffleLauncher = ShuffleLauncher()
 
@@ -129,8 +131,16 @@ struct TVLibraryGridView: View {
         }
         .onChange(of: viewModel.filter) { _, _ in
             detailReturnGeneration += 1
+            detailReturnOwner.cancel(generation: detailReturnGeneration)
             detailReturnState.cancel()
             detailReturnItemId = nil
+            detailReturnOwnerDepth = nil
+        }
+        .onChange(of: isTopMenuFocused) { _, focused in
+            if focused { cancelPendingDetailReturn() }
+        }
+        .onChange(of: openPanel) { _, panel in
+            if panel != nil { cancelPendingDetailReturn() }
         }
         .onDisappear { viewModel.cancelPosterPrefetch() }
     }
@@ -182,7 +192,10 @@ struct TVLibraryGridView: View {
                     sortDirection: viewModel.filter.sort.directionLabel(for: viewModel.filter.effectiveOrder),
                     filterCount: viewModel.filter.activeFacetCount,
                     focusRequest: controlFocusRequest,
-                    onFocusChange: { controlRowHasFocus = $0 },
+                    onFocusChange: { focused in
+                        controlRowHasFocus = focused
+                        if focused { cancelPendingDetailReturn() }
+                    },
                     onSort: { openPanel = .sort },
                     onFilter: { openPanel = .filter },
                     onShuffle: canShuffle ? {
@@ -235,8 +248,14 @@ struct TVLibraryGridView: View {
                         entryFocus: controlRowHasFocus ? .firstCardFromControls : .lastFocusedCard,
                         detailReturnRequest: detailReturnRequest,
                         detailReturnItemId: detailReturnItemId,
+                        detailReturnOwner: detailReturnOwner,
                         resultSetKey: viewModel.filter,
-                        onCardFocusChange: { gridFocusedItemId = $0 },
+                        onCardFocusChange: { itemId in
+                            gridFocusedItemId = itemId
+                            // Any actual card arrival completes the claim; a
+                            // nil or different card means focus went elsewhere.
+                            cancelPendingDetailReturn()
+                        },
                         onRowVisibilityChange: { range, isVisible in
                             viewModel.setPosterRowVisibility(range, isVisible: isVisible)
                         }
@@ -251,6 +270,9 @@ struct TVLibraryGridView: View {
         .tvEdgeToEdgeScroll(topRoom: 0)
         .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: noteShellFocusRequest))
         .onChange(of: router.path.count) { _, depth in
+            if detailReturnItemId != nil, detailReturnOwnerDepth != depth {
+                cancelPendingDetailReturn()
+            }
             let ids = viewModel.items.map(\.contentId)
             let openedItemID = detailReturnState.openedItemId
             guard let target = detailReturnState.targetAfterPop(to: depth, availableIDs: ids),
@@ -275,6 +297,8 @@ struct TVLibraryGridView: View {
                 guard let currentTarget = currentIDs.contains(target) ? target : currentIDs.first else { return }
                 if currentTarget != target { proxy.scrollTo(0, anchor: .top) }
                 detailReturnItemId = currentTarget
+                detailReturnOwnerDepth = depth
+                detailReturnOwner.activate(generation: generation, target: currentTarget)
                 detailReturnRequest += 1
             }
         }
@@ -282,6 +306,14 @@ struct TVLibraryGridView: View {
     }
 
     // MARK: - Focus routing
+
+    private func cancelPendingDetailReturn() {
+        guard detailReturnItemId != nil else { return }
+        detailReturnGeneration += 1
+        detailReturnOwner.cancel(generation: detailReturnGeneration)
+        detailReturnItemId = nil
+        detailReturnOwnerDepth = nil
+    }
 
     private func noteShellFocusRequest(_ request: Int) {
         guard request > 0, request != lastShellFocusRequest else { return }

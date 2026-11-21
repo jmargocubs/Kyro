@@ -38,6 +38,24 @@ enum TVFocusHandoffHostTests {
         detail.open(itemId: "old", detailDepth: 2)
         detail.cancel()
         precondition(detail.targetAfterPop(to: 1, availableIDs: ["new"]) == nil)
+        let claim = TVBrowseFocusReturnClaim(generation: 4, itemId: "deep")
+        precondition(claim.canClaim(generation: 4, target: "deep", ownsFocus: true,
+                                    availableIDs: ["first", "deep"]))
+        precondition(!claim.canClaim(generation: 5, target: nil, ownsFocus: false,
+                                     availableIDs: ["first", "deep"]))
+        precondition(!claim.canClaim(generation: 4, target: "deep", ownsFocus: false,
+                                     availableIDs: ["first", "deep"]))
+        precondition(!claim.canClaim(generation: 4, target: "deep", ownsFocus: true,
+                                     availableIDs: ["first"]))
+        precondition(TVBrowseFocusReturnClaim(generation: 5, itemId: "first")
+            .canClaim(generation: 5, target: "first", ownsFocus: true, availableIDs: ["first"]))
+        let owner = TVBrowseFocusReturnOwner()
+        owner.activate(generation: 4, target: "deep")
+        precondition(owner.canClaim(claim, availableIDs: ["first", "deep"]))
+        owner.cancel(generation: 5)
+        precondition(!owner.canClaim(claim, availableIDs: ["first", "deep"]))
+        owner.activate(generation: 6, target: "first")
+        precondition(!owner.canClaim(claim, availableIDs: ["first", "deep"]))
         print("PASS: scoped single-use transitions, cancelled handoffs, Browse detail return and fallback")
     }
 }

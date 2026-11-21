@@ -29,6 +29,7 @@ struct TVCatalogGrid: View {
     /// the target row into view. Ordinary directional entry never uses it.
     var detailReturnRequest: Int = 0
     var detailReturnItemId: String? = nil
+    var detailReturnOwner: TVBrowseFocusReturnOwner? = nil
     var resultSetKey: CatalogFilterState? = nil
     var onCardFocusChange: ((String?) -> Void)? = nil
     /// Opt-in default focus (Browse). `.firstCardFromControls` while the
@@ -45,7 +46,8 @@ struct TVCatalogGrid: View {
     /// The card that last held focus in this grid, kept while focus is on a
     /// pushed detail page. Cleared when the result set is replaced.
     @State private var lastFocusedItemId: String?
-    @State private var pendingDetailReturnItemId: String?
+    @State private var pendingDetailReturn: TVBrowseFocusReturnClaim?
+    @State private var expectedRestoreFocusLoss = false
     @State private var lastDetailReturnRequest = 0
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(\.browseLibraryId) private var playbackLibraryId
@@ -135,10 +137,15 @@ struct TVCatalogGrid: View {
             }
         ))
         .onChange(of: focusedItemId) { _, itemId in
-            onCardFocusChange?(itemId)
+            if itemId == nil, expectedRestoreFocusLoss {
+                expectedRestoreFocusLoss = false
+            } else {
+                onCardFocusChange?(itemId)
+            }
             if let itemId {
+                expectedRestoreFocusLoss = false
                 lastFocusedItemId = itemId
-                pendingDetailReturnItemId = nil
+                pendingDetailReturn = nil
             }
         }
         // A new first item means a new result set (filter, sort, letter
@@ -146,7 +153,13 @@ struct TVCatalogGrid: View {
         .onChange(of: items.first?.contentId) { _, _ in lastFocusedItemId = nil }
         .onChange(of: resultSetKey) { _, _ in
             lastFocusedItemId = nil
-            pendingDetailReturnItemId = nil
+            pendingDetailReturn = nil
+        }
+        .onChange(of: detailReturnItemId) { _, target in
+            if target == nil {
+                pendingDetailReturn = nil
+                expectedRestoreFocusLoss = false
+            }
         }
         .onChange(of: items.map(\.contentId)) { _, ids in
             if let lastFocusedItemId, !ids.contains(lastFocusedItemId) {
@@ -176,7 +189,9 @@ struct TVCatalogGrid: View {
     }
 
     private func onCellAppear(index: Int, itemId: String) {
-        if pendingDetailReturnItemId == itemId {
+        if let claim = pendingDetailReturn,
+           detailReturnOwner?.canClaim(claim, availableIDs: items.map(\.contentId)) == true,
+           claim.itemId == itemId {
             focusedItemId = itemId
         }
         guard hasMore else { return }
@@ -210,12 +225,17 @@ struct TVCatalogGrid: View {
               let detailReturnItemId,
               items.contains(where: { $0.contentId == detailReturnItemId }) else { return }
         lastDetailReturnRequest = request
-        pendingDetailReturnItemId = detailReturnItemId
+        guard let detailReturnOwner else { return }
+        let claim = TVBrowseFocusReturnClaim(generation: detailReturnOwner.generation, itemId: detailReturnItemId)
+        guard detailReturnOwner.canClaim(claim, availableIDs: items.map(\.contentId)) else { return }
+        pendingDetailReturn = claim
+        expectedRestoreFocusLoss = focusedItemId != nil
         focusedItemId = nil
         // Succeeds if already laid out; otherwise the cell's onAppear claims
         // it when the parent's non-animated scroll mounts the lazy row.
         DispatchQueue.main.async {
-            guard pendingDetailReturnItemId == detailReturnItemId else { return }
+            guard pendingDetailReturn == claim,
+                  detailReturnOwner.canClaim(claim, availableIDs: items.map(\.contentId)) else { return }
             focusedItemId = detailReturnItemId
         }
     }
@@ -288,5 +308,37 @@ struct TVBrowseDetailReturnState: Equatable {
             ?? availableIDs.first
         cancel()
         return target
+    }
+}
+
+/// A queued or lazy-cell claim is valid only for the current return owner.
+struct TVBrowseFocusReturnClaim: Equatable {
+    let generation: Int
+    let itemId: String
+
+    func canClaim(generation: Int, target: String?, ownsFocus: Bool, availableIDs: [String]) -> Bool {
+        self.generation == generation && target == itemId && ownsFocus && availableIDs.contains(itemId)
+    }
+}
+
+/// Shared reference so queued work reads the *current* owner, not a captured
+/// SwiftUI view value from before the user's next focus move.
+final class TVBrowseFocusReturnOwner {
+    private(set) var generation = 0
+    private var target: String?
+
+    func activate(generation: Int, target: String) {
+        self.generation = generation
+        self.target = target
+    }
+
+    func cancel(generation: Int) {
+        self.generation = generation
+        target = nil
+    }
+
+    func canClaim(_ claim: TVBrowseFocusReturnClaim, availableIDs: [String]) -> Bool {
+        claim.canClaim(generation: generation, target: target, ownsFocus: target != nil,
+                       availableIDs: availableIDs)
     }
 }
