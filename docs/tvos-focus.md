@@ -414,3 +414,18 @@ Unexpected signs:
   https://developer.apple.com/documentation/swiftui/view/onmovecommand(perform:)
 - Focus Cookbook sample (WWDC23, "The SwiftUI cookbook for focus"):
   https://developer.apple.com/documentation/swiftui/focus-cookbook-sample
+
+## Hosted Remote Harness Pages
+
+`-kyroTVFocusHarness <page>` (Debug builds only) mounts real screens for XCUIRemote tests, offline:
+
+- `livetv`, `movies`, `series`, `sports`, `settings`, `search` mount the production page under a stand-in
+  top menu. `search` mounts `SearchView` with the fixture Live TV service; `-kyroTVFocusHarnessSearchSeed <text>`
+  fills the query (a seeded query with channel matches is the populated state, an unmatched one the empty state).
+- `shell` mounts the production `TVMainTabView`: the real top bar, dropdowns, tab switching, and the pushed
+  Search and Settings screens. It has no signed-in session. It is built from what the shell already tolerates:
+  libraries placed in the response cache and a Live TV provider served by the in-process fixture host.
+  Home loads from the server and has no focusable content here, so it is reported as blocked, not passing.
+
+A failing test attaches the screen, the accessibility tree and `harness-journal`, a rolling record of the app's
+focus diagnostics and the engine's focus moves.

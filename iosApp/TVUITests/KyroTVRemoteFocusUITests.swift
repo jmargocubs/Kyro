@@ -158,6 +158,9 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         capture("livetv-channels")
         let first = press(.down, app, "livetv down")
         XCTAssertTrue(first.hasPrefix("Watch Harness"), "Down enters the channel grid, got \(first)")
+        // The control row's chips and Search field are kept out of the focus graph while focus is
+        // here; this capture is for checking they are not dimmed.
+        capture("livetv-content-focused-row-undimmed")
         let right = press(.right, app, "livetv grid right")
         XCTAssertTrue(right.hasPrefix("Watch Harness"), "Right stays in the grid, got \(right)")
         XCTAssertNotEqual(right, first)
@@ -499,17 +502,363 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         assertNeverMenu(path + categories + back + modes + modesBack)
     }
 
+    private func focusedElement(_ app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+    }
+
+    private func focusedValue(_ app: XCUIApplication) -> String {
+        (focusedElement(app).value as? String) ?? ""
+    }
+
+    /// Settings > General: a selector row opens its option sheet, the remote walks the options,
+    /// Select chooses one and focus returns to the row, which shows the new value; Back from the
+    /// sheet also returns to the row.
+    func testSettingsSelectorOpensChoosesAndReturnsToItsRow() {
+        let app = launch(.settings)
+        XCTAssertTrue(waitFor(app, timeout: 25) { $0 != "<none>" && !$0.hasPrefix("Menu ") }, "Settings takes focus")
+        let pane = press(.right, app, "settings into pane")
+        var row = pane
+        for _ in 0..<6 where !row.hasPrefix("Profile Selection") { row = press(.down, app, "settings pane down") }
+        XCTAssertTrue(row.hasPrefix("Profile Selection"), "Down reaches the Profile Selection row, got \(row)")
+        let before = row
+        remote.press(.select)
+        settle(2)
+        capture("settings-selector-open")
+        var options = [focusedLabel(app)]
+        XCTAssertFalse(options[0].hasPrefix("Profile Selection"), "Select opens the option sheet, focus on \(options[0])")
+        options.append(press(.down, app, "selector option down"))
+        log("settings selector options", options)
+        XCTAssertNotEqual(options[0], options[1], "Down moves between options")
+        remote.press(.select)
+        settle(2)
+        let after = focusedLabel(app)
+        log("settings selector chosen", [before, after])
+        XCTAssertTrue(after.hasPrefix("Profile Selection"), "Choosing an option returns focus to its row, got \(after)")
+        XCTAssertNotEqual(after, before, "The row shows the newly chosen value")
+        // Back from an open sheet closes it without changing the row.
+        remote.press(.select)
+        settle(2)
+        remote.press(.menu)
+        settle(2)
+        XCTAssertEqual(focusedLabel(app), after, "Back from the sheet returns to the same row, unchanged")
+    }
+
+    /// Settings > Playback: the rail's Playback entry shows its pane; a one-press On/Off row flips
+    /// on Select and flips back. Skipped when no such row exists without server data.
+    func testSettingsPlaybackToggleFlipsOnSelect() throws {
+        let app = launch(.settings)
+        XCTAssertTrue(waitFor(app, timeout: 25) { $0 != "<none>" && !$0.hasPrefix("Menu ") }, "Settings takes focus")
+        var rail = focusedLabel(app)
+        for _ in 0..<4 where !rail.hasPrefix("Playback") { rail = press(.down, app, "settings rail to playback") }
+        XCTAssertTrue(rail.hasPrefix("Playback"), "Down reaches the Playback rail entry, got \(rail)")
+        var path = [press(.right, app, "playback pane")]
+        var toggle: String?
+        for _ in 0..<8 {
+            let value = focusedValue(app)
+            if value == "On" || value == "Off" { toggle = path.last; break }
+            path.append(press(.down, app, "playback pane down"))
+        }
+        log("settings playback pane", path)
+        XCTAssertGreaterThanOrEqual(Set(path).count, 2, "Down walks the Playback pane: \(path)")
+        guard let toggle else { throw XCTSkip("BLOCKED: no On/Off row in Playback without server data: \(path)") }
+        let was = focusedValue(app)
+        remote.press(.select)
+        settle(1.5)
+        XCTAssertEqual(focusedLabel(app), toggle, "Select keeps focus on the toggle")
+        XCTAssertNotEqual(focusedValue(app), was, "Select flips \(toggle)")
+        remote.press(.select)
+        settle(1.5)
+        XCTAssertEqual(focusedValue(app), was, "Select flips it back")
+        remote.press(.left)
+        settle(1)
+        XCTAssertTrue(focusedLabel(app).hasPrefix("Playback"), "Left returns to the Playback rail entry")
+    }
+
+    // MARK: Search (production SearchView, offline)
+
+    private func searchField(_ app: XCUIApplication) -> XCUIElement { app.searchFields.firstMatch }
+
+    private func keyboardKeyHasFocus(_ app: XCUIApplication) -> Bool {
+        app.keys.matching(NSPredicate(format: "hasFocus == true")).firstMatch.exists
+    }
+
+    /// Down from the stand-in menu until the production search field holds focus.
+    private func reachSearchField(_ app: XCUIApplication) -> Bool {
+        let field = searchField(app)
+        guard field.waitForExistence(timeout: 40) else { return false }
+        for _ in 0..<6 {
+            if field.hasFocus { return true }
+            let label = focusedLabel(app)
+            if label.hasPrefix("Menu ") || label == "<none>" { _ = press(.down, app, "to search field") }
+            else { _ = press(.up, app, "back toward search field") }
+        }
+        return field.hasFocus
+    }
+
+    /// The real SearchView: the field takes focus, Select opens the tvOS keyboard, the remote moves
+    /// across its keys and types, and Back closes it with usable focus left behind.
+    func testSearchFieldOpensTheKeyboardTypesAndBackRestoresFocus() {
+        let app = launch(.search)
+        XCTAssertTrue(reachSearchField(app), "Down from the menu reaches the search field; focus \(focusedLabel(app))")
+        capture("search-field-focused")
+        let field = searchField(app)
+        remote.press(.select)
+        settle(2)
+        capture("search-keyboard")
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 10) || app.keys.firstMatch.exists, "Select opens the keyboard")
+        var path = [focusedLabel(app)]
+        for button in [XCUIRemote.Button.right, .right, .down, .left, .up] { path.append(press(button, app, "keyboard")) }
+        log("search keyboard", path)
+        XCTAssertGreaterThanOrEqual(Set(path).count, 3, "Remote presses move across the keyboard: \(path)")
+        XCTAssertTrue(keyboardKeyHasFocus(app) || path.contains { !$0.hasPrefix("Menu ") && $0 != "<none>" },
+                      "Focus stays on the keyboard: \(path)")
+        assertNeverMenu(path)
+        remote.press(.select)
+        settle(2)
+        let value = (field.value as? String) ?? ""
+        log("search typed", [value])
+        XCTAssertFalse(value.isEmpty || value.hasPrefix("Search movies"), "Select on a key types it, field shows \(value)")
+        remote.press(.menu)
+        settle(2)
+        let after = focusedLabel(app)
+        log("search after back", [after])
+        XCTAssertNotEqual(after, "<none>", "Back from the keyboard leaves focus on a usable element")
+        XCTAssertFalse(keyboardKeyHasFocus(app), "Back closes the keyboard")
+    }
+
+    /// A populated search: results are reachable below the field, Select acts on one (a channel
+    /// opens playback, which needs a real stream and is not asserted), and Up retraces to the
+    /// stand-in menu through the field.
+    func testSearchPopulatedResultsAreReachableSelectableAndUpReturnsToNavigation() {
+        let app = launch(.search, searchSeed: "Harness")
+        XCTAssertTrue(reachSearchField(app), "search field reachable; focus \(focusedLabel(app))")
+        settle(4)
+        var path = [focusedLabel(app)]
+        for _ in 0..<6 {
+            path.append(press(.down, app, "search down"))
+            let label = path.last ?? ""
+            if label != path[0], !searchField(app).hasFocus, !label.hasPrefix("Menu "), label != "<none>" { break }
+        }
+        log("search results down", path)
+        capture("search-populated")
+        let result = path.last ?? "<none>"
+        XCTAssertFalse(result.hasPrefix("Menu ") || result == "<none>" || searchField(app).hasFocus,
+                       "Down reaches a result or control below the field: \(path)")
+        let moved = press(.right, app, "search right")
+        log("search result right", [result, moved])
+        remote.press(.select)
+        settle(3)
+        capture("search-result-selected")
+        let afterSelect = focusedLabel(app)
+        remote.press(.menu)
+        settle(3)
+        let afterBack = focusedLabel(app)
+        log("search select/back", [afterSelect, afterBack])
+        XCTAssertNotEqual(afterBack, "<none>", "Back after selecting a result leaves usable focus")
+        var up = [afterBack]
+        for _ in 0..<8 where !(up.last ?? "").hasPrefix("Menu ") { up.append(press(.up, app, "search up")) }
+        log("search up", up)
+        XCTAssertTrue((up.last ?? "").hasPrefix("Menu "), "Up reaches the navigation controls: \(up)")
+    }
+
+    /// An empty search: nothing to select, yet the page stays navigable and never loses focus.
+    func testSearchEmptyResultsStayNavigable() {
+        let app = launch(.search, searchSeed: "zzzzqqqq")
+        XCTAssertTrue(reachSearchField(app), "search field reachable; focus \(focusedLabel(app))")
+        settle(4)
+        capture("search-empty")
+        var path = [focusedLabel(app)]
+        for button in [XCUIRemote.Button.down, .down, .up, .up, .up, .down] { path.append(press(button, app, "search empty")) }
+        log("search empty", path)
+        XCTAssertFalse(path.contains("<none>"), "Focus is never lost on an empty search: \(path)")
+    }
+
+    // MARK: Production shell (TVMainTabView, offline)
+
+    private func isBarElement(_ label: String) -> Bool {
+        label.contains(", tab, ") || label == "Search" || label == "Settings" || label == "Profile"
+    }
+
+    private func tabLabels(_ app: XCUIApplication) -> [String] {
+        let predicate = NSPredicate(format: "label CONTAINS ', tab, '")
+        return app.buttons.matching(predicate).allElementsBoundByIndex.map(\.label)
+    }
+
+    private func tabTitle(_ label: String) -> String {
+        label.components(separatedBy: ", tab, ").first ?? label
+    }
+
+    /// Up from wherever focus is until a bar element holds it.
+    private func focusBar(_ app: XCUIApplication, maxPresses: Int = 8) -> String {
+        var label = focusedLabel(app)
+        var presses = 0
+        while !isBarElement(label), presses < maxPresses {
+            label = press(.up, app, "to bar")
+            presses += 1
+        }
+        return label
+    }
+
+    /// Moves along the bar to the tab titled `title`, one press at a time.
+    private func moveToTab(_ title: String, _ app: XCUIApplication) -> Bool {
+        let tabs = tabLabels(app)
+        guard let target = tabs.firstIndex(where: { tabTitle($0) == title }) else { return false }
+        for _ in 0..<(tabs.count + 3) {
+            let label = focusedLabel(app)
+            if tabTitle(label) == title, label.contains(", tab, ") { return true }
+            guard let current = tabs.firstIndex(where: { tabTitle($0) == tabTitle(label) }) else {
+                _ = press(.right, app, "toward \(title)")
+                continue
+            }
+            let direction: XCUIRemote.Button = current < target ? .right : .left
+            _ = press(direction, app, "toward \(title)")
+        }
+        return tabTitle(focusedLabel(app)) == title
+    }
+
+    private func launchShell() -> XCUIApplication {
+        let app = launch(.shell)
+        _ = app.buttons.matching(NSPredicate(format: "label CONTAINS ', tab, '")).firstMatch.waitForExistence(timeout: 45)
+        settle(3)
+        return app
+    }
+
+    /// Every top-level tab is reachable by Right, in order, and Left retraces them.
+    func testShellEveryTabIsReachableAcrossTheRealBar() {
+        let app = launchShell()
+        let tabs = tabLabels(app)
+        log("shell tabs", tabs)
+        XCTAssertGreaterThanOrEqual(tabs.count, 3, "The real bar lists Home, Live TV and the library tabs: \(tabs)")
+        let start = focusBar(app)
+        XCTAssertTrue(isBarElement(start), "Up reaches the bar from wherever focus starts, got \(start)")
+        XCTAssertTrue(moveToTab(tabTitle(tabs[0]), app), "Left reaches the first tab")
+        var seen = [focusedLabel(app)]
+        for _ in 0..<(tabs.count + 1) { seen.append(press(.right, app, "shell right")) }
+        log("shell right", seen)
+        for tab in tabs { XCTAssertTrue(seen.contains(tab), "Right reaches \(tab): \(seen)") }
+        var back = [focusedLabel(app)]
+        for _ in 0..<(tabs.count + 3) { back.append(press(.left, app, "shell left")) }
+        log("shell left", back)
+        for tab in tabs { XCTAssertTrue(back.contains(tab), "Left reaches \(tab): \(back)") }
+        capture("shell-bar")
+    }
+
+    /// Each tab: Select shows it, Down enters its content or dropdown, and Up (or Back from a
+    /// dropdown) returns to that same tab. Twice round, so repeated switching is covered.
+    func testShellSwitchingTabsEntersContentAndReturnsToTheActiveTab() {
+        let app = launchShell()
+        let wanted = ["Live TV", "Movies", "Series", "Home"]
+        let titles = tabLabels(app).map(tabTitle)
+        log("shell switch tabs", titles)
+        XCTAssertTrue(titles.contains("Live TV"), "Live TV tab exists: \(titles)")
+        XCTAssertTrue(isBarElement(focusBar(app)))
+        for round in 1...2 {
+            for title in wanted where titles.contains(title) {
+                XCTAssertTrue(moveToTab(title, app), "round \(round): reach \(title) tab, at \(focusedLabel(app))")
+                remote.press(.select)
+                settle(2.5)
+                XCTAssertTrue(focusedLabel(app).contains(", tab, "), "round \(round): Select keeps focus on the \(title) tab")
+                let down = press(.down, app, "\(title) down")
+                capture("shell-\(title)-down-\(round)")
+                if title == "Home", isBarElement(down) {
+                    // The real Home loads from the server, which this offline shell has not got.
+                    print("KYRO-FOCUS BLOCKED Home content: no focusable element offline, Down stayed on \(down)")
+                    continue
+                }
+                XCTAssertFalse(isBarElement(down), "round \(round): Down from \(title) leaves the bar, got \(down)")
+                if title == "Movies" || title == "Series" {
+                    // The dropdown owns focus; Back closes it and returns to its own tab.
+                    remote.press(.menu)
+                    settle(1.5)
+                } else {
+                    var presses = 0
+                    while !isBarElement(focusedLabel(app)), presses < 8 { _ = press(.up, app, "\(title) up"); presses += 1 }
+                }
+                let back = focusedLabel(app)
+                XCTAssertEqual(tabTitle(back), title, "round \(round): returns to the \(title) tab, got \(back)")
+                XCTAssertTrue(back.contains(", tab, "), "round \(round): on a tab, got \(back)")
+            }
+        }
+    }
+
+    /// Closed dropdowns never block neighbouring tabs: Right passes over Movies and Series.
+    func testShellClosedDropdownsDoNotBlockOtherTabs() {
+        let app = launchShell()
+        let titles = tabLabels(app).map(tabTitle)
+        guard titles.contains("Movies"), titles.contains("Series") else {
+            XCTFail("Movies and Series tabs expected from the seeded libraries: \(titles)"); return
+        }
+        XCTAssertTrue(isBarElement(focusBar(app)))
+        XCTAssertTrue(moveToTab("Movies", app))
+        settle(1.2)
+        XCTAssertTrue(moveToTab("Series", app), "Right from Movies reaches Series")
+        XCTAssertTrue(moveToTab("Live TV", app), "Left reaches Live TV past both dropdown tabs")
+        let down = press(.down, app, "live tv under closed dropdowns")
+        XCTAssertFalse(isBarElement(down), "Down from Live TV enters the page, got \(down)")
+    }
+
+    /// Rapid presses never strand focus.
+    func testShellRapidDirectionalPressesKeepFocus() {
+        let app = launchShell()
+        XCTAssertTrue(isBarElement(focusBar(app)))
+        for _ in 0..<8 { remote.press(.right) }
+        settle(2)
+        let right = focusedLabel(app)
+        for _ in 0..<8 { remote.press(.left) }
+        settle(2)
+        let left = focusedLabel(app)
+        for button in [XCUIRemote.Button.down, .up, .down, .up, .down, .up] { remote.press(button) }
+        settle(2.5)
+        let end = focusedLabel(app)
+        log("shell rapid", [right, left, end])
+        XCTAssertNotEqual(right, "<none>")
+        XCTAssertNotEqual(left, "<none>")
+        XCTAssertNotEqual(end, "<none>", "Focus survives rapid input")
+    }
+
+    /// Search and Settings open from the real bar and Back returns to the bar.
+    func testShellSearchAndSettingsOpenFromTheBarAndBackReturns() {
+        let app = launchShell()
+        XCTAssertTrue(isBarElement(focusBar(app)))
+        var label = focusedLabel(app)
+        for _ in 0..<12 where label != "Search" { label = press(.left, app, "to search") }
+        XCTAssertEqual(label, "Search", "Left reaches the Search button")
+        remote.press(.select)
+        XCTAssertTrue(searchField(app).waitForExistence(timeout: 20), "Select on Search shows the Search screen")
+        settle(2)
+        capture("shell-search")
+        remote.press(.menu)
+        settle(2.5)
+        log("shell search back", [focusedLabel(app)])
+        XCTAssertTrue(isBarElement(focusedLabel(app)), "Back from Search returns to the bar, got \(focusedLabel(app))")
+
+        var settings = focusedLabel(app)
+        for _ in 0..<16 where settings != "Settings" { settings = press(.right, app, "to settings") }
+        XCTAssertEqual(settings, "Settings", "Right reaches the Settings button")
+        remote.press(.select)
+        settle(3)
+        capture("shell-settings")
+        let inSettings = focusedLabel(app)
+        log("shell settings", [inSettings])
+        XCTAssertFalse(isBarElement(inSettings) || inSettings == "<none>", "Settings takes focus on its rail, got \(inSettings)")
+        remote.press(.menu)
+        settle(3)
+        XCTAssertNotEqual(focusedLabel(app), "<none>", "Back from Settings leaves usable focus")
+    }
+
     // MARK: Helpers
 
-    private enum Page: String { case livetv, movies, series, sports, settings }
+    private enum Page: String { case livetv, movies, series, sports, settings, search, shell }
 
     private func launch(_ page: Page, edgeToEdge: Bool = true, dropdowns: Bool = false,
-                        ungatedPanels: Bool = false) -> XCUIApplication {
+                        ungatedPanels: Bool = false, searchSeed: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-kyroTVFocusHarness", page.rawValue, "-kyro.c3.introduction.completed", "YES"]
         if !edgeToEdge { app.launchArguments.append("-kyroTVFocusHarnessNoEdgeToEdge") }
         if dropdowns { app.launchArguments.append("-kyroTVFocusHarnessDropdowns") }
         if ungatedPanels { app.launchArguments.append("-kyroTVFocusHarnessUngatedPanels") }
+        if let searchSeed { app.launchArguments += ["-kyroTVFocusHarnessSearchSeed", searchSeed] }
         app.launch()
         currentApp = app
         return app

@@ -45,6 +45,8 @@ struct TVFocusHarnessModifier: ViewModifier {
                     await TVFocusHarnessFixture.stage(.movie, for: TVFocusHarnessFixture.vodProvider)
                 } else if requested == .series {
                     await TVFocusHarnessFixture.stage(.series, for: TVFocusHarnessFixture.vodProvider)
+                } else if requested == .shell {
+                    await TVFocusHarnessFixture.prepareShell()
                 }
                 // Let the startup splash lift first; the cover must own focus, not the splash.
                 try? await Task.sleep(for: .seconds(1.5))
@@ -60,13 +62,15 @@ struct TVFocusHarnessModifier: ViewModifier {
 }
 
 enum TVFocusHarnessPage: String, Identifiable {
-    case livetv, movies, series, sports, settings
+    case livetv, movies, series, sports, settings, search, shell
     var id: String { rawValue }
 }
 
 private struct TVFocusHarnessShell: View {
     let page: TVFocusHarnessPage
 
+    @State private var searchSeed: AppRouter.SearchRequest? =
+        TVFocusHarnessModifier.value(after: "-kyroTVFocusHarnessSearchSeed").map { AppRouter.SearchRequest(query: $0) }
     @State private var service = TVFocusHarnessFixture.makeLiveTVService()
     @State private var vodProvider = TVFocusHarnessFixture.vodProvider
     /// Only Settings reads it: the real screen, offline, with no signed-in session behind it.
@@ -94,6 +98,14 @@ private struct TVFocusHarnessShell: View {
     @State private var moviesTabFrame: CGRect = .zero
 
     var body: some View {
+        if page == .shell {
+            TVFocusHarnessRealShell()
+        } else {
+            standInBody
+        }
+    }
+
+    private var standInBody: some View {
         ZStack(alignment: .top) {
             Color.siloBackground.ignoresSafeArea()
             pageContent
@@ -211,6 +223,11 @@ private struct TVFocusHarnessShell: View {
         case .sports:
             TVSportsHubView(service: service, focusRequest: contentFocusRequest,
                             isTopMenuFocused: menuOwnsFocus)
+        case .search:
+            NavigationStack { SearchView(usesTVTopMenuInset: true, seededQuery: $searchSeed, liveTVService: service) }
+                .environment(router)
+        case .shell:
+            EmptyView()
         case .settings:
             TVSettingsView()
                 .environment(router)
@@ -293,6 +310,23 @@ enum TVFocusHarnessFixture {
         return service
     }
 
+    /// The production shell has no signed-in session here, so it builds from what it already
+    /// tolerates: libraries in the response cache (the startup prefetch's slot) and a Live TV
+    /// provider whose playlist and guide come from the in-process fixture host. No network, no
+    /// authentication, no change to either.
+    @MainActor
+    static func prepareShell() async {
+        URLProtocol.registerClass(TVFocusHarnessURLProtocol.self)
+        ResponseCache.shared.set(
+            LibrariesResponse(libraries: [library, Library(id: 9102, name: "Harness Series", type: "series", sortOrder: 1)]),
+            for: CacheKey.userLibraries)
+        let live = LiveTVService.shared
+        if live.providers.isEmpty {
+            _ = try? live.saveConfiguration(name: "Harness TV", playlistURL: "https://\(host)/playlist.m3u",
+                                            xmltvURL: "https://\(host)/guide.xml")
+        }
+    }
+
     static let library = Library(id: 9101, name: "Harness Movies", type: "movie", sortOrder: 0)
 
     static var vodProvider: LiveTVProvider {
@@ -355,6 +389,19 @@ private final class TVFocusHarnessSecretStore: LiveTVSecretStore {
     func read(account: String) -> String? { values[account] }
     func save(_ value: String, account: String) -> Bool { values[account] = value; return true }
     func remove(account: String) -> Bool { values[account] = nil; return true }
+}
+
+/// The production `TVMainTabView` (top bar, dropdowns, tab switching, pushed Search and Settings),
+/// mounted as the app mounts it, with no stand-in menu.
+private struct TVFocusHarnessRealShell: View {
+    @State private var router = AppRouter()
+    @State private var audioStore = AudioPlaybackStore()
+
+    var body: some View {
+        TVMainTabView(router: router)
+            .environment(audioStore)
+            .overlay(alignment: .bottomTrailing) { TVFocusHarnessJournalView() }
+    }
 }
 
 private final class TVFocusHarnessURLProtocol: URLProtocol {
