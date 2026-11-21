@@ -245,7 +245,6 @@ struct TVLibraryGridView: View {
                         onNearEnd: { _ in
                             Task { await viewModel.loadMoreIfNeeded() }
                         },
-                        entryFocus: controlRowHasFocus ? .firstCardFromControls : .lastFocusedCard,
                         detailReturnRequest: detailReturnRequest,
                         detailReturnItemId: detailReturnItemId,
                         detailReturnOwner: detailReturnOwner,
@@ -256,6 +255,7 @@ struct TVLibraryGridView: View {
                             // nil or different card means focus went elsewhere.
                             cancelPendingDetailReturn()
                         },
+                        entryFocus: controlRowHasFocus ? .firstCardFromControls : .lastFocusedCard,
                         onRowVisibilityChange: { range, isVisible in
                             viewModel.setPosterRowVisibility(range, isVisible: isVisible)
                         }
