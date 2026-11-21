@@ -196,7 +196,10 @@ jobs:
           OUT="$GITHUB_WORKSPACE/out"; mkdir -p "$OUT/stage/Payload"
           cp -R "$APP_PATH" "$OUT/stage/Payload/"
           python3 scripts/ci/validate-subtitle-packaging.py "$OUT/stage/Payload/$APP.app"
-          IPA="Kyro-${VERSION}-${BUILD}-${PLATFORM}-unsigned-arm64.ipa"
+          # This branch builds Kyro Labs on iOS (com.cubbiestream.kyro.labs); its artifacts never
+          # reuse a stable Kyro name. tvOS is not part of Labs and keeps the stable naming.
+          if [ "$PLATFORM" = ios ]; then IPA_PREFIX=Kyro-Labs; else IPA_PREFIX=Kyro; fi
+          IPA="${IPA_PREFIX}-${VERSION}-${BUILD}-${PLATFORM}-unsigned-arm64.ipa"
           (cd "$OUT/stage" && zip -qry "$OUT/$IPA" Payload)
           rm -rf "$OUT/stage"
           unzip -l "$OUT/$IPA" | grep -q "Payload/$APP.app/Info.plist"
@@ -209,8 +212,16 @@ jobs:
           ARCH=$(lipo -archs "$APP_PATH/$APP")
           SUPPORTED_PLATFORM=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$PLIST")
           if [ "$PLATFORM" = ios ]; then
-            EXPECTED_BUNDLE_ID=com.cubbiestream.kyro
+            EXPECTED_BUNDLE_ID=com.cubbiestream.kyro.labs
             EXPECTED_PLATFORM=iPhoneOS
+            # Isolation guards: Labs identity, Labs-prefixed extensions, no stable keychain group.
+            [ "$(/usr/libexec/PlistBuddy -c 'Print :KyroAppVariant' "$PLIST")" = labs ] || { echo "KyroAppVariant is not labs"; exit 1; }
+            [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST")" = "Kyro Labs" ] || { echo "display name is not Kyro Labs"; exit 1; }
+            for APPEX in "$APP_PATH"/PlugIns/*.appex; do
+              EXT_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist")
+              case "$EXT_ID" in com.cubbiestream.kyro.labs.*) ;; *) echo "extension $EXT_ID is outside the Labs bundle ID"; exit 1 ;; esac
+            done
+            if grep -rl "com.cubbiestream.kyro.shared" "$APP_PATH" --include=Info.plist >/dev/null 2>&1; then echo "stable keychain group found in a Labs bundle"; exit 1; fi
           else
             EXPECTED_BUNDLE_ID=com.cubbiestream.kyro.tvos
             EXPECTED_PLATFORM=AppleTVOS
@@ -251,7 +262,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           # Include run_id so concurrent platform builds and retries never clobber names.
-          name: Kyro-${{ inputs.platform }}-unsigned-ipa-${{ inputs.build_number }}-${{ github.run_id }}
+          name: Kyro${{ inputs.platform == 'ios' && '-Labs' || '' }}-${{ inputs.platform }}-unsigned-ipa-${{ inputs.build_number }}-${{ github.run_id }}
           path: out/
           retention-days: 7
           if-no-files-found: error

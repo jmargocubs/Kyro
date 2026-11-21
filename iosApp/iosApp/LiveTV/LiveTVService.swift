@@ -2090,7 +2090,7 @@ protocol LiveTVSecretStore {
 
 @MainActor
 struct KeychainLiveTVSecretStore: LiveTVSecretStore {
-    private let keychain = SharedKeychain(service: "com.cubbiestream.kyro.livetv")
+    private let keychain = SharedKeychain(service: KyroAppIdentity.current.liveTVKeychainService)
 
     func read(account: String) -> String? { keychain.get(account) }
     func save(_ value: String, account: String) -> Bool { keychain.set(value, for: account) }

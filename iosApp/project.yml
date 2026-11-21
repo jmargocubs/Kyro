@@ -109,7 +109,7 @@ targets:
         INFOPLIST_FILE: iosApp/Info.plist
         # Kyro's iPhone icon lives in Kyro/KyroBrand.xcassets; the Silo
         # AppIcon set stays in place for the macOS target.
-        ASSETCATALOG_COMPILER_APPICON_NAME: KyroAppIcon
+        ASSETCATALOG_COMPILER_APPICON_NAME: $(KYRO_APP_ICON_NAME)
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
@@ -289,6 +289,7 @@ targets:
       - path: iosApp/Notifications/ApplePushDisplayMetadata.swift
       - path: iosApp/Notifications/ApplePushDisplayTargets.swift
       - path: iosApp/Shared/KeychainAudience.swift
+      - path: iosApp/Shared/KyroAppIdentity.swift
       - path: iosApp/Shared/SharedStorage.swift
     configFiles:
       Debug: Signing/SiloNotificationService.xcconfig

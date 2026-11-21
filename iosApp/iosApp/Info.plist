@@ -11,17 +11,17 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Kyro</string>
+	<string>$(KYRO_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconName</key>
-	<string>KyroAppIcon</string>
+	<string>$(KYRO_APP_ICON_NAME)</string>
 	<key>CFBundleIcons</key>
 	<dict>
 		<key>CFBundlePrimaryIcon</key>
 		<dict>
 			<key>CFBundleIconName</key>
-			<string>KyroAppIcon</string>
+			<string>$(KYRO_APP_ICON_NAME)</string>
 		</dict>
 	</dict>
 	<key>CFBundleIdentifier</key>
@@ -38,17 +38,19 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.cubbiestream.kyro</string>
+			<string>$(KYRO_URL_NAME)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>kyro</string>
+				<string>$(KYRO_URL_SCHEME)</string>
 			</array>
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>KyroAppVariant</key>
+	<string>$(KYRO_APP_VARIANT)</string>
 	<key>SiloKeychainAccessGroup</key>
-	<string>$(AppIdentifierPrefix)com.cubbiestream.kyro.shared</string>
+	<string>$(AppIdentifierPrefix)$(KYRO_KEYCHAIN_GROUP)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>

@@ -603,7 +603,7 @@ final class ProfileLaunchIdentityTests: XCTestCase {
     }
 
     func testAppLocalKeychainFallbackPolicyRecognizesUnsignedArchiveGroup() {
-        let unprefixedGroup = "com.cubbiestream.kyro.shared"
+        let unprefixedGroup = KyroAppIdentity.current.keychainGroupSuffix
 
         XCTAssertEqual(
             SideloadKeychainFallbackPolicy.resolvedAccessGroup(

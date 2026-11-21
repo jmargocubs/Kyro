@@ -11,11 +11,11 @@ import Foundation
 /// hold such links (Top Shelf items, delivered notifications, Live
 /// Activities), so that scheme stays registered and is accepted as an alias.
 enum SiloURLScheme {
-    static let current = "kyro"
-    static let legacy = "silo"
+    static let current = KyroAppIdentity.current.urlScheme
+    static let legacy = KyroAppIdentity.current.legacyURLSchemes
 
     static func isAppURL(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else { return false }
-        return scheme == current || scheme == legacy
+        return scheme == current || legacy.contains(scheme)
     }
 }
