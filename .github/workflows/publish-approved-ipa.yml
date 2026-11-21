@@ -75,12 +75,30 @@ jobs:
               binary = archive.read(f"{app_root}/{executable}")
               (temp_dir / "app-bin").write_bytes(binary)
           bundle = plist["CFBundleIdentifier"]
-          version = plist["CFBundleShortVersionString"]
+          version = str(plist["CFBundleShortVersionString"])
           build = str(plist["CFBundleVersion"])
           min_os = plist["MinimumOSVersion"]
           supported = plist.get("CFBundleSupportedPlatforms", [])
           info = build_dir / ("BUILD-INFO-tvos.txt" if "AppleTVOS" in supported else "BUILD-INFO-ios.txt")
           metadata = dict(line.split(": ", 1) for line in info.read_text().splitlines() if ": " in line)
+          # Catalog version must match the IPA short version, and that short
+          # version must be major.minor.<build> (e.g. 1.0.105 for build 105).
+          parts = version.split(".")
+          if len(parts) != 3 or parts[2] != build or not all(p.isdigit() for p in parts):
+              raise SystemExit(
+                  f"CFBundleShortVersionString {version!r} must equal major.minor.{build} "
+                  f"and match CFBundleVersion {build!r}"
+              )
+          if metadata.get("marketing_version") not in (None, version):
+              raise SystemExit(
+                  f"BUILD-INFO marketing_version {metadata.get('marketing_version')!r} "
+                  f"!= IPA CFBundleShortVersionString {version!r}"
+              )
+          if metadata.get("build_number") not in (None, build):
+              raise SystemExit(
+                  f"BUILD-INFO build_number {metadata.get('build_number')!r} "
+                  f"!= IPA CFBundleVersion {build!r}"
+              )
           platform = "tvos" if "AppleTVOS" in supported else "ios"
           if platform == "tvos":
               if bundle != "com.cubbiestream.kyro.tvos" or metadata.get("source_ref") != "kyro/tvos":
@@ -205,8 +223,19 @@ jobs:
                   pathlib.Path(path).write_text(json.dumps(data, indent=2) + "\n")
                   print("catalog entry already present")
                   raise SystemExit(0)
-          if any(int(v.get("buildVersion", 0)) >= build_i for v in app.get("versions", []) if v.get("version") == version):
+          # Build numbers are compared globally so a new 1.0.104 row cannot land
+          # after legacy 1.0.0/105 or aligned 1.0.105/105. Exact version+build
+          # resume is handled above; never rewrite older rows.
+          existing_builds = []
+          for row in app.get("versions", []):
+              try:
+                  existing_builds.append(int(row.get("buildVersion", 0)))
+              except (TypeError, ValueError):
+                  continue
+          if any(b > build_i for b in existing_builds):
               raise SystemExit("refusing platform catalog downgrade")
+          if any(b == build_i for b in existing_builds):
+              raise SystemExit("refusing duplicate buildVersion under a different version string")
           app["versions"].insert(0, expected)
           app["size"] = expected["size"]
           app["name"] = listing_name
@@ -223,8 +252,16 @@ jobs:
                           already_in_tvos = True
                           break
                   if not already_in_tvos:
-                      if any(int(v.get("buildVersion", 0)) >= build_i for v in tvos_app.get("versions", []) if v.get("version") == version):
+                      tvos_builds = []
+                      for row in tvos_app.get("versions", []):
+                          try:
+                              tvos_builds.append(int(row.get("buildVersion", 0)))
+                          except (TypeError, ValueError):
+                              continue
+                      if any(b > build_i for b in tvos_builds):
                           raise SystemExit("refusing tvos-source catalog downgrade")
+                      if any(b == build_i for b in tvos_builds):
+                          raise SystemExit("refusing duplicate tvos buildVersion under a different version string")
                       tvos_app["versions"].insert(0, expected)
                       tvos_app["size"] = expected["size"]
                   tvos_app["name"] = listing_name
