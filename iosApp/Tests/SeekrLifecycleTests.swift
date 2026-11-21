@@ -3,6 +3,25 @@ import ImageIO
 import XCTest
 @testable import Silo
 
+final class SeekrCredentialLifecycleTests: XCTestCase {
+    func testStoreReadAndRemoveUsesOnlyTheProvidedKeychain() {
+        let keychain = SharedKeychain(service: "SeekrCredentialTests.\(UUID().uuidString)", accessGroup: nil,
+                                      usesUserIndependentKeychain: false, allowsAppLocalFallback: false)
+        XCTAssertNil(SeekrCredentials.apiKey(keychain: keychain))
+        XCTAssertTrue(SeekrCredentials.store("sk_user_supplied", keychain: keychain))
+        XCTAssertEqual(SeekrCredentials.apiKey(keychain: keychain), "sk_user_supplied")
+        SeekrCredentials.clear(keychain: keychain)
+        XCTAssertNil(SeekrCredentials.apiKey(keychain: keychain))
+    }
+
+    func testBlankKeyIsNotStored() {
+        let keychain = SharedKeychain(service: "SeekrCredentialTests.\(UUID().uuidString)", accessGroup: nil,
+                                      usesUserIndependentKeychain: false, allowsAppLocalFallback: false)
+        XCTAssertFalse(SeekrCredentials.store(" \n", keychain: keychain))
+        XCTAssertNil(SeekrCredentials.apiKey(keychain: keychain))
+    }
+}
+
 final class SeekrPreviewSettingsLifecycleTests: XCTestCase {
     func testEnableDisablePostsChangeNotificationAndIgnoresNoOp() {
         let suite = "kyro.seekr.settings.\(UUID().uuidString)"

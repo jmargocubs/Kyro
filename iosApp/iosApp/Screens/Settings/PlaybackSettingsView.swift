@@ -427,11 +427,98 @@ struct PlaybackAdvancedSettingsView: View {
     var body: some View {
         List {
             PlaybackAdvancedSettingsSections(viewModel: viewModel)
+            SeekrSettingsSection()
         }
         .settingsListChrome()
         .navigationTitle(PlaybackSettingsLayout.Group.advanced.title)
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
+    }
+}
+
+/// User-managed Seekr credentials. This is deliberately iOS-only and stores
+/// nothing outside the app Keychain.
+private struct SeekrSettingsSection: View {
+    @State private var key = ""
+    @State private var status: String?
+    @State private var testing = false
+    @State private var confirmRemoval = false
+
+    private var hasStoredKey: Bool { SeekrCredentials.apiKey() != nil }
+
+    var body: some View {
+        Section {
+            Toggle("Thumbnail Previews", isOn: Binding(
+                get: { SeekrPreviewSettings.shared.previewsEnabled },
+                set: { SeekrPreviewSettings.shared.setPreviewsEnabled($0) }
+            ))
+            .disabled(!hasStoredKey)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloSwitchOn)
+
+            SecureField(hasStoredKey ? "API key saved — enter to replace" : "Seekr API key", text: $key)
+                .textContentType(.password)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+
+            HStack {
+                Button("Save Key") {
+                    guard SeekrCredentials.store(key) else {
+                        status = "Enter a valid API key first."
+                        return
+                    }
+                    key = ""
+                    status = "Key saved securely."
+                }
+                .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Button("Test Connection") {
+                    testConnection()
+                }
+                .disabled(testing || (key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !hasStoredKey))
+            }
+
+            if hasStoredKey {
+                Button("Remove Key", role: .destructive) { confirmRemoval = true }
+            }
+
+            Link("Get a Seekr API Key", destination: URL(string: "https://seekr.tv")!)
+
+            if testing { ProgressView("Testing connection…") }
+            if let status { Text(status).font(.footnote).foregroundStyle(Color.siloSecondaryText) }
+        } header: {
+            Text("Seekr")
+                .foregroundStyle(Color.siloSecondaryText)
+        } footer: {
+            Text("Seekr thumbnail previews are optional and use your own API key. Playback and server thumbnails continue to work when Seekr is unavailable.")
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .listRowBackground(Color.siloGroupedCell)
+        .task { if !hasStoredKey { SeekrPreviewSettings.shared.setPreviewsEnabled(false) } }
+        .confirmationDialog("Remove Seekr API key?", isPresented: $confirmRemoval, titleVisibility: .visible) {
+            Button("Remove Key", role: .destructive) {
+                SeekrCredentials.clear()
+                SeekrPreviewSettings.shared.setPreviewsEnabled(false)
+                key = ""
+                status = "Key removed."
+            }
+            Button("Cancel", role: .cancel) { }
+        }
+    }
+
+    private func testConnection() {
+        let candidate = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = candidate.isEmpty ? SeekrCredentials.apiKey() : candidate
+        guard let value, !value.isEmpty else { return }
+        testing = true
+        status = nil
+        Task {
+            let valid = await SeekrClient(apiKeyProvider: { value }).validateKey()
+            await MainActor.run {
+                testing = false
+                status = valid ? "Connection successful." : "Connection failed. Check the key and try again."
+            }
+        }
     }
 }
 #endif
@@ -447,9 +534,11 @@ struct PlaybackAdvancedSettingsSections: View {
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
 
+            #if !os(iOS)
             Toggle("Thumbnail Previews", isOn: $viewModel.seekrThumbnailPreviewsEnabled)
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
+            #endif
 
             Picker("Buffer Ahead", selection: $viewModel.bufferAhead) {
                 ForEach(BufferAheadMode.allCases, id: \.self) { mode in
