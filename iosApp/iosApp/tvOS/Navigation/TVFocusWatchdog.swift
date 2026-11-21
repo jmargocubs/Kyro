@@ -109,13 +109,21 @@ enum TVFocusSystemProbe {
 @MainActor
 enum TVFocusMovementTracker {
     private static var observer: NSObjectProtocol?
-    private static weak var barRegion: UIView?
+    private final class WeakRegion {
+        let key: AnyHashable
+        weak var view: UIView?
+        init(key: AnyHashable, view: UIView) {
+            self.key = key
+            self.view = view
+        }
+    }
+    private static var itemRegions: [WeakRegion] = []
     private static var sequence = 0
     private static var gate = TVBarFocusTransitionGate()
-    private static var onBarTransition: ((TVBarFocusTransition) -> Void)?
+    private static var onBarTransition: ((TVBarFocusTransition, AnyHashable?) -> Void)?
     private static var handlerOwner: UUID?
 
-    static func setHandler(owner: UUID, _ handler: @escaping (TVBarFocusTransition) -> Void) {
+    static func setHandler(owner: UUID, _ handler: @escaping (TVBarFocusTransition, AnyHashable?) -> Void) {
         handlerOwner = owner
         onBarTransition = handler
     }
@@ -126,16 +134,24 @@ enum TVFocusMovementTracker {
         onBarTransition = nil
     }
 
-    static func setBarRegion(_ view: UIView?) { barRegion = view }
-    static func removeBarRegion(_ view: UIView) {
-        if barRegion === view { barRegion = nil }
+    static func setItemRegion(_ view: UIView, for key: AnyHashable) {
+        itemRegions.removeAll { $0.view == nil || $0.view === view }
+        itemRegions.append(WeakRegion(key: key, view: view))
     }
 
-    private static func isInsideBar(_ view: UIView?) -> Bool {
-        guard let view, let barRegion, let window = barRegion.window,
-              view.window === window else { return false }
-        let frame = view.convert(view.bounds, to: barRegion)
-        return barRegion.bounds.contains(CGPoint(x: frame.midX, y: frame.midY))
+    static func removeItemRegion(_ view: UIView, for key: AnyHashable) {
+        itemRegions.removeAll { $0.view == nil || ($0.key == key && $0.view === view) }
+    }
+
+    private static func itemKey(containing view: UIView?) -> AnyHashable? {
+        guard let view, let window = view.window else { return nil }
+        let focusedFrame = view.convert(view.bounds, to: window)
+        let center = CGPoint(x: focusedFrame.midX, y: focusedFrame.midY)
+        return itemRegions.first { entry in
+            guard let marker = entry.view, marker.window === window,
+                  !marker.isHidden, marker.alpha > 0 else { return false }
+            return marker.convert(marker.bounds, to: window).contains(center)
+        }?.key
     }
 
     static func install() {
@@ -148,41 +164,55 @@ enum TVFocusMovementTracker {
                 guard let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext else { return }
                 sequence += 1
                 let heading = context.focusHeading
+                let source = itemKey(containing: context.previouslyFocusedView)
+                let destination = itemKey(containing: context.nextFocusedView)
                 let transition = gate.consume(
                     sequence: sequence,
-                    sourceInBar: isInsideBar(context.previouslyFocusedView),
-                    destinationInBar: isInsideBar(context.nextFocusedView),
+                    sourceInBar: source != nil,
+                    destinationInBar: destination != nil,
                     isDown: heading.contains(.down),
                     isDirectional: !heading.intersection([.up, .down, .left, .right]).isEmpty
                 )
-                if transition != .unrelated { onBarTransition?(transition) }
+                if transition != .unrelated {
+                    onBarTransition?(transition, transition == .userArrival ? destination : source)
+                }
             }
         }
     }
 }
 
-/// The marker measures the bar in its window without becoming a focus item or
-/// intercepting a press. A focus item not represented by a UIView is unmatched.
-private final class TVBarFocusRegionView: UIView {
+/// Each marker measures one bar button, so rapid Right→Down cannot use the
+/// previous tab's binding. Markers never become focus items or intercept input.
+private final class TVBarFocusItemRegionView: UIView {
+    var key: AnyHashable?
     override var canBecomeFocused: Bool { false }
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        guard let key else { return }
         if window == nil {
-            TVFocusMovementTracker.removeBarRegion(self)
+            TVFocusMovementTracker.removeItemRegion(self, for: key)
         } else {
-            TVFocusMovementTracker.setBarRegion(self)
+            TVFocusMovementTracker.setItemRegion(self, for: key)
         }
     }
 }
 
-struct TVBarFocusRegion: UIViewRepresentable {
+struct TVBarFocusItemRegion: UIViewRepresentable {
+    let key: AnyHashable
+
     func makeUIView(context: Context) -> UIView {
-        let view = TVBarFocusRegionView()
+        let view = TVBarFocusItemRegionView()
+        view.key = key
         view.isUserInteractionEnabled = false
         return view
     }
     func updateUIView(_ uiView: UIView, context: Context) {
-        TVFocusMovementTracker.setBarRegion(uiView)
+        guard let uiView = uiView as? TVBarFocusItemRegionView else { return }
+        if let oldKey = uiView.key, oldKey != key {
+            TVFocusMovementTracker.removeItemRegion(uiView, for: oldKey)
+        }
+        uiView.key = key
+        if uiView.window != nil { TVFocusMovementTracker.setItemRegion(uiView, for: key) }
     }
 }
 

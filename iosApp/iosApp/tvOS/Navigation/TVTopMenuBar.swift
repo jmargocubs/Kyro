@@ -255,7 +255,6 @@ struct TVTopMenuBar: View {
         .padding(.top, SiloTheme.Skyline.barTopInset)
         .frame(maxWidth: .infinity, alignment: .top)
         .ignoresSafeArea(edges: [.top, .horizontal])
-        .background(TVBarFocusRegion())
         // The bar dims only while focus is down in the content zone (§5.1).
         // An open panel keeps it fully lit — focus has merely descended into
         // the dropdown, and dimming the bar there greys out the panel's own
@@ -314,6 +313,9 @@ struct TVTopMenuBar: View {
             let item = newValue.map { String(describing: $0) } ?? "nil"
             Self.logger.debug("topMenu.focus item=\(item, privacy: .public) panelHasFocus=\(panelHasFocus, privacy: .public) panelEntersFocus=\(panelEntersFocus, privacy: .public)")
             if let newValue {
+                // A delayed binding report from the native move into an
+                // entered panel must not replace UIKit's actual source tab.
+                guard !panelEntersFocus else { return }
                 lastBarFocus = newValue
                 refocusAfterClose = false
                 ignoreNextFocusLoss = false
@@ -353,20 +355,26 @@ struct TVTopMenuBar: View {
         }
     }
 
-    private func handleFocusTransition(_ transition: TVBarFocusTransition) {
+    private func handleFocusTransition(_ transition: TVBarFocusTransition, key: AnyHashable?) {
         TVFocusDiagnostics.value("state", "TopMenu", "scopedTransition", transition)
+        let actualItem = key?.base as? TVTopMenuFocus
         switch transition {
         case .userArrival:
             guard !panelEntersFocus else { return }
             isMenuFocused = true
-            if let focusedItem { scheduleDwell(for: focusedItem) }
+            if let actualItem {
+                lastBarFocus = actualItem
+                scheduleDwell(for: actualItem)
+            }
         case .downFromBar:
             guard !panelEntersFocus, isMenuFocused || pendingBarFocusLoss else { return }
+            guard let actualItem else { return }
+            lastBarFocus = actualItem
             pendingBarFocusLoss = false
             refocusAfterClose = false
             dwellTask?.cancel()
             isMenuFocused = false
-            if let panel = dwellTarget(for: focusedItem ?? lastBarFocus) {
+            if let panel = dwellTarget(for: actualItem) {
                 onEnterPanel(panel)
             } else {
                 onContentFocusHandoff()
@@ -374,10 +382,11 @@ struct TVTopMenuBar: View {
         case .otherDeparture:
             let wasOwned = isMenuFocused || pendingBarFocusLoss
             pendingBarFocusLoss = false
-            guard wasOwned, !panelEntersFocus else { return }
-            if (openPanel != nil || refocusAfterClose), let target = lastBarFocus {
+            guard wasOwned, !panelEntersFocus, let actualItem else { return }
+            lastBarFocus = actualItem
+            if openPanel != nil || refocusAfterClose {
                 refocusAfterClose = false
-                claimBarFocus(target)
+                claimBarFocus(actualItem)
             } else {
                 isMenuFocused = false
                 scheduleDwell(for: nil)
@@ -488,6 +497,7 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .root(root))
+        .background(TVBarFocusItemRegion(key: AnyHashable(TVTopMenuFocus.root(root))))
         // A ScrollView is its own focus region on tvOS. At its leading edge,
         // explicitly hand Left back to the fixed Search anchor.
         .modifier(TVTopMenuLeadingBoundaryHandler(isLeading: index == 0) {
@@ -619,6 +629,7 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .search)
+        .background(TVBarFocusItemRegion(key: AnyHashable(TVTopMenuFocus.search)))
         // The inverse boundary keeps Search usable in the scrolling fallback,
         // where the roots sit in a separate scroll region. Down is native: the
         // page's entry section declares where it lands.
@@ -647,6 +658,7 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .settings)
+        .background(TVBarFocusItemRegion(key: AnyHashable(TVTopMenuFocus.settings)))
         .accessibilityLabel("Settings")
     }
 
@@ -681,6 +693,7 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .profile)
+        .background(TVBarFocusItemRegion(key: AnyHashable(TVTopMenuFocus.profile)))
         .modifier(TVTopMenuAnchorPublisher(panel: .profile))
         .accessibilityLabel("Profile")
         .accessibilityHint("Rest or press to open the profile menu")

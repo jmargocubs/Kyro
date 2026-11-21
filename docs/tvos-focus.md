@@ -210,7 +210,9 @@ the panel has one Down owner. The bar is inert only while an entered panel
 owns focus.
 
 The bar receives only transition-specific updates (`TVFocusMovementTracker`)
-whose UIKit previous or next focus view falls within the bar's window region.
+whose UIKit previous or next focus view falls within a specific bar button's
+non-focusable geometry marker in the same window. The source button is taken
+from that update, not from a possibly lagging SwiftUI focus binding.
 It does not reuse a global last heading or assume notification/SwiftUI callback
 ordering. An unmatched update is neutral:
 
