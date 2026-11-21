@@ -480,12 +480,20 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
             XCTAssertEqual(up, channel, "round \(round): Up returns to the first channel")
             remote.press(.menu)
             settle(1.5)
-            XCTAssertEqual(focusedLabel(app), card, "round \(round): Back returns to the card")
+            let isAllChannels = card.hasPrefix("All Channels")
+            let expectedBack = isAllChannels ? "All Channels" : card
+            XCTAssertEqual(focusedLabel(app), expectedBack,
+                           "round \(round): \(isAllChannels ? "All Channels returns to the All Channels toolbar chip" : "A specific category returns to its originating category card")")
         }
         log("category openings landing on a channel", ["\(landed) of 6"])
+        let endFocus = focusedLabel(app)
         remote.press(.menu)
         settle(1.5)
-        XCTAssertEqual(focusedLabel(app), "Categories", "Back from the grid returns to the chip")
+        if endFocus == "All Channels" {
+            XCTAssertEqual(focusedLabel(app), "Menu Live TV", "Back from the toolbar chip returns to the top menu")
+        } else {
+            XCTAssertEqual(focusedLabel(app), "Categories", "Back from the grid returns to the chip")
+        }
     }
 
     // MARK: Sports
