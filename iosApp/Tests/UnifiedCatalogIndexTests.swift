@@ -1,5 +1,6 @@
 #if os(iOS) || KYRO_VOD_HOST_TESTS
 import Foundation
+import CryptoKit
 import XCTest
 #if !KYRO_VOD_HOST_TESTS
 @testable import Silo
@@ -302,6 +303,74 @@ final class UnifiedCatalogIndexTests: XCTestCase {
     }
 
     // MARK: Silo snapshots and identity
+
+    private func accountScope(_ account: String?, profile: String? = nil,
+                              server: String = "server-a") -> String? {
+        UnifiedSiloScope.make(serverID: server, serverURL: "https://silo.example",
+                              accountID: account, profileID: profile)
+    }
+
+    func testAccountBoundScopeSeparatesAccountsWithoutProfilesAndProfileSwitches() async throws {
+        let alice = try XCTUnwrap(accountScope("account-alice"))
+        let bob = try XCTUnwrap(accountScope("account-bob"))
+        let aliceProfile = try XCTUnwrap(accountScope("account-alice", profile: "profile-1"))
+        XCTAssertNotEqual(alice, bob, "two accounts on the same server without profiles must not share a cache")
+        XCTAssertNotEqual(alice, aliceProfile)
+        XCTAssertNotEqual(alice, accountScope("account-alice", server: "server-b"))
+        XCTAssertNil(accountScope(nil), "unverified account identity fails closed")
+        XCTAssertNil(accountScope(""))
+
+        try await importSilo([record("alice", "Alice Private", 2001)], scope: alice)
+        let aliceCards = await allCards(scope(silo: alice, providers: [])).map(\.title)
+        let bobCards = await allCards(scope(silo: bob, providers: [])).isEmpty
+        let profileCards = await allCards(scope(silo: aliceProfile, providers: [])).isEmpty
+        let anonymousCards = await allCards(scope(silo: nil, providers: [])).isEmpty
+        XCTAssertEqual(aliceCards, ["Alice Private"])
+        XCTAssertTrue(bobCards)
+        XCTAssertTrue(profileCards)
+        XCTAssertTrue(anonymousCards)
+        try await store.purgeSilo(keepingScope: bob)
+        let purged = await allCards(scope(silo: alice, providers: [])).isEmpty
+        XCTAssertTrue(purged)
+    }
+
+    func testInterruptedSwitchAndRestartCannotExposePreviousAccount() async throws {
+        let alice = try XCTUnwrap(accountScope("account-alice"))
+        let bob = try XCTUnwrap(accountScope("account-bob"))
+        try await importSilo([record("alice", "Alice Private", 2001)], scope: alice)
+        try await store.stageSilo([record("bob", "Bob Partial", 2002)], scope: bob,
+                                  libraryID: 1, kind: .movie, snapshot: "interrupted-switch")
+        await store.close()
+        store = try XtreamVODCatalogStore(directory: directory)
+        let bobCards = await allCards(scope(silo: bob, providers: [])).isEmpty
+        let anonymousCards = await allCards(scope(silo: nil, providers: [])).isEmpty
+        XCTAssertTrue(bobCards,
+                      "an unpromoted new-account snapshot is not visible after restart")
+        XCTAssertTrue(anonymousCards)
+        try await store.purgeSilo(keepingScope: bob)
+        let aliceCards = await allCards(scope(silo: alice, providers: [])).isEmpty
+        let activeCount = await store.unifiedRowCounts().siloActive
+        XCTAssertTrue(aliceCards)
+        XCTAssertEqual(activeCount, 0, "an interrupted staged snapshot remains private, not active")
+    }
+
+    func testLegacyAmbiguousScopeIsInvisibleAndPurged() async throws {
+        let oldRaw = "server-a|https://silo.example|-"
+        let legacy = SHA256.hash(data: Data(oldRaw.utf8)).map { String(format: "%02x", $0) }.joined()
+        let alice = try XCTUnwrap(accountScope("account-alice"))
+        XCTAssertNotEqual(legacy, alice)
+        try await importSilo([record("old", "Legacy Private", 2001)], scope: legacy)
+        let beforeRestart = await allCards(scope(silo: alice, providers: [])).isEmpty
+        XCTAssertTrue(beforeRestart)
+        await store.close()
+        store = try XtreamVODCatalogStore(directory: directory)
+        let afterRestart = await allCards(scope(silo: alice, providers: [])).isEmpty
+        XCTAssertTrue(afterRestart,
+                      "legacy ambiguous rows cannot appear under the new account after restart")
+        try await store.purgeSilo(keepingScope: alice)
+        let count = await store.unifiedRowCounts().siloItems
+        XCTAssertEqual(count, 0)
+    }
 
     func testPartialSnapshotIsInvisibleAndObsoleteTitlesGoOnlyAfterCompletion() async throws {
         try await importSilo([record("s1", "Arrival", 2016), record("s2", "Gone", 1999)])

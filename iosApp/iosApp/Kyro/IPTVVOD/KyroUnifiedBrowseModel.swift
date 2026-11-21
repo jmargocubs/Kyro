@@ -76,15 +76,16 @@ final class KyroUnifiedBrowseModel {
             hasLoaded = true
             return
         }
-        let auth = await SiloCatalogMirror.shared.currentAuth()
-        let siloScope = auth.map(SiloCatalogMirror.scope(for:))
+        let siloScope = await SiloCatalogMirror.shared.currentScope()
         guard current == configuration, !Task.isCancelled else { return abandon(current) }
         storeUnavailable = false
         self.store = store
+        // Also purge legacy server/profile-only scopes and unverified-account caches. A nil
+        // scope is fail-closed: it cannot reveal any Silo rows, even after a crash/restart.
+        try? await store.purgeSilo(keepingScope: siloScope)
         if let siloScope {
-            // Another identity's mirror never survives into this one, and a library this profile
-            // can no longer see is deleted. An empty list is a transient load, not a revocation.
-            try? await store.purgeSilo(keepingScope: siloScope)
+            // A library this profile can no longer see is deleted. An empty list is a
+            // transient load, not a revocation.
             if !libraries.isEmpty {
                 try? await store.retainSiloLibraries(scope: siloScope, kind: kind, libraryIDs: libraries.map(\.id))
             }
@@ -120,8 +121,7 @@ final class KyroUnifiedBrowseModel {
     /// the window around the top visible card so the grid does not jump.
     func indexDidChange() async {
         guard hasLoaded, let inputs, let scope, let store else { return }
-        let auth = await SiloCatalogMirror.shared.currentAuth()
-        if auth.map(SiloCatalogMirror.scope(for:)) != scope.siloScope {
+        if await SiloCatalogMirror.shared.currentScope() != scope.siloScope {
             // The identity changed under this grid: start over for the new one.
             await apply(inputs)
             return
