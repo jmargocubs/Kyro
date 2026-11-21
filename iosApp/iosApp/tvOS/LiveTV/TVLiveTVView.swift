@@ -519,42 +519,41 @@ struct TVLiveTVRootView: View {
                     .lineLimit(2)
             }
 
-            if showsChannelLoading {
-                statusPage(symbol: "line.3.horizontal.decrease.circle", title: "Loading channels",
-                           message: navigation.selectedCategory ?? "Filtering channels…")
-            } else if matches.isEmpty {
-                statusPage(symbol: navigation.section == .favorites ? "star.slash" : "magnifyingglass",
-                           title: navigation.section == .favorites ? "No favorite channels" : "No matching channels",
-                           message: navigation.section == .favorites
-                               ? "Hold Select on a channel to add it to Favorites."
-                               : "Try a different search or category.")
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: channelColumns, alignment: .leading, spacing: TVLiveTVPageLayout.channelRowSpacing) {
-                        ForEach(matches) { channel in
-                            TVLiveTVChannelCard(
-                                channel: channel,
-                                program: service.programPair(for: channel),
-                                isFavorite: service.isFavorite(channel),
-                                isPlaying: service.playerSession.activeChannelID == channel.id,
-                                focus: $focusedControl,
-                                play: { service.choose(channel, from: .list) },
-                                toggleFavorite: { service.toggleFavorite(channel) },
-                                hide: { hideChannel(channel) },
-                                showInformation: { infoChannel = channel }
-                            )
-                            .onAppear { channelCardMounted(channel.id) }
+            // The loading page keeps one position in this stack from the moment the category opens
+            // until focus has left it, so the engine never sees the focused view replaced (see
+            // `channelEntryHoldsAnchor`). Once results land it is invisible and the grid shows.
+            ZStack {
+                if !showsChannelLoading, matches.isEmpty {
+                    statusPage(symbol: navigation.section == .favorites ? "star.slash" : "magnifyingglass",
+                               title: navigation.section == .favorites ? "No favorite channels" : "No matching channels",
+                               message: navigation.section == .favorites
+                                   ? "Hold Select on a channel to add it to Favorites."
+                                   : "Try a different search or category.")
+                } else if !showsChannelLoading {
+                    ScrollView {
+                        LazyVGrid(columns: channelColumns, alignment: .leading, spacing: TVLiveTVPageLayout.channelRowSpacing) {
+                            ForEach(matches) { channel in
+                                TVLiveTVChannelCard(
+                                    channel: channel,
+                                    program: service.programPair(for: channel),
+                                    isFavorite: service.isFavorite(channel),
+                                    isPlaying: service.playerSession.activeChannelID == channel.id,
+                                    focus: $focusedControl,
+                                    play: { service.choose(channel, from: .list) },
+                                    toggleFavorite: { service.toggleFavorite(channel) },
+                                    hide: { hideChannel(channel) },
+                                    showInformation: { infoChannel = channel }
+                                )
+                                .onAppear { channelCardMounted(channel.id) }
+                            }
                         }
                     }
+                    .tvEdgeToEdgeScroll(horizontalBleed: TVScreenLayout.pageHorizontalInset)
                 }
-                .tvEdgeToEdgeScroll(horizontalBleed: TVScreenLayout.pageHorizontalInset)
-                .overlay(alignment: .topLeading) {
-                    if channelEntryHoldsAnchor {
-                        // Holds focus (as the loading placeholder did) until the first card has it.
-                        Color.clear.frame(width: 1, height: 1)
-                            .focusable()
-                            .focused($focusedControl, equals: .placeholder)
-                    }
+                if showsChannelLoading || channelEntryHoldsAnchor {
+                    statusPage(symbol: "line.3.horizontal.decrease.circle", title: "Loading channels",
+                               message: navigation.selectedCategory ?? "Filtering channels…")
+                        .opacity(channelEntryHoldsAnchor ? 0 : 1)
                 }
             }
         }
