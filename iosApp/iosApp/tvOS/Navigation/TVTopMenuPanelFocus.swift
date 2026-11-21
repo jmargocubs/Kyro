@@ -57,3 +57,26 @@ enum TVTopMenuPanelFocusPolicy {
         return focusedElementPanel != openPanel
     }
 }
+
+/// Which top-menu elements accept focus (docs/tvos-focus.md, "Top Menu Ownership").
+///
+/// While focus is on the page, only the selected tab (and an element the bar is claiming itself)
+/// accepts focus, so Up from any page control, by click or swipe, lands on the page's own tab.
+/// Once focus is in the bar, every element accepts it, so Left and Right move along the bar.
+///
+/// The bar's `.defaultFocus(…, priority: .userInitiated)` alone was not enough: the engine honours
+/// a section's default only when no item lies directly in the path. Up from the IPTV Movies
+/// "All Titles" chip, which sits under Home, landed on Home (hosted run 44872081993).
+enum TVTopMenuReachabilityPolicy {
+    static func acceptsFocus<Element: Equatable>(_ element: Element, selected: Element?,
+                                                 barHoldsFocus: Bool, claimTarget: Element?) -> Bool {
+        guard let selected else { return true }
+        return barHoldsFocus || element == selected || element == claimTarget
+    }
+
+    /// Whether the bar still holds focus after its binding reported `nil`. An entered dropdown
+    /// counts as holding it: closing the dropdown returns focus to its tab, which must be enabled.
+    static func barHoldsFocus(bindingIsNil: Bool, panelEntered: Bool) -> Bool {
+        !bindingIsNil || panelEntered
+    }
+}

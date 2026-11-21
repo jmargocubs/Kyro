@@ -247,6 +247,34 @@ transient `nil` binding cleared the flag, after which dropdowns stopped
 opening, a stale one stayed open while another tab had focus, and Down went to
 the page.
 
+## Top Menu Reachability
+
+While focus is on the page, only the selected tab accepts focus
+(`TVTopMenuReachabilityPolicy`); every other bar element is `.disabled`. The
+tabs draw no disabled state, so nothing changes visually. Up from any page
+control, by click or swipe, therefore lands on the page's own tab. Once focus
+is in the bar (or an entered dropdown), every element accepts it and Left and
+Right move along the bar. An element the bar claims itself, such as a
+dropdown's tab on Back, accepts that claim. The bar re-checks one turn after
+its binding reports `nil`, so a transient `nil` never disables the focused tab.
+
+The bar's `.defaultFocus(…, priority: .userInitiated)` alone was not enough:
+the engine applies a section's default only when no item lies directly in the
+path. Hosted run 44872081993 showed Up from the IPTV Movies "All Titles" chip,
+which sits under Home, landing on Home.
+
+## Dropdown Geometry
+
+Down reaches a dropdown only because the dropdown lies under its tab. The
+cascade keeps its section flyout's slot even when the highlighted row (an IPTV
+provider) has no sections, and an exit resets the flyout to the current scope.
+Run 44872081993 showed the composite shrinking to the library column after the
+provider row was highlighted, and Down then fell through to the page.
+
+XCUITest does not report `hasFocus` on the composite cascade. Hosted tests
+prove entry by the bar becoming inert with no page or menu element focused,
+and prove the row by the outcome of Select.
+
 ## Top Menu Ownership Tracking
 
 Ownership (`isTopMenuFocused`) only arbitrates page focus claims; it no longer

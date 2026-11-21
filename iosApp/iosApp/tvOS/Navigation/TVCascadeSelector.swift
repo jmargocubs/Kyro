@@ -185,6 +185,9 @@ struct TVCascadeSelector: View {
             if !entered {
                 panelFocused = false
                 focus = nil
+                // The next entry starts from the current scope, with its flyout.
+                flyoutFollowTask?.cancel()
+                flyoutAnchorId = currentScopeId ?? rowIDs.first
             }
         }
         .onAppear {
@@ -409,6 +412,15 @@ struct TVCascadeSelector: View {
             .transition(.opacity)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("\(library.name) sections")
+        } else {
+            // An IPTV provider row has no sections. Keep the flyout's slot so
+            // the composite's focus frame never shrinks: Down from the tab
+            // must always find this dropdown under it (navigation recovery:
+            // after the provider row was highlighted the frame collapsed to
+            // the library column and Down fell through to the page).
+            Color.clear
+                .frame(width: SiloTheme.Skyline.flyoutWidth, height: 1)
+                .accessibilityHidden(true)
         }
     }
 

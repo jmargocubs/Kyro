@@ -473,6 +473,30 @@ final class KyroTVFocusTests: XCTestCase {
                                                                     focusedElementPanel: "series"))
     }
 
+    func testFromThePageOnlyTheSelectedTabAcceptsFocus() {
+        // Up from any page control must land on that page's own tab, not the tab overhead.
+        XCTAssertTrue(TVTopMenuReachabilityPolicy.acceptsFocus("movies", selected: "movies",
+                                                              barHoldsFocus: false, claimTarget: nil))
+        XCTAssertFalse(TVTopMenuReachabilityPolicy.acceptsFocus("home", selected: "movies",
+                                                               barHoldsFocus: false, claimTarget: nil))
+        XCTAssertTrue(TVTopMenuReachabilityPolicy.acceptsFocus("home", selected: "movies",
+                                                              barHoldsFocus: true, claimTarget: nil),
+                      "inside the bar every tab is reachable")
+        XCTAssertTrue(TVTopMenuReachabilityPolicy.acceptsFocus("profile", selected: "movies",
+                                                              barHoldsFocus: false, claimTarget: "profile"),
+                      "an element the bar claims (dropdown close) accepts the claim")
+        XCTAssertTrue(TVTopMenuReachabilityPolicy.acceptsFocus("home", selected: String?.none,
+                                                              barHoldsFocus: false, claimTarget: nil),
+                      "with no selected tab on the bar nothing is gated")
+    }
+
+    func testAnEnteredDropdownKeepsTheBarReachable() {
+        XCTAssertTrue(TVTopMenuReachabilityPolicy.barHoldsFocus(bindingIsNil: false, panelEntered: false))
+        XCTAssertTrue(TVTopMenuReachabilityPolicy.barHoldsFocus(bindingIsNil: true, panelEntered: true),
+                      "closing a dropdown returns focus to its tab")
+        XCTAssertFalse(TVTopMenuReachabilityPolicy.barHoldsFocus(bindingIsNil: true, panelEntered: false))
+    }
+
     // MARK: Build 103 review: bar focus loss and ownership (pure policy, not the view)
 
     func testBarTransitionUsesOnlyItsOwnSourceAndConsumesOnce() {

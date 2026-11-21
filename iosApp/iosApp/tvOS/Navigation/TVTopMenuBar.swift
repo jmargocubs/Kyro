@@ -230,6 +230,9 @@ struct TVTopMenuBar: View {
     /// awkwardness. Cleared the instant focus moves to a *different* element,
     /// so resting here again later still opens it normally.
     @State private var dwellSuppressedElement: TVTopMenuFocus?
+    /// Whether focus is in the bar (or an entered dropdown). While false only
+    /// the selected tab accepts focus (`TVTopMenuReachabilityPolicy`).
+    @State private var barHoldsFocus = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private static let logger = Logger(
@@ -308,11 +311,12 @@ struct TVTopMenuBar: View {
             if !newValue { dwellSuppressedElement = nil }
         }
         .onChange(of: panelEntersFocus) { _, entered in
-            if entered { isMenuFocused = false }
+            if entered { isMenuFocused = false } else { recheckBarHoldsFocus() }
         }
         .onChange(of: focusedItem) { _, newValue in
             let item = newValue.map { String(describing: $0) } ?? "nil"
             Self.logger.debug("topMenu.focus item=\(item, privacy: .public) panelHasFocus=\(panelHasFocus, privacy: .public) panelEntersFocus=\(panelEntersFocus, privacy: .public)")
+            if newValue != nil { barHoldsFocus = true } else { recheckBarHoldsFocus() }
             if let newValue {
                 // A delayed binding report from the native move into an
                 // entered panel must not replace UIKit's actual source tab.
@@ -359,6 +363,26 @@ struct TVTopMenuBar: View {
             dwellTask?.cancel()
             TVFocusMovementTracker.removeHandler(owner: movementObserverID)
         }
+    }
+
+    /// One turn later, so a transient `nil` while SwiftUI rebuilds its focus
+    /// graph never disables the tab that still has focus.
+    private func recheckBarHoldsFocus() {
+        DispatchQueue.main.async {
+            barHoldsFocus = TVTopMenuReachabilityPolicy.barHoldsFocus(
+                bindingIsNil: focusedItem == nil, panelEntered: panelEntersFocus)
+            TVFocusDiagnostics.value("state", "TopMenu", "barHoldsFocus", barHoldsFocus)
+        }
+    }
+
+    /// Selected-tab-only reachability from the page; every element once the
+    /// bar holds focus. Tabs draw no disabled state (`.siloFlat`, explicit
+    /// label colours), so this changes focus eligibility only.
+    private func acceptsFocus(_ element: TVTopMenuFocus) -> Bool {
+        let selected: TVTopMenuFocus? = roots.contains(selectedRoot) ? .root(selectedRoot) : nil
+        return TVTopMenuReachabilityPolicy.acceptsFocus(element, selected: selected,
+                                                        barHoldsFocus: barHoldsFocus,
+                                                        claimTarget: requestedFocus)
     }
 
     private func handleFocusTransition(_ transition: TVBarFocusTransition, key: AnyHashable?) {
@@ -510,6 +534,7 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .root(root))
+        .disabled(!acceptsFocus(.root(root)))
         .background(TVBarFocusItemRegion(key: AnyHashable(TVTopMenuFocus.root(root))))
         // A ScrollView is its own focus region on tvOS. At its leading edge,
         // explicitly hand Left back to the fixed Search anchor.
@@ -642,6 +667,7 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .search)
+        .disabled(!acceptsFocus(.search))
         .background(TVBarFocusItemRegion(key: AnyHashable(TVTopMenuFocus.search)))
         // The inverse boundary keeps Search usable in the scrolling fallback,
         // where the roots sit in a separate scroll region. Down is native: the
@@ -671,6 +697,7 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .settings)
+        .disabled(!acceptsFocus(.settings))
         .background(TVBarFocusItemRegion(key: AnyHashable(TVTopMenuFocus.settings)))
         .accessibilityLabel("Settings")
     }
@@ -706,6 +733,7 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.siloFlat)
         .focused($focusedItem, equals: .profile)
+        .disabled(!acceptsFocus(.profile))
         .background(TVBarFocusItemRegion(key: AnyHashable(TVTopMenuFocus.profile)))
         .modifier(TVTopMenuAnchorPublisher(panel: .profile))
         .accessibilityLabel("Profile")

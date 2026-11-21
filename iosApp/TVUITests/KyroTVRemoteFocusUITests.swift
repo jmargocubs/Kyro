@@ -99,36 +99,36 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
 
         // Browse: tab → Down → Right (Recommended) → Down (Collections) → Down (Browse) → Select.
         XCTAssertTrue(focusMoviesTab(app), "Up then Right reaches Menu Movies")
-        XCTAssertTrue(isDropdown(press(.down, app, "movies down")), "Down enters the dropdown")
-        _ = press(.right, app, "sections")
-        _ = press(.down, app, "collections")
-        _ = press(.down, app, "browse")
+        XCTAssertTrue(enterDropdown(app, "movies down"), "Down enters the dropdown")
+        pressInDropdown(.right, "sections")
+        pressInDropdown(.down, "collections")
+        pressInDropdown(.down, "browse")
         remote.press(.select)
         XCTAssertTrue(selection(app, "Browse"), "Browse is selectable")
 
         // Collections.
         XCTAssertTrue(focusMoviesTab(app), "back to Menu Movies")
-        XCTAssertTrue(isDropdown(press(.down, app, "movies down")))
-        _ = press(.right, app, "sections")
-        _ = press(.down, app, "collections")
+        XCTAssertTrue(enterDropdown(app, "movies down"), "Down enters the dropdown again")
+        pressInDropdown(.right, "sections")
+        pressInDropdown(.down, "collections")
         remote.press(.select)
         XCTAssertTrue(selection(app, "Collections"), "Collections is selectable")
 
         // IPTV provider: the row below the library.
         XCTAssertTrue(focusMoviesTab(app), "back to Menu Movies")
-        XCTAssertTrue(isDropdown(press(.down, app, "movies down")))
-        _ = press(.down, app, "provider row")
+        XCTAssertTrue(enterDropdown(app, "movies down"), "Down enters the dropdown again")
+        pressInDropdown(.down, "provider row")
         remote.press(.select)
         XCTAssertTrue(selection(app, "Provider Harness VOD"), "The IPTV provider is selectable")
 
         // Repeated entry and exit: Up past the first row returns to the tab every time.
         XCTAssertTrue(focusMoviesTab(app), "back to Menu Movies")
         for round in 1...3 {
-            XCTAssertTrue(isDropdown(press(.down, app, "enter \(round)")), "entry \(round)")
+            XCTAssertTrue(enterDropdown(app, "enter \(round)"), "entry \(round)")
             XCTAssertEqual(press(.up, app, "exit \(round)"), "Menu Movies", "exit \(round) returns to the tab")
         }
         // Back from inside the dropdown also returns to the tab.
-        XCTAssertTrue(isDropdown(press(.down, app, "enter for back")))
+        XCTAssertTrue(enterDropdown(app, "enter for back"))
         XCTAssertEqual(press(.menu, app, "back from dropdown"), "Menu Movies")
         // Sideways from the tab is never captured by the dropdown below it.
         XCTAssertEqual(press(.left, app, "tab left"), "Menu Live TV")
@@ -295,6 +295,115 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         assertNeverMenu(Array(path.dropLast(2)))
     }
 
+    // MARK: Reachability sweep (navigation recovery)
+
+    /// Every Live TV control acts on Select and Back/Up return usable focus: Favorites content,
+    /// the Providers screen and its Back, the search field, rapid Lefts, and repeated menu trips.
+    func testLiveTVEveryControlActsOnSelectAndBackRestoresIt() {
+        let app = launch(.livetv)
+        XCTAssertTrue(waitForFocus(app, in: liveTVControls), "Live TV starts on its control row")
+        XCTAssertEqual(press(.right, app, "to categories"), "Categories")
+        XCTAssertEqual(press(.right, app, "to favorites"), "Favorites")
+        remote.press(.select)
+        settle()
+        let favorites = press(.down, app, "favorites content")
+        XCTAssertFalse(liveTVControls.contains(favorites) || favorites == "<none>" || favorites.hasPrefix("Menu "),
+                       "Down from Favorites reaches its content (channels or empty state), got \(favorites)")
+        XCTAssertEqual(press(.up, app, "favorites up"), "Favorites", "Up returns to the selected chip")
+
+        XCTAssertEqual(press(.right, app, "to guide"), "TV Guide")
+        XCTAssertEqual(press(.right, app, "to providers"), "Providers")
+        remote.press(.select)
+        settle(1.5)
+        var providers = [focusedLabel(app)]
+        for _ in 0..<3 { providers.append(press(.down, app, "providers down")) }
+        log("providers screen", providers)
+        XCTAssertFalse(liveTVControls.contains(providers[0]) || providers.contains("<none>"),
+                       "Providers opens with focus inside it and stays focusable: \(providers)")
+        remote.press(.menu)
+        settle(1.5)
+        XCTAssertEqual(focusedLabel(app), "Providers", "Back from Providers restores its chip")
+
+        XCTAssertTrue(press(.right, app, "to search").localizedCaseInsensitiveContains("search"),
+                      "the channel search field is reachable")
+        for _ in 0..<4 { remote.press(.left) }
+        settle(1.5)
+        XCTAssertEqual(focusedLabel(app), "Categories", "four rapid Lefts move exactly four controls")
+
+        for round in 1...3 {
+            XCTAssertEqual(press(.up, app, "menu round \(round)"), "Menu Live TV",
+                           "Up from the row lands on the page's own tab (round \(round))")
+            let back = press(.down, app, "page round \(round)")
+            XCTAssertTrue(liveTVControls.contains(back), "Down from the tab re-enters the row (round \(round)), got \(back)")
+        }
+    }
+
+    /// IPTV Movies: a poster opens its detail, every detail control is reachable, Favorite acts on
+    /// Select, and Back returns to the same poster. Playback needs a real stream: not pressed here.
+    func testIPTVMoviesPosterDetailControlsAndBackRestoreTheCard() {
+        assertVODDetailRoundTrip(.movies, prefix: "Harness Movie",
+                                 controls: ["Back", "Add Favorite", "Play Movie"])
+    }
+
+    /// IPTV Series: same round trip. Seasons and episodes come from the provider's series info,
+    /// which the offline fixture does not serve, so they are not covered here.
+    func testIPTVSeriesPosterDetailControlsAndBackRestoreTheCard() {
+        assertVODDetailRoundTrip(.series, prefix: "Harness Series", controls: ["Back", "Add Favorite"])
+    }
+
+    /// IPTV Series page: grid card-by-card, Up to its controls, Up to its own tab, Down back in.
+    func testIPTVSeriesGridControlsAndMenuAreReachable() {
+        let app = launch(.series)
+        XCTAssertTrue(waitFor(app, timeout: 25) { $0.hasPrefix("Harness Series") }, "Series grid takes focus")
+        var path = [focusedLabel(app)]
+        for _ in 0..<3 { path.append(press(.right, app, "series right")) }
+        path.append(press(.down, app, "series down"))
+        XCTAssertEqual(Set(path).count, path.count, "each press moves to a new card: \(path)")
+        let menu = upUntilMenu(app, path: &path, maxPresses: 6)
+        XCTAssertEqual(menu, "Menu Live TV", "Up lands on the page's tab, never a neighbour: \(path)")
+        let controls = press(.down, app, "series menu down")
+        XCTAssertFalse(controls.hasPrefix("Menu ") || controls == "<none>", "Down re-enters the page, got \(controls)")
+        var row = [controls]
+        for _ in 0..<5 { row.append(press(.right, app, "series controls right")) }
+        log("series controls", row)
+        XCTAssertTrue(row.contains("Refresh Catalog") || row.contains("Refreshing Catalog"),
+                      "the last control in the row is reachable: \(row)")
+    }
+
+    private func assertVODDetailRoundTrip(_ page: Page, prefix: String, controls: [String],
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        let app = launch(page)
+        XCTAssertTrue(waitFor(app, timeout: 25) { $0.hasPrefix(prefix) }, "\(prefix) grid takes focus",
+                      file: file, line: line)
+        let card = press(.right, app, "to second card")
+        remote.press(.select)
+        settle(1.5)
+        var seen = [focusedLabel(app)]
+        for button in [XCUIRemote.Button.up, .down, .right, .left, .up, .down] {
+            seen.append(press(button, app, "detail sweep"))
+        }
+        log("\(page.rawValue) detail", seen)
+        for control in controls {
+            XCTAssertTrue(seen.contains(control) || (control == "Add Favorite" && seen.contains("Remove Favorite")),
+                          "\(control) is reachable in the detail: \(seen)", file: file, line: line)
+        }
+        // Select acts: Favorite toggles and toggles back.
+        var label = focusedLabel(app)
+        for _ in 0..<3 where !label.hasSuffix("Favorite") { label = press(.down, app, "to favorite") }
+        if label.hasSuffix("Favorite") {
+            let before = label
+            remote.press(.select)
+            settle()
+            XCTAssertNotEqual(focusedLabel(app), before, "Select on \(before) acts", file: file, line: line)
+            remote.press(.select)
+            settle()
+        }
+        remote.press(.menu)
+        settle(1.5)
+        XCTAssertEqual(focusedLabel(app), card, "Back returns to the poster that opened the detail",
+                       file: file, line: line)
+    }
+
     // MARK: Sports
 
     /// The two Sports chip rows are fixed in code (`KyroSportsCategory.filterOrder` and
@@ -356,7 +465,7 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
 
     // MARK: Helpers
 
-    private enum Page: String { case livetv, movies, sports }
+    private enum Page: String { case livetv, movies, series, sports }
 
     private func launch(_ page: Page, edgeToEdge: Bool = true, dropdowns: Bool = false,
                         ungatedPanels: Bool = false) -> XCUIApplication {
@@ -468,8 +577,30 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         return label == "Menu Movies"
     }
 
-    private func isDropdown(_ label: String) -> Bool {
-        label == "cascade.movies" || label.localizedCaseInsensitiveContains("libraries")
+    /// XCUITest does not report `hasFocus` on the cascade: it is one composite focus item whose rows
+    /// are labels (docs/tvos-focus.md). Entry is proven by what the remote press changed: the bar
+    /// became inert (the shell disables it only while a dropdown holds focus), the dropdown is on
+    /// screen, and no page or menu element holds focus. Later Select presses prove which row.
+    private func enterDropdown(_ app: XCUIApplication, _ note: String) -> Bool {
+        remote.press(.down)
+        settle()
+        let tab = app.buttons["Menu Movies"]
+        let cascade = app.otherElements["cascade.movies"].firstMatch
+        let deadline = Date().addingTimeInterval(3)
+        var entered = false
+        while Date() < deadline {
+            entered = tab.exists && !tab.isEnabled && cascade.exists && focusedLabel(app) == "<none>"
+            if entered { break }
+            settle(0.3)
+        }
+        print("KYRO-FOCUS \(note): \(entered ? "dropdown entered" : "not entered, focus \(focusedLabel(app))")")
+        return entered
+    }
+
+    private func pressInDropdown(_ button: XCUIRemote.Button, _ note: String) {
+        remote.press(button)
+        settle(0.6)
+        print("KYRO-FOCUS \(note): dropdown highlight moved")
     }
 
     private func selection(_ app: XCUIApplication, _ value: String) -> Bool {

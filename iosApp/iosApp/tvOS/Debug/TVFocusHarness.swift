@@ -39,7 +39,9 @@ struct TVFocusHarnessModifier: ViewModifier {
                 // Stage Movies before the page is presented, so it mounts once with its catalog
                 // already stored, the way a real provider page opens. No placeholder takes focus first.
                 if requested == .movies {
-                    await TVFocusHarnessFixture.stageMovies(for: TVFocusHarnessFixture.vodProvider)
+                    await TVFocusHarnessFixture.stage(.movie, for: TVFocusHarnessFixture.vodProvider)
+                } else if requested == .series {
+                    await TVFocusHarnessFixture.stage(.series, for: TVFocusHarnessFixture.vodProvider)
                 }
                 // Let the startup splash lift first; the cover must own focus, not the splash.
                 try? await Task.sleep(for: .seconds(1.5))
@@ -55,7 +57,7 @@ struct TVFocusHarnessModifier: ViewModifier {
 }
 
 enum TVFocusHarnessPage: String, Identifiable {
-    case livetv, movies, sports
+    case livetv, movies, series, sports
     var id: String { rawValue }
 }
 
@@ -80,6 +82,11 @@ private struct TVFocusHarnessShell: View {
     @State private var focusedBarPanel: String?
     @State private var dwellTask: Task<Void, Never>?
     @State private var lastSelection = "none"
+    /// Same reachability rule as the shell's bar (`TVTopMenuReachabilityPolicy`).
+    @State private var menuHoldsFocus = false
+    @State private var menuClaim: String?
+    /// The Movies item's frame, so the dropdown is centred under it like the shell's.
+    @State private var moviesTabFrame: CGRect = .zero
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -125,7 +132,9 @@ private struct TVFocusHarnessShell: View {
             .opacity(isOpen ? 1 : 0)
             .allowsHitTesting(isOpen)
             .disabled(ungatedPanels ? false : !participates)
-            .padding(.leading, 520)
+            // Level-1 column centred under the tab, as the shell places it.
+            .padding(.leading, max(SiloTheme.Skyline.safeAreaX,
+                                   moviesTabFrame.midX - SiloTheme.Skyline.dropdownWidth / 2))
 
             // A closed dropdown that is never eligible here: it only has to sit over the row.
             TVForYouDropdown(acceptsFocus: false, focusEntryGeneration: 0, onPanelFocusChanged: { _ in },
@@ -168,6 +177,7 @@ private struct TVFocusHarnessShell: View {
         openPanel = nil
         panelEntered = false
         focusedBarPanel = nil
+        menuClaim = Self.moviesPanel
         menuFocus = Self.moviesPanel
     }
 
@@ -189,6 +199,9 @@ private struct TVFocusHarnessShell: View {
         case .movies:
             TVXtreamVODView(provider: vodProvider, kind: .movie, focusRequest: contentFocusRequest,
                             isTopMenuFocused: menuOwnsFocus)
+        case .series:
+            TVXtreamVODView(provider: vodProvider, kind: .series, focusRequest: contentFocusRequest,
+                            isTopMenuFocused: menuOwnsFocus)
         case .sports:
             TVSportsHubView(service: service, focusRequest: contentFocusRequest,
                             isTopMenuFocused: menuOwnsFocus)
@@ -202,6 +215,12 @@ private struct TVFocusHarnessShell: View {
                     contentFocusRequest += 1
                 }
                 .focused($menuFocus, equals: item)
+                .disabled(!TVTopMenuReachabilityPolicy.acceptsFocus(item, selected: selectedMenuItem,
+                                                                   barHoldsFocus: menuHoldsFocus,
+                                                                   claimTarget: menuClaim))
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                    if item == Self.moviesPanel { moviesTabFrame = frame }
+                }
             }
         }
         .frame(height: SiloTheme.Skyline.barHeight)
@@ -210,11 +229,28 @@ private struct TVFocusHarnessShell: View {
         .defaultFocus($menuFocus, selectedMenuItem, priority: .userInitiated)
         .focusSection()
         .disabled(tvTopMenuIsInert(panelEntered: panelEntered))
-        .onChange(of: menuFocus) { _, item in menuFocusChanged(item) }
+        .onChange(of: menuFocus) { _, item in
+            if item != nil {
+                menuHoldsFocus = true
+                menuClaim = nil
+            } else {
+                recheckMenuHoldsFocus()
+            }
+            menuFocusChanged(item)
+        }
+        .onChange(of: panelEntered) { _, entered in if !entered { recheckMenuHoldsFocus() } }
+    }
+
+    private func recheckMenuHoldsFocus() {
+        DispatchQueue.main.async {
+            menuHoldsFocus = TVTopMenuReachabilityPolicy.barHoldsFocus(bindingIsNil: menuFocus == nil,
+                                                                       panelEntered: panelEntered)
+        }
     }
 
     /// Back from a page's top level: one explicit claim, no deferral.
     private func focusMenu() {
+        menuClaim = selectedMenuItem
         menuFocus = selectedMenuItem
     }
 }
@@ -254,21 +290,23 @@ enum TVFocusHarnessFixture {
                                       name: "Harness VOD", channelCount: 0, lastRefreshed: Date(), kind: .xtream)
         provider.vodEnabled = true
         provider.vodMoviesEnabled = true
+        provider.vodSeriesEnabled = true
         return provider
     }
 
     /// Stages 120 fictional movies for the fixture provider in the shared VOD catalog store.
-    static func stageMovies(for provider: LiveTVProvider) async {
+    static func stage(_ kind: XtreamVODKind, for provider: LiveTVProvider) async {
         let id = provider.id
+        let prefix = kind == .movie ? "Harness Movie" : "Harness Series"
         let items = (1...120).map { index in
-            XtreamVODItem(providerID: id, kind: .movie, remoteID: index, title: "Harness Movie \(index)",
+            XtreamVODItem(providerID: id, kind: kind, remoteID: index, title: "\(prefix) \(index)",
                           category: categories[index % categories.count], poster: nil, fileExtension: "mp4",
                           summary: nil, genre: nil, rating: nil)
         }
         guard let store = try? XtreamVODCatalogStore() else { return }
         await store.remove(providerID: id)
         try? await store.stage(items, generation: "harness")
-        try? await store.promote(providerID: id, kind: .movie, generation: "harness")
+        try? await store.promote(providerID: id, kind: kind, generation: "harness")
         await store.close()
     }
 
