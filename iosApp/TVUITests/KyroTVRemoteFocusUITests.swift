@@ -555,6 +555,40 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         assertNeverMenu(path + categories + back + modes + modesBack)
     }
 
+    /// Filter actions are testable without game data: Select must change the selected trait
+    /// and retain focus. Event details and streams still require a real server/provider.
+    func testSportsFilterSelectionsActAndKeepFocus() {
+        let app = launch(.sports)
+        XCTAssertTrue(app.buttons["All"].waitForExistence(timeout: 20))
+        XCTAssertTrue(waitFor(app, timeout: 20) { $0 != "<none>" })
+        for _ in 0..<4 where !sportsCategories.contains(focusedLabel(app)) {
+            _ = press(focusedLabel(app) == "Refresh" ? .down : .up, app, "sports to categories")
+        }
+        XCTAssertTrue(sportsCategories.contains(focusedLabel(app)))
+        for _ in 0..<sportsCategories.count where focusedLabel(app) != "All" {
+            _ = press(.left, app, "sports to All")
+        }
+        XCTAssertEqual(focusedLabel(app), "All")
+        XCTAssertEqual(press(.right, app, "sports NFL"), "NFL")
+        remote.press(.select)
+        XCTAssertTrue(waitUntil(5) { app.buttons["NFL"].isSelected }, "Select applies the NFL category")
+        XCTAssertEqual(focusedLabel(app), "NFL", "Category selection retains its control's focus")
+        XCTAssertEqual(press(.left, app, "sports All"), "All")
+        remote.press(.select)
+        XCTAssertTrue(waitUntil(5) { app.buttons["All"].isSelected })
+        XCTAssertEqual(press(.down, app, "sports modes"), "Live")
+        for title in ["Upcoming", "Recent"] {
+            XCTAssertEqual(press(.right, app, "sports mode \(title)"), title)
+            remote.press(.select)
+            XCTAssertTrue(waitUntil(5) { app.buttons[title].isSelected }, "Select applies \(title)")
+            XCTAssertEqual(focusedLabel(app), title, "Mode selection retains focus")
+        }
+        capture("sports-filters-selected")
+        var path: [String] = []
+        XCTAssertEqual(upUntilMenu(app, path: &path, maxPresses: 6), "Menu Live TV")
+        XCTAssertFalse(press(.down, app, "sports return").hasPrefix("Menu "))
+    }
+
     private func focusedElement(_ app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
     }

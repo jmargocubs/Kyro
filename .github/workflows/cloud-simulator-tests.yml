@@ -15,6 +15,7 @@ on:
           - navigation-recovery
           - navigation-repair
           - navigation-dropdown
+          - sports-actions
           - focus-export
 
       expected_sha:
@@ -260,7 +261,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify exact recovery commit
-        if: inputs.suite == 'navigation-recovery' || inputs.suite == 'navigation-repair' || inputs.suite == 'navigation-dropdown'
+        if: inputs.suite == 'navigation-recovery' || inputs.suite == 'navigation-repair' || inputs.suite == 'navigation-dropdown' || inputs.suite == 'sports-actions'
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
@@ -340,7 +341,13 @@ jobs:
               "${selectors[@]}" -resultBundlePath "$RUNNER_TEMP/tvos-focused.xcresult" \
               CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- 2>&1 | tee "$RUNNER_TEMP/tvos-focused.log"
           fi
-          if [ "$SUITE" = "navigation-dropdown" ]; then
+          if [ "$SUITE" = "sports-actions" ]; then
+            tests=(
+              SiloTVUITests/KyroTVRemoteFocusUITests/testSportsFilterSelectionsActAndKeepFocus
+              SiloTVUITests/KyroTVRemoteFocusUITests/testSportsChipRowsMoveOneChipAtATimeAndStopAtTheirEnds
+              SiloTVUITests/KyroTVRemoteFocusUITests/testSportsUpReachesTheTopMenuWithoutAPageHandler
+            )
+          elif [ "$SUITE" = "navigation-dropdown" ]; then
             tests=(
               SiloTVUITests/KyroTVRemoteFocusUITests/testShellMoviesAndSeriesDropdownSelectionsReturnToTheirOwnTabs
               SiloTVUITests/KyroTVRemoteFocusUITests/testShellClosedDropdownsDoNotBlockOtherTabs
