@@ -36,7 +36,8 @@ let package = Package(
     .target(name: "KyroMatching", dependencies: ["KyroCatalog"]),
     .target(name: "KyroSources", dependencies: ["KyroFoundation", "KyroCatalog"]),
     .target(
-      name: "KyroSourceJellyfin", dependencies: ["KyroFoundation", "KyroCatalog", "KyroSources"]),
+      name: "KyroSourceJellyfin",
+      dependencies: ["KyroFoundation", "KyroCatalog", "KyroSources", "KyroCredentials"]),
     .target(
       name: "KyroSourceXtream", dependencies: ["KyroFoundation", "KyroCatalog", "KyroSources"]),
     .target(name: "KyroPlayback", dependencies: ["KyroFoundation"]),
