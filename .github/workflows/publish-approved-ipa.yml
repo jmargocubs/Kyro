@@ -31,6 +31,9 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'kyro/labs-phase2') }}
     runs-on: ubuntu-latest
+    permissions:
+      # Creates the Labs release in this repository with the built-in token.
+      contents: write
     env:
       GH_TOKEN: ${{ secrets.KYRO }}
       RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || github.event.workflow_run.id }}
@@ -145,6 +148,8 @@ jobs:
       - name: Create or verify Kyro pre-release
         shell: bash
         env:
+          # Built-in token (contents: write above). The KYRO PAT cannot create releases here.
+          GH_TOKEN: ${{ github.token }}
           IPA: ${{ steps.metadata.outputs.ipa }}
           SHA: ${{ steps.metadata.outputs.sha }}
           IPA_SIZE: ${{ steps.metadata.outputs.ipa_size }}

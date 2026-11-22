@@ -219,7 +219,7 @@ final class LiveTVPairingTests: XCTestCase {
 
     func testLinkRejectsHostsOutsideTheLocalNetwork() throws {
         func link(_ host: String) -> LiveTVPairingLink? {
-            LiveTVPairingLink(url: URL(string: "kyro://livetv-pair?v=1&s=AQEBAQEBAQEBAQEBAQEBAQ&c=ABCDEFGHJK&h=\(host)&p=80")!)
+            LiveTVPairingLink(url: URL(string: "\(LiveTVPairing.linkScheme)://livetv-pair?v=1&s=AQEBAQEBAQEBAQEBAQEBAQ&c=ABCDEFGHJK&h=\(host)&p=80")!)
         }
         XCTAssertNil(link("8.8.8.8"))
         XCTAssertNil(link("evil.example.com"))

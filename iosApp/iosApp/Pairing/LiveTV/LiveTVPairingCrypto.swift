@@ -18,7 +18,7 @@ enum LiveTVPairing {
     static let maxFailedAttempts = 3
     static let maxFrameBytes = 16 * 1024
     static let bonjourType = "_kyrolive._tcp"
-    static let linkScheme = "kyro"
+    static var linkScheme: String { KyroAppIdentity.current.urlScheme }
     static let linkHost = "livetv-pair"
     static let codeLength = 10
 }

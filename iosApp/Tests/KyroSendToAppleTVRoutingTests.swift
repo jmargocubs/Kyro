@@ -6,7 +6,7 @@ import XCTest
 /// link may take that path. Other kyro:// links keep going to the normal deep-link router.
 @MainActor
 final class KyroSendToAppleTVRoutingTests: XCTestCase {
-    private let validLink = "kyro://livetv-pair?v=1&s=AQEBAQEBAQEBAQEBAQEBAQ&c=ABCDEFGHJK&h=192.168.1.20&p=4455"
+    private let validLink = "\(LiveTVPairing.linkScheme)://livetv-pair?v=1&s=AQEBAQEBAQEBAQEBAQEBAQ&c=ABCDEFGHJK&h=192.168.1.20&p=4455"
 
     override func tearDown() {
         KyroSendToAppleTVInbox.shared.link = nil

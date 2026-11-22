@@ -15,7 +15,7 @@ enum DownloadNotifier {
     /// the same userInfo key the push pipeline uses, so
     /// `SiloAppDelegate.userNotificationCenter(_:didReceive:)` routes both
     /// kinds through one code path.
-    private static let downloadsDeepLink = "kyro://downloads"
+    private static var downloadsDeepLink: String { "\(SiloURLScheme.current)://downloads" }
 
     static func downloadCompleted(_ record: DownloadRecord) {
         post(

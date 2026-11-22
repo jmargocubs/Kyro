@@ -22,6 +22,13 @@ final class ExternalSignInTests: XCTestCase {
     override func setUp() {
         super.setUp()
         stub = APIv2TestStub()
+        // The handshake is tested as stable Kyro runs it; Labs disables it (see KyroLabsIdentityTests).
+        NativeSignIn.browserSignInEnabled = true
+    }
+
+    override func tearDown() {
+        NativeSignIn.browserSignInEnabled = KyroAppIdentity.current.supportsExternalBrowserSignIn
+        super.tearDown()
     }
 
     private func fixture(_ name: String) throws -> Data {
@@ -408,7 +415,7 @@ final class ExternalSignInTests: XCTestCase {
         var startURLs: [URL] { lock.withLock { opened } }
 
         @MainActor func authenticate(url: URL, callbackScheme: String) async throws -> URL {
-            XCTAssertEqual(callbackScheme, "com.cubbiestream.kyro")
+            XCTAssertEqual(callbackScheme, KyroAppIdentity.current.bundleID)
             lock.withLock { opened.append(url) }
             try await whileOpen?()
             return try answer(url)

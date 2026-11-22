@@ -111,6 +111,66 @@ final class KyroLabsIdentityTests: XCTestCase {
         XCTAssertFalse(SiloURLScheme.isAppURL(try XCTUnwrap(URL(string: "silo://search?q=x"))))
     }
 
+    // MARK: External sign-in and deep-link isolation
+
+    func testExternalSignInCallbackSchemeIsPerApp() {
+        XCTAssertEqual(stable.externalSignInCallbackScheme, "com.cubbiestream.kyro")
+        XCTAssertEqual(labs.externalSignInCallbackScheme, "com.cubbiestream.kyro.labs")
+        XCTAssertNotEqual(stable.externalSignInCallbackScheme, labs.externalSignInCallbackScheme)
+        XCTAssertEqual(NativeSignIn.callbackScheme, KyroAppIdentity.current.bundleID)
+    }
+
+    /// The server's redirect is fixed to stable's scheme, so Labs must not start a browser flow
+    /// that would land in stable Kyro.
+    func testOnlyStableOffersExternalBrowserSignIn() {
+        XCTAssertTrue(stable.supportsExternalBrowserSignIn)
+        XCTAssertFalse(labs.supportsExternalBrowserSignIn)
+        XCTAssertEqual(NativeSignIn.browserSignInEnabled, KyroAppIdentity.current.supportsExternalBrowserSignIn)
+    }
+
+    func testAppLinksUseTheAppsOwnScheme() {
+        XCTAssertEqual(stable.appLink("downloads")?.absoluteString, "kyro://downloads")
+        XCTAssertEqual(labs.appLink("item/42")?.absoluteString, "kyrolabs://item/42")
+        XCTAssertEqual(LiveTVPairing.linkScheme, KyroAppIdentity.current.urlScheme)
+    }
+
+    func testNoSourceHardCodesTheStableDeepLinkScheme() throws {
+        let roots = ["iosApp", "TopShelf", "DownloadsActivity"]
+        var scanned = 0
+        for root in roots {
+            let files = try XCTUnwrap(FileManager.default.enumerator(
+                at: Self.iosAppDir.appendingPathComponent(root), includingPropertiesForKeys: nil))
+            for case let url as URL in files where url.pathExtension == "swift" {
+                scanned += 1
+                let source = try String(contentsOf: url, encoding: .utf8)
+                for line in source.split(whereSeparator: \.isNewline) {
+                    let code = line.trimmingCharacters(in: .whitespaces)
+                    if code.hasPrefix("//") { continue }
+                    XCTAssertFalse(code.contains("\"kyro://"), "\(url.lastPathComponent) hard-codes kyro://: \(code)")
+                }
+            }
+        }
+        XCTAssertGreaterThan(scanned, 300)
+    }
+
+    func testAppleTVAndTopShelfAreLabsAndPrefixedByTheHost() throws {
+        let variant = try settings("Signing/KyroVariant.xcconfig")
+        XCTAssertEqual(variant["SILO_TV_BUNDLE_ID"], "com.cubbiestream.kyro.tvos.labs")
+        XCTAssertEqual(variant["SILO_TOPSHELF_BUNDLE_ID"], "com.cubbiestream.kyro.tvos.labs.topshelf")
+        XCTAssertTrue(try XCTUnwrap(variant["SILO_TOPSHELF_BUNDLE_ID"]).hasPrefix(try XCTUnwrap(variant["SILO_TV_BUNDLE_ID"]) + "."))
+        for plistPath in ["iosApp/tvOS-Info.plist", "TopShelf/Info.plist", "DownloadsActivity/Info.plist"] {
+            let info = try plist(plistPath)
+            XCTAssertEqual(info["KyroAppVariant"] as? String, "$(KYRO_APP_VARIANT)", plistPath)
+            XCTAssertFalse(try text(plistPath).contains("com.cubbiestream.kyro.shared"), plistPath)
+        }
+        for entitlements in ["SiloTVLabs.entitlements", "TopShelf/TopShelfLabs.entitlements"] {
+            let body = try text(entitlements)
+            XCTAssertTrue(body.contains(labs.appGroup), entitlements)
+            XCTAssertFalse(body.contains(stable.appGroup + "<"), entitlements)
+            XCTAssertFalse(body.contains(stable.keychainGroupSuffix), entitlements)
+        }
+    }
+
     // MARK: Build configuration (reads the repository's own files)
 
     private static let iosAppDir = URL(fileURLWithPath: #filePath)

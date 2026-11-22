@@ -92,6 +92,18 @@ struct KyroAppIdentity: Equatable, Sendable {
 
     var isLabs: Bool { variant == .labs }
 
+    /// RFC 8252 private-use scheme of the external sign-in redirect (the bundle ID).
+    var externalSignInCallbackScheme: String { bundleID }
+
+    /// Whether the server's fixed external sign-in redirect (`com.cubbiestream.kyro:/auth/callback`)
+    /// lands in this app. It does only for stable Kyro. The server has no redirect parameter yet, so
+    /// a Labs browser sign-in would return to stable Kyro (or never return). Labs therefore offers no
+    /// browser sign-in until the server can redirect to `com.cubbiestream.kyro.labs:/auth/callback`.
+    var supportsExternalBrowserSignIn: Bool { variant == .stable }
+
+    /// `kyro://` or `kyrolabs://` link for this app.
+    func appLink(_ rest: String) -> URL? { URL(string: "\(urlScheme)://\(rest)") }
+
     /// Names that name local storage or routing. Used by tests to prove no value is shared.
     var isolatedNames: [String: String] {
         [

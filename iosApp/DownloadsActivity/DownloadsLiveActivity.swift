@@ -14,7 +14,7 @@ struct SiloDownloadsActivityBundle: WidgetBundle {
 /// Island treatments. Tapping anywhere deep-links to the Downloads tab via
 /// the `kyro://downloads` route the app already handles.
 struct DownloadsLiveActivity: Widget {
-    private static let deepLink = URL(string: "kyro://downloads")
+    private static let deepLink = KyroAppIdentity.current.appLink("downloads")
 
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DownloadActivityAttributes.self) { context in

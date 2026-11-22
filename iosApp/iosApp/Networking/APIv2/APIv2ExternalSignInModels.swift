@@ -224,7 +224,8 @@ struct SignInOptions: Equatable, Sendable {
     /// The provider's native start, read from `native_start_path`. Nil when
     /// the server does not list it or it has another shape.
     static func nativeStart(of provider: APIv2AuthProvider) -> NativeStart? {
-        ServerAuthPath.relative(provider.nativeStartPath, suffix: ServerAuthPath.nativeStart, allowsQuery: true)
+        guard NativeSignIn.browserSignInEnabled else { return nil }
+        return ServerAuthPath.relative(provider.nativeStartPath, suffix: ServerAuthPath.nativeStart, allowsQuery: true)
             .map { NativeStart(apiPath: $0.apiPath, queryItems: $0.queryItems) }
     }
 

@@ -330,6 +330,7 @@ targets:
     sources:
       - path: DownloadsActivity
       - path: iosApp/Downloads/DownloadActivityAttributes.swift
+      - path: iosApp/Shared/KyroAppIdentity.swift
     configFiles:
       Debug: Signing/SiloDownloadsActivity.xcconfig
       Release: Signing/SiloDownloadsActivity.xcconfig

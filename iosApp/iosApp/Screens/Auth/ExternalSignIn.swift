@@ -28,7 +28,11 @@ import Security
 enum NativeSignIn {
     /// RFC 8252 private-use scheme: the iOS bundle prefix and the Android
     /// `applicationId`. Distinct from the `kyro://` deep links.
-    static let callbackScheme = "com.cubbiestream.kyro"
+    static var callbackScheme: String { KyroAppIdentity.current.externalSignInCallbackScheme }
+    /// False in Kyro Labs: the server's fixed redirect would not reach it (see
+    /// `KyroAppIdentity.supportsExternalBrowserSignIn`). Tests that exercise the handshake itself
+    /// set it to true.
+    static var browserSignInEnabled = KyroAppIdentity.current.supportsExternalBrowserSignIn
     static let callbackPath = "/auth/callback"
 
     /// Whether `url` is the handshake's app redirect rather than a deep link.

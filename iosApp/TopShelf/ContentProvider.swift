@@ -274,10 +274,10 @@ final class ContentProvider: TVTopShelfContentProvider {
             shelfItem.setImageURL(url, for: .screenScale2x)
         }
         shelfItem.displayAction = TVTopShelfAction(
-            url: URL(string: "kyro://item/\(item.contentId)")!
+            url: KyroAppIdentity.current.appLink("item/\(item.contentId)")!
         )
         shelfItem.playAction = TVTopShelfAction(
-            url: URL(string: "kyro://play/\(item.contentId)")!
+            url: KyroAppIdentity.current.appLink("play/\(item.contentId)")!
         )
         return shelfItem
     }
