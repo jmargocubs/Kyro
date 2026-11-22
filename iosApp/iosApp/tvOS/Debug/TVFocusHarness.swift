@@ -151,6 +151,7 @@ private struct TVFocusHarnessShell: View {
                 libraries: [TVFocusHarnessFixture.library],
                 providers: TVCascadeProviderRow.rows(for: [TVFocusHarnessFixture.vodProvider]),
                 currentScopeId: TVFocusHarnessFixture.library.id,
+                isVisible: isOpen,
                 entersPanel: isOpen && panelEntered,
                 isEligible: eligible,
                 focusEntryGeneration: 0,
@@ -166,7 +167,7 @@ private struct TVFocusHarnessShell: View {
                 },
                 onExitToContent: { commitSelection("Content") }
             )
-            .opacity(isOpen ? 1 : 0)
+            .opacity(isOpen || eligible ? 1 : 0)
             .allowsHitTesting(isOpen)
             .disabled(ungatedPanels ? false : !participates)
             // Level-1 column centred under the tab, as the shell places it.

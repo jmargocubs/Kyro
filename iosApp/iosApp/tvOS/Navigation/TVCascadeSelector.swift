@@ -98,6 +98,8 @@ struct TVCascadeSelector: View {
     /// The library currently scoped for this tab (gets the `✓`, and the
     /// row focus lands here on entry).
     let currentScopeId: Int?
+    /// Hide passive rows without hiding the composite's native focus owner.
+    var isVisible = true
     /// Whether focus has entered the panel.
     let entersPanel: Bool
     /// Whether the composite is a focus destination although not entered yet:
@@ -166,12 +168,15 @@ struct TVCascadeSelector: View {
     private var rowIDs: [Int] { libraries.map(\.id) + providers.map(\.rowID) }
 
     var body: some View {
-        Group {
-            if isSingleLibrary, let library = libraries.first {
-                singleLevelPanel(for: library)
-            } else {
-                twoLevelPanel
+        ZStack {
+            Group {
+                if isSingleLibrary, let library = libraries.first {
+                    singleLevelPanel(for: library)
+                } else {
+                    twoLevelPanel
+                }
             }
+            .opacity(isVisible ? 1 : 0)
         }
         // The cascade is a composite tvOS control. Rows are rendered labels in
         // both preview and entered modes; only the panel container itself is
@@ -201,6 +206,8 @@ struct TVCascadeSelector: View {
         // Lets hosted Siri Remote tests see that the composite holds focus.
         .accessibilityIdentifier("cascade.\(type.rawValue)")
         .tvObserveFocus("Cascade", value: panelFocused)
+        .onChange(of: isEligible, initial: true) { _, value in TVFocusDiagnostics.value("state", "Cascade", "eligible", value) }
+        .onChange(of: isVisible, initial: true) { _, value in TVFocusDiagnostics.value("state", "Cascade", "visible", value) }
         .onChange(of: focus) { _, value in TVFocusDiagnostics.value("state", "Cascade", "highlightNotEngineFocus", value) }
         .onTapGesture(perform: commitFocusedSelection)
         .onMoveCommand(perform: handleMoveCommand)

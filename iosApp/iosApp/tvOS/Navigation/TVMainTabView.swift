@@ -659,10 +659,18 @@ struct TVMainTabView: View {
             panel, focusedBarPanel: focusedBarPanel,
             openPanel: openPanel, panelEntered: panelEntersFocus)
 
+        // A closed eligible cascade must retain a transparent native focus owner:
+        // whole-panel opacity zero prevents Down re-entry after Back suppresses dwell.
+        let isCascade: Bool
+        switch panel {
+        case .root(.libraryType(_)), .root(.libraryShortcut(_, _)): isCascade = true
+        default: isCascade = false
+        }
+
         return panelBody(for: panel, isActive: isActive, isEligible: isEligible)
             .padding(.leading, leading)
             .padding(.top, SiloTheme.Skyline.dropdownTopInset)
-            .opacity(isActive ? 1 : 0)
+            .opacity(isActive || (isCascade && isEligible) ? 1 : 0)
             .scaleEffect(
                 reduceMotion || isActive ? 1 : SiloTheme.Skyline.cascadeOpenScale,
                 anchor: UnitPoint(x: anchorX, y: 0)
@@ -773,6 +781,7 @@ struct TVMainTabView: View {
             libraries: libraries(of: type),
             providers: providerRows,
             currentScopeId: currentProviderRow ?? activeLibrary(for: type)?.id,
+            isVisible: isActive,
             entersPanel: isActive && panelEntersFocus,
             isEligible: isEligible,
             focusEntryGeneration: panelFocusEntryGeneration,
@@ -800,6 +809,7 @@ struct TVMainTabView: View {
                 type: type,
                 libraries: [library],
                 currentScopeId: library.id,
+                isVisible: isActive,
                 entersPanel: isActive && panelEntersFocus,
                 isEligible: isEligible,
                 focusEntryGeneration: panelFocusEntryGeneration,

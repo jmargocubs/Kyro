@@ -14,6 +14,7 @@ on:
           - tvos-ui
           - navigation-recovery
           - navigation-repair
+          - navigation-dropdown
           - focus-export
 
       expected_sha:
@@ -259,7 +260,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify exact recovery commit
-        if: inputs.suite == 'navigation-recovery' || inputs.suite == 'navigation-repair'
+        if: inputs.suite == 'navigation-recovery' || inputs.suite == 'navigation-repair' || inputs.suite == 'navigation-dropdown'
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
@@ -322,7 +323,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/guide-renders"
           export TEST_RUNNER_KYRO_RENDER_DIR="$RUNNER_TEMP/guide-renders"
-          if [ "$SUITE" = "navigation-recovery" ] || [ "$SUITE" = "navigation-repair" ]; then
+          if [ "$SUITE" = "navigation-recovery" ] || [ "$SUITE" = "navigation-repair" ] || [ "$SUITE" = "navigation-dropdown" ]; then
             focused=(
               testLiveTVControlRowMovesOneControlAtATimeInBothDirections
               testLiveTVControlRowTraversesUnderClosedDropdowns
@@ -339,7 +340,13 @@ jobs:
               "${selectors[@]}" -resultBundlePath "$RUNNER_TEMP/tvos-focused.xcresult" \
               CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- 2>&1 | tee "$RUNNER_TEMP/tvos-focused.log"
           fi
-          if [ "$SUITE" = "navigation-repair" ]; then
+          if [ "$SUITE" = "navigation-dropdown" ]; then
+            tests=(
+              SiloTVUITests/KyroTVRemoteFocusUITests/testShellMoviesAndSeriesDropdownSelectionsReturnToTheirOwnTabs
+              SiloTVUITests/KyroTVRemoteFocusUITests/testShellClosedDropdownsDoNotBlockOtherTabs
+              SiloTVUITests/KyroTVRemoteFocusUITests/testShellEveryTabIsReachableAcrossTheRealBar
+            )
+          elif [ "$SUITE" = "navigation-repair" ]; then
             tests=(
               SiloTVUITests/KyroTVRemoteFocusUITests/testSettingsRailWalksAndPaneEntersAndReturns
               SiloTVUITests/KyroTVRemoteFocusUITests/testSettingsSelectorOpensChoosesAndReturnsToItsRow
