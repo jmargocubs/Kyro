@@ -25,6 +25,21 @@ public struct SourceGrant: Codable, Sendable, Equatable {
   }
 }
 
+/// A Kyro profile's association with a user on one specific provider account. The remote ID
+/// is never a Kyro profile ID; credentials and session state remain in the provider's store.
+public struct ProviderUserLink: Codable, Sendable, Equatable {
+  public let profile: KyroProfileID
+  public let account: ProviderAccountID
+  public let provider: String
+  public let remoteUserID: String
+  public init(profile: KyroProfileID, account: ProviderAccountID, provider: String, remoteUserID: String) {
+    self.profile = profile
+    self.account = account
+    self.provider = provider
+    self.remoteUserID = remoteUserID
+  }
+}
+
 public struct IdentityStore: Sendable {
   private let database: SQLiteDatabase
   private let key: String
@@ -39,6 +54,22 @@ public struct IdentityStore: Sendable {
     var pins: [String: ProfilePIN] = [:]
     var failures: [String: Int] = [:]
     var blockedUntil: [String: Date] = [:]
+    var links: [ProviderUserLink] = []
+
+    private enum CodingKeys: String, CodingKey {
+      case profiles, accounts, grants, pins, failures, blockedUntil, links
+    }
+    init() {}
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      profiles = try container.decodeIfPresent([KyroProfile].self, forKey: .profiles) ?? []
+      accounts = try container.decodeIfPresent([ProviderAccount].self, forKey: .accounts) ?? []
+      grants = try container.decodeIfPresent([SourceGrant].self, forKey: .grants) ?? []
+      pins = try container.decodeIfPresent([String: ProfilePIN].self, forKey: .pins) ?? [:]
+      failures = try container.decodeIfPresent([String: Int].self, forKey: .failures) ?? [:]
+      blockedUntil = try container.decodeIfPresent([String: Date].self, forKey: .blockedUntil) ?? [:]
+      links = try container.decodeIfPresent([ProviderUserLink].self, forKey: .links) ?? []
+    }
   }
   private func update<T: Sendable>(_ body: @Sendable (inout State) throws -> T) async throws -> T {
     try await database.transaction { db in
@@ -72,6 +103,7 @@ public struct IdentityStore: Sendable {
       }
       state.profiles[index].tombstonedAt = state.profiles[index].tombstonedAt ?? date
       state.grants.removeAll { $0.profile == id }
+      state.links.removeAll { $0.profile == id }
       state.pins[id.description] = nil
     }
   }
@@ -90,6 +122,7 @@ public struct IdentityStore: Sendable {
       guard state.accounts.contains(where: { $0.id == id }) else { throw IdentityError.missing }
       state.accounts.removeAll { $0.id == id }
       state.grants.removeAll { $0.account == id }
+      state.links.removeAll { $0.account == id }
     }
   }
   public func accounts() async throws -> [ProviderAccount] {
@@ -117,6 +150,52 @@ public struct IdentityStore: Sendable {
   public func grants(for profile: KyroProfileID) async throws -> [SourceGrant] {
     try await database.load(State.self, key: key)?.grants.filter { $0.profile == profile } ?? []
   }
+  /// Linking replaces only this profile's association to this account. A remote user can have
+  /// only one Kyro owner within a household, preventing ambiguous progress writes.
+  public func link(_ link: ProviderUserLink, projected: Bool = false) async throws {
+    try await update { state in
+      guard !link.provider.isEmpty, !link.remoteUserID.isEmpty,
+        !state.profiles.contains(where: { $0.id.description == link.remoteUserID })
+      else { throw IdentityError.invalidLink }
+      guard state.profiles.contains(where: { $0.id == link.profile && $0.tombstonedAt == nil }) else {
+        throw IdentityError.missing
+      }
+      if !projected {
+        guard state.accounts.contains(where: { $0.id == link.account && $0.provider == link.provider }) else {
+          throw IdentityError.missing
+        }
+      }
+      guard !state.links.contains(where: {
+        $0.account == link.account && $0.provider == link.provider
+          && $0.remoteUserID == link.remoteUserID && $0.profile != link.profile
+      }) else { throw IdentityError.subjectAlreadyWritable }
+      state.links.removeAll {
+        $0.profile == link.profile && $0.account == link.account && $0.provider == link.provider
+      }
+      state.links.append(link)
+    }
+  }
+  public func links(for profile: KyroProfileID) async throws -> [ProviderUserLink] {
+    let state = try await database.load(State.self, key: key) ?? State()
+    guard state.profiles.contains(where: { $0.id == profile && $0.tombstonedAt == nil }) else { return [] }
+    return state.links.filter { $0.profile == profile }
+  }
+  public func link(account: ProviderAccountID, provider: String, remoteUserID: String) async throws -> ProviderUserLink? {
+    try await database.load(State.self, key: key)?.links.first {
+      $0.account == account && $0.provider == provider && $0.remoteUserID == remoteUserID
+    }
+  }
+  public func unlink(profile: KyroProfileID, account: ProviderAccountID, provider: String) async throws {
+    try await update { state in
+      state.links.removeAll { $0.profile == profile && $0.account == account && $0.provider == provider }
+    }
+  }
+  /// Call when removing a projected account from its owning store. No profile or other data is removed.
+  public func unlinkAccount(_ account: ProviderAccountID, provider: String) async throws {
+    try await update { state in
+      state.links.removeAll { $0.account == account && $0.provider == provider }
+    }
+  }
   public func setPIN(_ pin: String, for profile: KyroProfileID) async throws {
     let derived = try ProfilePIN(pin: pin)
     try await update { state in
@@ -143,5 +222,5 @@ public struct IdentityStore: Sendable {
       return valid
     }
   }
-  public enum IdentityError: Error { case missing, duplicate, deleted, subjectAlreadyWritable }
+  public enum IdentityError: Error { case missing, duplicate, deleted, subjectAlreadyWritable, invalidLink }
 }
