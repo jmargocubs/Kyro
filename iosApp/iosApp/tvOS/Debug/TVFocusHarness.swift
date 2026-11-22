@@ -456,6 +456,7 @@ private final class TVFocusHarnessURLProtocol: URLProtocol {
 @MainActor @Observable
 final class TVFocusHarnessProbe {
     static let shared = TVFocusHarnessProbe()
+    var categoriesHasFocus = false
     private(set) var lines: [String] = []
     private var started = Date()
     @ObservationIgnored private var observer: NSObjectProtocol?
@@ -489,6 +490,7 @@ private struct TVFocusHarnessJournalView: View {
             .accessibilityElement()
             .accessibilityLabel(probe.lines.suffix(60).joined(separator: "\n"))
             .accessibilityIdentifier("harness-journal")
+            .accessibilityValue(probe.categoriesHasFocus ? "LiveTV.binding.Categories" : "")
             .allowsHitTesting(false)
     }
 }

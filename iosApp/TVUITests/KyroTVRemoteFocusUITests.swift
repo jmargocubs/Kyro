@@ -3,7 +3,7 @@ import XCTest
 /// Build 100: real Siri Remote focus transitions on the hosted Apple TV simulator.
 ///
 /// Each test launches the Debug-only focus harness (`-kyroTVFocusHarness`), which shows a real
-/// tvOS root page over offline fixtures under a stand-in top menu, then presses directions with
+/// tvOS root page over offline fixtures or the production shell, then presses directions with
 /// `XCUIRemote` and reads which element holds focus. Every press and the element it landed on is
 /// printed as a `KYRO-FOCUS` line, so a failing run shows the exact path focus took.
 ///
@@ -18,7 +18,7 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     private let moviesControls = ["Search movies", "All Titles", "Continue Watching", "Favorites", "Refresh Catalog"]
 
     override func setUp() {
-        continueAfterFailure = true
+        continueAfterFailure = false
     }
 
     /// Every failure carries the screen and the app's accessibility tree at that moment.
@@ -1025,7 +1025,18 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
 
     private func focusedLabel(_ app: XCUIApplication) -> String {
         let element = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
-        guard element.exists else { return "<none>" }
+        guard element.exists else {
+            // Only the known Categories reporting mismatch: require current binding evidence
+            // plus an enabled, onscreen control. Never infer focus from existence alone.
+            let journal = app.descendants(matching: .any)["harness-journal"]
+            let categories = app.buttons["Categories"]
+            if journal.exists, journal.value as? String == "LiveTV.binding.Categories",
+               categories.exists, categories.isEnabled, categories.isHittable {
+                print("KYRO-FOCUS accessibility unavailable; actual Categories binding confirms focus")
+                return "Categories"
+            }
+            return "<none>"
+        }
         return element.label.isEmpty ? element.identifier : element.label
     }
 

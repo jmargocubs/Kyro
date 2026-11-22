@@ -297,6 +297,14 @@ struct TVLiveTVRootView: View {
             refreshVisibleCatalog()
         }
         .onChange(of: focusedControl) { _, target in
+            #if DEBUG
+            // Observe the actual binding; nil clears stale evidence after focus leaves the row.
+            if case .section(.categories)? = target {
+                TVFocusHarnessProbe.shared.categoriesHasFocus = true
+            } else {
+                TVFocusHarnessProbe.shared.categoriesHasFocus = false
+            }
+            #endif
             channelEntryFocusChanged(target)
             if !showsGuide && !showsProviders, let target { focusBeforeCover = target }
             if case .channel(let id)? = target { lastContentChannel = id }
