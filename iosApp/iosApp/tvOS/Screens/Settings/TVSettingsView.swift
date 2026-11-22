@@ -269,6 +269,7 @@ struct TVSettingsView: View {
         }
         .buttonStyle(TVSettingsRailRowStyle(dimsWhenDisabled: railIsInert))
         .focused($railFocus, equals: .profile)
+        .prefersDefaultFocus(preferredRailFocus == .profile, in: railFocusScope)
         .disabled(!railAccepts(.profile))
     }
 
@@ -299,6 +300,7 @@ struct TVSettingsView: View {
             dimsWhenDisabled: railIsInert
         ))
         .focused($railFocus, equals: .category(category))
+        .prefersDefaultFocus(preferredRailFocus == .category(category), in: railFocusScope)
         .disabled(!railAccepts(.category(category)))
     }
 
@@ -317,6 +319,7 @@ struct TVSettingsView: View {
         }
         .buttonStyle(TVSettingsRailRowStyle(isDestructive: true, dimsWhenDisabled: railIsInert))
         .focused($railFocus, equals: .signOut)
+        .prefersDefaultFocus(preferredRailFocus == .signOut, in: railFocusScope)
         .disabled(!railAccepts(.signOut))
     }
 
