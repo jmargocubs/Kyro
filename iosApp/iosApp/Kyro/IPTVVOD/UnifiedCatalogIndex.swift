@@ -21,6 +21,10 @@ struct UnifiedIndexRow: Hashable, Sendable {
         /// `payload` is the JSON-encoded Silo `BrowseItem` captured at sync time.
         case silo(libraryID: Int, contentID: String, payload: Data)
         case iptv(XtreamVODItem)
+        /// A title from a provider account (Jellyfin, Emby, Plex, …). `account` is the text form of
+        /// its `ProviderAccountRef`; with `library` and `contentID` it is the full identity, so the
+        /// same remote ID on two accounts is two different rows. `payload` is opaque to the index.
+        case provider(account: String, library: String, contentID: String, payload: Data)
     }
 
     let cursor: UnifiedIndexCursor
@@ -28,19 +32,43 @@ struct UnifiedIndexRow: Hashable, Sendable {
     let year: Int?
     let poster: String?
     let source: Source
+    /// The provider account this row came from, in `ProviderAccountRef` text form. Silo rows carry
+    /// the account their scope is bound to, or "silo" when the scope has none yet.
+    let account: String
 
-    var isSilo: Bool { if case .silo = source { return true } else { return false } }
-
-    /// Silo libraries form one origin: two Silo records with the same title and year are
-    /// ambiguous (for example two cuts), exactly as `UnifiedVODCatalog.aggregate` treats them.
-    var origin: String {
+    init(cursor: UnifiedIndexCursor, title: String, year: Int?, poster: String?, source: Source,
+         account: String? = nil) {
+        self.cursor = cursor
+        self.title = title
+        self.year = year
+        self.poster = poster
+        self.source = source
         switch source {
-        case .silo: return "silo"
-        case .iptv(let item): return "iptv:\(item.providerID.uuidString)"
+        case .silo: self.account = account ?? "silo"
+        case .iptv(let item): self.account = UnifiedCatalogKeys.iptvAccount(providerID: item.providerID)
+        case .provider(let account, _, _, _): self.account = account
         }
     }
 
+    var isSilo: Bool { if case .silo = source { return true } else { return false } }
+    var isProvider: Bool { if case .provider = source { return true } else { return false } }
+
+    /// One account is one origin: two records of an account with the same title and year are
+    /// ambiguous (for example two cuts), exactly as `UnifiedVODCatalog.aggregate` treats them, so
+    /// they never merge into one card.
+    var origin: String { account }
+
     var iptvItem: XtreamVODItem? { if case .iptv(let item) = source { return item } else { return nil } }
+
+    /// Silo first, then media-server accounts, then IPTV: the order a card lists its members and
+    /// picks its primary detail.
+    var sourceRank: Int {
+        switch source {
+        case .silo: return 0
+        case .provider: return 1
+        case .iptv: return 2
+        }
+    }
 }
 
 /// The Silo record for staging: the caller encodes its `BrowseItem` so the store (and its host
@@ -60,6 +88,11 @@ struct UnifiedIndexScope: Hashable, Sendable {
     let siloScope: String?
     let siloLibraryIDs: [Int]
     let providerIDs: [UUID]
+    /// Media-server accounts contributing through the provider-qualified arm. They need no Silo
+    /// scope, so they stay visible while Silo is signed out.
+    var providerSources: [UnifiedProviderSource] = []
+    /// The account the Silo scope belongs to, when known; it labels Silo rows.
+    var siloAccount: String? = nil
 }
 
 enum UnifiedPageDirection: Sendable {
@@ -374,13 +407,15 @@ extension XtreamVODCatalogStore {
         }
     }
 
-    /// Raw keyset read across both sources. Each arm walks its own covering browse index and is
-    /// bounded by `limit`; SQLite orders the at most 2×limit candidates. Only the active Silo
+    /// Raw keyset read across the sources. Each arm walks its own covering browse index and is
+    /// bounded by `limit`; SQLite orders the at most 3×limit candidates. Only the active Silo
     /// snapshot of the current scope and only active IPTV generations are visible.
     func unifiedRows(_ scope: UnifiedIndexScope, direction: UnifiedPageDirection, limit: Int) -> [UnifiedIndexRow] {
         let includeSilo = scope.siloScope != nil && !scope.siloLibraryIDs.isEmpty
         let includeIPTV = !scope.providerIDs.isEmpty
-        guard includeSilo || includeIPTV else { return [] }
+        let providerFilter = XtreamVODCatalogStore.providerSourceFilter(scope.providerSources, alias: "p")
+        let includeProvider = providerFilter != nil
+        guard includeSilo || includeIPTV || includeProvider else { return [] }
         let cursor: UnifiedIndexCursor?
         let comparison: String
         let order: String
@@ -423,6 +458,18 @@ extension XtreamVODCatalogStore {
                 ORDER BY \(ordering("k.")) LIMIT ?3)
                 """)
         }
+        if let providerFilter {
+            arms.append("""
+                SELECT * FROM (SELECT p.sort_key AS sort_key, p.match_key AS match_key, p.entry_key AS entry_key,
+                  2 AS origin, p.content_id AS record, p.account AS owner, p.title AS title, p.year AS year,
+                  p.poster AS poster, p.payload AS payload, p.library AS category, NULL AS ext, NULL AS summary,
+                  NULL AS genre, NULL AS rating
+                FROM unified_provider_items p JOIN unified_provider_active a
+                  ON a.account=p.account AND a.library=p.library AND a.kind=p.kind AND a.snapshot=p.snapshot
+                WHERE p.kind=?2 AND (\(providerFilter))\(keyset("p"))
+                ORDER BY \(ordering("p.")) LIMIT ?3)
+                """)
+        }
         // Each arm binds the keyset at ?4..?6 (named reuse keeps the arms' parameters identical).
         let sql = arms.joined(separator: " UNION ALL ").replacingOccurrences(of: "(?,?,?)", with: "(?4,?5,?6)")
             + " ORDER BY \(ordering("")) LIMIT ?3"
@@ -443,14 +490,23 @@ extension XtreamVODCatalogStore {
         while sqlite3_step(statement) == SQLITE_ROW {
             let rowCursor = UnifiedIndexCursor(sortKey: text(0) ?? "", matchKey: text(1) ?? "", entryKey: text(2) ?? "")
             let title = text(6) ?? "Untitled"
-            if sqlite3_column_int(statement, 3) == 0 {
+            let origin = sqlite3_column_int(statement, 3)
+            if origin == 0 || origin == 2 {
                 let bytes = sqlite3_column_blob(statement, 9)
                 let count = Int(sqlite3_column_bytes(statement, 9))
                 let payload = bytes.map { Data(bytes: $0, count: count) } ?? Data()
                 let year = sqlite3_column_type(statement, 7) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(statement, 7))
-                rows.append(.init(cursor: rowCursor, title: title, year: year, poster: text(8),
-                                  source: .silo(libraryID: Int(sqlite3_column_int64(statement, 5)),
-                                                contentID: text(4) ?? "", payload: payload)))
+                if origin == 2 {
+                    guard let account = text(5), let library = text(10) else { continue }
+                    rows.append(.init(cursor: rowCursor, title: title, year: year, poster: text(8),
+                                      source: .provider(account: account, library: library,
+                                                        contentID: text(4) ?? "", payload: payload)))
+                } else {
+                    rows.append(.init(cursor: rowCursor, title: title, year: year, poster: text(8),
+                                      source: .silo(libraryID: Int(sqlite3_column_int64(statement, 5)),
+                                                    contentID: text(4) ?? "", payload: payload),
+                                      account: scope.siloAccount))
+                }
             } else {
                 guard let provider = text(5).flatMap(UUID.init(uuidString:)) else { continue }
                 let item = XtreamVODItem(providerID: provider, kind: scope.kind,
@@ -483,6 +539,11 @@ struct UnifiedCatalogCard: Identifiable, Hashable, Sendable {
     var poster: String? { members.lazy.compactMap(\.poster).first { !$0.isEmpty } }
     var iptvItems: [XtreamVODItem] { members.compactMap(\.iptvItem) }
     var hasSilo: Bool { primary.isSilo }
+    /// Every provider account contributing to this card, in member order, without repeats.
+    var accounts: [String] {
+        var seen = Set<String>()
+        return members.map(\.account).filter { seen.insert($0).inserted }
+    }
     /// Cards that came from one match group share it; a single unmatched record has none.
     var groupKey: String? {
         firstCursor.matchKey.isEmpty ? nil : firstCursor.sortKey + "\u{0}" + firstCursor.matchKey
@@ -505,7 +566,9 @@ enum UnifiedCatalogGrouping {
             }
             let group = Array(rows[index..<end])
             if group.count > 1, Set(group.map(\.origin)).count == group.count {
-                let members = group.filter(\.isSilo) + group.filter { !$0.isSilo }
+                // Stable within a rank, so accounts and providers keep index order.
+                let members = group.enumerated().sorted { ($0.element.sourceRank, $0.offset) < ($1.element.sourceRank, $1.offset) }
+                    .map(\.element)
                 cards.append(.init(id: "m:" + row.cursor.matchKey, members: members,
                                    firstCursor: group[0].cursor, lastCursor: group[group.count - 1].cursor))
             } else {
@@ -523,16 +586,22 @@ enum UnifiedCatalogGrouping {
 // MARK: - Detail routing
 
 /// Which existing detail a unified card opens, with every other source it carries. Silo is the
-/// primary page whenever the card has a Silo record; otherwise the first IPTV source is.
+/// primary page whenever the card has a Silo record, then a media-server account's title, then the
+/// first IPTV source.
 /// Sources are only ever added to `alternates`, never dropped.
 enum UnifiedDetailTarget: Equatable {
     case silo(contentID: String, libraryID: Int, payload: Data, alternates: [XtreamVODItem])
     case iptv(XtreamVODItem, alternates: [XtreamVODItem])
+    /// A media-server account's title is primary: the card has no Silo record. `account`, `library`
+    /// and `contentID` are the title's full provider-qualified identity.
+    case provider(account: String, library: String, contentID: String, payload: Data, alternates: [XtreamVODItem])
 
     init(card: UnifiedCatalogCard) {
         let iptv = card.iptvItems
         if case let .silo(libraryID, contentID, payload) = card.primary.source {
             self = .silo(contentID: contentID, libraryID: libraryID, payload: payload, alternates: iptv)
+        } else if case let .provider(account, library, contentID, payload) = card.primary.source {
+            self = .provider(account: account, library: library, contentID: contentID, payload: payload, alternates: iptv)
         } else {
             self = .iptv(iptv[0], alternates: Array(iptv.dropFirst()))
         }

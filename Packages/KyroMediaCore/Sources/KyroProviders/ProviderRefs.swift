@@ -32,6 +32,17 @@ public struct ProviderAccountRef: Hashable, Codable, Sendable, CustomStringConve
     self.kind = kind
   }
   public var description: String { kind.rawValue + ":" + id.description }
+  /// The canonical `kind:uuid` spelling `description` writes, read back. Used where an account
+  /// is stored as text (the catalog index). Any other spelling is refused.
+  public init?(description text: String) {
+    let parts = text.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+    guard parts.count == 2, let kind = ProviderKind(rawValue: String(parts[0])),
+      let uuid = UUID(uuidString: String(parts[1]))
+    else { return nil }
+    let ref = Self(id: ProviderAccountID(rawValue: uuid), kind: kind)
+    guard ref.description == text else { return nil }
+    self = ref
+  }
 
   /// A stable ID derived from the identifier the provider's own store already uses (a Silo
   /// server ID), so the same server always projects to the same account.
@@ -117,4 +128,8 @@ public enum ProviderError: Error, Equatable {
   case projectedKind
   case missingAccount
   case notConnected
+  /// A catalog record whose content and library belong to different accounts.
+  case accountMismatch
+  /// The catalog holds movies and series; seasons and episodes are read through detail.
+  case unsupportedCatalogKind
 }

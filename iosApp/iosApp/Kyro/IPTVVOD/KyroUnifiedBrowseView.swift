@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import KyroProviders
 
 /// The one Movies or Series library grid (Build 110): Silo and IPTV titles in one catalog-wide
 /// alphabetical order, confident matches shown once. See `KyroUnifiedBrowseModel`.
@@ -21,13 +22,14 @@ struct KyroUnifiedBrowseView: View {
     private let liveTV = LiveTVService.shared
     private let service = XtreamVODService.shared
     private let mirror = SiloCatalogMirror.shared
+    private let providerMirror = ProviderCatalogMirror.shared
 
     private var configurationIdentity: String {
-        "\(kind.rawValue):\(libraries.map(\.id)):\(liveTV.providers.filter { $0.kind == .xtream }.map(\.id)):\(vodEnabled)"
+        "\(kind.rawValue):\(libraries.map(\.id)):\(liveTV.providers.filter { $0.kind == .xtream }.map(\.id)):\(vodEnabled):\(providerMirror.accountsRevision)"
     }
 
     /// Changes when an IPTV generation or a Silo snapshot was published or removed.
-    private var indexRevision: String { "\(service.catalogRevision):\(mirror.revision)" }
+    private var indexRevision: String { "\(service.catalogRevision):\(mirror.revision):\(providerMirror.revision)" }
 
     var body: some View {
         // The page's own scroll container (like `LibraryPageScrollContainer`, which it cannot
@@ -39,7 +41,7 @@ struct KyroUnifiedBrowseView: View {
                 VStack(spacing: SiloTheme.padding) {
                     status
                     if model.cards.isEmpty && model.hasLoaded && !model.isLoading && !model.isFillingLibrary {
-                        if KyroProviderState.current.isSiloConnected {
+                        if KyroProviderState.current.isSiloConnected || model.hasProviderSources {
                             EmptyStateView(icon: kind == .movie ? "film" : "tv",
                                            title: "No titles available",
                                            subtitle: "Check your Silo libraries or IPTV catalog settings.")
@@ -85,6 +87,8 @@ struct KyroUnifiedBrowseView: View {
             statusLine("The local catalog is unavailable. Pull to retry.", progress: false)
         } else if model.siloSyncFailed {
             statusLine("Some Silo titles could not be updated. Showing the last synced catalog.", progress: false)
+        } else if model.providerSyncFailed {
+            statusLine("Some media server titles could not be updated. Showing the last synced catalog.", progress: false)
         }
     }
 
@@ -171,6 +175,15 @@ struct KyroUnifiedBrowseView: View {
                                             alternates: alternates.map(request))
         case let .iptv(item, alternates):
             router.presentIPTVDetail(request(item), alternates: alternates.map(request))
+        case let .provider(account, _, contentID, _, alternates):
+            // A media-server title opens through its provider's detail once one exists. Until then
+            // the card's IPTV source, if it has one, is the way in; otherwise the tap does nothing.
+            if let presenter = KyroProviderCatalogBridge.detailPresenter,
+               let ref = KyroProviderCatalogBridge.contentRef(account: account, contentID: contentID) {
+                presenter(ref)
+            } else if let first = alternates.first {
+                router.presentIPTVDetail(request(first), alternates: alternates.dropFirst().map(request))
+            }
         }
     }
 
