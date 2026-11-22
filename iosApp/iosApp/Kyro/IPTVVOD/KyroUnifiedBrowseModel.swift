@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import Observation
+import KyroProviders
 
 /// The unified Movies or Series grid (Build 110): a bounded window over the local unified index
 /// (`UnifiedCatalogIndex.swift`), which holds the active IPTV generations of the enabled
@@ -17,8 +18,10 @@ final class KyroUnifiedBrowseModel {
         let kind: XtreamVODKind
         let libraries: [Library]
         let providerIDs: [UUID]
+        /// Registered media-server accounts, in `ProviderAccountRef` text form.
+        var providerAccounts: [String] = []
 
-        var key: String { "\(kind.rawValue):\(libraries.map(\.id)):\(providerIDs)" }
+        var key: String { "\(kind.rawValue):\(libraries.map(\.id)):\(providerIDs):\(providerAccounts)" }
         static func == (lhs: Inputs, rhs: Inputs) -> Bool { lhs.key == rhs.key }
     }
 
@@ -27,6 +30,9 @@ final class KyroUnifiedBrowseModel {
     private(set) var hasLoaded = false
     private(set) var isIndexingIPTV = false
     private(set) var siloSyncFailed = false
+    private(set) var providerSyncFailed = false
+    /// Media-server accounts contribute to this grid (registered, whether or not Silo is signed in).
+    private(set) var hasProviderSources = false
     private(set) var storeUnavailable = false
     /// Decoded Silo cards of the current window, keyed by card ID.
     private(set) var siloItems: [String: BrowseItem] = [:]
@@ -52,13 +58,15 @@ final class KyroUnifiedBrowseModel {
     func configure(kind: XtreamVODKind, libraries: [Library], providers: [LiveTVProvider],
                    vodEnabled: Bool) async {
         let providerIDs = vodEnabled ? providers.filter { $0.kind == .xtream }.map(\.id) : []
-        let next = Inputs(kind: kind, libraries: libraries, providerIDs: providerIDs)
+        let accounts = await KyroProviderCatalogBridge.registeredAccounts().map(\.description)
+        let next = Inputs(kind: kind, libraries: libraries, providerIDs: providerIDs, providerAccounts: accounts)
         guard next != inputs else { return }
         await apply(next)
     }
 
     private func apply(_ next: Inputs) async {
         let kind = next.kind, libraries = next.libraries, providerIDs = next.providerIDs
+        let providerAccounts = next.providerAccounts
         inputs = next
         configuration &+= 1
         token &+= 1
@@ -70,6 +78,8 @@ final class KyroUnifiedBrowseModel {
         siloItems = [:]
         hasLoaded = false
         siloSyncFailed = false
+        providerSyncFailed = false
+        hasProviderSources = !providerAccounts.isEmpty
         guard let store = await XtreamVODService.shared.unifiedStore() else {
             guard current == configuration else { return }
             storeUnavailable = true
@@ -90,8 +100,16 @@ final class KyroUnifiedBrowseModel {
                 try? await store.retainSiloLibraries(scope: siloScope, kind: kind, libraryIDs: libraries.map(\.id))
             }
         }
+        let siloAccount = siloScope == nil ? nil : KyroProviderCatalogBridge.siloAccountKey()
+        // Record which provider account the catalog data already on disk belongs to. Additive and
+        // idempotent; it changes no catalog row.
+        _ = try? await store.backfillLegacySourceIdentities()
+        if let siloScope, let siloAccount { try? await store.bindSiloScope(siloScope, to: siloAccount) }
         scope = UnifiedIndexScope(kind: kind, siloScope: siloScope, siloLibraryIDs: libraries.map(\.id),
-                                  providerIDs: providerIDs)
+                                  providerIDs: providerIDs,
+                                  providerSources: KyroProviderCatalogBridge.sources(
+                                      providerAccounts.compactMap(ProviderAccountRef.init(description:))),
+                                  siloAccount: siloAccount)
         // Show what the index already holds first; syncing and key building happen behind it.
         await loadFirst()
         guard current == configuration else { return }
@@ -190,7 +208,12 @@ final class KyroUnifiedBrowseModel {
     /// The grid is empty only because a first sync or key build is still filling it. The page
     /// shows its loading placeholders rather than an empty state.
     var isFillingLibrary: Bool {
-        cards.isEmpty && (isSyncingSilo || isIndexingIPTV)
+        cards.isEmpty && (isSyncingSilo || isSyncingProviders || isIndexingIPTV)
+    }
+
+    var isSyncingProviders: Bool {
+        guard let kind = inputs?.kind else { return false }
+        return ProviderCatalogMirror.shared.isSyncing(kind: kind)
     }
 
     var isSyncingSilo: Bool {
@@ -226,13 +249,22 @@ final class KyroUnifiedBrowseModel {
     }
 
     private func startSync(force: Bool) {
-        guard let inputs, !inputs.libraries.isEmpty, scope?.siloScope != nil else { return }
+        guard let inputs else { return }
+        // Silo needs a Silo scope and libraries; media-server accounts need neither.
+        let syncsSilo = !inputs.libraries.isEmpty && scope?.siloScope != nil
+        let accounts = inputs.providerAccounts
+        guard syncsSilo || !accounts.isEmpty else { return }
         syncTask?.cancel()
         let current = configuration
         syncTask = Task { [weak self] in
-            let failed = await SiloCatalogMirror.shared.sync(kind: inputs.kind, libraries: inputs.libraries, force: force)
+            async let providersFailed = ProviderCatalogMirror.shared.sync(kind: inputs.kind, accounts: accounts, force: force)
+            let siloFailed = syncsSilo
+                ? await SiloCatalogMirror.shared.sync(kind: inputs.kind, libraries: inputs.libraries, force: force)
+                : false
+            let providerFailed = await providersFailed
             guard let self, !Task.isCancelled, self.configuration == current else { return }
-            self.siloSyncFailed = failed
+            self.siloSyncFailed = siloFailed
+            self.providerSyncFailed = providerFailed
         }
     }
 

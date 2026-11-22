@@ -1,6 +1,7 @@
 import Foundation
 import KyroFoundation
 import KyroIdentity
+import KyroProviders
 
 enum KyroLocalIdentityDefaults {
     static let householdIDKey = "kyro.identity.household-id"
@@ -59,6 +60,12 @@ final class KyroLocalIdentityRuntime {
             database = nil
             identity = nil
         }
+    }
+
+    /// The household's provider accounts, in the same database as its profiles. Nil when local
+    /// storage could not be opened.
+    func providerRegistry() -> ProviderRegistry? {
+        identity.map { ProviderRegistry(identity: $0) }
     }
 
     /// Profiles are created by the person in Kyro's first-run setup or with Add Profile, never

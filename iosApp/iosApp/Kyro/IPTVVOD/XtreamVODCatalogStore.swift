@@ -68,6 +68,12 @@ actor XtreamVODCatalogStore {
         // Build 110 unified Movies/Series index. Additive tables only: vod_items, its FTS index
         // and triggers are untouched, so Universal Search reads exactly what it read before.
         try initialize(Self.unifiedCatalogSchema)
+        // Kyro Labs M2 provider-qualified catalog, schema version 2: more additive tables, in one
+        // transaction. Nothing above is altered, so the Build 110 path keeps working unchanged.
+        do { try initialize(Self.providerCatalogMigrationSQL) } catch {
+            _ = sqlite3_exec(openedDatabase, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
         var version: Int32 = 0
         var versionStatement: OpaquePointer?
         if sqlite3_prepare_v2(openedDatabase, "PRAGMA user_version", -1, &versionStatement, nil) == SQLITE_OK,
