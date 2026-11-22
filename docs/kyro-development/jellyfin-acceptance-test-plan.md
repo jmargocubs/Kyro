@@ -1,8 +1,8 @@
 # Kyro Labs: Jellyfin Standalone Acceptance Test Plan & Regression Suite
 
-**Document Version:** 1.0  
+**Document Version:** 1.1 (integration review, 2026-11-22)
 **Target Milestone:** Jellyfin-only Kyro Labs Phase 2 Milestone  
-**Baseline Commit:** `1f2fa19b76f5d233414f413ffb1fc13d9c47a5f8` (`kyro/labs-phase2-integration`)  
+**Baseline Commit:** `0af20608ae777717387d480b611aca0e20efa6db` (`kyro/labs-phase2-integration`, before acceptance-test cherry-pick)
 **Target Device:** iPhone 16 Plus (Physical iOS Device, unsigned IPA distributed via Feather / Nullsign)  
 
 ---
@@ -33,7 +33,7 @@ Kyro Labs is the experimental edition of Kyro (`com.cubbiestream.kyro.labs`). It
    - Projected account cleanup (`removedProjectedAccount`) clearing server associations without deleting Kyro profiles or PINs.
 
 4. **Jellyfin Client & Provider Adapter (`KyroSourceJellyfin` & `JellyfinProviderAdapter`):**
-   - `JellyfinClient`: Read-only async actor utilizing standard MediaBrowser authorization headers (`MediaBrowser Client="...", Device="...", DeviceId="...", Version="...", Token="..."`).
+  - `JellyfinClient`: Read-only async actor utilizing standard MediaBrowser authorization headers (`MediaBrowser Client="...", Device="...", DeviceId="...", Version="...", Token="..."`).
    - Pure credential isolation: Passwords are used once on `AuthenticateByName` and discarded; tokens are stored in injected `CredentialStore` (`AppleKeychainCredentialStore`).
    - `JellyfinProviderAdapter`: Conforms to `CatalogProviding`, mapping Jellyfin `movies`, `tvshows`, and `mixed` CollectionFolders to `ProviderLibrary` and streaming pages into `ProviderCatalogRecord`.
 
@@ -77,7 +77,7 @@ This 12-stage test plan covers full end-to-end functionality for a Jellyfin-only
   3. Test URL sanitization (leading/trailing whitespace, trailing slashes, scheme validation).
   4. Save endpoint.
 * **Expected Result:**
-  - Endpoint passes `SourceEndpoint` validation.
+  - Endpoint passes `KyroJellyfinConnections.endpoint(_:)` validation; enter a full `http://` or `https://` URL.
   - Server is registered in `ProviderRegistry` with `ProviderKind.jellyfin` and a new UUID `ProviderAccountID`.
   - Non-secret endpoint URL is saved with the account in `IdentityStore`.
 
@@ -93,8 +93,8 @@ This 12-stage test plan covers full end-to-end functionality for a Jellyfin-only
 * **Expected Result:**
   - Password is never written to disk or Keychain.
   - `JellyfinSession` is stored in Keychain under `kyro.jellyfin.<accountId>`.
-  - On re-launch, `client.restoreSession()` restores the session in <5ms without sending any HTTP requests.
-  - Capabilities report `.connected`.
+  - `client.restoreSession()` reads the saved session locally. The app then validates it with an authenticated libraries request before marking the account connected; test both online and offline launches.
+  - A revoked token prompts reconnection without deleting the saved account or Kyro profile.
 
 ### Stage 5: Browse Movies and Series
 * **Goal:** Verify that Jellyfin libraries populate the unified Movies and Series grids without Silo.
@@ -119,10 +119,10 @@ This 12-stage test plan covers full end-to-end functionality for a Jellyfin-only
   3. Return to Series grid and tap a Jellyfin series card.
   4. Observe seasons list (`GET /Shows/{seriesId}/Seasons`).
   5. Select Season 1 to view episodes list (`GET /Shows/{seriesId}/Episodes`).
-  6. Tap an episode to view episode synopsis and runtime.
+  6. Inspect episode title and synopsis in the series detail view. Opening a separate episode detail is not yet implemented.
 * **Expected Result:**
-  - `KyroProviderCatalogBridge.detailPresenter` routes the `ContentRef` to the Jellyfin media detail screen.
-  - Season and episode hierarchies reflect remote server indexes correctly.
+  - `KyroUnifiedBrowseView` routes the provider-qualified `ContentRef` through `AppRouter.presentJellyfinDetail`.
+  - Seasons can be selected and their episode lists reflect remote server indexes.
 
 ### Stage 7: Start Playback Once Available
 * **Goal:** Verify playback intent generation and stream delivery negotiation.
@@ -163,7 +163,7 @@ This 12-stage test plan covers full end-to-end functionality for a Jellyfin-only
 ### Stage 10: Sign Out and Reconnect
 * **Goal:** Verify explicit sign-out and re-authentication behavior.
 * **Test Steps:**
-  1. In Settings > Providers, select Jellyfin Server A and tap **Sign Out**.
+  1. Once a sign-out control exists, select Jellyfin Server A and tap **Sign Out**. This step is currently blocked.
   2. Verify network dispatch `POST /Sessions/Logout`.
   3. Verify Keychain state: `kyro.jellyfin.server-a` is deleted.
   4. Check Movies grid: catalog rows for Server A remain cached or mark requires authentication.
@@ -175,7 +175,7 @@ This 12-stage test plan covers full end-to-end functionality for a Jellyfin-only
 ### Stage 11: Remove an Account Safely
 * **Goal:** Verify complete teardown of a Jellyfin provider account.
 * **Test Steps:**
-  1. In Settings > Providers, select Jellyfin Server B and tap **Remove Server**.
+  1. From the Add Media Server sheet on Kyro Home, select Jellyfin Server B and tap **Remove**.
   2. Observe database teardown via `ProviderRegistry.remove(accountB)`.
   3. Observe catalog purge via `ProviderCatalogMirror.remove(accountB, store: store)`.
 * **Expected Result:**
@@ -212,9 +212,9 @@ To be completed on physical iPhone 16 Plus running unsigned release build via Fe
 | 7 | Series Grid Browse | Displays Jellyfin TV shows; metadata (year, seasons) accurate | [ ] |
 | 8 | Pull to Refresh | Pulling grid re-syncs catalog quietly; no duplicated cards | [ ] |
 | 9 | Media Detail Screen | Tapping title opens movie/show detail; backdrop art renders | [ ] |
-| 10 | Hierarchy Navigation | Series > Season > Episode navigation operates cleanly | [ ] |
-| 11 | Direct Play Video | Video stream starts in AVPlayer/VLC; audio & subs selectable | [ ] |
-| 12 | Playback Resume | Exiting midway and returning shows Resume button with correct timestamp | [ ] |
+| 10 | Hierarchy Navigation | Series detail shows selectable seasons and episode lists; standalone episode detail remains deferred | [ ] |
+| 11 | Direct Play Video | Deferred until Jellyfin playback routing is implemented | Blocked |
+| 12 | Playback Resume | Deferred until playback reporting and Continue Watching are implemented | Blocked |
 | 13 | Multi-Account Switch | Second server added; profile switch transitions active server cleanly | [ ] |
 | 14 | Token Revocation | Invalidate token on server web UI; app catches 401 and prompts sign-in | [ ] |
 | 15 | Remove Server | Removing server cleans index without touching Kyro profile or IPTV | [ ] |
@@ -223,35 +223,15 @@ To be completed on physical iPhone 16 Plus running unsigned release build via Fe
 
 ## 4. Technical Coverage Gaps Analysis
 
-While core foundational models, client networking, adapters, and schema v2 catalog storage are implemented and verified by automated tests, the following **seven specific gaps** in production UI and orchestration currently prevent executing the acceptance test on a physical iPhone build:
+The integration at `0af20608` resolves three of the seven previously reported blockers:
 
-1. **Onboarding UI for Jellyfin (`KyroFirstRunSetupView` / `ServerSetupView`):**
-   - Current status: First-run setup offers `Source.mediaServer` (which hard-routes to Silo's `ServerSetupView`) and `Source.iptv`.
-   - Gap: Needs a dedicated Jellyfin server onboarding form (Host, Port, SSL toggle, Username, Password) that invokes `JellyfinClient.authenticate(...)` and registers with `ProviderRegistry`.
-   - *Note: Active work by parallel integration agent.*
+1. **Jellyfin onboarding and authentication — resolved in code, device check pending.** `KyroFirstRunSetupView` opens `KyroJellyfinSetupView`; the connection owner authenticates, checks libraries, registers the account, and links it to the active Kyro profile. The form accepts a complete server URL rather than separate host, port, and SSL fields.
+2. **Endpoint persistence and restoration — resolved in code, device check pending.** `ProviderAccount.endpoint` supplies the URL on cold launch. `KyroJellyfinConnections.restore()` reads the saved session and validates it with a network library request. An offline launch cannot be called connected until that check succeeds.
+3. **Jellyfin detail routing — partially resolved.** Movie and series cards open `KyroJellyfinDetailView` through `AppRouter`, with selectable seasons and an episode list. The old optional `detailPresenter` is not used for this route. A separate tappable episode detail is still missing.
 
-2. **Endpoint Persistence in Provider Account Record:**
-   - Current status: `ProviderAccount` historically held only `id`, `provider`, `label`.
-   - Gap: The server URL endpoint must be stored with the account (e.g. `endpoint: String?`) so that on cold launch the app knows which base URL to instantiate `JellyfinClient` with before calling `restoreSession()`.
-   - *Note: Active work by parallel integration agent.*
+The remaining limitations are:
 
-3. **Detail Presenter Binding (`KyroProviderCatalogBridge.detailPresenter`):**
-   - Current status: `detailPresenter` is `nil` in production (`KyroProviderCatalogBridge.swift:41`).
-   - Gap: Tapping a media-server card without an IPTV alternate currently does nothing (`KyroUnifiedBrowseView.swift:181`). A SwiftUI view presenting `JellyfinMediaItem` details (and season/episode hierarchy) must be wired to `detailPresenter`.
-   - *Note: Active work by parallel integration agent.*
-
-4. **Player Routing for Jellyfin Streams:**
-   - Current status: Playback coordinator is wired for Silo transcode/HLS and IPTV MPEG-TS/HLS streams.
-   - Gap: Jellyfin stream URL generation (`/Videos/{itemId}/stream` with container/codec params) and playback handoff to `PlaybackCoordinator` is not yet connected.
-
-5. **Playback Progress Reporting Endpoints:**
-   - Current status: `JellyfinClient` is catalog read-only (explicitly documents: "Read-only Jellyfin catalog client. No playback or progress reporting").
-   - Gap: Progress reporting methods (`reportPlaybackStarted`, `reportPlaybackProgress`, `reportPlaybackStopped` hitting `/Sessions/Playing/*`) are needed to sync watch progress back to the Jellyfin server.
-
-6. **Home Tab Continue Watching Rail Integration:**
-   - Current status: When Silo is signed out, Home shows `KyroHomeView` which offers Live TV and setup shortcuts.
-   - Gap: Querying Jellyfin resume items (`/User/{userId}/Items/Resume`) and rendering a Jellyfin Continue Watching row on Kyro Home when Silo is not connected.
-
-7. **Settings UI for Multi-Server Jellyfin Management:**
-   - Current status: Server management UI in Settings is tied to `ServerRegistry` (Silo) and `LiveTVService` (IPTV).
-   - Gap: Needs a "Media Servers" section in Kyro Settings to view registered Jellyfin accounts, inspect sync status, sign out, or delete a server.
+4. **Playback:** Jellyfin detail deliberately shows “Playback is not available yet”; stream resolution and player handoff are not integrated. Do not include unfinished playback work in this milestone.
+5. **Progress and resume:** No Jellyfin playback reporting, resume action, or Continue Watching rail exists yet. Stages 7–8 and checklist items 11–12 are deferred.
+6. **Account management:** The Add Media Server sheet lists saved accounts and supports reconnect and remove. Explicit sign-out and a dedicated Settings management section are absent. Stage 10 is deferred; stage 11 can run through the sheet.
+7. **Physical-device evidence:** Generic iOS compilation and macOS package tests cannot establish real-server authentication, Keychain restoration, artwork rendering, profile switching, or Silo/IPTV behavior on the iPhone. Run the checklist only after a separately approved unsigned IPA build.
