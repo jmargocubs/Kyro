@@ -209,7 +209,9 @@ final class KyroLabsIdentityTests: XCTestCase {
         XCTAssertEqual(v["SILO_DOWNLOADS_ACTIVITY_BUNDLE_ID"], labs.bundleID + ".DownloadsActivity")
         XCTAssertEqual(v["KYRO_APP_ICON_NAME"], "KyroLabsAppIcon")
         for (key, value) in v where key.hasSuffix("_BUNDLE_ID") {
-            XCTAssertTrue(value.hasPrefix(labs.bundleID), "\(key) = \(value) is outside Labs's bundle ID")
+            let labsTV = "com.cubbiestream.kyro.tvos.labs"
+            XCTAssertTrue(value.hasPrefix(labs.bundleID) || value.hasPrefix(labsTV),
+                          "\(key) = \(value) is outside Labs's bundle IDs")
         }
     }
 
