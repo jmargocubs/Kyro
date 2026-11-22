@@ -157,8 +157,7 @@ jobs:
           T0=$(date +%s)
           xcodegen generate --spec project.yml
           xcodebuild -resolvePackageDependencies -project Silo.xcodeproj -scheme "$SCHEME" \
-            -clonedSourcePackagesDirPath .spm-packages \
-            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
+            -clonedSourcePackagesDirPath .spm-packages
           echo "RESOLVE_SECONDS=$(( $(date +%s) - T0 ))" >> "$GITHUB_ENV"
 
       - name: Archive (unsigned, Release) with resource sampling
@@ -178,7 +177,6 @@ jobs:
             -project Silo.xcodeproj -scheme "$SCHEME" -configuration Release \
             -destination "$DEST" -archivePath "$RUNNER_TEMP/$APP.xcarchive" \
             -clonedSourcePackagesDirPath .spm-packages \
-            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
             -jobs "$BUILD_JOBS" -showBuildTimingSummary \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' CODE_SIGN_ENTITLEMENTS='' \
             SILO_BUILD_CHANNEL=sideload MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \

@@ -30,7 +30,8 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        (github.event.workflow_run.head_branch == 'kyro/m1-rebrand' ||
-        github.event.workflow_run.head_branch == 'kyro/tvos')) }}
+        github.event.workflow_run.head_branch == 'kyro/tvos' ||
+        github.event.workflow_run.head_branch == 'kyro/phase2-stable-integration')) }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.KYRO }}
@@ -100,6 +101,7 @@ jobs:
                   f"!= IPA CFBundleVersion {build!r}"
               )
           platform = "tvos" if "AppleTVOS" in supported else "ios"
+          phase2_source = metadata.get("source_ref") == "kyro/phase2-stable-integration"
           if platform == "tvos":
               production_source = metadata.get("source_ref") == "kyro/tvos"
               build104_recovery = (
@@ -110,13 +112,14 @@ jobs:
               )
               if build104_recovery and plist.get("CFBundleDisplayName") != "Kyro Build 104":
                   raise SystemExit("Build 104 recovery display name mismatch")
-              if bundle != "com.cubbiestream.kyro.tvos" or not (production_source or build104_recovery):
+              if bundle != "com.cubbiestream.kyro.tvos" or not (production_source or build104_recovery or phase2_source):
                   raise SystemExit("tvOS bundle/source identity mismatch")
               if f"{app_root}/PlugIns/SiloTVTopShelf.appex/Info.plist" not in names:
                   raise SystemExit("tvOS IPA is missing the Top Shelf extension")
               catalog, name = "source.json", "Kyro Apple TV"
           else:
-              if bundle != "com.cubbiestream.kyro" or metadata.get("source_ref") != "kyro/m1-rebrand":
+              production_source = metadata.get("source_ref") == "kyro/m1-rebrand"
+              if bundle != "com.cubbiestream.kyro" or not (production_source or phase2_source):
                   raise SystemExit("iOS bundle/source identity mismatch")
               if "iPhoneOS" not in supported:
                   raise SystemExit("iOS IPA does not declare iPhoneOS")
