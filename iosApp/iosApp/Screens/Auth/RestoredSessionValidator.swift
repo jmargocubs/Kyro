@@ -246,7 +246,14 @@ enum RestoredSessionAuthResolver {
         guard auth.hasServer,
               let activeServerID = ServerRegistry.shared.activeServerId,
               !activeServerID.isEmpty else {
-            return LocalResolution(state: .needsServerSetup, restoredAccount: nil)
+            do {
+                try await KyroLocalIdentityRuntime.shared.ensureInitialProfile()
+                return LocalResolution(state: .needsProfile, restoredAccount: nil)
+            } catch {
+                // The existing profile picker owns storage error presentation;
+                // it keeps the same first-run surface without requiring Silo.
+                return LocalResolution(state: .needsProfile, restoredAccount: nil)
+            }
         }
 
         guard await TokenStore.shared.hasAccessTokenForActiveServer(serverId: activeServerID) else {

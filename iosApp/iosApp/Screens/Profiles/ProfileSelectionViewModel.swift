@@ -19,8 +19,11 @@ class ProfileSelectionViewModel {
     private let auth = AuthService.shared
     private let launchPreferences = ProfileLaunchPreferences.shared
 
+    var isKyroLocalMode: Bool { !auth.hasServer }
+
     init() {
-        if let cached: [UserProfile] = ResponseCache.shared.get(CacheKey.profiles) {
+        if !isKyroLocalMode,
+           let cached: [UserProfile] = ResponseCache.shared.get(CacheKey.profiles) {
             profiles = cached
         }
     }
@@ -38,6 +41,17 @@ class ProfileSelectionViewModel {
             isRefreshing = false
         }
 
+        if isKyroLocalMode {
+            do {
+                try await KyroLocalIdentityRuntime.shared.ensureInitialProfile()
+                profiles = try await KyroLocalIdentityRuntime.shared.profiles()
+                accountName = "Kyro"
+            } catch {
+                self.error = ErrorState(error)
+            }
+            return
+        }
+
         do {
             let fresh = try await StartupContentPrefetcher.fetchProfiles()
             profiles = fresh
@@ -53,12 +67,13 @@ class ProfileSelectionViewModel {
     private(set) var accountName: String?
 
     func loadAccount() async {
+        guard !isKyroLocalMode else { accountName = "Kyro"; return }
         accountName = try? await SiloAPI.shared.currentUser().username
     }
 
     var primaryProfile: UserProfile? {
         profiles.first(where: \.isPrimary)
-            ?? (profiles.count == 1 ? profiles.first : nil)
+            ?? (isKyroLocalMode ? profiles.first : (profiles.count == 1 ? profiles.first : nil))
     }
 
     /// Select a profile that has no PIN and navigate to home.
@@ -79,6 +94,11 @@ class ProfileSelectionViewModel {
     private func select(_ profile: UserProfile, pin: String?, router: AppRouter) async throws {
         guard await clearTemporaryManagementContextIfNeeded() else {
             throw ProfileManagementError.temporaryContextCleanupFailed
+        }
+        if isKyroLocalMode {
+            try await KyroLocalIdentityRuntime.shared.select(profile, pin: pin)
+            router.resetToHome()
+            return
         }
         try await auth.selectProfile(
             profileId: profile.id,
@@ -120,6 +140,16 @@ class ProfileSelectionViewModel {
     func prepareForProfileManagement(pin: String? = nil) async throws {
         guard let primaryProfile else {
             throw ProfileManagementError.primaryProfileUnavailable
+        }
+        if isKyroLocalMode {
+            if primaryProfile.hasPin {
+                guard let pin,
+                      let uuid = UUID(uuidString: primaryProfile.id),
+                      try await KyroLocalIdentityRuntime.shared.verify(pin, profileID: uuid) else {
+                    throw ProfileTransitionError.incorrectPIN
+                }
+            }
+            return
         }
         try await auth.selectProfile(
             profileId: primaryProfile.id,
