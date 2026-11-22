@@ -3,6 +3,15 @@ import XCTest
 
 /// Covers moving stored state from its pre-rename `continuum` names.
 final class SiloRenameMigrationTests: XCTestCase {
+    /// Kyro Labs has no pre-rename items and never moves any: its legacy mapping is disabled by
+    /// design (`KyroAppIdentity.labs`). `KyroLabsIdentityTests` covers that behavior instead.
+    override func setUpWithError() throws {
+        try XCTSkipUnless(
+            KyroAppIdentity.current.legacyKeychainAccountPrefix != nil,
+            "The pre-rename keychain migration exists only in stable Kyro."
+        )
+    }
+
     private func keychains() -> (current: SharedKeychain, legacy: SharedKeychain) {
         let name = "SiloRenameMigrationTests.\(UUID().uuidString)"
         let legacyName = name + ".legacy"

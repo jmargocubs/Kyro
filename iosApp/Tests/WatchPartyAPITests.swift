@@ -110,19 +110,19 @@ final class WatchPartyAPITests: XCTestCase {
 
     func testAppLinkInvitationMatchesTheWebLink() throws {
         let app = try XCTUnwrap(WatchPartyInvitation(url: URL(string:
-            "kyro://watch-party?server=https%3A%2F%2Fexample.test%2Fsilo%2F&token=invite%2Bproof")!))
+            "\(SiloURLScheme.current)://watch-party?server=https%3A%2F%2Fexample.test%2Fsilo%2F&token=invite%2Bproof")!))
         let web = try XCTUnwrap(WatchPartyInvitation(url: URL(string: "https://example.test/silo/rooms/join?token=invite%2Bproof")!))
         XCTAssertEqual(app, web)
         let lan = try XCTUnwrap(WatchPartyInvitation(url: URL(string: "SILO://watch-party?server=HTTP://192.168.1.10:8090&token=t")!))
         XCTAssertEqual(lan.serverURL, "http://192.168.1.10:8090")
-        for value in ["kyro://watch-party?token=a", "kyro://watch-party?server=https://example.test&token=",
-                      "kyro://watch-party?server=https://example.test&token=a&token=b",
-                      "kyro://watch-party?server=https://example.test&server=https://other.test&token=a",
-                      "kyro://watch-party?server=https://user:pass@example.test&token=a",
-                      "kyro://watch-party?server=https://example.test?x=1&token=a",
-                      "kyro://watch-party?server=file:///srv&token=a", "kyro://watch-party?server=example.test&token=a",
-                      "kyro://watch-party/other?server=https://example.test&token=a",
-                      "kyro://invite?server=https://example.test&token=a",
+        for value in ["\(SiloURLScheme.current)://watch-party?token=a", "\(SiloURLScheme.current)://watch-party?server=https://example.test&token=",
+                      "\(SiloURLScheme.current)://watch-party?server=https://example.test&token=a&token=b",
+                      "\(SiloURLScheme.current)://watch-party?server=https://example.test&server=https://other.test&token=a",
+                      "\(SiloURLScheme.current)://watch-party?server=https://user:pass@example.test&token=a",
+                      "\(SiloURLScheme.current)://watch-party?server=https://example.test?x=1&token=a",
+                      "\(SiloURLScheme.current)://watch-party?server=file:///srv&token=a", "\(SiloURLScheme.current)://watch-party?server=example.test&token=a",
+                      "\(SiloURLScheme.current)://watch-party/other?server=https://example.test&token=a",
+                      "\(SiloURLScheme.current)://invite?server=https://example.test&token=a",
                       "continuum://watch-party?server=https://example.test&token=a"] {
             XCTAssertNil(WatchPartyInvitation(url: URL(string: value)!), value)
         }

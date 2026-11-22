@@ -1,4 +1,4 @@
-name: Publish approved IPA and update catalog
+name: Publish Kyro Labs IPA and update catalog
 
 on:
   workflow_run:
@@ -29,8 +29,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       (github.event.workflow_run.head_branch == 'kyro/m1-rebrand' ||
-        github.event.workflow_run.head_branch == 'kyro/tvos')) }}
+       github.event.workflow_run.head_branch == 'kyro/labs-phase2') }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.KYRO }}
@@ -46,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/build"
-          mapfile -t artifacts < <(gh api "repos/$KYRO_REPO/actions/runs/$RUN_ID/artifacts" --paginate --jq '.artifacts[] | select(.expired == false and (.name | startswith("Kyro-ios-unsigned-ipa-") or startswith("Kyro-tvos-unsigned-ipa-"))) | .name')
+          mapfile -t artifacts < <(gh api "repos/$KYRO_REPO/actions/runs/$RUN_ID/artifacts" --paginate --jq '.artifacts[] | select(.expired == false and (.name | startswith("Kyro-Labs-ios-unsigned-ipa-") or startswith("Kyro-Labs-tvos-unsigned-ipa-"))) | .name')
           test "${#artifacts[@]}" -eq 1
           gh run download "$RUN_ID" --repo "$KYRO_REPO" --name "${artifacts[0]}" --dir "$RUNNER_TEMP/build"
 
@@ -60,6 +59,10 @@ jobs:
           python3 - "$ipa" "$RUNNER_TEMP/build" "$GITHUB_OUTPUT" "$RUNNER_TEMP" <<'PY'
           import hashlib, pathlib, plistlib, sys, zipfile
           ipa, build_dir, output, temp_dir = map(pathlib.Path, sys.argv[1:])
+
+          def archive_bytes(path, member):
+              with zipfile.ZipFile(path) as z:
+                  return z.read(member)
           with zipfile.ZipFile(ipa) as archive:
               names = archive.namelist()
               forbidden = [n for n in names if n.endswith(("embedded.mobileprovision", ".p8", ".p12", ".cer", ".mobileprovision"))]
@@ -100,27 +103,31 @@ jobs:
                   f"!= IPA CFBundleVersion {build!r}"
               )
           platform = "tvos" if "AppleTVOS" in supported else "ios"
+          # Kyro Labs only: never production bundle IDs, never a production catalog entry.
+          if metadata.get("source_ref") != "kyro/labs-phase2":
+              raise SystemExit("Labs publishing only accepts kyro/labs-phase2")
+          if plist.get("KyroAppVariant") != "labs" or plist.get("CFBundleDisplayName") != "Kyro Labs":
+              raise SystemExit("IPA is not the Kyro Labs variant")
           if platform == "tvos":
-              production_source = metadata.get("source_ref") == "kyro/tvos"
-              build104_recovery = (
-                  metadata.get("source_ref") == "kyro/tvos-build104-recovery"
-                  and metadata.get("source_commit") == "f66d9e929cce41c90b67bbeaffaf057f342438d1"
-                  and build == "104"
-                  and version == "1.0.104"
-              )
-              if build104_recovery and plist.get("CFBundleDisplayName") != "Kyro Build 104":
-                  raise SystemExit("Build 104 recovery display name mismatch")
-              if bundle != "com.cubbiestream.kyro.tvos" or not (production_source or build104_recovery):
-                  raise SystemExit("tvOS bundle/source identity mismatch")
+              if bundle != "com.cubbiestream.kyro.tvos.labs":
+                  raise SystemExit("tvOS Labs bundle identity mismatch")
               if f"{app_root}/PlugIns/SiloTVTopShelf.appex/Info.plist" not in names:
                   raise SystemExit("tvOS IPA is missing the Top Shelf extension")
-              catalog, name = "source.json", "Kyro Apple TV"
+              ts = plistlib.loads(archive_bytes(ipa, f"{app_root}/PlugIns/SiloTVTopShelf.appex/Info.plist"))
+              if ts["CFBundleIdentifier"] != "com.cubbiestream.kyro.tvos.labs.topshelf":
+                  raise SystemExit("Top Shelf ID is not the Labs Top Shelf ID")
+              catalog, name = "source.json", "Kyro Labs Apple TV"
           else:
-              if bundle != "com.cubbiestream.kyro" or metadata.get("source_ref") != "kyro/m1-rebrand":
-                  raise SystemExit("iOS bundle/source identity mismatch")
+              if bundle != "com.cubbiestream.kyro.labs":
+                  raise SystemExit("iOS Labs bundle identity mismatch")
               if "iPhoneOS" not in supported:
                   raise SystemExit("iOS IPA does not declare iPhoneOS")
-              catalog, name = "source.json", "Kyro"
+              for n in names:
+                  if n.endswith(".appex/Info.plist"):
+                      ext = plistlib.loads(archive_bytes(ipa, n))["CFBundleIdentifier"]
+                      if not ext.startswith("com.cubbiestream.kyro.labs."):
+                          raise SystemExit(f"extension {ext} is outside the Labs bundle ID")
+              catalog, name = "source.json", "Kyro Labs"
           if "arm64" not in __import__("subprocess").check_output(["file", str(temp_dir / "app-bin")], text=True):
               raise SystemExit("IPA is not arm64")
           sha = hashlib.sha256(ipa.read_bytes()).hexdigest()
@@ -147,21 +154,14 @@ jobs:
           SOURCE_SHA: ${{ steps.metadata.outputs.source_sha }}
         run: |
           set -euo pipefail
-          tag="kyro-${PLATFORM}-v${VERSION}-build${BUILD}-rc1"
-          title="Kyro ${PLATFORM} ${VERSION} Build ${BUILD}"
-          # Cloud unsigned IPA names include platform ("…-ios-unsigned-arm64.ipa").
-          # Feather / NullSign catalog URLs for iOS expect Kyro-vX-BuildN-Unsigned.ipa.
-          if [ "$PLATFORM" = ios ]; then
-            published="$RUNNER_TEMP/Kyro-v${VERSION}-Build${BUILD}-Unsigned.ipa"
-            cp "$IPA" "$published"
-            IPA="$published"
-          fi
+          tag="kyro-labs-${PLATFORM}-v${VERSION}-build${BUILD}-rc1"
+          title="Kyro Labs ${PLATFORM} ${VERSION} Build ${BUILD}"
           checksum="$RUNNER_TEMP/$(basename "$IPA").sha256"
           printf '%s  %s\n' "$SHA" "$(basename "$IPA")" > "$checksum"
           if gh release view "$tag" --repo "$KYRO_REPO" >/dev/null 2>&1; then
             test "$(gh release view "$tag" --repo "$KYRO_REPO" --json isPrerelease --jq .isPrerelease)" = true
           else
-            gh release create "$tag" "$IPA" "$checksum" --repo "$KYRO_REPO" --target "$SOURCE_SHA" --prerelease --title "$title" --notes "UNSIGNED PRE-RELEASE — NOT YET DEVICE VERIFIED. Users must sign and sideload this ${PLATFORM} application themselves. SHA-256: $SHA"
+            gh release create "$tag" "$IPA" "$checksum" --repo "$KYRO_REPO" --target "$SOURCE_SHA" --prerelease --title "$title" --notes "KYRO LABS EXPERIMENTAL UNSIGNED PRE-RELEASE — NOT DEVICE VERIFIED. Separate from production Kyro (own bundle IDs); built from the Phase 2 source. Users must sign and sideload this ${PLATFORM} application themselves. SHA-256: $SHA"
           fi
 
       - name: Update feather-apps catalog
@@ -207,22 +207,38 @@ jobs:
           listing_name = f"{name}{listing_sep}{build}"
           data = json.loads(pathlib.Path(path).read_text())
 
+          TEMPLATES = {
+              "com.cubbiestream.kyro.labs": {
+                  "subtitle": "Experimental builds of Kyro",
+                  "localizedDescription": "Kyro Labs is the experimental edition of Kyro. It installs separately from Kyro, keeps its own data and sign-in, and may be less stable. This unsigned beta requires your own signing and sideloading setup.",
+              },
+              "com.cubbiestream.kyro.tvos.labs": {
+                  "subtitle": "Experimental builds of Kyro for Apple TV",
+                  "localizedDescription": "Kyro Labs Apple TV is the experimental edition of Kyro for tvOS. It installs separately from Kyro Apple TV, keeps its own data and sign-in, and may be less stable. This unsigned beta requires your own signing and sideloading setup.",
+              },
+          }
+
           def find_app(apps):
+              # Labs entries are matched by bundle ID only, never by name, so a production
+              # listing can never be selected. A missing Labs entry is created.
               for candidate in apps:
                   if candidate.get("bundleIdentifier") == bundle_id:
                       return candidate
-              for candidate in apps:
-                  current = candidate.get("name") or ""
-                  if current == name or current.startswith(name + listing_sep):
-                      return candidate
-              raise SystemExit(f"catalog app not found for bundle {bundle_id} / name {name}")
+              if not bundle_id.endswith(".labs"):
+                  raise SystemExit("refusing to create a non-Labs catalog entry")
+              entry = {"name": listing_name, "bundleIdentifier": bundle_id, "developerName": "jmargocubs",
+                       **TEMPLATES[bundle_id],
+                       "iconURL": "https://jmargocubs.github.io/feather-apps/assets/kyro-labs/icon.png",
+                       "tintColor": "#F59E0B", "size": 0, "versions": []}
+              apps.append(entry)
+              return entry
 
           app = find_app(data["apps"])
           if app.get("bundleIdentifier") not in (None, bundle_id):
               raise SystemExit(f"bundle mismatch for {name}: {app.get('bundleIdentifier')} != {bundle_id}")
           app["bundleIdentifier"] = bundle_id
-          url = f"https://github.com/jmargocubs/Kyro/releases/download/kyro-{platform}-v{version}-build{build}-rc1/" + (f"Kyro-{version}-{build}-tvos-unsigned-arm64.ipa" if platform == "tvos" else f"Kyro-v{version}-Build{build}-Unsigned.ipa")
-          expected = {"version": version, "buildVersion": build, "downloadURL": url, "size": int(ipa_size), "minOSVersion": min_os}
+          url = f"https://github.com/jmargocubs/Kyro/releases/download/kyro-labs-{platform}-v{version}-build{build}-rc1/Kyro-Labs-{version}-{build}-{platform}-unsigned-arm64.ipa"
+          expected = {"version": version, "buildVersion": build, "date": __import__("datetime").date.today().isoformat(), "downloadURL": url, "size": int(ipa_size), "minOSVersion": min_os}
           for old in app.get("versions", []):
               if old.get("version") == version and old.get("buildVersion") == build:
                   if old.get("downloadURL") != url or old.get("size") != expected["size"]:
@@ -289,7 +305,7 @@ jobs:
             echo "deferred=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git commit -m "Update Kyro $PLATFORM to Build $BUILD"
+          git commit -m "Publish Kyro Labs $PLATFORM Build $BUILD"
 
           # Rebase/retry push softens races with other catalog writers until the
           # feather-apps cross-repo catalog-write lock is adopted.

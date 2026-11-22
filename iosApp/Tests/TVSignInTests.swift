@@ -37,7 +37,7 @@ final class TVSignInTests: XCTestCase {
         // A web approval link from an older server reaches the field as its
         // `initialCode` and still enables Continue.
         let link = try XCTUnwrap(DeviceApprovalLink(url: XCTUnwrap(URL(string:
-            "kyro://device?url=http://10.0.0.2:8090&code=ABCD-EFGH"))))
+            "\(SiloURLScheme.current)://device?url=http://10.0.0.2:8090&code=ABCD-EFGH"))))
         XCTAssertEqual(link.code, "ABCDEFGH")
         let field = DeviceUserCode.entryText(link.code)
         XCTAssertEqual(field, "ABCD EFGH")
@@ -92,15 +92,15 @@ final class TVSignInTests: XCTestCase {
 
     func testDeviceLinksCarryTheServerIdentityAddressAndCode() throws {
         let link = try XCTUnwrap(DeviceApprovalLink(url: XCTUnwrap(URL(string:
-            "kyro://device?server=3f2a9d5e&url=https%3A%2F%2Fsilo.example.com%2F&code=4821-7730"))))
+            "\(SiloURLScheme.current)://device?server=3f2a9d5e&url=https%3A%2F%2Fsilo.example.com%2F&code=4821-7730"))))
         XCTAssertEqual(link.serverId, "3f2a9d5e")
         XCTAssertEqual(link.serverURL, "https://silo.example.com")
         XCTAssertEqual(link.code, "48217730")
-        XCTAssertNil(DeviceApprovalLink(url: try XCTUnwrap(URL(string: "kyro://device?code=48217730"))),
+        XCTAssertNil(DeviceApprovalLink(url: try XCTUnwrap(URL(string: "\(SiloURLScheme.current)://device?code=48217730"))),
             "a bare code means nothing without its server")
-        XCTAssertNil(DeviceApprovalLink(url: try XCTUnwrap(URL(string: "kyro://device?server=x&url=javascript:alert(1)&code="))))
-        XCTAssertNil(DeviceApprovalLink(url: try XCTUnwrap(URL(string: "kyro://item/abc?code=1"))))
-        let urlOnly = try XCTUnwrap(DeviceApprovalLink(url: XCTUnwrap(URL(string: "kyro://device?url=http://10.0.0.2:8090&code=11112222"))))
+        XCTAssertNil(DeviceApprovalLink(url: try XCTUnwrap(URL(string: "\(SiloURLScheme.current)://device?server=x&url=javascript:alert(1)&code="))))
+        XCTAssertNil(DeviceApprovalLink(url: try XCTUnwrap(URL(string: "\(SiloURLScheme.current)://item/abc?code=1"))))
+        let urlOnly = try XCTUnwrap(DeviceApprovalLink(url: XCTUnwrap(URL(string: "\(SiloURLScheme.current)://device?url=http://10.0.0.2:8090&code=11112222"))))
         XCTAssertNil(urlOnly.serverId)
         XCTAssertEqual(urlOnly.serverURL, "http://10.0.0.2:8090")
     }
@@ -110,7 +110,7 @@ final class TVSignInTests: XCTestCase {
             lastUsedAt: Date(), verifiedServerId: "srv-home")
         let unverified = ServerEntry(id: "lan", url: "http://192.168.1.4:8090", fetchedName: "Lan", profileId: nil, lastUsedAt: Date())
         func link(_ query: String) throws -> DeviceApprovalLink {
-            try XCTUnwrap(DeviceApprovalLink(url: XCTUnwrap(URL(string: "kyro://device?\(query)"))))
+            try XCTUnwrap(DeviceApprovalLink(url: XCTUnwrap(URL(string: "\(SiloURLScheme.current)://device?\(query)"))))
         }
         let probes: [String: ServerIdentityProbeResult] = [
             "http://192.168.1.4:8090": .identity("srv-lan"),
@@ -149,7 +149,7 @@ final class TVSignInTests: XCTestCase {
         let other = ServerEntry(id: "other", url: "https://other.example", fetchedName: "Other", profileId: nil,
             lastUsedAt: Date(), verifiedServerId: "srv-other")
         func link(_ query: String) throws -> DeviceApprovalLink {
-            try XCTUnwrap(DeviceApprovalLink(url: XCTUnwrap(URL(string: "kyro://device?\(query)"))))
+            try XCTUnwrap(DeviceApprovalLink(url: XCTUnwrap(URL(string: "\(SiloURLScheme.current)://device?\(query)"))))
         }
         let probe: (String) async -> ServerIdentityProbeResult = { url in
             switch url {

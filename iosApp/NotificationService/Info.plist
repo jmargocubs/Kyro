@@ -20,8 +20,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>KyroAppVariant</key>
+	<string>$(KYRO_APP_VARIANT)</string>
 	<key>SiloKeychainAccessGroup</key>
-	<string>$(AppIdentifierPrefix)com.cubbiestream.kyro.shared</string>
+	<string>$(AppIdentifierPrefix)$(KYRO_KEYCHAIN_GROUP)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

@@ -16,13 +16,13 @@ final class SiriIntentTests: XCTestCase {
     }
 
     func testTermIsTrimmedAndBlankOpensEmptySearch() throws {
-        XCTAssertEqual(SiriSearchLink.term(from: try XCTUnwrap(URL(string: "kyro://search?q=%20Dune%0A"))), "Dune")
-        XCTAssertEqual(SiriSearchLink.term(from: try XCTUnwrap(URL(string: "kyro://search"))), "")
+        XCTAssertEqual(SiriSearchLink.term(from: try XCTUnwrap(URL(string: "\(SiloURLScheme.current)://search?q=%20Dune%0A"))), "Dune")
+        XCTAssertEqual(SiriSearchLink.term(from: try XCTUnwrap(URL(string: "\(SiloURLScheme.current)://search"))), "")
         XCTAssertEqual(SiriSearchLink.term(from: try XCTUnwrap(URL(string: "continuum://search?q=Dune"))), "Dune")
     }
 
     func testOtherLinksAreNotSearchLinks() throws {
-        XCTAssertNil(SiriSearchLink.term(from: try XCTUnwrap(URL(string: "kyro://item/abc?q=Dune"))))
+        XCTAssertNil(SiriSearchLink.term(from: try XCTUnwrap(URL(string: "\(SiloURLScheme.current)://item/abc?q=Dune"))))
         XCTAssertNil(SiriSearchLink.term(from: try XCTUnwrap(URL(string: "https://search?q=Dune"))))
     }
 

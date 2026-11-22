@@ -112,7 +112,7 @@ jobs:
             { echo "SCHEME=Silo"; echo "APP=Silo"; echo "DEST=generic/platform=iOS"; echo "EXTRA="; } >> "$GITHUB_ENV"
           else
             echo "BUILD_JOBS=2" >> "$GITHUB_ENV"
-            { echo "SCHEME=SiloTV"; echo "APP=SiloTV"; echo "DEST=generic/platform=tvOS"; echo "EXTRA=SILO_USER_INDEPENDENT_KEYCHAIN=NO"; } >> "$GITHUB_ENV"
+            { echo "SCHEME=SiloTV"; echo "APP=SiloTV"; echo "DEST=generic/platform=tvOS"; echo "EXTRA=SILO_USER_INDEPENDENT_KEYCHAIN=NO SILO_TV_BUNDLE_ID=com.cubbiestream.kyro.tvos.labs SILO_TOPSHELF_BUNDLE_ID=com.cubbiestream.kyro.tvos.labs.topshelf"; } >> "$GITHUB_ENV"
           fi
 
       - name: Select Xcode 27.1 and record environment
@@ -195,14 +195,12 @@ jobs:
           set -euo pipefail
           APP_PATH="$RUNNER_TEMP/$APP.xcarchive/Products/Applications/$APP.app"
           test -d "$APP_PATH"
-          if [ "$PLATFORM" = tvos ]; then
-            /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Kyro Build $BUILD" "$APP_PATH/Info.plist"
-            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_PATH/Info.plist")" = "Kyro Build $BUILD"
-          fi
           OUT="$GITHUB_WORKSPACE/out"; mkdir -p "$OUT/stage/Payload"
           cp -R "$APP_PATH" "$OUT/stage/Payload/"
           python3 scripts/ci/validate-subtitle-packaging.py "$OUT/stage/Payload/$APP.app"
-          IPA="Kyro-${VERSION}-${BUILD}-${PLATFORM}-unsigned-arm64.ipa"
+          # This branch builds Kyro Labs on iOS (com.cubbiestream.kyro.labs) and Apple TV
+          # (com.cubbiestream.kyro.tvos.labs); artifacts never reuse a stable Kyro name.
+          IPA="Kyro-Labs-${VERSION}-${BUILD}-${PLATFORM}-unsigned-arm64.ipa"
           (cd "$OUT/stage" && zip -qry "$OUT/$IPA" Payload)
           rm -rf "$OUT/stage"
           unzip -l "$OUT/$IPA" | grep -q "Payload/$APP.app/Info.plist"
@@ -215,12 +213,26 @@ jobs:
           ARCH=$(lipo -archs "$APP_PATH/$APP")
           SUPPORTED_PLATFORM=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$PLIST")
           if [ "$PLATFORM" = ios ]; then
-            EXPECTED_BUNDLE_ID=com.cubbiestream.kyro
+            EXPECTED_BUNDLE_ID=com.cubbiestream.kyro.labs
             EXPECTED_PLATFORM=iPhoneOS
+            # Isolation guards: Labs identity, Labs-prefixed extensions, no stable keychain group.
+            [ "$(/usr/libexec/PlistBuddy -c 'Print :KyroAppVariant' "$PLIST")" = labs ] || { echo "KyroAppVariant is not labs"; exit 1; }
+            [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST")" = "Kyro Labs" ] || { echo "display name is not Kyro Labs"; exit 1; }
+            for APPEX in "$APP_PATH"/PlugIns/*.appex; do
+              EXT_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist")
+              case "$EXT_ID" in com.cubbiestream.kyro.labs.*) ;; *) echo "extension $EXT_ID is outside the Labs bundle ID"; exit 1 ;; esac
+            done
+            if grep -rl "com.cubbiestream.kyro.shared" "$APP_PATH" --include=Info.plist >/dev/null 2>&1; then echo "stable keychain group found in a Labs bundle"; exit 1; fi
           else
-            EXPECTED_BUNDLE_ID=com.cubbiestream.kyro.tvos
+            EXPECTED_BUNDLE_ID=com.cubbiestream.kyro.tvos.labs
             EXPECTED_PLATFORM=AppleTVOS
             test -d "$APP_PATH/PlugIns/SiloTVTopShelf.appex"
+            [ "$(/usr/libexec/PlistBuddy -c 'Print :KyroAppVariant' "$PLIST")" = labs ] || { echo "KyroAppVariant is not labs"; exit 1; }
+            [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST")" = "Kyro Labs" ] || { echo "display name is not Kyro Labs"; exit 1; }
+            TS_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/PlugIns/SiloTVTopShelf.appex/Info.plist")
+            [ "$TS_ID" = com.cubbiestream.kyro.tvos.labs.topshelf ] || { echo "Top Shelf ID $TS_ID is not the Labs Top Shelf ID"; exit 1; }
+            [ "$(/usr/libexec/PlistBuddy -c 'Print :KyroAppVariant' "$APP_PATH/PlugIns/SiloTVTopShelf.appex/Info.plist")" = labs ] || { echo "Top Shelf variant is not labs"; exit 1; }
+            if grep -rl "com.cubbiestream.kyro.shared" "$APP_PATH" --include=Info.plist >/dev/null 2>&1; then echo "stable keychain group found in a Labs bundle"; exit 1; fi
           fi
           [ "$BUNDLE_ID" = "$EXPECTED_BUNDLE_ID" ] || { echo "CFBundleIdentifier $BUNDLE_ID != $EXPECTED_BUNDLE_ID"; exit 1; }
           [ "$SUPPORTED_PLATFORM" = "$EXPECTED_PLATFORM" ] || { echo "supported platform $SUPPORTED_PLATFORM != $EXPECTED_PLATFORM"; exit 1; }
@@ -257,7 +269,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           # Include run_id so concurrent platform builds and retries never clobber names.
-          name: Kyro-${{ inputs.platform }}-unsigned-ipa-${{ inputs.build_number }}-${{ github.run_id }}
+          name: Kyro-Labs-${{ inputs.platform }}-unsigned-ipa-${{ inputs.build_number }}-${{ github.run_id }}
           path: out/
           retention-days: 7
           if-no-files-found: error

@@ -222,7 +222,7 @@ struct EPGKeyStoreError: Error, Equatable, Sendable {
 /// keychain entitlement reads as unavailable, which disables cached guides rather than weakening
 /// the key.
 struct KeychainEPGFingerprintKeyStore: EPGFingerprintKeyStoring {
-    static let defaultService = "com.cubbiestream.kyro.livetv.epg-source-key"
+    static let defaultService = KyroAppIdentity.current.epgKeyKeychainService
     static let account = "hmac-sha256-v1"
 
     let service: String

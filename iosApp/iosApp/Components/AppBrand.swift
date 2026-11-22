@@ -8,7 +8,7 @@ import SwiftUI
 /// device names sent to the server and internal identifiers never use it.
 enum AppBrand {
     #if os(iOS)
-    static let name = "Kyro"
+    static let name = KyroAppIdentity.current.displayName
     #else
     static let name = "Silo"
     #endif

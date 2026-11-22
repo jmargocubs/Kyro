@@ -16,7 +16,7 @@ import Security
 enum SharedStorage {
     /// Must match the `com.apple.security.application-groups` entitlement
     /// on both the main app and the extension.
-    static let appGroup = "group.com.cubbiestream.kyro"
+    static let appGroup = KyroAppIdentity.current.appGroup
 
     /// Must match the `keychain-access-groups` entitlement on both sides.
     /// Resolved from a build-expanded Info.plist value so personal-team
@@ -24,10 +24,10 @@ enum SharedStorage {
     static let keychainAccessGroup = RuntimeConfiguration.sharedKeychainAccessGroup
 
     /// Shared Keychain service name. Same on both sides.
-    static let keychainService = "com.cubbiestream.kyro"
+    static let keychainService = KyroAppIdentity.current.keychainService
 
     /// Every Keychain account the apps own starts with this prefix.
-    static let keychainAccountPrefix = "com.cubbiestream.kyro."
+    static let keychainAccountPrefix = KyroAppIdentity.current.keychainAccountPrefix
 
     /// Builds before the continuum → silo rename stored every item under
     /// this service, with `com.continuum.` where accounts now use
@@ -35,12 +35,12 @@ enum SharedStorage {
     /// moves an item to its current name the first time it is read, so
     /// whichever process runs first after an update (app or extension)
     /// migrates it.
-    static let legacyKeychainService = "com.continuum.app"
-    static let legacyKeychainAccountPrefix = "com.continuum."
+    static let legacyKeychainService: String? = KyroAppIdentity.current.legacyKeychainService
+    static let legacyKeychainAccountPrefix: String? = KyroAppIdentity.current.legacyKeychainAccountPrefix
 
     /// The account that held `account` under the legacy service.
     static func legacyKeychainAccount(for account: String) -> String {
-        if account.hasPrefix(keychainAccountPrefix) {
+        if let legacyKeychainAccountPrefix, account.hasPrefix(keychainAccountPrefix) {
             return legacyKeychainAccountPrefix + account.dropFirst(keychainAccountPrefix.count)
         }
         // Unprefixed names (`watchParty.recent.v1`) and names read as-is from
@@ -106,7 +106,7 @@ enum SharedStorage {
 }
 
 enum SideloadKeychainFallbackPolicy {
-    private static let canonicalAccessGroup = "com.cubbiestream.kyro.shared"
+    private static let canonicalAccessGroup = KyroAppIdentity.current.keychainGroupSuffix
 
     static func isEnabled(buildChannel: String, isPreIOS26: Bool) -> Bool {
         buildChannel == "sideload" && isPreIOS26

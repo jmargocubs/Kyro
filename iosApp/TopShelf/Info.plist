@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Kyro</string>
+	<string>$(KYRO_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -20,8 +20,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>KyroAppVariant</key>
+	<string>$(KYRO_APP_VARIANT)</string>
 	<key>SiloKeychainAccessGroup</key>
-	<string>$(AppIdentifierPrefix)com.cubbiestream.kyro.shared</string>
+	<string>$(AppIdentifierPrefix)$(KYRO_KEYCHAIN_GROUP)</string>
 	<key>SiloUsesUserIndependentKeychain</key>
 	<string>$(SILO_USER_INDEPENDENT_KEYCHAIN)</string>
 	<key>NSAppTransportSecurity</key>
