@@ -16,6 +16,7 @@ let package = Package(
     .library(name: "KyroSourceXtream", targets: ["KyroSourceXtream"]),
     .library(name: "KyroPlayback", targets: ["KyroPlayback"]),
     .library(name: "KyroCapabilities", targets: ["KyroCapabilities"]),
+    .library(name: "KyroProviders", targets: ["KyroProviders"]),
   ],
   dependencies: [
     .package(url: "https://github.com/apple/swift-crypto", exact: "3.15.1")
@@ -40,6 +41,12 @@ let package = Package(
       name: "KyroSourceXtream", dependencies: ["KyroFoundation", "KyroCatalog", "KyroSources"]),
     .target(name: "KyroPlayback", dependencies: ["KyroFoundation"]),
     .target(name: "KyroCapabilities", dependencies: ["KyroFoundation"]),
+    .target(
+      name: "KyroProviders",
+      dependencies: [
+        "KyroFoundation", "KyroCatalog", "KyroCapabilities", "KyroIdentity",
+        .product(name: "Crypto", package: "swift-crypto"),
+      ]),
     .testTarget(
       name: "KyroMediaCoreTests",
       dependencies: [
@@ -51,11 +58,12 @@ let package = Package(
     + [
       "KyroFoundation", "KyroCredentials", "KyroIdentity", "KyroLedger", "KyroCatalog",
       "KyroMatching", "KyroSources", "KyroSourceJellyfin", "KyroSourceXtream", "KyroPlayback",
-      "KyroCapabilities",
+      "KyroCapabilities", "KyroProviders",
     ].map { module in
       var dependencies: [Target.Dependency] = [.target(name: module)]
       if module != "KyroFoundation" { dependencies.append("KyroFoundation") }
       if module == "KyroMatching" { dependencies.append("KyroCatalog") }
+      if module == "KyroProviders" { dependencies.append("KyroIdentity") }
       if module == "KyroCredentials" {
         dependencies.append(.product(name: "Crypto", package: "swift-crypto"))
       }

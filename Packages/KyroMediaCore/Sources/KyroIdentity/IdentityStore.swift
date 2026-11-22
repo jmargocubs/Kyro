@@ -83,6 +83,15 @@ public struct IdentityStore: Sendable {
       state.accounts.append(account)
     }
   }
+  /// Removes one provider account and the grants that referenced it. Profiles, PINs and every
+  /// other account are untouched: a provider coming and going never deletes a Kyro profile.
+  public func removeAccount(_ id: ProviderAccountID) async throws {
+    try await update { state in
+      guard state.accounts.contains(where: { $0.id == id }) else { throw IdentityError.missing }
+      state.accounts.removeAll { $0.id == id }
+      state.grants.removeAll { $0.account == id }
+    }
+  }
   public func accounts() async throws -> [ProviderAccount] {
     try await database.load(State.self, key: key)?.accounts ?? []
   }

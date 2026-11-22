@@ -139,6 +139,8 @@ targets:
         product: KyroIdentity
       - package: KyroMediaCore
         product: KyroCredentials
+      - package: KyroMediaCore
+        product: KyroProviders
       - target: SiloNotificationService
         embed: true
       - target: SiloDownloadsActivity
@@ -201,6 +203,8 @@ targets:
         product: KyroIdentity
       - package: KyroMediaCore
         product: KyroCredentials
+      - package: KyroMediaCore
+        product: KyroProviders
       - target: SiloTVTopShelf
         embed: true
 
@@ -258,6 +262,8 @@ targets:
         product: KyroIdentity
       - package: KyroMediaCore
         product: KyroCredentials
+      - package: KyroMediaCore
+        product: KyroProviders
 
   # Top Shelf extension: populates the Apple TV Home Screen with
   # Continue Watching / Next Up rows when the Silo app icon is

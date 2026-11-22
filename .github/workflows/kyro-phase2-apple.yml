@@ -44,5 +44,6 @@ jobs:
           -only-testing:SiloTests/KyroIntroductionTests
           -only-testing:SiloTests/KyroStartupPolicyTests
           -only-testing:SiloTests/KyroOnboardingTests
+          -only-testing:SiloTests/KyroProviderBridgeTests
           -only-testing:SiloTests/UnifiedCatalogIndexTests
           CODE_SIGNING_ALLOWED=NO
