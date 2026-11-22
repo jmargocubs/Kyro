@@ -101,7 +101,16 @@ jobs:
               )
           platform = "tvos" if "AppleTVOS" in supported else "ios"
           if platform == "tvos":
-              if bundle != "com.cubbiestream.kyro.tvos" or metadata.get("source_ref") != "kyro/tvos":
+              production_source = metadata.get("source_ref") == "kyro/tvos"
+              build104_recovery = (
+                  metadata.get("source_ref") == "kyro/tvos-build104-recovery"
+                  and metadata.get("source_commit") == "f66d9e929cce41c90b67bbeaffaf057f342438d1"
+                  and build == "104"
+                  and version == "1.0.104"
+              )
+              if build104_recovery and plist.get("CFBundleDisplayName") != "Kyro Build 104":
+                  raise SystemExit("Build 104 recovery display name mismatch")
+              if bundle != "com.cubbiestream.kyro.tvos" or not (production_source or build104_recovery):
                   raise SystemExit("tvOS bundle/source identity mismatch")
               if f"{app_root}/PlugIns/SiloTVTopShelf.appex/Info.plist" not in names:
                   raise SystemExit("tvOS IPA is missing the Top Shelf extension")

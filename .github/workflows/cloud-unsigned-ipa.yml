@@ -108,8 +108,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$PLATFORM" = ios ]; then
+            echo "BUILD_JOBS=3" >> "$GITHUB_ENV"
             { echo "SCHEME=Silo"; echo "APP=Silo"; echo "DEST=generic/platform=iOS"; echo "EXTRA="; } >> "$GITHUB_ENV"
           else
+            echo "BUILD_JOBS=2" >> "$GITHUB_ENV"
             { echo "SCHEME=SiloTV"; echo "APP=SiloTV"; echo "DEST=generic/platform=tvOS"; echo "EXTRA=SILO_USER_INDEPENDENT_KEYCHAIN=NO"; } >> "$GITHUB_ENV"
           fi
 
@@ -177,7 +179,7 @@ jobs:
             -destination "$DEST" -archivePath "$RUNNER_TEMP/$APP.xcarchive" \
             -clonedSourcePackagesDirPath .spm-packages \
             -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
-            -jobs 3 -showBuildTimingSummary \
+            -jobs "$BUILD_JOBS" -showBuildTimingSummary \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' CODE_SIGN_ENTITLEMENTS='' \
             SILO_BUILD_CHANNEL=sideload MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
             $EXTRA > "$RUNNER_TEMP/xcodebuild.log" 2>&1
@@ -193,6 +195,10 @@ jobs:
           set -euo pipefail
           APP_PATH="$RUNNER_TEMP/$APP.xcarchive/Products/Applications/$APP.app"
           test -d "$APP_PATH"
+          if [ "$PLATFORM" = tvos ]; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Kyro Build $BUILD" "$APP_PATH/Info.plist"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_PATH/Info.plist")" = "Kyro Build $BUILD"
+          fi
           OUT="$GITHUB_WORKSPACE/out"; mkdir -p "$OUT/stage/Payload"
           cp -R "$APP_PATH" "$OUT/stage/Payload/"
           python3 scripts/ci/validate-subtitle-packaging.py "$OUT/stage/Payload/$APP.app"
