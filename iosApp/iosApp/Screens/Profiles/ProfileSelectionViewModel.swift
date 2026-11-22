@@ -43,9 +43,8 @@ class ProfileSelectionViewModel {
 
         if isKyroLocalMode {
             do {
-                try await KyroLocalIdentityRuntime.shared.ensureInitialProfile()
                 profiles = try await KyroLocalIdentityRuntime.shared.profiles()
-                accountName = "Kyro"
+                hasLoadedLocalProfiles = true
             } catch {
                 self.error = ErrorState(error)
             }
@@ -66,8 +65,19 @@ class ProfileSelectionViewModel {
     /// `loadAccount` finishes, or when the read fails.
     private(set) var accountName: String?
 
+    /// True once Kyro's own profile list has been read, so an empty list means an empty
+    /// household (first-run setup), never a list that has not loaded yet.
+    private(set) var hasLoadedLocalProfiles = false
+
+    /// Kyro owns Who's Watching and has no profiles yet: run first-run setup instead.
+    var needsKyroSetup: Bool {
+        isKyroLocalMode && hasLoadedLocalProfiles && error == nil
+            && KyroFirstRunSetup.needsSetup(isSiloSignedIn: false, localProfileCount: profiles.count)
+    }
+
     func loadAccount() async {
-        guard !isKyroLocalMode else { accountName = "Kyro"; return }
+        // Kyro profiles belong to no account; the line stays empty rather than naming one.
+        guard !isKyroLocalMode else { accountName = nil; return }
         accountName = try? await SiloAPI.shared.currentUser().username
     }
 
@@ -101,6 +111,7 @@ class ProfileSelectionViewModel {
             } catch KyroLocalIdentityRuntime.RuntimeError.incorrectPIN {
                 throw ProfileTransitionError.incorrectPIN
             }
+            CurrentProfileStore.shared.reset()
             router.resetToHome()
             return
         }

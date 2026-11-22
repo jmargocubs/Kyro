@@ -114,12 +114,21 @@ final class AuthService: @unchecked Sendable {
     /// legacy `UserDefaults["serverUrl"]` slot for sync readers.
     var serverUrl: String { ServerRegistry.shared.activeServerUrl }
 
-    /// Active request profile. Mutations must use the transition APIs below so
-    /// profile ID, verification proof, caches, diagnostics, and Top Shelf stay
-    /// on one identity boundary.
-    var profileId: String? {
+    /// The active Silo request profile. Mutations must use the transition APIs
+    /// below so profile ID, verification proof, caches, diagnostics, and Top
+    /// Shelf stay on one identity boundary.
+    ///
+    /// Silo only: request headers, owner fences, response snapshots and
+    /// invalid-profile recovery all read it. A Kyro-owned local profile is
+    /// never a Silo profile, so it never appears here (see `kyroProfileId`).
+    var profileId: String? { defaults.string(forKey: SharedStorage.profileIdKey) }
+
+    /// Who is watching, for data Kyro keeps on the device (IPTV progress and
+    /// favorites, browse and navigation preferences): the Silo profile while
+    /// Silo is signed in, otherwise the selected Kyro profile.
+    var kyroProfileId: String? {
         KyroStartupPolicy.activeProfileID(
-            siloProfileID: defaults.string(forKey: SharedStorage.profileIdKey),
+            siloProfileID: profileId,
             localProfileID: KyroLocalIdentityDefaults.activeProfileID,
             isSiloSignedIn: { isLoggedIn }
         )

@@ -59,7 +59,7 @@ struct BrowsePrefsStore {
     // MARK: - Keys
 
     private func base(libraryId: Int?, mediaScope: String? = nil) -> String? {
-        guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else { return nil }
+        guard let profileId = AuthService.shared.kyroProfileId, !profileId.isEmpty else { return nil }
         let serverId = ServerRegistry.shared.activeServerId ?? "default"
         let lib = libraryId.map(String.init) ?? "all"
         return "\(Self.platformPrefix).\(serverId).\(profileId).\(lib)" + (mediaScope.map { ".type-\($0)" } ?? "")

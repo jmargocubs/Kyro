@@ -136,6 +136,31 @@ which `RestoredSessionAuthResolver` still reports, to the route Kyro shows.
 - A plain Silo sign-out returns to Who's Watching. Switching account or server continues to that
   server's sign-in. An expired session asks to sign in again while the server is still saved.
 
+### First-run setup and Kyro profiles
+
+- Kyro profiles live in `Application Support/Kyro/identity.sqlite`. Kyro never creates one silently.
+  With no Silo session and no Kyro profile, Who's Watching shows `KyroFirstRunSetupView`:
+  Create Profile (the existing profile form), then Add Media Server (Silo setup), Add IPTV
+  (Live TV's Xtream Codes / M3U form, iPhone only), or Not now. A saved IPTV provider enters Kyro on Live TV.
+- Anyone with a saved Kyro profile goes straight to Who's Watching. Build 113's automatic "Home"
+  profile is kept like any other.
+- Provider sign-in, sign-out, switching and IPTV changes never delete Kyro profiles. While Silo is
+  signed in, Who's Watching lists the Silo account's profiles. The Kyro profiles come back after sign-out.
+
+### Profile scoping (the "active server or profile changed" error)
+
+- `AuthService.profileId` is the Silo request profile only. Silo request headers, owner fences,
+  response snapshots and invalid-profile recovery read it.
+- `AuthService.kyroProfileId` is the Silo profile while Silo is signed in, otherwise the Kyro
+  profile. It keys Kyro-owned device data: IPTV progress and favorites, browse and navigation preferences.
+- Build 113 returned the Kyro profile from `profileId` when a saved server was signed out. Kyro
+  Home then sent Silo requests under that mixed identity. The owner fence rejected them
+  ("The active server or profile changed. Try again."), and recovery returned to Who's Watching.
+- `KyroProviderState` decides what each surface loads. Without a Silo session, Home is
+  `KyroHomeView`: watch Live TV, sign in to the saved server or add one, add IPTV. Movies, Series
+  and the shell library menus send no Silo library requests and show no cached Silo libraries.
+- Apple TV in this branch has no Live TV, so its setup and Home offer only a media server.
+
 ## Movies and Series loading
 
 The unified grid shows the local index first, then syncs Silo and builds IPTV keys behind it.

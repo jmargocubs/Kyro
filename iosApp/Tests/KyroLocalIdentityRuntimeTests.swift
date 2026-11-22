@@ -16,14 +16,17 @@ final class KyroLocalIdentityRuntimeTests: XCTestCase {
         let databaseURL = directory.appendingPathComponent("identity.sqlite")
         let runtime = KyroLocalIdentityRuntime(databaseURL: databaseURL, defaults: defaults)
 
-        try await runtime.ensureInitialProfile()
         let initialProfiles = try await runtime.profiles()
-        XCTAssertEqual(initialProfiles.map(\.name), ["Home"])
+        XCTAssertEqual(initialProfiles, [], "no profile is created behind the person's back")
 
-        try await runtime.createProfile(
+        try await runtime.createProfile(name: "Alex", isChild: false, avatarEmoji: nil, pin: nil)
+        let created = try await runtime.createProfile(
             name: "Kids", isChild: true, avatarEmoji: "preset:dicebear:adventurer:otter", pin: "4826")
+        XCTAssertEqual(created.name, "Kids")
+        XCTAssertTrue(created.hasPin)
         let profiles = try await runtime.profiles()
         XCTAssertEqual(profiles.count, 2)
+        XCTAssertTrue(profiles.contains(created))
         let kids = try XCTUnwrap(profiles.first(where: { $0.name == "Kids" }))
         XCTAssertTrue(kids.isChild)
         XCTAssertTrue(kids.hasPin)

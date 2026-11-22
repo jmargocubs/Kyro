@@ -410,7 +410,7 @@ final class XtreamVODService {
     }
 
     func personalItems(providerID: UUID, kind: XtreamVODKind, favorites: Bool) async -> [XtreamVODItem] {
-        let profile = AuthService.shared.profileId ?? "local"
+        let profile = AuthService.shared.kyroProfileId ?? "local"
         let prefix = "kyro.iptvvod.\(profile).\(providerID.uuidString):\(kind.rawValue):"
         var saved: [(Int, XtreamVODWatchState)] = []
         for (key, value) in defaults.dictionaryRepresentation() where key.hasPrefix(prefix) {
@@ -462,7 +462,7 @@ final class XtreamVODService {
     }
 
     private func stateKey(_ item: XtreamVODItem, episode: XtreamVODEpisode? = nil) -> String {
-        let profile = AuthService.shared.profileId ?? "local"
+        let profile = AuthService.shared.kyroProfileId ?? "local"
         return "kyro.iptvvod.\(profile).\(item.id).\(episode?.remoteID ?? 0)"
     }
 

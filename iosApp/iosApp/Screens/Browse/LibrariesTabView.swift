@@ -421,6 +421,13 @@ struct LibrariesTabView: View {
                 ErrorView(state: error, onRetry: { Task { await loadLibraries() } })
             } else if isLoading && visibleLibraries.isEmpty {
                 Color.clear
+            } else if !KyroProviderState.current.loadsSiloLibraries {
+                ScrollView {
+                    KyroAddSourcesPanel()
+                        .frame(maxWidth: 640)
+                        .padding(SiloTheme.padding)
+                        .frame(maxWidth: .infinity)
+                }
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up",
@@ -679,6 +686,16 @@ struct LibrariesTabView: View {
     }
 
     private func loadLibraries() async {
+        // Silo libraries belong to a signed-in Silo profile. Without one there is nothing to
+        // request (it would fail the owner fence) and no cached list to show: a list cached
+        // before sign-out is another identity's.
+        guard KyroProviderState.current.loadsSiloLibraries else {
+            libraries = []
+            error = nil
+            isLoading = false
+            applyLibrarySelection()
+            return
+        }
         // Hydrate from cache so a returning visit paints last-known
         // libraries instantly while the refresh runs.
         if libraries.isEmpty,

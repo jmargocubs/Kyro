@@ -3152,7 +3152,7 @@ struct MainTabView: View {
             ? librarySnapshot.libraries
             : []
         librarySnapshot = .init(authority: authority, libraries: retainedLibraries)
-        guard let authority else { return }
+        guard let authority, KyroProviderState.current.loadsSiloLibraries else { return }
         do {
             let response = try await StartupContentPrefetcher.fetchUserLibraries()
             guard !Task.isCancelled, currentLibraryAuthority == authority else { return }
@@ -3657,7 +3657,11 @@ struct MainTabView: View {
     private func tabContent(for tab: AppTab) -> some View {
         switch tab {
         case .home:
-            HomeView()
+            // Silo's Home rows need a signed-in Silo profile; otherwise Kyro's own Home.
+            switch KyroProviderState.current.homeContent {
+            case .silo: HomeView()
+            case .kyro: KyroHomeView()
+            }
 
         case .libraries:
             LibrariesTabView(

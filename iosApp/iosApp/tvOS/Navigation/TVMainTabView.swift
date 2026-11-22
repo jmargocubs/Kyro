@@ -426,12 +426,18 @@ struct TVMainTabView: View {
     private var selectedRootContent: some View {
         switch selectedRoot {
         case .home:
-            HomeView(
-                homeFocusRequest: contentFocusRequest,
-                detailReturnFocusRequest: detailReturnFocusRequest,
-                isTopMenuFocused: menuOwnsFocus,
-                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
-            )
+            // Silo's Home rows need a signed-in Silo profile; otherwise Kyro's own Home.
+            if KyroProviderState.current.homeContent == .silo {
+                HomeView(
+                    homeFocusRequest: contentFocusRequest,
+                    detailReturnFocusRequest: detailReturnFocusRequest,
+                    isTopMenuFocused: menuOwnsFocus,
+                    onTopMenuFocusRequest: { focusTopMenuIfVisible() }
+                )
+            } else {
+                KyroHomeView()
+                    .padding(.top, 120)
+            }
         case .recommendations:
             RecommendationsView(
                 focusRequest: contentFocusRequest,
@@ -1098,7 +1104,7 @@ struct TVMainTabView: View {
             shortcutPillSelections = [:]
             ensureSelectedRootIsVisible()
         }
-        guard let authority else { return }
+        guard let authority, KyroProviderState.current.loadsSiloLibraries else { return }
 
         if libraries.isEmpty,
            let cached: LibrariesResponse = ResponseCache.shared.get(CacheKey.userLibraries) {
@@ -1345,6 +1351,12 @@ struct TVMainTabView: View {
     }
 
     private func loadCurrentProfile() async {
+        // A Kyro profile on this device, while no Silo session is signed in.
+        if !AuthService.shared.isLoggedIn {
+            await CurrentProfileStore.shared.refresh()
+            currentProfile = CurrentProfileStore.shared.profile
+            return
+        }
         guard let profileId = AuthService.shared.profileId else {
             currentProfile = nil
             return

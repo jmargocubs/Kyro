@@ -39,10 +39,22 @@ struct KyroUnifiedBrowseView: View {
                 VStack(spacing: SiloTheme.padding) {
                     status
                     if model.cards.isEmpty && model.hasLoaded && !model.isLoading && !model.isFillingLibrary {
-                        EmptyStateView(icon: kind == .movie ? "film" : "tv",
-                                       title: "No titles available",
-                                       subtitle: "Check your Silo libraries or IPTV catalog settings.")
-                            .frame(minHeight: 280)
+                        if KyroProviderState.current.isSiloConnected {
+                            EmptyStateView(icon: kind == .movie ? "film" : "tv",
+                                           title: "No titles available",
+                                           subtitle: "Check your Silo libraries or IPTV catalog settings.")
+                                .frame(minHeight: 280)
+                        } else {
+                            // No media server: offer one, or IPTV (whose Movies & Series switch
+                            // is in its settings), instead of a dead end.
+                            VStack(spacing: 20) {
+                                EmptyStateView(icon: kind == .movie ? "film" : "tv",
+                                               title: "No \(kind == .movie ? "movies" : "series") yet",
+                                               subtitle: "Connect a media server, or turn on IPTV Movies & Series in IPTV settings.")
+                                KyroAddSourcesPanel()
+                            }
+                            .padding(.top, 24)
+                        }
                     } else {
                         grid
                     }

@@ -480,7 +480,7 @@ final class KyroIPTVMetadataEnrichment {
     }
 
     func detail(for item: XtreamVODItem, providerDetail: XtreamVODDetail?) async -> RequestMediaDetail? {
-        let key = "\(AuthService.shared.profileId ?? "local"):\(item.id)"
+        let key = "\(AuthService.shared.kyroProfileId ?? "local"):\(item.id)"
         if let detail = cached[key] { return detail }
         if let task = pending[key] { return await task.value }
         let session = generation

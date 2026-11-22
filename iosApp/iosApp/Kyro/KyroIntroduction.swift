@@ -5,8 +5,9 @@ import Foundation
 ///
 /// It is local and separate from Silo's server-synced onboarding tour
 /// (`OnboardingTourGate`), which runs per profile after sign-in. It sets
-/// nothing up: Get Started and Skip both lead into the existing server
-/// setup, and Live TV stays optional under the Live TV tab.
+/// nothing up: Get Started and Skip both lead to Who's Watching, which runs
+/// Kyro's first-run setup (`KyroFirstRunSetupView`: create a Kyro profile,
+/// then optionally add a media server or IPTV) when no Kyro profile exists.
 enum KyroIntroduction {
     static let completedDefaultsKey = "kyro.c3.introduction.completed"
 

@@ -34,6 +34,14 @@ final class CurrentProfileStore {
         let task = Task {
             // A load that `reset()` superseded must not clear its successor.
             defer { if gen == generation { inFlight = nil } }
+            // A Kyro profile lives on the device; only a Silo profile is fetched from Silo.
+            guard AuthService.shared.isLoggedIn else {
+                guard let localID = AuthService.shared.kyroProfileId,
+                      let profiles = try? await KyroLocalIdentityRuntime.shared.profiles(),
+                      gen == generation else { return }
+                profile = profiles.first(where: { $0.id == localID })
+                return
+            }
             guard let profileId = AuthService.shared.profileId else { return }
             guard let profiles = try? await AuthService.shared.getProfiles(),
                   gen == generation else { return }

@@ -43,5 +43,6 @@ jobs:
           -only-testing:SiloTests/RestoredSessionValidatorTests/testNoSiloServerCanResolveToKyroLocalProfilePicker
           -only-testing:SiloTests/KyroIntroductionTests
           -only-testing:SiloTests/KyroStartupPolicyTests
+          -only-testing:SiloTests/KyroOnboardingTests
           -only-testing:SiloTests/UnifiedCatalogIndexTests
           CODE_SIGNING_ALLOWED=NO

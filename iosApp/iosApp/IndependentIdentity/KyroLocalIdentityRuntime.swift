@@ -11,9 +11,10 @@ enum KyroLocalIdentityDefaults {
     }
 }
 
-/// The local household identity used when no Silo server is configured.
-/// Silo sessions remain owned by AuthService; this store only backs the
-/// existing profile picker in standalone mode.
+/// Kyro's own household and profiles, stored on the device. They back Who's Watching whenever
+/// no Silo session is signed in, and outlive every provider: connecting, switching or signing
+/// out of Silo, or adding and removing IPTV, never deletes them. Silo sessions remain owned
+/// by AuthService.
 @MainActor
 final class KyroLocalIdentityRuntime {
     static let shared = KyroLocalIdentityRuntime()
@@ -60,14 +61,11 @@ final class KyroLocalIdentityRuntime {
         }
     }
 
-    func ensureInitialProfile() async throws {
-        guard let identity else { throw startupError ?? RuntimeError.storageUnavailable }
-        if try await identity.profiles().isEmpty {
-            try await identity.create(KyroProfile(name: "Home", kind: .standard))
-        }
-    }
-
-    func createProfile(name: String, isChild: Bool, avatarEmoji: String?, pin: String?) async throws {
+    /// Profiles are created by the person in Kyro's first-run setup or with Add Profile, never
+    /// silently: an empty household is what tells Who's Watching to start setup. Existing
+    /// profiles, including a "Home" profile made by Build 113, are kept as they are.
+    @discardableResult
+    func createProfile(name: String, isChild: Bool, avatarEmoji: String?, pin: String?) async throws -> UserProfile {
         guard let identity else { throw startupError ?? RuntimeError.storageUnavailable }
         let profile = KyroProfile(
             name: name,
@@ -83,6 +81,14 @@ final class KyroLocalIdentityRuntime {
                 throw error
             }
         }
+        return UserProfile(
+            id: profile.id.description,
+            name: profile.name,
+            avatarEmoji: profile.avatarEmoji,
+            hasPin: pin?.isEmpty == false,
+            isChild: isChild,
+            isPrimary: false
+        )
     }
 
     func profiles() async throws -> [UserProfile] {
@@ -110,6 +116,12 @@ final class KyroLocalIdentityRuntime {
                 throw RuntimeError.incorrectPIN
             }
         }
+        defaults.set(profile.id, forKey: KyroLocalIdentityDefaults.activeProfileIDKey)
+    }
+
+    /// First-run setup selects the profile its person just created (and set any PIN for)
+    /// without asking for that PIN again. Every later selection goes through `select`.
+    func activateNewProfile(_ profile: UserProfile) {
         defaults.set(profile.id, forKey: KyroLocalIdentityDefaults.activeProfileIDKey)
     }
 

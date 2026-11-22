@@ -11,6 +11,9 @@ struct ProfileSelectionView: View {
     @State private var isVerifyingPIN = false
     @State private var showCreateProfile: Bool = false
     @State private var showSignOutConfirm: Bool = false
+    /// Kyro's first-run setup owns the screen from the moment an empty Kyro household is found
+    /// until it finishes, including after its profile exists and the list is no longer empty.
+    @State private var isRunningFirstRunSetup = false
     /// The profile under a finger, then the one being opened; either tints
     /// the backdrop with that profile's color.
     @State private var pressedProfileID: String?
@@ -150,7 +153,14 @@ struct ProfileSelectionView: View {
 
     @ViewBuilder
     private var pickerContent: some View {
-        if viewModel.isLoading && viewModel.profiles.isEmpty {
+        if isRunningFirstRunSetup || viewModel.needsKyroSetup {
+            KyroFirstRunSetupView(
+                router: router,
+                onProfileCreated: { await viewModel.loadProfiles() },
+                onFinish: { isRunningFirstRunSetup = false }
+            )
+            .onAppear { isRunningFirstRunSetup = true }
+        } else if viewModel.isLoading && viewModel.profiles.isEmpty {
             LoadingView(message: "Loading profiles...")
         } else if let error = viewModel.error, viewModel.profiles.isEmpty {
             ErrorView(state: error, onRetry: {

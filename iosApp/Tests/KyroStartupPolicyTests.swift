@@ -110,23 +110,20 @@ final class KyroStartupPolicyTests: XCTestCase {
         let databaseURL = directory.appendingPathComponent("identity.sqlite")
 
         let first = KyroLocalIdentityRuntime(databaseURL: databaseURL, defaults: defaults)
-        try await first.ensureInitialProfile()
+        let home = try await first.createProfile(name: "Home", isChild: false, avatarEmoji: nil, pin: nil)
         let household = defaults.string(forKey: KyroLocalIdentityDefaults.householdIDKey)
-        let firstProfiles = try await first.profiles()
-        let home = try XCTUnwrap(firstProfiles.first)
         try await first.select(home, pin: nil)
 
         let relaunched = KyroLocalIdentityRuntime(databaseURL: databaseURL, defaults: defaults)
-        try await relaunched.ensureInitialProfile()
         let profiles = try await relaunched.profiles()
-        XCTAssertEqual(profiles.map(\.id), [home.id], "relaunch adds no second Home profile")
+        XCTAssertEqual(profiles.map(\.id), [home.id], "relaunch keeps the profile and adds none")
         XCTAssertEqual(defaults.string(forKey: KyroLocalIdentityDefaults.householdIDKey), household)
         XCTAssertEqual(defaults.string(forKey: KyroLocalIdentityDefaults.activeProfileIDKey), home.id)
     }
 
     // MARK: Empty provider list
 
-    func testNoProvidersStillYieldsAUsableProfile() async throws {
+    func testNoProvidersStillYieldsAUsableProfileAfterSetup() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("KyroStartupPolicyTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -137,10 +134,15 @@ final class KyroStartupPolicyTests: XCTestCase {
 
         let runtime = KyroLocalIdentityRuntime(
             databaseURL: directory.appendingPathComponent("identity.sqlite"), defaults: defaults)
-        try await runtime.ensureInitialProfile()
+        let empty = try await runtime.profiles()
+        XCTAssertTrue(KyroFirstRunSetup.needsSetup(isSiloSignedIn: false, localProfileCount: empty.count),
+                      "an empty household starts first-run setup rather than inventing a profile")
+        let created = try await runtime.createProfile(name: "Sam", isChild: false, avatarEmoji: nil, pin: nil)
+        runtime.activateNewProfile(created)
         let profiles = try await runtime.profiles()
-        XCTAssertEqual(profiles.count, 1)
-        XCTAssertFalse(try XCTUnwrap(profiles.first).hasPin, "the first profile opens without a PIN")
+        XCTAssertEqual(profiles.map(\.id), [created.id])
+        XCTAssertFalse(created.hasPin, "the first profile opens without a PIN")
+        XCTAssertEqual(defaults.string(forKey: KyroLocalIdentityDefaults.activeProfileIDKey), created.id)
         XCTAssertEqual(KyroStartupPolicy.launchRoute(forSilo: .needsServerSetup), .needsProfile)
     }
 }

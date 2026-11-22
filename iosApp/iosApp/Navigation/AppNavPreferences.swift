@@ -52,7 +52,7 @@ final class AppNavPreferences {
     private static func showAudiobooksKey() -> String? {
         // No profile -> nothing to scope. Persisting under an anonymous key
         // would leak one user's choice into the next signed-in profile.
-        guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else {
+        guard let profileId = AuthService.shared.kyroProfileId, !profileId.isEmpty else {
             return nil
         }
         let serverId = ServerRegistry.shared.activeServerId ?? "default"
