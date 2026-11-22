@@ -118,8 +118,11 @@ final class AuthService: @unchecked Sendable {
     /// profile ID, verification proof, caches, diagnostics, and Top Shelf stay
     /// on one identity boundary.
     var profileId: String? {
-        defaults.string(forKey: SharedStorage.profileIdKey)
-            ?? (!hasServer ? KyroLocalIdentityDefaults.activeProfileID : nil)
+        KyroStartupPolicy.activeProfileID(
+            siloProfileID: defaults.string(forKey: SharedStorage.profileIdKey),
+            localProfileID: KyroLocalIdentityDefaults.activeProfileID,
+            isSiloSignedIn: { isLoggedIn }
+        )
     }
 
     var hasServer: Bool { serverRegistry.hasActiveServer }

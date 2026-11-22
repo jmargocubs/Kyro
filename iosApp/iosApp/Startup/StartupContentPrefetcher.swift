@@ -63,7 +63,7 @@ enum StartupContentPrefetcher {
     }
 
     static func prefetchProfiles() {
-        guard AuthService.shared.hasServer else { return }
+        guard AuthService.shared.isLoggedIn else { return }
         Task {
             _ = try? await fetchProfiles()
         }
@@ -605,6 +605,8 @@ enum StartupContentPrefetcher {
         #endif
         switch state {
         case .authenticated:
+            // A Kyro profile without a Silo session has no Silo content to warm.
+            guard AuthService.shared.isLoggedIn else { break }
             prefetchAuthenticatedContent()
             // The root top bar renders the active profile's avatar right
             // after launch. Warm the list here (cold launch only) so it

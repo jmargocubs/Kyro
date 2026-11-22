@@ -12,7 +12,9 @@ import SwiftUI
 struct CreateProfileView: View {
     let onCreated: () -> Void
 
-    private var isKyroLocalMode: Bool { !AuthService.shared.hasServer }
+    private var isKyroLocalMode: Bool {
+        KyroStartupPolicy.usesLocalProfiles(isSiloSignedIn: AuthService.shared.isLoggedIn)
+    }
 
     @State private var name: String = ""
     @State private var selectedStyleId: String = ProfileAvatarPresets.defaultStyleId

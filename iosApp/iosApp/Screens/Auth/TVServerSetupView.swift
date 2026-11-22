@@ -59,6 +59,8 @@ struct TVServerSetupView: View {
                     .transition(.opacity)
             } else {
                 phoneFirst
+                    // Silo is optional: Menu returns to Who's Watching instead of leaving the app.
+                    .onExitCommand { router.leaveSiloSetup() }
                     .transition(.opacity)
             }
         }

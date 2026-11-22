@@ -24,9 +24,18 @@ struct ServerSetupView: View {
     }
 
     var body: some View {
-        MarqueeStage(scrim: .bottom, frostStart: 0.30) {
+        // Silo is optional: back returns to Who's Watching. Leaving mid-connect would let the
+        // finished connect pull the app on, so the way back waits for it.
+        MarqueeStage(scrim: .bottom, frostStart: 0.30,
+                     onBack: viewModel.isLoading ? nil : { router.leaveSiloSetup() }) {
             MarqueeTopBar {
-                AppWordmarkView(placement: .topBar)
+                HStack(spacing: 12) {
+                    MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back to profiles") {
+                        router.leaveSiloSetup()
+                    }
+                    .disabled(viewModel.isLoading)
+                    AppWordmarkView(placement: .topBar)
+                }
             } trailing: { EmptyView() }
         } content: {
             MarqueeHeadline(title: "Connect to\nyour server", lead: "Type the address you use for Silo.")

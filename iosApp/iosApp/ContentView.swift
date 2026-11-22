@@ -1228,7 +1228,12 @@ struct ContentView: View {
     /// validation is cancelled and the local route stands, which keeps an
     /// offline launch from waiting on the network.
     private func checkInitialState() async {
-        let local = await RestoredSessionAuthResolver.resolveLocal()
+        let resolved = await RestoredSessionAuthResolver.resolveLocal()
+        // Kyro owns startup: a missing or signed-out Silo server enters Kyro's own profiles.
+        let local = RestoredSessionAuthResolver.LocalResolution(
+            state: KyroStartupPolicy.launchRoute(forSilo: resolved.state),
+            restoredAccount: resolved.restoredAccount
+        )
         guard !Task.isCancelled, router.authState == .loading else { return }
         #if os(iOS)
         // Set in the same update as the route, so server setup never shows
@@ -1246,10 +1251,10 @@ struct ContentView: View {
             expected: expectedAccount
         )
         guard !Task.isCancelled, router.authState == local.state else { return }
-        let validatedState = await RestoredSessionAuthResolver.state(
+        let validatedState = KyroStartupPolicy.launchRoute(forSilo: await RestoredSessionAuthResolver.state(
             after: validation,
             fallingBackTo: local.state
-        )
+        ))
         guard !Task.isCancelled,
               router.authState == local.state,
               validatedState != local.state else { return }

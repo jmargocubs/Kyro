@@ -19,7 +19,7 @@ class ProfileSelectionViewModel {
     private let auth = AuthService.shared
     private let launchPreferences = ProfileLaunchPreferences.shared
 
-    var isKyroLocalMode: Bool { !auth.hasServer }
+    var isKyroLocalMode: Bool { KyroStartupPolicy.usesLocalProfiles(isSiloSignedIn: auth.isLoggedIn) }
 
     init() {
         if !isKyroLocalMode,

@@ -966,6 +966,17 @@ final class AppRouter {
         setAuthState(.needsServerSetup, reason: "resetToServerSetup")
     }
 
+    /// Leave Silo's setup screen for Who's Watching. Silo is optional, so its setup is never a
+    /// dead end: the picker shows Kyro profiles, or the Silo profiles of a signed-in session.
+    func leaveSiloSetup() {
+        loginNotice = nil
+        sessionReturnPoint = nil
+        recordScreenBreadcrumb(target: "profileSelection", action: "leaveSiloSetup")
+        path = NavigationPath()
+        skipsSingleProfilePicker = false
+        setAuthState(KyroStartupPolicy.routeLeavingSiloSetup, reason: "leaveSiloSetup")
+    }
+
     /// Commit an auth state produced after validating a server selection.
     /// Every previous screen belongs to the old server/session boundary.
     func resetAfterServerResolution(to state: AuthState) {
@@ -1102,19 +1113,26 @@ final class AppRouter {
                 accountActionError = "\(AppBrand.name) couldn't clear the saved sign-in on this device. Please try signing out again."
             }
             let state: AuthState
-            if !ServerRegistry.shared.hasActiveServer {
-                state = .needsServerSetup
-            } else if removingServer, ServerRegistry.shared.activeServerId != serverID {
-                state = await RestoredSessionAuthResolver.resolveValidated()
+            if removingServer, ServerRegistry.shared.hasActiveServer,
+               ServerRegistry.shared.activeServerId != serverID {
+                // The remaining server is not a gate either: signed out, it enters Kyro.
+                state = KyroStartupPolicy.launchRoute(
+                    forSilo: await RestoredSessionAuthResolver.resolveValidated()
+                )
             } else {
-                state = .needsLogin
+                // Kyro stays usable without Silo: a plain sign-out returns to Who's Watching;
+                // switching account or server continues to that server's sign-in.
+                state = KyroStartupPolicy.routeAfterSiloSignOut(
+                    hasActiveServer: ServerRegistry.shared.hasActiveServer,
+                    continuesToSignIn: targetServerID != nil || startsSignIn
+                )
             }
             resetAfterServerResolution(to: state)
         }
     }
 
     private func completeRequestedProfileSwitch() async -> Bool {
-        if !AuthService.shared.hasServer { return true }
+        if KyroStartupPolicy.usesLocalProfiles(isSiloSignedIn: AuthService.shared.isLoggedIn) { return true }
         if await AuthService.shared.beginExplicitProfileSelection() {
             return true
         }
@@ -1135,13 +1153,16 @@ final class AppRouter {
     func expiredSession() {
         sessionReturnPoint = currentReturnPoint()
         path = NavigationPath()
-        if ServerRegistry.shared.hasActiveServer {
+        let next = KyroStartupPolicy.routeAfterSiloSessionExpired(
+            hasActiveServer: ServerRegistry.shared.hasActiveServer
+        )
+        if next == .needsLogin {
             recordScreenBreadcrumb(target: "login", action: "sessionExpired")
             loginNotice = .sessionExpired
             setAuthState(.needsLogin, reason: "sessionExpired")
         } else {
-            recordScreenBreadcrumb(target: "serverSetup", action: "sessionExpired")
-            setAuthState(.needsServerSetup, reason: "sessionExpiredNoServer")
+            recordScreenBreadcrumb(target: "profileSelection", action: "sessionExpired")
+            setAuthState(next, reason: "sessionExpiredNoServer")
         }
     }
 
