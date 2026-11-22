@@ -141,6 +141,8 @@ targets:
         product: KyroCredentials
       - package: KyroMediaCore
         product: KyroProviders
+      - package: KyroMediaCore
+        product: KyroSourceJellyfin
       - target: SiloNotificationService
         embed: true
       - target: SiloDownloadsActivity

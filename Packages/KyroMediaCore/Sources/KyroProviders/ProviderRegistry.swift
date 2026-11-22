@@ -24,7 +24,7 @@ public struct ProviderAccountRecord: Sendable, Equatable, Identifiable {
 /// Provider accounts for one Kyro household. It is a typed view over `IdentityStore`'s
 /// household-scoped account list, so the accounts share its database, its isolation between
 /// households and its persistence. Secrets never live here: each provider keeps its own
-/// credentials (Silo's TokenStore, Live TV's Keychain items, KyroCredentials for new servers).
+/// credentials (Silo's token store, Live TV's Keychain items, KyroCredentials for new servers).
 public struct ProviderRegistry: Sendable {
   private let identity: IdentityStore
   public init(identity: IdentityStore) { self.identity = identity }

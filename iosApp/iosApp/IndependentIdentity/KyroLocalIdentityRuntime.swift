@@ -160,6 +160,13 @@ final class KyroLocalIdentityRuntime {
             profile: KyroProfileID(rawValue: profileID), from: account)
     }
 
+    /// Called only after the owning projected provider has actually been removed. Sign-out and
+    /// server switching do not call this, so neither event erases a durable profile association.
+    func removedProjectedAccount(_ account: ProviderAccountRef) async throws {
+        guard let identity else { throw startupError ?? RuntimeError.storageUnavailable }
+        try await ProfileLinkRegistry(identity: identity).removedProjectedAccount(account)
+    }
+
     enum RuntimeError: LocalizedError {
         case storageUnavailable, profileUnavailable, incorrectPIN
         var errorDescription: String? {

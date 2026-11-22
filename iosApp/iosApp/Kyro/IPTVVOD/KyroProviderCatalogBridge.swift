@@ -2,6 +2,7 @@
 import Foundation
 import Observation
 import KyroProviders
+import KyroSourceJellyfin
 
 /// Where the provider-qualified Movies/Series catalog meets the rest of the app (Kyro Labs M2):
 /// which media-server accounts contribute, the catalog providers that can be synced, and how a
@@ -45,6 +46,13 @@ enum KyroProviderCatalogBridge {
     }
 
     static func mediaKind(_ kind: XtreamVODKind) -> MediaKind { kind == .movie ? .movie : .series }
+
+    /// Called by a future Jellyfin connection flow after registering the account and restoring
+    /// or authenticating its per-account client. No existing Silo or IPTV path is changed.
+    @MainActor
+    static func registerJellyfinCatalog(account: ProviderAccountRef, client: JellyfinClient) throws {
+        ProviderCatalogMirror.shared.register(try JellyfinProviderAdapter(account: account, client: client))
+    }
 }
 
 /// Syncs the catalog of every media-server account that has a registered provider, into the

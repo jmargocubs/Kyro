@@ -124,6 +124,7 @@ public struct LibraryRef: Hashable, Codable, Sendable, CustomStringConvertible {
 
 public enum ProviderError: Error, Equatable {
   case emptyRemoteID
+  case invalidCursor
   /// Silo and IPTV accounts are projections of their own stores and cannot be registered.
   case projectedKind
   case missingAccount

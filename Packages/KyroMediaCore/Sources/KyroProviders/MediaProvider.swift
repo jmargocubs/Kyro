@@ -23,7 +23,7 @@ public protocol MediaProvider: Sendable {
   func libraries() async throws -> [ProviderLibrary]
 }
 
-/// One Silo library as the existing Silo API returns it.
+/// One Silo library as the existing server client returns it.
 public struct SiloLibraryRow: Sendable, Equatable {
   public let id: Int
   public let name: String
@@ -37,7 +37,7 @@ public struct SiloLibraryRow: Sendable, Equatable {
   }
 }
 
-/// The existing Silo library read. The app implements it with `SiloAPI.libraries()`, so Silo's
+/// The existing Silo library read. The app implements it with its library request, so Silo's
 /// authentication, request fencing and error handling stay exactly where they are.
 public protocol SiloLibraryReading: Sendable {
   func readLibraries() async throws -> [SiloLibraryRow]

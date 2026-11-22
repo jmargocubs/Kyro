@@ -1,6 +1,7 @@
 import Foundation
 import OSLog
 import Synchronization
+import KyroProviders
 
 /// A single Silo server the user has added to the device.
 ///
@@ -714,6 +715,14 @@ final class ServerRegistry {
         guard await tokenStore.deleteTokens(for: serverId) else {
             await rollBackRemoval(reason: "sessionInvalidationFailed")
             return false
+        }
+        // The server removal is durable now. Only its provider-user associations are retired;
+        // local Kyro profiles, PINs and other providers are never touched.
+        do {
+            try await KyroLocalIdentityRuntime.shared.removedProjectedAccount(
+                .derived(kind: .silo, key: serverId))
+        } catch {
+            Self.logger.error("removeServer could not clear local profile links")
         }
 
         // Only a non-active removal can be breadcrumbed; active-server outcomes

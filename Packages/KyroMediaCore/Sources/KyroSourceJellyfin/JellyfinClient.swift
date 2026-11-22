@@ -62,7 +62,7 @@ private final class SameHostRedirects: NSObject, URLSessionTaskDelegate, Sendabl
 ///
 /// Passwords are used once for `AuthenticateByName` and never stored. The access token is
 /// persisted as JSON in the injected `CredentialStore` (use `AppleKeychainCredentialStore`
-/// in the app), under a key unrelated to Silo's `TokenStore`.
+/// in the app), under a key unrelated to Silo's token storage.
 public actor JellyfinClient {
   public static let maxPageSize = 500
   public static let maxResponseBytes = 8 * 1_024 * 1_024

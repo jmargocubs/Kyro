@@ -45,7 +45,7 @@ let package = Package(
     .target(
       name: "KyroProviders",
       dependencies: [
-        "KyroFoundation", "KyroCatalog", "KyroCapabilities", "KyroIdentity",
+        "KyroFoundation", "KyroCatalog", "KyroCapabilities", "KyroIdentity", "KyroSourceJellyfin",
         .product(name: "Crypto", package: "swift-crypto"),
       ]),
     .testTarget(
@@ -64,7 +64,9 @@ let package = Package(
       var dependencies: [Target.Dependency] = [.target(name: module)]
       if module != "KyroFoundation" { dependencies.append("KyroFoundation") }
       if module == "KyroMatching" { dependencies.append("KyroCatalog") }
-      if module == "KyroProviders" { dependencies.append("KyroIdentity") }
+      if module == "KyroProviders" {
+        dependencies.append(contentsOf: ["KyroIdentity", "KyroSourceJellyfin", "KyroSources", "KyroCredentials"])
+      }
       if module == "KyroCredentials" {
         dependencies.append(.product(name: "Crypto", package: "swift-crypto"))
       }

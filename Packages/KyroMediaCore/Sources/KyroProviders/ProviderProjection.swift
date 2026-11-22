@@ -1,7 +1,7 @@
 import Foundation
 
 /// What Kyro may read of the Silo server registry. Built by the app from `ServerRegistry` and
-/// `AuthService`; it carries no tokens, only whether the active server has a session.
+/// the app's session owner; it carries no tokens, only whether the active server has a session.
 public struct SiloServerSnapshot: Sendable, Equatable {
   public struct Server: Sendable, Equatable {
     public let id: String

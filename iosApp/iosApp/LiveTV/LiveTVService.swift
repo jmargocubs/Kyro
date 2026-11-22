@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import CryptoKit
+import KyroProviders
 
 private enum LiveTVCatalogDownload: Sendable {
     case materialized(LiveTVCachedCatalog)
@@ -575,7 +576,14 @@ final class LiveTVService {
     /// channels, guide, status) is settled before the first suspension, so no view or late task can
     /// observe a selected provider that no longer exists.
     func removeProvider(_ id: UUID) async {
+        let removedKind = providers.first(where: { $0.id == id })?.kind
         forgetProvider(id)
+        if let removedKind {
+            let account = ProviderAccountRef(
+                id: ProviderAccountID(rawValue: id),
+                kind: removedKind == .xtream ? .xtream : .m3u)
+            try? await KyroLocalIdentityRuntime.shared.removedProjectedAccount(account)
+        }
         await deleteProviderFiles(id)
     }
 
