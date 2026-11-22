@@ -497,6 +497,7 @@ final class UnifiedCatalogIndexTests: XCTestCase {
 
     func testCancelledSyncDiscardsItsSnapshot() async throws {
         let store = self.store!
+        try await importSilo([record("old", "Old", 2000)])
         let task = Task {
             await UnifiedSiloSyncEngine.sync(
                 store: store, scope: self.scopeA, libraryID: 1, kind: .movie, freshness: nil, isCurrent: { true },
@@ -511,7 +512,95 @@ final class UnifiedCatalogIndexTests: XCTestCase {
         let v30 = await task.value
         XCTAssertEqual(v30, .cancelled)
         let v31 = await store.unifiedRowCounts().siloItems
-        XCTAssertEqual(v31, 0)
+        XCTAssertEqual(v31, 1, "only the previous snapshot remains")
+        let v32 = await allCards(scope(providers: [])).map(\.title)
+        XCTAssertEqual(v32, ["Old"])
+    }
+
+    // MARK: Nonblocking first sync
+
+    func testFirstSyncShowsTitlesBeforeTheWalkFinishes() async throws {
+        let store = self.store!
+        let progress = ProgressCounter()
+        let seenMidWalk = SeenTitles()
+        let pages = [page([record("1", "Alpha", 2001)], next: 1),
+                     page([record("2", "Bravo", 2002)], next: 2),
+                     page([record("3", "Charlie", 2003)], next: nil)]
+        let outcome = await UnifiedSiloSyncEngine.sync(
+            store: store, scope: scopeA, libraryID: 1, kind: .movie, freshness: 3600, isCurrent: { true },
+            onProgress: { await progress.bump() },
+            first: { pages[0] },
+            next: { cursor in
+                // The grid can already read what was walked so far.
+                await seenMidWalk.record(await self.allCards(self.scope(providers: [])).map(\.title))
+                return pages[cursor]
+            })
+        XCTAssertEqual(outcome, .synced(count: 3))
+        let midWalk = await seenMidWalk.values
+        XCTAssertEqual(midWalk, [["Alpha"], ["Alpha", "Bravo"]])
+        let progressCount = await progress.count
+        XCTAssertEqual(progressCount, 2, "pages 1 and 2 published before the final page")
+        let final = await allCards(scope(providers: [])).map(\.title)
+        XCTAssertEqual(final, ["Alpha", "Bravo", "Charlie"])
+        let syncedAt = await store.siloSyncedAt(scope: scopeA, libraryID: 1, kind: .movie)
+        XCTAssertGreaterThan(try XCTUnwrap(syncedAt), .distantPast, "a finished walk is fresh")
+    }
+
+    func testInterruptedFirstSyncKeepsShownTitlesAndStaysStale() async throws {
+        let store = self.store!
+        let outcome = await UnifiedSiloSyncEngine.sync(
+            store: store, scope: scopeA, libraryID: 1, kind: .movie, freshness: 3600, isCurrent: { true },
+            first: { self.page([self.record("1", "Alpha", 2001)], next: 1) },
+            next: { (_: Int) -> UnifiedSiloSyncPage<Int> in throw FakeError() })
+        XCTAssertEqual(outcome, .failed)
+        let shown = await allCards(scope(providers: [])).map(\.title)
+        XCTAssertEqual(shown, ["Alpha"], "titles already on screen stay instead of an empty grid")
+        let syncedAt = await store.siloSyncedAt(scope: scopeA, libraryID: 1, kind: .movie)
+        XCTAssertEqual(syncedAt, .distantPast)
+
+        let resumed = await UnifiedSiloSyncEngine.sync(
+            store: store, scope: scopeA, libraryID: 1, kind: .movie, freshness: 3600, isCurrent: { true },
+            first: { self.page([self.record("1", "Alpha", 2001), self.record("2", "Bravo", 2002)], next: nil) },
+            next: { _ in XCTFail(); return self.page([], next: nil) })
+        XCTAssertEqual(resumed, .synced(count: 2), "a partial first sync is never treated as fresh")
+        let v33 = await allCards(scope(providers: [])).map(\.title)
+        XCTAssertEqual(v33, ["Alpha", "Bravo"])
+    }
+
+    func testLaterSyncKeepsThePreviousSnapshotUntilItFinishes() async throws {
+        let store = self.store!
+        try await importSilo([record("old", "Old", 2000)])
+        let seenMidWalk = SeenTitles()
+        let outcome = await UnifiedSiloSyncEngine.sync(
+            store: store, scope: scopeA, libraryID: 1, kind: .movie, freshness: nil, isCurrent: { true },
+            onProgress: { XCTFail("a library with a published snapshot refreshes quietly") },
+            first: { self.page([self.record("1", "New", 2001)], next: 1) },
+            next: { _ in
+                await seenMidWalk.record(await self.allCards(self.scope(providers: [])).map(\.title))
+                return self.page([self.record("2", "Newer", 2002)], next: nil)
+            })
+        XCTAssertEqual(outcome, .synced(count: 2))
+        let midWalk = await seenMidWalk.values
+        XCTAssertEqual(midWalk, [["Old"]])
+        let v34 = await allCards(scope(providers: [])).map(\.title)
+        XCTAssertEqual(v34, ["New", "Newer"])
+    }
+
+    func testProgressivePublishingIsBounded() {
+        let published = (1...64).filter(UnifiedSiloSyncEngine.publishesProgress(afterPage:))
+        XCTAssertEqual(published, [1, 2, 4, 8, 16, 32, 48, 64])
+        XCTAssertFalse(UnifiedSiloSyncEngine.publishesProgress(afterPage: 0))
+    }
+
+    func testReselectingTheSameIdentityKeepsItsMirror() async throws {
+        try await importSilo([record("a1", "Mine", 2001)], scope: scopeA)
+        try await importSilo([record("b1", "Theirs", 2002)], scope: scopeB)
+        // An identity boundary that ends on the same scope (launch restore, same profile picked).
+        try await store.purgeSilo(keepingScope: scopeA)
+        let mine = await allCards(scope(silo: scopeA, providers: [])).map(\.title)
+        XCTAssertEqual(mine, ["Mine"])
+        let theirs = await allCards(scope(silo: scopeB, providers: [])).isEmpty
+        XCTAssertTrue(theirs)
     }
 
     // MARK: Detail routing
@@ -563,6 +652,16 @@ final class UnifiedCatalogIndexTests: XCTestCase {
         XCTAssertEqual(entry.normalizedTitle, "arrival")
         XCTAssertEqual(UnifiedCatalogKeys.normalizedTitle("Arrival (2016)", year: 2016), "arrival")
     }
+}
+
+private actor ProgressCounter {
+    private(set) var count = 0
+    func bump() { count += 1 }
+}
+
+private actor SeenTitles {
+    private(set) var values: [[String]] = []
+    func record(_ titles: [String]) { values.append(titles) }
 }
 
 private actor IdentityFlag {

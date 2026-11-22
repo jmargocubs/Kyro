@@ -34,23 +34,43 @@ enum UnifiedSiloSyncOutcome: Equatable, Sendable {
 /// Walks one Silo library into a private snapshot and publishes it only when the walk finished
 /// for the same identity. The previous snapshot stays visible throughout and is replaced in one
 /// transaction; any failure, cancellation or identity change discards the partial snapshot.
+///
+/// A library with nothing published yet (a fresh install, a new profile or a new library) has no
+/// previous snapshot to keep on screen, so its first walk publishes as it goes: the first page
+/// appears after one request and the grid fills in the background. Those partial publishes are
+/// stamped `.distantPast`, so they always count as stale; a cancelled or failed first walk keeps
+/// what was already shown, and an identity change removes it.
 enum UnifiedSiloSyncEngine {
     /// A cursor rejected this many times in one sync fails it instead of looping.
     static let maximumRestarts = 2
     /// 4,000 pages of 60 bound one library at 240K titles.
     static let maximumPages = 4_000
+    /// After the first progressive pages, publish every this many pages so the grid is not
+    /// re-read for every request of a large library.
+    static let progressiveInterval = 16
+
+    /// Whether a first walk publishes after staging page `count` (1-based): pages 1, 2, 4 and 8,
+    /// then every `progressiveInterval` pages.
+    static func publishesProgress(afterPage count: Int) -> Bool {
+        guard count > 0 else { return false }
+        if count < progressiveInterval { return count & (count - 1) == 0 }
+        return count.isMultiple(of: progressiveInterval)
+    }
 
     static func sync<Cursor>(
         store: XtreamVODCatalogStore, scope: String, libraryID: Int, kind: XtreamVODKind,
         freshness: TimeInterval?, now: @Sendable () -> Date = { Date() },
         isCurrent: @Sendable () async -> Bool,
+        onProgress: @Sendable () async -> Void = {},
         first: @Sendable () async throws -> UnifiedSiloSyncPage<Cursor>,
         next: @Sendable (Cursor) async throws -> UnifiedSiloSyncPage<Cursor>
     ) async -> UnifiedSiloSyncOutcome {
-        if let freshness, let synced = await store.siloSyncedAt(scope: scope, libraryID: libraryID, kind: kind),
-           now().timeIntervalSince(synced) < freshness {
+        let previous = await store.siloSyncedAt(scope: scope, libraryID: libraryID, kind: kind)
+        if let freshness, let previous, now().timeIntervalSince(previous) < freshness {
             return .skippedFresh
         }
+        // Nothing on screen yet: publish while walking instead of waiting for the whole library.
+        let progressive = previous == nil
         var snapshot = UUID().uuidString
         var seen = Set<String>()
         var restarts = 0
@@ -58,11 +78,18 @@ enum UnifiedSiloSyncEngine {
         func discard() async {
             await store.discardSilo(scope: scope, libraryID: libraryID, kind: kind, snapshot: snapshot)
         }
+        func retract() async {
+            if progressive {
+                try? await store.retractSilo(scope: scope, libraryID: libraryID, kind: kind)
+            } else {
+                await discard()
+            }
+        }
         do {
             var page = try await first()
             while true {
                 if Task.isCancelled { await discard(); return .cancelled }
-                guard page.scope == scope, await isCurrent() else { await discard(); return .identityChanged }
+                guard page.scope == scope, await isCurrent() else { await retract(); return .identityChanged }
                 if page.startsOver {
                     // Restart into a new snapshot: rows read before the rejection may describe a
                     // list that no longer exists, so none of them is reused.
@@ -76,12 +103,17 @@ enum UnifiedSiloSyncEngine {
                 let fresh = page.records.filter { seen.insert($0.contentID).inserted }
                 try await store.stageSilo(fresh, scope: scope, libraryID: libraryID, kind: kind, snapshot: snapshot)
                 pages += 1
+                if progressive, publishesProgress(afterPage: pages), page.next != nil {
+                    try await store.promoteSilo(scope: scope, libraryID: libraryID, kind: kind, snapshot: snapshot,
+                                                itemCount: seen.count, syncedAt: .distantPast)
+                    await onProgress()
+                }
                 guard let cursor = page.next else { break }
                 guard pages < maximumPages else { await discard(); return .failed }
                 page = try await next(cursor)
             }
             if Task.isCancelled { await discard(); return .cancelled }
-            guard await isCurrent() else { await discard(); return .identityChanged }
+            guard await isCurrent() else { await retract(); return .identityChanged }
             try await store.promoteSilo(scope: scope, libraryID: libraryID, kind: kind, snapshot: snapshot,
                                         itemCount: seen.count, syncedAt: now())
             return .synced(count: seen.count)
@@ -131,7 +163,12 @@ final class SiloCatalogMirror {
     }
 
     /// Called on every identity boundary. In-flight walks can no longer publish (their epoch is
-    /// stale) and every mirrored row is deleted.
+    /// stale) and every row of another identity is deleted.
+    ///
+    /// The boundary also runs when the same account and profile are restored at launch or picked
+    /// again at Who's Watching. Their scope is unchanged, so their mirror is kept instead of
+    /// forcing a full re-sync; the scope is read when the purge runs, after the transition, and a
+    /// missing identity keeps nothing.
     func invalidateIdentity() {
         epoch &+= 1
         running.values.forEach { $0.cancel() }
@@ -139,7 +176,8 @@ final class SiloCatalogMirror {
         syncingLibraries.removeAll()
         Task {
             if let store = await XtreamVODService.shared.unifiedStore() {
-                try? await store.purgeSilo(keepingScope: nil)
+                let keeping = await self.currentScope()
+                try? await store.purgeSilo(keepingScope: keeping)
             }
             self.revision &+= 1
         }
@@ -187,6 +225,13 @@ final class SiloCatalogMirror {
             await UnifiedSiloSyncEngine.sync(
                 store: store, scope: scope, libraryID: libraryID, kind: kind,
                 freshness: force ? nil : Self.freshness, isCurrent: isCurrent,
+                onProgress: { [weak self] in
+                    // A first walk published more titles: grids re-read around their position.
+                    await MainActor.run {
+                        guard let self, self.epoch == startedEpoch else { return }
+                        self.revision &+= 1
+                    }
+                },
                 first: {
                     var state = CatalogFilterState.none
                     state.sort = .title

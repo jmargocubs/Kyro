@@ -116,3 +116,37 @@ Apple TV are not built from this branch.
 | Icon | `KyroLabsAppIcon` | `TVAppIconLabs` |
 | Release tag | `kyro-labs-ios-v<ver>-build<n>-rc1` | `kyro-labs-tvos-v<ver>-build<n>-rc1` |
 | Catalog entry | Kyro Labs | Kyro Labs Apple TV |
+
+## Startup and Silo as an optional provider
+
+Kyro owns startup. `IndependentIdentity/KyroStartupPolicy.swift` maps the Silo provider's state,
+which `RestoredSessionAuthResolver` still reports, to the route Kyro shows.
+
+| Silo provider state | Cold-launch route |
+| --- | --- |
+| No server saved, or a saved server that is signed out | Who's Watching with Kyro's local profiles |
+| Signed in, no Silo profile chosen | Silo Who's Watching (unchanged) |
+| Signed in with a profile | Home (unchanged) |
+| Server recovery | Recovery screen (unchanged) |
+
+- Local profiles show whenever no Silo session is signed in. Before 2026-11-22 they showed only
+  when no server was saved at all, so one saved server made Silo sign-in mandatory again.
+- "Connect Silo" on Who's Watching and an explicit server pick still open Silo setup and sign-in.
+  Silo setup has a back button (iOS) and Menu (tvOS) that return to Who's Watching.
+- A plain Silo sign-out returns to Who's Watching. Switching account or server continues to that
+  server's sign-in. An expired session asks to sign in again while the server is still saved.
+
+## Movies and Series loading
+
+The unified grid shows the local index first, then syncs Silo and builds IPTV keys behind it.
+
+- A library with nothing published yet syncs progressively: pages 1, 2, 4 and 8, then every 16
+  pages, are published while walking. The first titles appear after one request. Partial publishes
+  are stamped `.distantPast`, so they always count as stale. A failed or cancelled first walk keeps
+  what is shown; an identity change removes it.
+- A library that already has a snapshot refreshes quietly and swaps in one transaction, as before.
+- The identity boundary that runs at every launch restore and profile pick keeps the mirror of the
+  identity now in use and deletes every other identity's titles. It used to delete everything, which
+  forced a full re-walk on each launch.
+- No "Preparing your library" or "Updating Silo titles…" states. An empty grid that is still filling
+  shows poster placeholders; only failures show a status line.

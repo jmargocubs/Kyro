@@ -90,18 +90,22 @@ final class KyroUnifiedBrowseModel {
                 try? await store.retainSiloLibraries(scope: siloScope, kind: kind, libraryIDs: libraries.map(\.id))
             }
         }
-        if !providerIDs.isEmpty {
-            isIndexingIPTV = true
-            _ = try? await store.ensureUnifiedKeys()
-            isIndexingIPTV = false
-        }
-        guard current == configuration, !Task.isCancelled else { return abandon(current) }
         scope = UnifiedIndexScope(kind: kind, siloScope: siloScope, siloLibraryIDs: libraries.map(\.id),
                                   providerIDs: providerIDs)
+        // Show what the index already holds first; syncing and key building happen behind it.
         await loadFirst()
         guard current == configuration else { return }
         hasLoaded = true
         startSync(force: false)
+        if !providerIDs.isEmpty {
+            // Catalogs imported before Build 110 still need their keys. Build them behind the
+            // cached grid, then re-read it in place.
+            isIndexingIPTV = true
+            let built = (try? await store.ensureUnifiedKeys()) ?? 0
+            guard current == configuration, !Task.isCancelled else { return abandon(current) }
+            isIndexingIPTV = false
+            if built > 0 { await indexDidChange() }
+        }
     }
 
     /// Pull to refresh: re-walk every Silo library now and show the catalog from the start.
@@ -181,6 +185,12 @@ final class KyroUnifiedBrowseModel {
     func setColumns(_ columns: Int) {
         guard columns > 0, window.rowGranularity != columns else { return }
         window.rowGranularity = columns
+    }
+
+    /// The grid is empty only because a first sync or key build is still filling it. The page
+    /// shows its loading placeholders rather than an empty state.
+    var isFillingLibrary: Bool {
+        cards.isEmpty && (isSyncingSilo || isIndexingIPTV)
     }
 
     var isSyncingSilo: Bool {

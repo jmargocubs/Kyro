@@ -38,13 +38,10 @@ struct KyroUnifiedBrowseView: View {
                 if let controls { controls }
                 VStack(spacing: SiloTheme.padding) {
                     status
-                    if model.cards.isEmpty && model.hasLoaded && !model.isLoading {
+                    if model.cards.isEmpty && model.hasLoaded && !model.isLoading && !model.isFillingLibrary {
                         EmptyStateView(icon: kind == .movie ? "film" : "tv",
-                                       title: model.isSyncingSilo || model.isIndexingIPTV
-                                           ? "Preparing your library" : "No titles available",
-                                       subtitle: model.isSyncingSilo || model.isIndexingIPTV
-                                           ? "Titles appear as soon as they are indexed."
-                                           : "Check your Silo libraries or IPTV catalog settings.")
+                                       title: "No titles available",
+                                       subtitle: "Check your Silo libraries or IPTV catalog settings.")
                             .frame(minHeight: 280)
                     } else {
                         grid
@@ -68,14 +65,12 @@ struct KyroUnifiedBrowseView: View {
         .refreshable { await model.refresh() }
     }
 
+    /// Only problems are reported here. Syncing and indexing run quietly behind the cached grid;
+    /// an empty grid that is still filling shows the poster placeholders instead.
     @ViewBuilder
     private var status: some View {
         if model.storeUnavailable {
             statusLine("The local catalog is unavailable. Pull to retry.", progress: false)
-        } else if model.isIndexingIPTV {
-            statusLine("Indexing IPTV titles…", progress: true)
-        } else if model.isSyncingSilo {
-            statusLine("Updating Silo titles…", progress: true)
         } else if model.siloSyncFailed {
             statusLine("Some Silo titles could not be updated. Showing the last synced catalog.", progress: false)
         }
@@ -110,7 +105,7 @@ struct KyroUnifiedBrowseView: View {
                     .onAppear { Task { await model.loadPrevious() } }
             }
             LazyVGrid(columns: layout.columns, spacing: PosterGridLayout.rowSpacing) {
-                if cards.isEmpty && !model.hasLoaded {
+                if cards.isEmpty && (!model.hasLoaded || model.isFillingLibrary) {
                     ForEach(0..<(columns * 4), id: \.self) { _ in PosterSkeletonCard() }
                 }
                 ForEach(UnifiedIndexedCards(cards: cards)) { entry in

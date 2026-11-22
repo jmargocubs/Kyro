@@ -271,7 +271,31 @@ extension XtreamVODCatalogStore {
         sqlite3_step(statement)
     }
 
-    /// When the last completed sync of a library finished, or nil when it has never completed.
+    /// Removes every snapshot of one library, including the active one. Used only when a first
+    /// sync, published while walking, lost its identity: everything stored for that library came
+    /// from that walk.
+    func retractSilo(scope: String, libraryID: Int, kind: XtreamVODKind) throws {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            for table in ["unified_silo_active", "unified_silo_items"] {
+                let statement = try prepare("DELETE FROM \(table) WHERE scope=? AND library_id=? AND kind=?")
+                bind(scope, at: 1, in: statement)
+                sqlite3_bind_int64(statement, 2, sqlite3_int64(libraryID))
+                bind(kind.rawValue, at: 3, in: statement)
+                let result = sqlite3_step(statement)
+                sqlite3_finalize(statement)
+                guard result == SQLITE_DONE else { throw XtreamVODError.storage }
+            }
+            try execute("COMMIT")
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+    }
+
+    /// When the last completed sync of a library finished, or nil when nothing was ever published.
+    /// A first sync that is still walking (or was interrupted) is visible with `.distantPast`, so
+    /// it always counts as stale.
     func siloSyncedAt(scope: String, libraryID: Int, kind: XtreamVODKind) -> Date? {
         guard let statement = try? prepare("""
             SELECT synced_at FROM unified_silo_active WHERE scope=? AND library_id=? AND kind=?
