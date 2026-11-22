@@ -1008,6 +1008,10 @@ struct TVMainTabView: View {
     /// down. The page swaps in place via the scope/pill change + the
     /// existing `.id(activeLibrary.id)` crossfade.
     private func commitScope(type: TVLibraryTabType, library: Library, pill: TVLibraryPill?) {
+        #if DEBUG
+        // Passive evidence of the production Select callback, not a test navigation route.
+        TVFocusHarnessProbe.shared.committedScope = "\(type.rawValue):\((pill ?? .recommended).title)"
+        #endif
         scopeSelections[type] = library.id
         TVLibraryScopeStore.shared.setSelectedLibraryId(library.id, for: type)
         pillSelections[type] = pill ?? .recommended

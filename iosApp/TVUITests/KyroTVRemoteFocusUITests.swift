@@ -895,6 +895,36 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         }
     }
 
+    /// Both real shell cascades: every offline section is reached by remote Down and selected.
+    /// The Debug observer reports the actual production callback; then Up must restore that tab.
+    func testShellMoviesAndSeriesDropdownSelectionsReturnToTheirOwnTabs() {
+        let app = launchShell()
+        for title in ["Movies", "Series"] {
+            for (index, section) in ["Recommended", "Collections", "Browse"].enumerated() {
+                XCTAssertTrue(isBarElement(focusBar(app)))
+                XCTAssertTrue(moveToTab(title, app))
+                remote.press(.down)
+                let tab = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "\(title), tab, ")).firstMatch
+                let cascade = app.otherElements["cascade.\(title.lowercased())"].firstMatch
+                XCTAssertTrue(waitUntil(5) { tab.exists && !tab.isEnabled && cascade.exists },
+                              "Down enters the real \(title) dropdown")
+                // One seeded library and no VOD provider: the real cascade is single-level.
+                for _ in 0..<index { remote.press(.down) }
+                remote.press(.select)
+                let marker = app.descendants(matching: .any)["harness-committed-scope"]
+                XCTAssertTrue(waitUntil(5) { marker.exists && marker.label == "\(title.lowercased()):\(section)" },
+                              "Select commits \(title) \(section) through the production callback")
+                XCTAssertTrue(waitFor(app, timeout: 10) { $0 != "<none>" && !self.isBarElement($0) },
+                              "\(title) \(section) takes content focus, including offline status controls")
+                XCTAssertEqual(tabTitle(focusBar(app)), title, "Up restores the selected \(title) tab")
+                remote.press(.down)
+                XCTAssertTrue(waitUntil(5) { tab.exists && !tab.isEnabled && cascade.exists })
+                XCTAssertEqual(tabTitle(press(.menu, app, "\(title) \(section) dropdown Back")), title)
+            }
+        }
+        XCTAssertTrue(moveToTab("Live TV", app), "Another main section remains reachable")
+    }
+
     /// Closed dropdowns never block neighbouring tabs: Right passes over Movies and Series.
     func testShellClosedDropdownsDoNotBlockOtherTabs() {
         let app = launchShell()

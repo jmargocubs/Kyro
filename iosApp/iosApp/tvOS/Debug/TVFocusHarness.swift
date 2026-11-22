@@ -456,6 +456,7 @@ private final class TVFocusHarnessURLProtocol: URLProtocol {
 @MainActor @Observable
 final class TVFocusHarnessProbe {
     static let shared = TVFocusHarnessProbe()
+    var committedScope = "none"
     var categoriesHasFocus = false
     private(set) var lines: [String] = []
     private var started = Date()
@@ -492,6 +493,13 @@ private struct TVFocusHarnessJournalView: View {
             .accessibilityIdentifier("harness-journal")
             .accessibilityValue(probe.categoriesHasFocus ? "LiveTV.binding.Categories" : "")
             .allowsHitTesting(false)
+            .overlay {
+                Color.clear.frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityLabel(probe.committedScope)
+                    .accessibilityIdentifier("harness-committed-scope")
+                    .allowsHitTesting(false)
+            }
     }
 }
 #endif
