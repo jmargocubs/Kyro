@@ -48,7 +48,8 @@ struct TVLibraryBrowseView: View {
                         accessibilityLabel: "Loading \(library.name)"
                     )
             } else if let error = sectionsError, sections.isEmpty {
-                ErrorView(state: error, onRetry: { Task { await loadContent() } })
+                ErrorView(state: error, onRetry: { Task { await loadContent() } },
+                          tvFocusRequest: focusRequest, tvIsTopMenuFocused: isTopMenuFocused)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if contentSections.isEmpty {
                 emptyHint

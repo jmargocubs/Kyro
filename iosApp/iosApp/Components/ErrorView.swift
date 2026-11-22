@@ -12,6 +12,12 @@ struct ErrorView: View {
     var onSignOut: (() -> Void)? = nil
     var onManageServers: (() -> Void)? = nil
 
+    #if os(tvOS)
+    /// Optional shell handoff for a root error page replacing focused loading content.
+    var tvFocusRequest: Int? = nil
+    var tvIsTopMenuFocused = false
+    #endif
+
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -33,9 +39,7 @@ struct ErrorView: View {
 
             VStack(spacing: SiloTheme.smallPadding) {
                 if let primary = primaryAction {
-                    Button(primary.title, action: primary.run)
-                        .siloPrimaryButton()
-                        .frame(width: 200)
+                    primaryButton(primary)
                 }
                 ForEach(Array(secondaryActions.enumerated()), id: \.offset) { _, action in
                     Button(action.title, action: action.run)
@@ -48,6 +52,20 @@ struct ErrorView: View {
             .padding(.top, SiloTheme.smallPadding)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func primaryButton(_ action: Action) -> some View {
+        #if os(tvOS)
+        Button(action.title, action: action.run)
+            .siloPrimaryButton()
+            .frame(width: 200)
+            .modifier(TVErrorActionFocus(request: tvFocusRequest, isTopMenuFocused: tvIsTopMenuFocused))
+        #else
+        Button(action.title, action: action.run)
+            .siloPrimaryButton()
+            .frame(width: 200)
+        #endif
     }
 
     private var headline: String { Self.headline(for: state) }

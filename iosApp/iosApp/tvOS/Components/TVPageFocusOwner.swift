@@ -64,6 +64,25 @@ struct TVPageFocusOwner: ViewModifier {
     }
 }
 
+/// Seeds an error page's existing primary button after the outgoing loading view unmounts.
+/// The button remains the only focus owner; this modifier creates no extra focusable container.
+struct TVErrorActionFocus: ViewModifier {
+    let request: Int?
+    let isTopMenuFocused: Bool
+    @FocusState private var isFocused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focused($isFocused)
+            .task(id: request) {
+                guard request != nil, !isTopMenuFocused else { return }
+                await Task.yield()
+                guard !Task.isCancelled, !isTopMenuFocused else { return }
+                isFocused = true
+            }
+    }
+}
+
 extension View {
     /// Make this placeholder its page's focus owner. See `TVPageFocusOwner`.
     func tvPageFocusOwner(
