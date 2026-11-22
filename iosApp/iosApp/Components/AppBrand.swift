@@ -39,6 +39,14 @@ struct AppWordmarkView: View {
             .interpolation(.high)
             .scaledToFit()
             .frame(width: kyroWidth)
+            .background {
+                if KyroAppIdentity.current.isLabs {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(.black.opacity(0.55))
+                        .padding(.horizontal, -5)
+                        .padding(.vertical, -3)
+                }
+            }
             .accessibilityLabel(AppBrand.name)
         #else
         SiloWordmarkView(width: siloWidth)

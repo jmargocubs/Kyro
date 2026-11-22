@@ -45,7 +45,7 @@ final class KyroLabsIdentityTests: XCTestCase {
 
     func testLabsHasTheRequestedBundleIdentity() {
         XCTAssertEqual(labs.variant, .labs)
-        XCTAssertEqual(labs.displayName, "Kyro Labs")
+        XCTAssertEqual(labs.displayName, "Kyro X Labs")
         XCTAssertEqual(labs.bundleID, "com.cubbiestream.kyro.labs")
     }
 
@@ -282,8 +282,8 @@ final class KyroLabsIdentityTests: XCTestCase {
             .appendingPathComponent("\(brand)/KyroLabsAppIcon.appiconset/Contents.json"))
         let labsSet = try XCTUnwrap(try JSONSerialization.jsonObject(with: contents) as? [String: Any])
         let images = try XCTUnwrap(labsSet["images"] as? [[String: Any]])
-        XCTAssertEqual(images.first?["filename"] as? String, "Kyro_Labs_AppIcon_1024.png")
-        let image = Self.iosAppDir.appendingPathComponent("\(brand)/KyroLabsAppIcon.appiconset/Kyro_Labs_AppIcon_1024.png")
+        XCTAssertEqual(images.first?["filename"] as? String, "KyroXLabsAppIcon.png")
+        let image = Self.iosAppDir.appendingPathComponent("\(brand)/KyroLabsAppIcon.appiconset/KyroXLabsAppIcon.png")
         XCTAssertTrue(FileManager.default.fileExists(atPath: image.path))
         let stableImage = Self.iosAppDir.appendingPathComponent("\(brand)/KyroAppIcon.appiconset/Kyro_C3_AppIcon_1024.png")
         XCTAssertTrue(FileManager.default.fileExists(atPath: stableImage.path))

@@ -112,7 +112,7 @@
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
-		<string>LaunchBackground</string>
+		<string>$(KYRO_LAUNCH_BACKGROUND_NAME)</string>
 	</dict>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
