@@ -36,7 +36,7 @@ public struct JellyfinSession: Codable, Sendable, Equatable, CustomStringConvert
   public var debugDescription: String { description }
 }
 
-public enum JellyfinError: Error, Equatable, Sendable {
+public enum JellyfinError: LocalizedError, Equatable, Sendable {
   case invalidServerURL
   case invalidRequest
   /// Wrong credentials (on sign-in) or an expired/revoked token (on any other call).
@@ -48,6 +48,21 @@ public enum JellyfinError: Error, Equatable, Sendable {
   case http(Int)
   case malformedResponse
   case responseTooLarge
+
+  public var errorDescription: String? {
+    switch self {
+    case .invalidServerURL: "Enter a valid Jellyfin server URL."
+    case .invalidRequest: "Enter a Jellyfin username and password."
+    case .unauthorized: "The Jellyfin credentials or session were rejected."
+    case .forbidden: "This Jellyfin account cannot access that content."
+    case .notFound: "This Jellyfin item is no longer available."
+    case .notSignedIn: "Reconnect this Jellyfin server."
+    case .serverUnavailable: "Jellyfin is unreachable. Check the server URL and connection."
+    case .http: "Jellyfin could not complete this request."
+    case .malformedResponse: "Jellyfin returned an invalid response."
+    case .responseTooLarge: "Jellyfin returned too much data."
+    }
+  }
 }
 
 public enum JellyfinItemKind: String, Sendable, Equatable {

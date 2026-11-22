@@ -3905,6 +3905,9 @@ private struct ItemDetailSheet: View {
                 tmdbId: request.tmdbId,
                 onClose: router.dismissItemDetail
             )
+        } else if let jellyfin = presentation.jellyfin {
+            KyroJellyfinDetailView(ref: jellyfin, isSeries: presentation.jellyfinIsSeries,
+                                   onClose: router.dismissItemDetail)
         } else if let iptv = presentation.iptv {
             // An IPTV poster's title, in the same card as a Silo title. Its page plays through
             // Silo's player with an `ExternalPlaybackRequest`.

@@ -652,6 +652,9 @@ final class ServerRegistry {
         let previousMirroredServerID = defaults.string(forKey: SharedStorage.activeServerIdKey)
         let previousProfileID = defaults.string(forKey: SharedStorage.profileIdKey)
 
+        let projectedAccount = ProviderAccountRef.derived(kind: .silo, key: serverId)
+        await KyroLocalIdentityRuntime.shared.markProjectedRemovalPending(projectedAccount)
+
         entries.removeAll(where: { $0.id == serverId })
         if removesActiveServer {
             let fallback = entries.max { $0.lastUsedAt < $1.lastUsedAt }
@@ -684,6 +687,7 @@ final class ServerRegistry {
             // unreachable until the same server is added again, at which
             // point the new sign-in replaces it.
             let rolledBack = persist()
+            if rolledBack { await KyroLocalIdentityRuntime.shared.cancelProjectedRemoval(projectedAccount) }
             let reason = rolledBack ? reason : "\(reason)+rollbackPersistFailed"
             defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
             defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
@@ -719,8 +723,7 @@ final class ServerRegistry {
         // The server removal is durable now. Only its provider-user associations are retired;
         // local Kyro profiles, PINs and other providers are never touched.
         do {
-            try await KyroLocalIdentityRuntime.shared.removedProjectedAccount(
-                .derived(kind: .silo, key: serverId))
+            try await KyroLocalIdentityRuntime.shared.removedProjectedAccount(projectedAccount)
         } catch {
             Self.logger.error("removeServer could not clear local profile links")
         }

@@ -31,9 +31,10 @@ public struct ProviderRegistry: Sendable {
 
   /// Registers a Jellyfin, Emby or Plex account. Silo and IPTV are projections, not registered.
   @discardableResult
-  public func register(kind: ProviderKind, label: String) async throws -> ProviderAccountRef {
+  public func register(kind: ProviderKind, label: String, endpoint: String? = nil,
+                       id: ProviderAccountID = .init()) async throws -> ProviderAccountRef {
     guard !kind.isProjected else { throw ProviderError.projectedKind }
-    let account = ProviderAccount(provider: kind.rawValue, label: label)
+    let account = ProviderAccount(id: id, provider: kind.rawValue, label: label, endpoint: endpoint)
     try await identity.register(account)
     return ProviderAccountRef(id: account.id, kind: kind)
   }
@@ -56,6 +57,9 @@ public struct ProviderRegistry: Sendable {
         origin: .registered, connection: .saved)
     }
   }
+
+  /// Includes endpoint metadata for restoration, scoped to this registry's household.
+  public func storedAccounts() async throws -> [ProviderAccount] { try await identity.accounts() }
 
   /// Registered accounts followed by the projections, without duplicates.
   public func allAccounts(projected: [ProviderAccountRecord]) async throws -> [ProviderAccountRecord] {

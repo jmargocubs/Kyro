@@ -125,6 +125,29 @@ private actor Switch {
     try await reopened.close()
   }
 
+  func testJellyfinEndpointMetadataRestoresPerAccountWithoutChangingLegacyAccounts() async throws {
+    let (db, url) = try makeDatabase()
+    let household = HouseholdID()
+    let registry = ProviderRegistry(identity: IdentityStore(database: db, household: household))
+    let first = try await registry.register(kind: .jellyfin, label: "Den",
+                                            endpoint: "https://den.example:8096")
+    let second = try await registry.register(kind: .jellyfin, label: "Cabin",
+                                             endpoint: "https://cabin.example")
+    let legacy = try await registry.register(kind: .plex, label: "Plex")
+    try await db.close()
+
+    let reopened = try SQLiteDatabase(path: url)
+    let restored = ProviderRegistry(identity: IdentityStore(database: reopened, household: household))
+    let accounts = try await restored.storedAccounts()
+    XCTAssertEqual(accounts.first { $0.id == first.id }?.endpoint, "https://den.example:8096")
+    XCTAssertEqual(accounts.first { $0.id == second.id }?.endpoint, "https://cabin.example")
+    XCTAssertNil(accounts.first { $0.id == legacy.id }?.endpoint)
+    try await restored.remove(first)
+    let remaining = try await restored.storedAccounts()
+    XCTAssertEqual(Set(remaining.map(\.id)), [second.id, legacy.id])
+    try await reopened.close()
+  }
+
   func testHouseholdsInOneDatabaseDoNotSeeEachOthersAccounts() async throws {
     let (db, _) = try makeDatabase()
     let first = ProviderRegistry(identity: IdentityStore(database: db, household: HouseholdID()))

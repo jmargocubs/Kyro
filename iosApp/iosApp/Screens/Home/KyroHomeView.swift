@@ -44,7 +44,14 @@ struct KyroHomeView: View {
         .toolbar(.hidden, for: .navigationBar)
         #endif
         .siloPageBackground()
-        .task { await profileStore.refresh() }
+        .task {
+            await KyroLocalIdentityRuntime.shared.reconcilePendingRemovals(
+                availableAccounts: KyroProviderBridge.accounts)
+            #if os(iOS)
+            await KyroJellyfinConnections.shared.restore()
+            #endif
+            await profileStore.refresh()
+        }
     }
 
     private var greeting: String {
@@ -77,6 +84,7 @@ struct KyroAddSourcesPanel: View {
     private let liveTV = LiveTVService.shared
     #if os(iOS)
     @State private var showIPTVSetup = false
+    @State private var showMediaServerSetup = false
     #endif
 
     var body: some View {
@@ -91,11 +99,14 @@ struct KyroAddSourcesPanel: View {
                 }
             }
             #endif
-            let savedServer = AuthService.shared.isLoggedIn ? nil : ServerRegistry.shared.activeServer?.displayName
-            row(title: KyroHomeCopy.mediaServerTitle(savedServerName: savedServer),
-                subtitle: KyroHomeCopy.mediaServerSubtitle(savedServerName: savedServer),
+            row(title: "Add Media Server",
+                subtitle: "Connect Jellyfin or Silo",
                 symbol: "server.rack", id: "kyroHomeAddMediaServer") {
+                #if os(iOS)
+                showMediaServerSetup = true
+                #else
                 router.navigate(to: .serverList)
+                #endif
             }
             #if os(iOS)
             row(title: liveTV.providers.isEmpty ? "Add IPTV" : "Manage IPTV",
@@ -111,6 +122,7 @@ struct KyroAddSourcesPanel: View {
                 LiveTVSettingsView(service: liveTV, presentation: .sheet)
             }
         }
+        .sheet(isPresented: $showMediaServerSetup) { KyroJellyfinSetupView() }
         #endif
     }
 

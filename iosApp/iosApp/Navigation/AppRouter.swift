@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import KyroProviders
+#endif
 
 extension EnvironmentValues {
     /// The existing shell stack, not a nested Live TV stack. Home browsing appends typed
@@ -178,6 +181,9 @@ final class AppRouter {
         /// Set when an IPTV poster opens a provider title (`presentIPTVDetail`); `contentId` is
         /// then only a page identity.
         let iptv: KyroIPTVDetailRequest?
+        /// Provider-qualified item identity, never a Silo content ID.
+        let jellyfin: ContentRef?
+        let jellyfinIsSeries: Bool
         /// The other IPTV sources of a matched unified title (Build 110). The root page stays the
         /// existing Silo or IPTV detail; each alternate opens its own IPTV detail inside the card.
         var alternates: [KyroIPTVDetailRequest] = []
@@ -201,6 +207,8 @@ final class AppRouter {
             self.request = nil
             #if os(iOS)
             self.iptv = nil
+            self.jellyfin = nil
+            self.jellyfinIsSeries = false
             #endif
         }
 
@@ -211,6 +219,8 @@ final class AppRouter {
             self.request = request
             #if os(iOS)
             self.iptv = nil
+            self.jellyfin = nil
+            self.jellyfinIsSeries = false
             #endif
         }
 
@@ -221,6 +231,18 @@ final class AppRouter {
             self.resumeContext = nil
             self.request = nil
             self.iptv = iptv
+            self.jellyfin = nil
+            self.jellyfinIsSeries = false
+        }
+
+        init(jellyfin ref: ContentRef, isSeries: Bool) {
+            self.contentId = ref.description
+            self.libraryId = nil
+            self.resumeContext = nil
+            self.request = nil
+            self.iptv = nil
+            self.jellyfin = ref
+            self.jellyfinIsSeries = isSeries
         }
         #endif
     }
@@ -785,6 +807,11 @@ final class AppRouter {
         var presentation = ItemDetailPresentation(iptv: request)
         presentation.alternates = alternates
         openItemDetail(presentation)
+    }
+
+    func presentJellyfinDetail(_ ref: ContentRef, isSeries: Bool) {
+        itemDetailPath = NavigationPath()
+        openItemDetail(ItemDetailPresentation(jellyfin: ref, isSeries: isSeries))
     }
 
     /// Opens a unified (Build 110) Silo title in the existing Silo detail, carrying every matched

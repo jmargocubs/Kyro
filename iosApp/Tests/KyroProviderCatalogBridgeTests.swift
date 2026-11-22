@@ -67,7 +67,14 @@ final class KyroProviderCatalogBridgeTests: XCTestCase {
         let registry = try XCTUnwrap(runtime.providerRegistry())
         let jellyfin = try await registry.register(kind: .jellyfin, label: "Den")
         let plex = try await registry.register(kind: .plex, label: "Plex")
-        let accounts = await KyroProviderCatalogBridge.registeredAccounts(runtime: runtime)
+        let profile = try await runtime.createProfile(name: "Alex", isChild: false,
+                                                      avatarEmoji: nil, pin: nil)
+        runtime.activateNewProfile(profile)
+        let profileID = try XCTUnwrap(UUID(uuidString: profile.id))
+        try await runtime.link(profileID: profileID, to: jellyfin, remoteUserID: "jf-user")
+        try await runtime.link(profileID: profileID, to: plex, remoteUserID: "plex-user")
+        let accounts = await KyroProviderCatalogBridge.registeredAccounts(
+            runtime: runtime, connectedJellyfin: [jellyfin])
         XCTAssertEqual(Set(accounts), [jellyfin, plex])
         XCTAssertEqual(
             Set(KyroProviderCatalogBridge.sources(accounts).map(\.account)), [jellyfin.description, plex.description])
@@ -75,12 +82,19 @@ final class KyroProviderCatalogBridgeTests: XCTestCase {
 
     func testTurningTheProviderCatalogOffRestoresTheBuild110Path() async throws {
         let runtime = try makeRuntime()
-        try await runtime.providerRegistry()?.register(kind: .jellyfin, label: "Den")
+        let account = try await runtime.providerRegistry()?.register(kind: .jellyfin, label: "Den")
+        let profile = try await runtime.createProfile(name: "Alex", isChild: false,
+                                                      avatarEmoji: nil, pin: nil)
+        runtime.activateNewProfile(profile)
+        try await runtime.link(profileID: try XCTUnwrap(UUID(uuidString: profile.id)),
+                               to: try XCTUnwrap(account), remoteUserID: "user")
         UserDefaults.standard.set(false, forKey: KyroProviderCatalogBridge.enabledDefaultsKey)
-        let off = await KyroProviderCatalogBridge.registeredAccounts(runtime: runtime)
+        let off = await KyroProviderCatalogBridge.registeredAccounts(
+            runtime: runtime, connectedJellyfin: [try XCTUnwrap(account)])
         XCTAssertTrue(off.isEmpty, "no provider arm in any grid or sync")
         UserDefaults.standard.removeObject(forKey: KyroProviderCatalogBridge.enabledDefaultsKey)
-        let on = await KyroProviderCatalogBridge.registeredAccounts(runtime: runtime)
+        let on = await KyroProviderCatalogBridge.registeredAccounts(
+            runtime: runtime, connectedJellyfin: [try XCTUnwrap(account)])
         XCTAssertEqual(on.count, 1, "the registered account was never touched")
     }
 

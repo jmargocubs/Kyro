@@ -577,11 +577,11 @@ final class LiveTVService {
     /// observe a selected provider that no longer exists.
     func removeProvider(_ id: UUID) async {
         let removedKind = providers.first(where: { $0.id == id })?.kind
+        let account = removedKind.map { ProviderAccountRef(
+            id: ProviderAccountID(rawValue: id), kind: $0 == .xtream ? .xtream : .m3u) }
+        if let account { KyroLocalIdentityRuntime.shared.markProjectedRemovalPending(account) }
         forgetProvider(id)
-        if let removedKind {
-            let account = ProviderAccountRef(
-                id: ProviderAccountID(rawValue: id),
-                kind: removedKind == .xtream ? .xtream : .m3u)
+        if let account {
             try? await KyroLocalIdentityRuntime.shared.removedProjectedAccount(account)
         }
         await deleteProviderFiles(id)

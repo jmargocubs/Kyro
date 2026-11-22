@@ -6,10 +6,13 @@ public struct ProviderAccount: Codable, Sendable, Identifiable, Equatable {
   public let id: ProviderAccountID
   public let provider: String
   public let label: String
-  public init(id: ProviderAccountID = .init(), provider: String, label: String) {
+  /// Nonsecret server endpoint. Legacy accounts decode with nil; tokens never belong here.
+  public let endpoint: String?
+  public init(id: ProviderAccountID = .init(), provider: String, label: String, endpoint: String? = nil) {
     self.id = id
     self.provider = provider
     self.label = label
+    self.endpoint = endpoint
   }
 }
 public struct SourceGrant: Codable, Sendable, Equatable {

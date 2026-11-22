@@ -43,6 +43,8 @@ class ProfileSelectionViewModel {
 
         if isKyroLocalMode {
             do {
+                await KyroLocalIdentityRuntime.shared.reconcilePendingRemovals(
+                    availableAccounts: KyroProviderBridge.accounts)
                 profiles = try await KyroLocalIdentityRuntime.shared.profiles()
                 hasLoadedLocalProfiles = true
             } catch {

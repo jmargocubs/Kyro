@@ -17,6 +17,7 @@ struct KyroFirstRunSetupView: View {
     @State private var errorText: String?
     #if os(iOS)
     @State private var showIPTVSetup = false
+    @State private var showMediaServerSetup = false
     @State private var iptvProviderCountBefore = 0
     #endif
 
@@ -32,6 +33,9 @@ struct KyroFirstRunSetupView: View {
             NavigationStack {
                 LiveTVSettingsView(service: .shared, presentation: .sheet)
             }
+        }
+        .sheet(isPresented: $showMediaServerSetup) {
+            KyroJellyfinSetupView(onConnected: enterKyro, onSiloSelected: onFinish)
         }
         #endif
     }
@@ -111,7 +115,7 @@ struct KyroFirstRunSetupView: View {
 
     private func sourceLabel(_ source: KyroFirstRunSetup.Source) -> some View {
         let (title, subtitle, symbol) = switch source {
-        case .mediaServer: ("Add Media Server", "Connect your Silo server", "server.rack")
+        case .mediaServer: ("Add Media Server", "Connect Jellyfin or Silo", "server.rack")
         case .iptv: ("Add IPTV", "Xtream Codes or an M3U playlist", "dot.radiowaves.left.and.right")
         }
         return HStack(spacing: 14) {
@@ -157,10 +161,12 @@ struct KyroFirstRunSetupView: View {
     private func choose(_ source: KyroFirstRunSetup.Source) {
         switch source {
         case .mediaServer:
-            // Silo's own setup and sign-in. Its Back returns to Who's Watching, which now lists
-            // this profile; signing in continues to the Silo account's profiles as before.
+            #if os(iOS)
+            showMediaServerSetup = true
+            #else
             onFinish()
             router.resetToServerSetup()
+            #endif
         case .iptv:
             #if os(iOS)
             iptvProviderCountBefore = LiveTVService.shared.providers.count

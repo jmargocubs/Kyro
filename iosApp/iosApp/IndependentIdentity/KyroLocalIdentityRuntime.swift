@@ -23,6 +23,7 @@ final class KyroLocalIdentityRuntime {
     private let database: SQLiteDatabase?
     private let identity: IdentityStore?
     private let defaults: UserDefaults
+    private let pendingRemovalsKey: String
     private(set) var startupError: Error?
 
     init(databaseURL: URL? = nil, defaults: UserDefaults = .standard) {
@@ -36,6 +37,7 @@ final class KyroLocalIdentityRuntime {
             householdID = HouseholdID()
             defaults.set(householdID.description, forKey: key)
         }
+        pendingRemovalsKey = "kyro.identity.pending-provider-removals.\(householdID.description)"
         do {
             let databasePath: URL
             if let databaseURL {
@@ -154,6 +156,18 @@ final class KyroLocalIdentityRuntime {
             .profile(for: account, remoteUserID: remoteUserID)?.rawValue
     }
 
+    func linkedAccountsForActiveProfile() async throws -> Set<ProviderAccountRef> {
+        guard let identity else { throw startupError ?? RuntimeError.storageUnavailable }
+        guard let value = defaults.string(forKey: KyroLocalIdentityDefaults.activeProfileIDKey),
+              let uuid = UUID(uuidString: value) else { return [] }
+        let links = try await ProfileLinkRegistry(identity: identity)
+            .links(for: KyroProfileID(rawValue: uuid))
+        return Set(links.compactMap { link in
+            guard let kind = ProviderKind(rawValue: link.provider) else { return nil }
+            return ProviderAccountRef(id: link.account, kind: kind)
+        })
+    }
+
     func unlink(profileID: UUID, from account: ProviderAccountRef) async throws {
         guard let identity else { throw startupError ?? RuntimeError.storageUnavailable }
         try await ProfileLinkRegistry(identity: identity).unlink(
@@ -162,9 +176,40 @@ final class KyroLocalIdentityRuntime {
 
     /// Called only after the owning projected provider has actually been removed. Sign-out and
     /// server switching do not call this, so neither event erases a durable profile association.
+    func markProjectedRemovalPending(_ account: ProviderAccountRef) {
+        guard account.kind.isProjected else { return }
+        var pending = Set(defaults.stringArray(forKey: pendingRemovalsKey) ?? [])
+        pending.insert(account.description)
+        defaults.set(pending.sorted(), forKey: pendingRemovalsKey)
+    }
+
+    func cancelProjectedRemoval(_ account: ProviderAccountRef) {
+        var pending = Set(defaults.stringArray(forKey: pendingRemovalsKey) ?? [])
+        pending.remove(account.description)
+        defaults.set(pending.sorted(), forKey: pendingRemovalsKey)
+    }
+
+    /// The journal is written before the owning provider is removed. A failed identity write
+    /// leaves the entry pending; relaunch can retry without touching another account's links.
     func removedProjectedAccount(_ account: ProviderAccountRef) async throws {
         guard let identity else { throw startupError ?? RuntimeError.storageUnavailable }
         try await ProfileLinkRegistry(identity: identity).removedProjectedAccount(account)
+        cancelProjectedRemoval(account)
+    }
+
+    func reconcilePendingRemovals(availableAccounts: [ProviderAccountRecord]) async {
+        let available = Set(availableAccounts.map(\.ref))
+        for text in defaults.stringArray(forKey: pendingRemovalsKey) ?? [] {
+            guard let account = ProviderAccountRef(description: text), account.kind.isProjected else {
+                continue
+            }
+            if available.contains(account) {
+                // A removal rolled back or never reached the owning store.
+                cancelProjectedRemoval(account)
+            } else {
+                try? await removedProjectedAccount(account)
+            }
+        }
     }
 
     enum RuntimeError: LocalizedError {

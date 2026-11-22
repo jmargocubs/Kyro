@@ -20,10 +20,17 @@ enum KyroProviderCatalogBridge {
     /// Registered media-server accounts of this household. Needs no Silo session, and never throws:
     /// an unreadable registry contributes nothing rather than hiding Silo or IPTV titles.
     @MainActor
-    static func registeredAccounts(runtime: KyroLocalIdentityRuntime = .shared) async -> [ProviderAccountRef] {
+    static func registeredAccounts(runtime: KyroLocalIdentityRuntime? = nil,
+                                   connectedJellyfin: Set<ProviderAccountRef>? = nil) async -> [ProviderAccountRef] {
+        let runtime = runtime ?? .shared
         guard isEnabled, let registry = runtime.providerRegistry(),
               let records = try? await registry.accounts() else { return [] }
-        return records.map(\.ref).filter { $0.kind.isMediaServer && !$0.kind.isProjected }
+        guard let linked = try? await runtime.linkedAccountsForActiveProfile() else { return [] }
+        let connected = connectedJellyfin ?? KyroJellyfinConnections.shared.connectedAccounts
+        return records.map(\.ref).filter {
+            $0.kind.isMediaServer && !$0.kind.isProjected && linked.contains($0)
+                && ($0.kind != .jellyfin || connected.contains($0))
+        }
     }
 
     /// The account the active Silo server projects to, which labels Silo rows in the index.

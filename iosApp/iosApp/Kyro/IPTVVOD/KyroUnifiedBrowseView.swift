@@ -70,6 +70,7 @@ struct KyroUnifiedBrowseView: View {
         .siloPageBackground()
         .onChange(of: scrolledCardID) { _, id in model.anchorCardID = id }
         .task(id: configurationIdentity) {
+            await KyroJellyfinConnections.shared.restore()
             await model.configure(kind: kind, libraries: libraries,
                                   providers: liveTV.providers, vodEnabled: vodEnabled)
         }
@@ -176,11 +177,9 @@ struct KyroUnifiedBrowseView: View {
         case let .iptv(item, alternates):
             router.presentIPTVDetail(request(item), alternates: alternates.map(request))
         case let .provider(account, _, contentID, _, alternates):
-            // A media-server title opens through its provider's detail once one exists. Until then
-            // the card's IPTV source, if it has one, is the way in; otherwise the tap does nothing.
-            if let presenter = KyroProviderCatalogBridge.detailPresenter,
-               let ref = KyroProviderCatalogBridge.contentRef(account: account, contentID: contentID) {
-                presenter(ref)
+            if let ref = KyroProviderCatalogBridge.contentRef(account: account, contentID: contentID),
+               ref.account.kind == .jellyfin {
+                router.presentJellyfinDetail(ref, isSeries: kind == .series)
             } else if let first = alternates.first {
                 router.presentIPTVDetail(request(first), alternates: alternates.dropFirst().map(request))
             }
