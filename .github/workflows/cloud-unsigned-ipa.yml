@@ -112,7 +112,7 @@ jobs:
             { echo "SCHEME=Silo"; echo "APP=Silo"; echo "DEST=generic/platform=iOS"; echo "EXTRA="; } >> "$GITHUB_ENV"
           else
             echo "BUILD_JOBS=2" >> "$GITHUB_ENV"
-            { echo "SCHEME=SiloTV"; echo "APP=SiloTV"; echo "DEST=generic/platform=tvOS"; echo "EXTRA=SILO_USER_INDEPENDENT_KEYCHAIN=NO SILO_TV_BUNDLE_ID=com.cubbiestream.kyro.tvos"; } >> "$GITHUB_ENV"
+            { echo "SCHEME=SiloTV"; echo "APP=SiloTV"; echo "DEST=generic/platform=tvOS"; echo "EXTRA=SILO_USER_INDEPENDENT_KEYCHAIN=NO SILO_TV_BUNDLE_ID=com.cubbiestream.kyro.tvos SILO_TOPSHELF_BUNDLE_ID=com.cubbiestream.kyro.tvos.topshelf"; } >> "$GITHUB_ENV"
           fi
 
       - name: Select Xcode 27.1 and record environment
