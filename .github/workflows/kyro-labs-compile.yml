@@ -1,0 +1,126 @@
+name: Kyro Labs compile validation
+
+# Dedicated compile-only validation workflow for Kyro Labs branding.
+# Compiles the Labs iOS target for generic/platform=iOS without code signing.
+# Does NOT run a simulator, does NOT archive or export, and does NOT package an IPA.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - kyro/labs-kyro-x-branding
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kyro-labs-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Labs iOS compile and branding validation
+    runs-on: xcode-27 # standard free arm64 runner; Xcode 27.1 default
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode 27.1
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          xcodebuild -version
+
+      - name: Install pinned XcodeGen
+        if: hashFiles('.github/actions/install-xcodegen/action.yml') != ''
+        uses: ./.github/actions/install-xcodegen
+        with:
+          cache: 'true'
+          save-cache: 'true'
+
+      - name: Install XcodeGen (fallback)
+        if: hashFiles('.github/actions/install-xcodegen/action.yml') == ''
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Restore SwiftPM cache
+        uses: actions/cache@v4
+        with:
+          path: iosApp/.spm-packages
+          key: spm-compile-${{ hashFiles('iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            spm-compile-
+
+      - name: Generate project and resolve dependencies
+        working-directory: iosApp
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          xcodebuild -resolvePackageDependencies -project Silo.xcodeproj -scheme Silo \
+            -clonedSourcePackagesDirPath .spm-packages
+
+      - name: Compile Labs iOS app (generic/platform=iOS Debug, no signing)
+        working-directory: iosApp
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project Silo.xcodeproj \
+            -scheme Silo \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            -clonedSourcePackagesDirPath .spm-packages \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' CODE_SIGN_ENTITLEMENTS=''
+
+      - name: Run KyroMediaCore Swift package tests
+        run: |
+          swift test --package-path Packages/KyroMediaCore -j 2
+
+      - name: Validate branding, identity, and asset catalog configuration
+        run: |
+          python3 -c '
+          import os
+
+          # 1. Build configuration and display name
+          with open("iosApp/Signing/KyroVariant.xcconfig") as f:
+              xc = f.read()
+          assert "KYRO_APP_VARIANT = labs" in xc, "KYRO_APP_VARIANT must be labs"
+          assert "KYRO_DISPLAY_NAME = Kyro X Labs" in xc, "KYRO_DISPLAY_NAME must be Kyro X Labs"
+          assert "KYRO_TV_DISPLAY_NAME = Kyro Labs" in xc, "KYRO_TV_DISPLAY_NAME must be Kyro Labs"
+          assert "KYRO_APP_ICON_NAME = KyroLabsAppIcon" in xc, "KYRO_APP_ICON_NAME must be KyroLabsAppIcon"
+          assert "KYRO_LAUNCH_BACKGROUND_NAME = KyroXLaunchBackground" in xc, "KYRO_LAUNCH_BACKGROUND_NAME must be KyroXLaunchBackground"
+          assert "SILO_IOS_BUNDLE_ID = com.cubbiestream.kyro.labs" in xc, "SILO_IOS_BUNDLE_ID must be com.cubbiestream.kyro.labs"
+          assert "KYRO_APP_GROUP = group.com.cubbiestream.kyrolabs" in xc, "KYRO_APP_GROUP must be group.com.cubbiestream.kyrolabs"
+          assert "KYRO_KEYCHAIN_GROUP = com.cubbiestream.kyrolabs.shared" in xc, "KYRO_KEYCHAIN_GROUP must be com.cubbiestream.kyrolabs.shared"
+
+          # 2. Plist checks
+          with open("iosApp/iosApp/Info.plist") as f:
+              plist = f.read()
+          assert "$(KYRO_LAUNCH_BACKGROUND_NAME)" in plist, "Info.plist must reference $(KYRO_LAUNCH_BACKGROUND_NAME)"
+          assert "$(KYRO_DISPLAY_NAME)" in plist, "Info.plist must reference $(KYRO_DISPLAY_NAME)"
+
+          with open("iosApp/iosApp/tvOS-Info.plist") as f:
+              tv_plist = f.read()
+          assert "$(KYRO_TV_DISPLAY_NAME)" in tv_plist, "tvOS-Info.plist must reference $(KYRO_TV_DISPLAY_NAME)"
+
+          # 3. Code identity check
+          with open("iosApp/iosApp/Shared/KyroAppIdentity.swift") as f:
+              ident = f.read()
+          assert "displayName: \"Kyro X Labs\"" in ident, "KyroAppIdentity must define Kyro X Labs"
+          assert "displayName: \"Kyro\"" in ident, "KyroAppIdentity must preserve stable Kyro"
+
+          # 4. Labs asset catalog existence
+          brand_dir = "iosApp/iosApp/Kyro/KyroBrand.xcassets"
+          assert os.path.isfile(f"{brand_dir}/KyroLabsAppIcon.appiconset/KyroXLabsAppIcon.png"), "KyroXLabsAppIcon.png missing"
+          assert os.path.isfile(f"{brand_dir}/KyroXWordmark.imageset/KyroXWordmark.png"), "KyroXWordmark.png missing"
+          assert os.path.isfile(f"{brand_dir}/KyroXSplashBackground.imageset/KyroXSplashBackground_Portrait.png"), "KyroXSplashBackground missing"
+          assert os.path.isfile(f"{brand_dir}/KyroXLaunchBackground.colorset/Contents.json"), "KyroXLaunchBackground missing"
+
+          # 5. Production iOS and tvOS asset preservation
+          assert os.path.isfile(f"{brand_dir}/KyroAppIcon.appiconset/Kyro_C3_AppIcon_1024.png"), "Production Kyro_C3_AppIcon_1024.png missing"
+          assert os.path.isfile(f"{brand_dir}/KyroWordmark.imageset/Kyro_C3_Wordmark_Transparent.png"), "Production Kyro_C3_Wordmark missing"
+          assert os.path.isfile(f"{brand_dir}/KyroSplashBackground.imageset/Kyro_C3_Splash_Portrait_1320x2868.png"), "Production Kyro_C3_Splash missing"
+          assert os.path.isfile("iosApp/iosApp/Assets.xcassets/TVAppIcon.brandassets/Top Shelf Image.imageset/Content.png"), "tvOS Top Shelf missing"
+          assert os.path.isfile("iosApp/iosApp/Assets.xcassets/TVAppIconLabs.brandassets/Top Shelf Image.imageset/Content.png"), "tvOS Labs Top Shelf missing"
+
+          print("All branding, identity, and asset catalog checks verified successfully!")
+          '

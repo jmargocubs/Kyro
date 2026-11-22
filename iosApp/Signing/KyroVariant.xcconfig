@@ -9,8 +9,10 @@
 // SILO_IOS_BUNDLE_ID back to a stable value on a Labs checkout would break Labs's isolation.
 
 KYRO_APP_VARIANT = labs
-KYRO_DISPLAY_NAME = Kyro Labs
+KYRO_DISPLAY_NAME = Kyro X Labs
+KYRO_TV_DISPLAY_NAME = Kyro Labs
 KYRO_APP_ICON_NAME = KyroLabsAppIcon
+KYRO_LAUNCH_BACKGROUND_NAME = KyroXLaunchBackground
 KYRO_APP_GROUP = group.com.cubbiestream.kyrolabs
 KYRO_KEYCHAIN_GROUP = com.cubbiestream.kyrolabs.shared
 KYRO_URL_SCHEME = kyrolabs

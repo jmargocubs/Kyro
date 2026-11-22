@@ -10,8 +10,12 @@ import UIKit
 /// the alpha channel. The colours are sampled to sit with the halo; they are
 /// not Silo design tokens.
 enum KyroBrand {
-    static let backdropImageName = "KyroSplashBackground"
-    static let wordmarkImageName = "KyroWordmark"
+    static var backdropImageName: String {
+        KyroAppIdentity.current.isLabs ? "KyroXSplashBackground" : "KyroSplashBackground"
+    }
+    static var wordmarkImageName: String {
+        KyroAppIdentity.current.isLabs ? "KyroXWordmark" : "KyroWordmark"
+    }
 
     /// Pixel size of the approved backdrop. Layout is placed in its
     /// coordinates so text and symbols stay locked to the halo on every
@@ -120,7 +124,7 @@ struct KyroWordmark: View {
                 }
                 .allowsHitTesting(false)
             }
-            .accessibilityLabel("Kyro")
+            .accessibilityLabel(KyroAppIdentity.current.isLabs ? "Kyro X Labs" : "Kyro")
     }
 }
 

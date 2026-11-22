@@ -63,7 +63,7 @@ struct KyroAppIdentity: Equatable, Sendable {
 
     static let labs = KyroAppIdentity(
         variant: .labs,
-        displayName: "Kyro Labs",
+        displayName: "Kyro X Labs",
         bundleID: "com.cubbiestream.kyro.labs",
         appGroup: "group.com.cubbiestream.kyrolabs",
         keychainGroupSuffix: "com.cubbiestream.kyrolabs.shared",
