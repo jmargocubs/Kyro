@@ -278,23 +278,25 @@ struct ProfileSelectionView: View {
             Button {
                 router.navigate(to: .serverList)
             } label: {
-                Label("Change server", systemImage: "server.rack")
+                Label(viewModel.isKyroLocalMode ? "Connect Silo" : "Change server", systemImage: "server.rack")
             }
             .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
 
-            Button {
+            if !viewModel.isKyroLocalMode {
+                Button {
+                    #if os(tvOS)
+                    showSignOutConfirm = true
+                    #else
+                    router.signOutAndReset()
+                    #endif
+                } label: {
+                    Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+                }
+                .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
                 #if os(tvOS)
-                showSignOutConfirm = true
-                #else
-                router.signOutAndReset()
+                .focused($isSignOutFocused)
                 #endif
-            } label: {
-                Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
             }
-            .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
-            #if os(tvOS)
-            .focused($isSignOutFocused)
-            #endif
         }
     }
 

@@ -12,6 +12,8 @@ import SwiftUI
 struct CreateProfileView: View {
     let onCreated: () -> Void
 
+    private var isKyroLocalMode: Bool { !AuthService.shared.hasServer }
+
     @State private var name: String = ""
     @State private var selectedStyleId: String = ProfileAvatarPresets.defaultStyleId
     @State private var selectedSeed: String?
@@ -115,10 +117,10 @@ struct CreateProfileView: View {
             Text(err.message)
         }
         .task {
-            await loadLibraries()
+            if !isKyroLocalMode { await loadLibraries() }
         }
         .task {
-            await loadRequestsSupport()
+            if !isKyroLocalMode { await loadRequestsSupport() }
         }
         .onChange(of: isChild) { _, child in
             // Matches the web Kids preset: request discovery browses titles
@@ -290,17 +292,19 @@ struct CreateProfileView: View {
                 }
             }
 
-            ProfileSwitchRow(
-                title: "Child Profile",
-                subtitle: "Restricts content to kid-friendly ratings",
-                isOn: $isChild
-            )
+            if !isKyroLocalMode {
+                ProfileSwitchRow(
+                    title: "Child Profile",
+                    subtitle: "Restricts content to kid-friendly ratings",
+                    isOn: $isChild
+                )
+            }
 
-            if isChild {
+            if isChild && !isKyroLocalMode {
                 childAccessControls
             }
 
-            if requestsAllowedSupported == true {
+            if !isKyroLocalMode && requestsAllowedSupported == true {
                 ProfileSwitchRow(
                     title: Self.requestsAllowedTitle,
                     subtitle: Self.requestsAllowedHelp,
@@ -405,23 +409,25 @@ struct CreateProfileView: View {
                             }
                         }
 
-                        Toggle(isOn: $isChild) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Child Profile")
-                                    .font(.siloBody)
-                                    .foregroundColor(.siloOnSurface)
-                                Text("Restricts content to kid-friendly ratings")
-                                    .font(.siloCaption)
-                                    .foregroundColor(.siloSecondaryText)
+                        if !isKyroLocalMode {
+                            Toggle(isOn: $isChild) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Child Profile")
+                                        .font(.siloBody)
+                                        .foregroundColor(.siloOnSurface)
+                                    Text("Restricts content to kid-friendly ratings")
+                                        .font(.siloCaption)
+                                        .foregroundColor(.siloSecondaryText)
+                                }
                             }
+                            .tint(.siloSwitchOn)
                         }
-                        .tint(.siloSwitchOn)
 
-                        if isChild {
+                        if isChild && !isKyroLocalMode {
                             childAccessControls
                         }
 
-                        if requestsAllowedSupported == true {
+                        if !isKyroLocalMode && requestsAllowedSupported == true {
                             Toggle(isOn: requestsAllowedBinding) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(Self.requestsAllowedTitle)
@@ -704,6 +710,20 @@ struct CreateProfileView: View {
         isLoading = true
         formError = nil
         defer { isLoading = false }
+
+        if isKyroLocalMode {
+            do {
+                try await KyroLocalIdentityRuntime.shared.createProfile(
+                    name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                    isChild: isChild,
+                    pin: pin.isEmpty ? nil : pin
+                )
+                onCreated()
+            } catch {
+                formError = CreateProfileFailure(message: error.localizedDescription)
+            }
+            return
+        }
 
         // Without the support answer a Kids profile would be created with
         // requests allowed, the server's default. The form stays editable

@@ -1114,6 +1114,7 @@ final class AppRouter {
     }
 
     private func completeRequestedProfileSwitch() async -> Bool {
+        if !AuthService.shared.hasServer { return true }
         if await AuthService.shared.beginExplicitProfileSelection() {
             return true
         }
