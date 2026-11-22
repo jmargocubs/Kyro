@@ -81,6 +81,32 @@ private actor Switch {
       ProviderAccountRef.derived(kind: .silo, key: "a").id, ProviderAccountRef.derived(kind: .jellyfin, key: "a").id)
   }
 
+  func testAccountDescriptionRoundTripsOnlyInItsCanonicalForm() {
+    for kind in ProviderKind.allCases {
+      let ref = ProviderAccountRef(id: ProviderAccountID(), kind: kind)
+      XCTAssertEqual(ProviderAccountRef(description: ref.description), ref)
+    }
+    let id = UUID()
+    for bad in ["", "silo", "silo:", "nope:\(id)", "plex:not-a-uuid", "plex:\(id.uuidString)", "plex:\(id.uuidString.lowercased()):x"] {
+      XCTAssertNil(ProviderAccountRef(description: bad), bad)
+    }
+  }
+
+  func testCatalogRecordsStayOnOneAccountAndHoldOnlyMoviesAndSeries() throws {
+    let a = ProviderAccountRef(id: ProviderAccountID(), kind: .jellyfin)
+    let b = ProviderAccountRef(id: ProviderAccountID(), kind: .jellyfin)
+    let content = try ContentRef(account: a, remoteID: "7")
+    let record = try ProviderCatalogRecord(
+      ref: content, library: LibraryRef(account: a, remoteID: "lib"), kind: .movie, title: "Arrival", year: 2016)
+    XCTAssertEqual(record.ref.account, a)
+    XCTAssertThrowsError(
+      try ProviderCatalogRecord(ref: content, library: LibraryRef(account: b, remoteID: "lib"), kind: .movie, title: "x"))
+    { XCTAssertEqual($0 as? ProviderError, .accountMismatch) }
+    XCTAssertThrowsError(
+      try ProviderCatalogRecord(ref: content, library: LibraryRef(account: a, remoteID: "lib"), kind: .episode, title: "x"))
+    { XCTAssertEqual($0 as? ProviderError, .unsupportedCatalogKind) }
+  }
+
   // MARK: Registry persistence and household isolation
 
   func testRegisteredAccountsPersistAcrossReopen() async throws {

@@ -175,3 +175,47 @@ The unified grid shows the local index first, then syncs Silo and builds IPTV ke
   forced a full re-walk on each launch.
 - No "Preparing your library" or "Updating Silo titles…" states. An empty grid that is still filling
   shows poster placeholders; only failures show a status line.
+
+## Provider-qualified Movies and Series catalog (M2)
+
+Build 110's unified index had two hard-coded storage arms: Silo's per-profile mirror and IPTV's
+active generations. M2 adds a third, generic arm keyed by a provider account, so any number of
+media-server accounts (Jellyfin, Emby, Plex, later) can contribute titles at the same time and
+without a Silo session. The Silo and IPTV arms, tables and sync paths are unchanged and remain the
+path for those two sources.
+
+- **Identity.** An account is the text form of `ProviderAccountRef` (`jellyfin:<uuid>`). Every
+  `UnifiedIndexRow` carries one: IPTV rows get `xtream:<provider uuid>`, Silo rows get the account
+  their scope is bound to (`silo:<derived from the server ID>`), provider rows keep their own. A
+  row's origin is its account, so two accounts never merge into one origin and one account's
+  duplicate titles never merge with each other. Table keys include the account, so the same remote
+  ID on two servers is two rows; `UnifiedCatalogKeys.providerEntryKey` is injective.
+- **Cards.** Members order Silo, then media-server accounts, then IPTV. The primary detail is the
+  first member: Silo keeps today's page, a media-server title is `UnifiedDetailTarget.provider`,
+  and IPTV stays reachable as an alternate. There is no media-server detail screen yet
+  (`KyroProviderCatalogBridge.detailPresenter` is nil), so such a card opens its IPTV alternate or
+  nothing until a provider milestone supplies one.
+- **Storage.** `unified_provider_items` / `unified_provider_active` use the same snapshot
+  lifecycle as the Silo mirror: stage, promote in one transaction, discard, retract. A first sync
+  shows its first pages while it walks; a failure or cancellation keeps the previous snapshot; an
+  account removed mid-walk retracts what it published. `ProviderCatalogMirror` drives the walks
+  from registered `CatalogProviding` readers (`KyroProviders`). An account with no reader keeps its
+  last synced titles.
+- **Migration (schema version 2).** `unified_schema` records the version. The migration creates
+  only new tables (`unified_provider_*`, `unified_source_identity`) in one transaction on open and
+  is idempotent. It never alters a Silo, IPTV, key or full-text row, so a version 1 database reads
+  identically afterwards and an earlier build reads a version 2 one unchanged.
+  `backfillLegacySourceIdentities` records which provider account each existing IPTV provider and
+  Silo scope belongs to (a Silo scope is bound once and never rebound).
+  `rollbackProviderCatalog()` drops exactly the additions and returns the file to Build 110's
+  schema. The catalog lives in Caches and is re-downloadable.
+- **Fallback.** `kyro.unified.providerCatalog.enabled` (default on) switches the provider arm off
+  for every grid and sync, leaving exactly Build 110's catalog.
+- **Silo signed out.** Provider rows need no Silo scope. The grid's purge of other identities' Silo
+  rows (everything, when signed out) never touches the provider tables.
+- **Search.** `providerSearch` returns titles with their account, library and content ID, filtered
+  by account. It is not yet shown in the Search screen, which needs a provider-aware result row.
+
+Host tests (no simulator; run from `iosApp/`; `Stubs.swift` as in `build-110-unified-browsing.md`):
+add `iosApp/Kyro/IPTVVOD/UnifiedProviderCatalog.swift` and `Tests/UnifiedProviderCatalogTests.swift`
+to the `swiftc` command in that document.
