@@ -143,21 +143,29 @@ final class AppRouter {
     /// Navigation path for push/pop within the current flow.
     var path = NavigationPath()
 
+    /// A route pushed through the router. `fromRelatedRail` marks a title
+    /// opened from another title's "More like this" rail (see
+    /// `openRelatedTitle`).
+    struct PushedRoute {
+        let route: Route
+        let fromRelatedRail: Bool
+    }
+
     /// Routes pushed through the router, mirrored because `NavigationPath` is
     /// opaque. Entries past `path.count` are stale (the system Back button
     /// pops the path directly), so read `visiblePushedRoutes` instead.
-    @ObservationIgnored private var pushedRoutes: [Route] = []
+    @ObservationIgnored private var pushedRoutes: [PushedRoute] = []
 
     /// The routes currently on the stack, oldest first. The Mac sidebar reads
     /// this to highlight the row that matches the page in view, and closing
     /// the Requests screens reads it to find them.
     var visiblePushedRoutes: [Route] {
-        Array(pushedRoutes.prefix(path.count))
+        pushedRoutes.prefix(path.count).map(\.route)
     }
 
-    private func recordPush(_ route: Route, replacingTop: Bool = false) {
+    private func recordPush(_ route: Route, replacingTop: Bool = false, fromRelatedRail: Bool = false) {
         let kept = max(0, path.count - (replacingTop ? 1 : 0))
-        pushedRoutes = Array(pushedRoutes.prefix(kept)) + [route]
+        pushedRoutes = Array(pushedRoutes.prefix(kept)) + [PushedRoute(route: route, fromRelatedRail: fromRelatedRail)]
     }
 
     // MARK: - Item Detail Presentation
@@ -182,6 +190,12 @@ final class AppRouter {
         /// existing Silo or IPTV detail; each alternate opens its own IPTV detail inside the card.
         var alternates: [KyroIPTVDetailRequest] = []
         #endif
+        /// Set when the card opens on a row's full page (Explore all) rather
+        /// than a catalog item; `contentId` is then only a page identity.
+        let section: SectionCatalogTarget?
+        /// Set when the card opens on a movie box set; `contentId` is then
+        /// only a page identity.
+        let boxSet: BoxSetRoot?
         /// Presented as large as the window instead of as a page sheet: a
         /// window-sized sheet on iPad, a full-screen cover on iPhone, where
         /// iOS 27.1 caps sheets well short of the iPhone Duo's open display.
@@ -194,6 +208,11 @@ final class AppRouter {
             let tmdbId: Int
         }
 
+        struct BoxSetRoot: Equatable {
+            let id: String
+            let libraryId: Int
+        }
+
         init(contentId: String, libraryId: Int? = nil, resumeContext: SeriesDetailContext? = nil) {
             self.contentId = contentId
             self.libraryId = libraryId
@@ -202,6 +221,8 @@ final class AppRouter {
             #if os(iOS)
             self.iptv = nil
             #endif
+            self.section = nil
+            self.boxSet = nil
         }
 
         init(request: RequestRoot) {
@@ -212,6 +233,32 @@ final class AppRouter {
             #if os(iOS)
             self.iptv = nil
             #endif
+            self.section = nil
+            self.boxSet = nil
+        }
+
+        init(section: SectionCatalogTarget) {
+            self.contentId = "section:\(section.scope):\(section.sectionId)"
+            self.libraryId = nil
+            self.resumeContext = nil
+            self.request = nil
+            #if os(iOS)
+            self.iptv = nil
+            #endif
+            self.section = section
+            self.boxSet = nil
+        }
+
+        init(boxSet: BoxSetRoot) {
+            self.contentId = "box_set:\(boxSet.libraryId):\(boxSet.id)"
+            self.libraryId = boxSet.libraryId
+            self.resumeContext = nil
+            self.request = nil
+            #if os(iOS)
+            self.iptv = nil
+            #endif
+            self.section = nil
+            self.boxSet = boxSet
         }
 
         #if os(iOS)
@@ -220,6 +267,8 @@ final class AppRouter {
             self.libraryId = nil
             self.resumeContext = nil
             self.request = nil
+            self.section = nil
+            self.boxSet = nil
             self.iptv = iptv
         }
         #endif
@@ -234,10 +283,11 @@ final class AppRouter {
 
     /// Mirror of `itemDetailPath`, kept like `pushedRoutes`: entries past
     /// `itemDetailPath.count` are stale.
-    @ObservationIgnored private var itemDetailPushedRoutes: [Route] = []
+    @ObservationIgnored private var itemDetailPushedRoutes: [PushedRoute] = []
 
-    private func appendToItemDetail(_ route: Route) {
-        itemDetailPushedRoutes = Array(itemDetailPushedRoutes.prefix(itemDetailPath.count)) + [route]
+    private func appendToItemDetail(_ route: Route, fromRelatedRail: Bool = false) {
+        itemDetailPushedRoutes = Array(itemDetailPushedRoutes.prefix(itemDetailPath.count))
+            + [PushedRoute(route: route, fromRelatedRail: fromRelatedRail)]
         itemDetailPath.append(route)
     }
 
@@ -247,10 +297,14 @@ final class AppRouter {
         guard let presentedItemDetail else { return [] }
         let root: Route = if let request = presentedItemDetail.request {
             .requestDetail(mediaType: request.mediaType, tmdbId: request.tmdbId)
+        } else if let section = presentedItemDetail.section {
+            .sectionCatalog(section)
+        } else if let boxSet = presentedItemDetail.boxSet {
+            .boxSet(id: boxSet.id, libraryId: boxSet.libraryId)
         } else {
             .itemDetail(contentId: presentedItemDetail.contentId, libraryId: presentedItemDetail.libraryId)
         }
-        return [root] + itemDetailPushedRoutes.prefix(itemDetailPath.count)
+        return [root] + itemDetailPushedRoutes.prefix(itemDetailPath.count).map(\.route)
     }
 
     /// Kept current by the tab view: true while its window would split a
@@ -267,7 +321,7 @@ final class AppRouter {
     @ObservationIgnored private var itemDetailSeriesSelection: SeriesDetailContext?
 
     /// Opens or restores the detail card in the presentation the window calls
-    /// for now. Request and IPTV details stay sheets: their pages have no split layout.
+    /// for now. Request, IPTV and row-page details stay sheets: their pages have no split layout.
     private func openItemDetail(_ presentation: ItemDetailPresentation?) {
         if presentation?.id != presentedItemDetail?.id {
             itemDetailSeriesSelection = nil
@@ -281,6 +335,7 @@ final class AppRouter {
 
     private func fillsWindow(_ presentation: ItemDetailPresentation) -> Bool {
         presentsItemDetailFullWindow && presentation.request == nil && presentation.iptv == nil
+            && presentation.section == nil
     }
 
     /// Moves an open detail to the presentation the window now calls for,
@@ -732,6 +787,30 @@ final class AppRouter {
             }
             return
         }
+        // A row's full page opens in the same card, so titles opened from it
+        // push inside the card and pull-down returns to the row.
+        if case .sectionCatalog(let target) = route {
+            recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "present")
+            if presentedItemDetail == nil {
+                itemDetailPath = NavigationPath()
+                openItemDetail(ItemDetailPresentation(section: target))
+            } else {
+                appendToItemDetail(route)
+            }
+            return
+        }
+        // A box set opens in the title card too; its movies then push inside
+        // the card, so Back returns to the box set.
+        if case .boxSet(let id, let libraryId) = route {
+            recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "present")
+            if presentedItemDetail == nil {
+                itemDetailPath = NavigationPath()
+                openItemDetail(ItemDetailPresentation(boxSet: .init(id: id, libraryId: libraryId)))
+            } else {
+                appendToItemDetail(route)
+            }
+            return
+        }
         #endif
 
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "navigate")
@@ -816,6 +895,73 @@ final class AppRouter {
         presentItemDetail(contentId: item.contentId, libraryId: libraryId)
     }
 
+    /// Opens a title picked from another title's "More like this" rail.
+    /// The first hop from a title pushes, so Back returns to that title. A
+    /// hop from a page such a rail opened replaces that page, so however
+    /// many recommendations someone follows, two Backs leave the chain: one
+    /// to the title it started from, one to wherever that title was opened.
+    /// Picking the starting title again goes back to it instead of opening
+    /// a second copy.
+    func openRelatedTitle(contentId: String) {
+        let route = Route.itemDetail(contentId: contentId)
+        #if os(iOS)
+        guard presentedItemDetail != nil else {
+            presentItemDetail(contentId: contentId)
+            return
+        }
+        let visible = visibleItemDetailRoutes
+        let inViewFromRail = itemDetailPushedRoutes.prefix(itemDetailPath.count).last?.fromRelatedRail ?? false
+        switch Self.relatedTitleStep(
+            to: contentId, inView: visible.last, inViewFromRail: inViewFromRail, start: visible.dropLast().last
+        ) {
+        case .alreadyShowing:
+            break
+        case .push:
+            recordScreenBreadcrumb(target: "itemDetail", action: "present")
+            appendToItemDetail(route, fromRelatedRail: true)
+        case .replaceTop:
+            recordScreenBreadcrumb(target: "itemDetail", action: "replace")
+            itemDetailPath.removeLast()
+            appendToItemDetail(route, fromRelatedRail: true)
+        case .returnToStart:
+            recordScreenBreadcrumb(target: "previous", action: "back")
+            itemDetailPath.removeLast()
+        }
+        #else
+        let visible = pushedRoutes.prefix(path.count)
+        switch Self.relatedTitleStep(
+            to: contentId, inView: visible.last?.route,
+            inViewFromRail: visible.last?.fromRelatedRail ?? false, start: visible.dropLast().last?.route
+        ) {
+        case .alreadyShowing:
+            break
+        case .push:
+            recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "navigate")
+            recordPush(route, fromRelatedRail: true)
+            path.append(route)
+        case .replaceTop:
+            replaceCurrent(with: route, fromRelatedRail: true)
+        case .returnToStart:
+            goBack()
+        }
+        #endif
+    }
+
+    private enum RelatedTitleStep {
+        case alreadyShowing, push, replaceTop, returnToStart
+    }
+
+    /// `inView` is the page on screen and `start` the page under it. A
+    /// second tap on the same card, or on the title just returned to, can
+    /// arrive while the page is still changing; it opens nothing.
+    private static func relatedTitleStep(
+        to contentId: String, inView: Route?, inViewFromRail: Bool, start: Route?
+    ) -> RelatedTitleStep {
+        if inView?.itemDetailContentId == contentId { return .alreadyShowing }
+        guard inViewFromRail else { return .push }
+        return start?.itemDetailContentId == contentId ? .returnToStart : .replaceTop
+    }
+
     /// Close the complete bottom-presented detail flow and discard any nested
     /// episode/person navigation so the next title always opens at its root.
     func dismissItemDetail() {
@@ -827,11 +973,11 @@ final class AppRouter {
     }
 
     /// Swap the top route instead of pushing, so sideways hops between
-    /// sibling pages (e.g. episode → episode on the tvOS detail rail) don't
-    /// stack up — Back exits the chain in one step.
-    func replaceCurrent(with route: Route) {
+    /// sibling pages (e.g. one recommendation to the next, see
+    /// `openRelatedTitle`) don't stack up — Back exits the chain in one step.
+    func replaceCurrent(with route: Route, fromRelatedRail: Bool = false) {
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "replace")
-        recordPush(route, replacingTop: true)
+        recordPush(route, replacingTop: true, fromRelatedRail: fromRelatedRail)
         if !path.isEmpty {
             path.removeLast()
         }
@@ -1150,12 +1296,12 @@ final class AppRouter {
         guard authState == .authenticated, let authenticatedOwner else { return nil }
         #if os(iOS)
         guard !path.isEmpty || presentedItemDetail != nil else { return nil }
-        return SessionReturnPoint(owner: authenticatedOwner, path: path, pushedRoutes: visiblePushedRoutes,
+        return SessionReturnPoint(owner: authenticatedOwner, path: path, pushedRoutes: Array(pushedRoutes.prefix(path.count)),
                                   itemDetail: presentedItemDetail, itemDetailPath: itemDetailPath,
                                   itemDetailPushedRoutes: Array(itemDetailPushedRoutes.prefix(itemDetailPath.count)))
         #else
         guard !path.isEmpty else { return nil }
-        return SessionReturnPoint(owner: authenticatedOwner, path: path, pushedRoutes: visiblePushedRoutes)
+        return SessionReturnPoint(owner: authenticatedOwner, path: path, pushedRoutes: Array(pushedRoutes.prefix(path.count)))
         #endif
     }
 
@@ -1239,11 +1385,11 @@ struct SessionOwner: Equatable {
 struct SessionReturnPoint {
     let owner: SessionOwner
     let path: NavigationPath
-    let pushedRoutes: [Route]
+    let pushedRoutes: [AppRouter.PushedRoute]
     #if os(iOS)
     let itemDetail: AppRouter.ItemDetailPresentation?
     let itemDetailPath: NavigationPath
-    let itemDetailPushedRoutes: [Route]
+    let itemDetailPushedRoutes: [AppRouter.PushedRoute]
     #endif
 
     /// Only the same profile of the same account on the same server goes
@@ -1255,6 +1401,10 @@ struct SessionReturnPoint {
 }
 
 private extension Route {
+    var itemDetailContentId: String? {
+        if case .itemDetail(let contentId, _, _, _) = self { contentId } else { nil }
+    }
+
     var diagnosticsTarget: String {
         switch self {
         case .serverSetup:
@@ -1273,6 +1423,10 @@ private extension Route {
             return "itemDetail"
         case .personDetail:
             return "personDetail"
+        case .sectionCatalog:
+            return "sectionCatalog"
+        case .boxSet:
+            return "boxSet"
         case .player:
             return "player"
         case .playerWithFile:
@@ -1299,6 +1453,8 @@ private extension Route {
             return "requestDetail"
         case .myRequests:
             return "myRequests"
+        case .requestDiscoverRow:
+            return "requestDiscoverRow"
         case .offlinePlayer:
             return "offlinePlayer"
         case .offlineSeriesBrowse:

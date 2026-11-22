@@ -661,14 +661,15 @@ struct ContentView: View {
         async let requests: Void = RequestsFeatureStore.shared.refresh()
         async let shuffle: Void = ShuffleFeatureStore.shared.refresh()
         async let subtitles: Void = SubtitleProvidersStore.shared.refresh()
+        async let sectionItemLimit: Void = SectionItemLimitSupport.shared.refresh()
         async let profile: Void = CurrentProfileStore.shared.refresh()
         async let customization: Void = uiCustomization.refresh()
         async let seek: Void = SeekIntervalPreferences.shared.refresh()
         async let titleArt: Void = TitleArtPreferences.shared.refresh()
         async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
         async let themeMusic: Void = ThemeMusicPreferences.shared.refresh()
-        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek, titleArt, spoilers,
-                   themeMusic)
+        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, sectionItemLimit, profile, customization, seek,
+                   titleArt, spoilers, themeMusic)
     }
 
     @MainActor
@@ -976,6 +977,8 @@ struct ContentView: View {
     ///   invitation (see `WatchPartyInvitation`)
     /// - `kyro://search?q={term}` — open Search with `term` filled in
     ///   (Siri's in-app search; see `SiriSearchLink`)
+    /// - `silo://cast?host=…&port=…&id=…` — connect the remote to the Roku
+    ///   whose pairing code was scanned (iOS; see `SiloControlPairingLink`)
     ///
     /// If the auth state isn't ready yet, the link is queued in
     /// `pendingDeepLink` until startup commits its initial route.
@@ -1049,6 +1052,17 @@ struct ContentView: View {
                 return
             }
             deviceApprovalLink = link
+            return
+        }
+        // A Roku's pairing code, scanned with the Camera. The remote needs a
+        // profile on the Roku's server to connect under.
+        if let link = SiloControlPairingLink(url: url) {
+            guard router.authState == .authenticated,
+                  !launchPreferences.requiresSelectionAfterBackground() else {
+                pendingDeepLink = url
+                return
+            }
+            Task { await siloControl.connect(pairingLink: link) }
             return
         }
         #endif
@@ -3712,6 +3726,10 @@ struct MainTabView: View {
             ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
+        case .sectionCatalog(let target):
+            SectionCatalogView(target: target)
+        case .boxSet(let id, let libraryId):
+            BoxSetDetailView(id: id, libraryId: libraryId)
         case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion, let libraryId):
             #if os(macOS)
             PlayerView(
@@ -3773,6 +3791,8 @@ struct MainTabView: View {
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .myRequests:
             MyRequestsView()
+        case .requestDiscoverRow(let key, let title):
+            RequestDiscoverRowView(rowKey: key, title: title)
         case .search:
             #if os(iOS)
             SearchView(seededQuery: $siriSearchRequest)
@@ -3903,6 +3923,10 @@ private struct ItemDetailSheet: View {
                 providerName: iptv.providerName,
                 onClose: router.dismissItemDetail
             )
+        } else if let section = presentation.section {
+            SectionCatalogView(target: section, onClose: router.dismissItemDetail)
+        } else if let boxSet = presentation.boxSet {
+            BoxSetDetailView(id: boxSet.id, libraryId: boxSet.libraryId, onClose: router.dismissItemDetail)
         } else {
             ItemDetailView(
                 contentId: presentation.contentId,
@@ -3923,8 +3947,12 @@ private struct ItemDetailSheet: View {
             ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
+        case .boxSet(let id, let libraryId):
+            BoxSetDetailView(id: id, libraryId: libraryId)
         case .requestDetail(let mediaType, let tmdbId):
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
+        case .sectionCatalog(let target):
+            SectionCatalogView(target: target)
         default:
             EmptyView()
         }

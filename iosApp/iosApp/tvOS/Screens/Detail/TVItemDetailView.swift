@@ -445,7 +445,7 @@ struct TVItemDetailView: View {
                     }
                 },
                 onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    router.openRelatedTitle(contentId: id)
                 },
                 synopsisStatus: viewModel.descriptionTranslationStatus,
                 isTranslatingEpisodes: viewModel.isTranslatingSeasonEpisodes,
@@ -471,6 +471,7 @@ struct TVItemDetailView: View {
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
+                boxSet: viewModel.boxSet,
                 selectedVersionFileId: preferredVersionFileId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
@@ -575,7 +576,7 @@ struct TVItemDetailView: View {
                     }
                 },
                 onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    router.openRelatedTitle(contentId: id)
                 },
                 synopsisStatus: viewModel.descriptionTranslationStatus,
                 onTranslateDescription: translateDescriptionAction
@@ -945,11 +946,15 @@ struct TVItemDetailView: View {
     ) async {
         let selected = order[selectedIndex].seasonNumber
         var index = selectedIndex + direction
-        while order.indices.contains(index) {
+        // Short seasons need several pages before the rail has a full row.
+        // Count cards, not rows: the rail drops repeated episode ids.
+        var seen = Set((viewModel.episodesBySeason[selected] ?? []).map(\.contentId))
+        var loadedCount = 0
+        while order.indices.contains(index), loadedCount < SeriesEpisodeWindow.minimumEpisodesPerSide {
             guard !Task.isCancelled, viewModel.selectedSeason?.seasonNumber == selected else { return }
             let season = order[index]
             if let page = viewModel.episodesBySeason[season.seasonNumber] {
-                if !page.isEmpty { break }
+                loadedCount += page.filter { seen.insert($0.contentId).inserted }.count
                 index += direction
                 continue
             }
@@ -987,7 +992,7 @@ struct TVItemDetailView: View {
                 PosterImageCache.prefetchArtworkData(edgeEpisodes.compactMap {
                     $0.stillUrl.flatMap(URL.init(string:))
                 })
-                if !sorted.isEmpty { break }
+                loadedCount += sorted.filter { seen.insert($0.contentId).inserted }.count
                 index += direction
             } catch {
                 guard !Task.isCancelled else { return }

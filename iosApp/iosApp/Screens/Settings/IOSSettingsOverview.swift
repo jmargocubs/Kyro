@@ -323,7 +323,7 @@ private struct IOSAppearanceNavigationSettingsView: View {
         List {
             Section("Appearance & Navigation") {
                 NavigationLink { InterfaceCustomizationView() } label: {
-                    SettingsOverviewRow(title: "Interface", subtitle: "Cards, posters, title pages, and menu presentation", systemImage: "rectangle.3.group.fill", value: uiCustomization.cardPresentation.preset?.title ?? "Custom")
+                    SettingsOverviewRow(title: "Interface", subtitle: "Cards, posters, title pages, and menu presentation", systemImage: "rectangle.3.group.fill", value: uiCustomization.cardPresentation.posterSize.title)
                 }
                 if KyroUnifiedNavigation.isActive { KyroNavigationSettingsRow() }
             }

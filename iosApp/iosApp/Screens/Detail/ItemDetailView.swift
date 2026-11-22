@@ -918,7 +918,7 @@ private struct ItemDetailPhoneContent: View {
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
                 onPersonTap: { openPerson($0) },
-                onNavigateToItem: { openItem($0) },
+                onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
@@ -936,6 +936,7 @@ private struct ItemDetailPhoneContent: View {
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
+                boxSet: viewModel.boxSet,
                 selectedVersionFileId: preferredVersionFileId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
@@ -1004,7 +1005,7 @@ private struct ItemDetailPhoneContent: View {
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
                 onPersonTap: { openPerson($0) },
-                onNavigateToItem: { openItem($0) },
+                onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
@@ -1110,7 +1111,9 @@ private struct ItemDetailPhoneContent: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
+        // A remembered pick of a track the server can't deliver falls back
+        // to Auto: starting on it would be refused.
+        let available = version.subtitleTracks?.filter { !$0.hasUnsupportedFormat }.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 
@@ -1124,7 +1127,9 @@ private struct ItemDetailPhoneContent: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
+        // A remembered pick of a track the server can't deliver falls back
+        // to Auto: starting on it would be refused.
+        let available = version.subtitleTracks?.filter { !$0.hasUnsupportedFormat }.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 

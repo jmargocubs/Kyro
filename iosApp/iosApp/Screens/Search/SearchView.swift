@@ -44,7 +44,7 @@ struct SearchView: View {
         programSearchEnabled: Bool = true
     ) {
         let liveTVService = liveTVService ?? LiveTVService.shared
-        let searchModel = SearchViewModel(includesPeople: true, includesEpisodes: true)
+        let searchModel = SearchViewModel(includesPeople: true, includesEpisodes: true, includesBoxSets: true)
         // The unified search has only All / Movies & TV / Live TV filters. Its Silo scope is video
         // with episodes, not audiobooks, regardless of the device's optional audiobook tab.
         searchModel.audiobooksEnabled = false
@@ -298,7 +298,8 @@ struct SearchView: View {
         let isCombined = selectedFilter == .all
         let visibleItems = isCombined ? Array(viewModel.results.prefix(6)) : viewModel.results
         let hasMoreTitles = viewModel.hasMore || viewModel.total > visibleItems.count
-        let contentCount = viewModel.results.count + viewModel.people.count + visibleRequestResults.count
+        let contentCount = viewModel.results.count + viewModel.people.count + viewModel.boxSets.count
+            + visibleRequestResults.count
             + iptvOnlyTitles.count
 
         return VStack(alignment: .leading, spacing: SiloTheme.padding) {
@@ -312,6 +313,8 @@ struct SearchView: View {
             if !coordinator.isSiloIdentityCurrent {
                 sourceMessage("Updating Silo results for this profile…", symbol: "arrow.clockwise")
             } else {
+                // A matching box set leads, ahead of people and its movies.
+                if !viewModel.boxSets.isEmpty { boxSetSection }
                 if !viewModel.people.isEmpty { peopleSection }
                 if !visibleItems.isEmpty {
                     titleResults(items: visibleItems, showsPagination: !isCombined)
@@ -850,6 +853,31 @@ struct SearchView: View {
         CatalogGrid(items: [], isLoading: true, hasMore: false, onItemTap: { _ in }, onLoadMore: {})
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Searching")
+        #endif
+    }
+
+    /// Matching box sets, drawn as cards in the title grid's columns. Each
+    /// opens its box set page.
+    private var boxSetSection: some View {
+        let cards = viewModel.boxSets.map(BrowseItem.init(boxSet:))
+        #if os(tvOS)
+        return VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
+            TVSectionHeader(title: "Box Sets")
+            TVCatalogGrid(
+                items: cards,
+                isLoading: false,
+                hasMore: false,
+                onItemTap: { _ in },
+                onNearEnd: { _ in },
+                columnCount: 6,
+                cardWidth: 220
+            )
+        }
+        #else
+        return VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "Box Sets")
+            CatalogGrid(items: cards, isLoading: false, hasMore: false, onItemTap: { _ in }, onLoadMore: {})
+        }
         #endif
     }
 
