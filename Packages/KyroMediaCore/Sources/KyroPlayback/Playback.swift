@@ -1,0 +1,8 @@
+import Foundation
+import KyroFoundation
+
+public struct PlaybackIntent: Sendable, Hashable { public let profileID:KyroProfileID;public let mediaKey:String;public let preferredAudio:String?;public let preferredSubtitle:String?;public init(profileID:KyroProfileID,mediaKey:String,preferredAudio:String?=nil,preferredSubtitle:String?=nil){self.profileID=profileID;self.mediaKey=mediaKey;self.preferredAudio=preferredAudio;self.preferredSubtitle=preferredSubtitle} }
+public struct MediaQuality: Codable,Hashable,Sendable {public let resolution:String?;public let videoCodec:String?;public let audioCodec:String?;public let bitrate:Int?;public let provenance:String;public init(resolution:String?=nil,videoCodec:String?=nil,audioCodec:String?=nil,bitrate:Int?=nil,provenance:String){self.resolution=resolution;self.videoCodec=videoCodec;self.audioCodec=audioCodec;self.bitrate=bitrate;self.provenance=provenance}}
+public struct ResolvedStream: Sendable,Hashable {public let url:URL;public let mimeType:String?;public let quality:MediaQuality;public init(url:URL,mimeType:String?=nil,quality:MediaQuality){self.url=url;self.mimeType=mimeType;self.quality=quality}}
+public struct ResolvedPlayback: Sendable,Hashable {public let stream:ResolvedStream;public let resumeSeconds:Double?;public init(stream:ResolvedStream,resumeSeconds:Double?=nil){self.stream=stream;self.resumeSeconds=resumeSeconds}}
+public protocol PlaybackReporter: Sendable {func reportProgress(profileID:KyroProfileID,mediaKey:String,seconds:Double,duration:Double) async throws;func reportFinished(profileID:KyroProfileID,mediaKey:String) async throws}
