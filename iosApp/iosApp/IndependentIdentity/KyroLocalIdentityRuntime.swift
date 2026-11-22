@@ -137,6 +137,29 @@ final class KyroLocalIdentityRuntime {
         return try await identity.verifyPIN(pin, for: KyroProfileID(rawValue: profileID))
     }
 
+    /// Provider sessions are deliberately not changed here. In particular Silo's current
+    /// profile-selection and sign-out flows continue to own their authentication state.
+    func link(profileID: UUID, to account: ProviderAccountRef, remoteUserID: String) async throws {
+        guard let identity else { throw startupError ?? RuntimeError.storageUnavailable }
+        let accounts = try await ProviderRegistry(identity: identity).allAccounts(
+            projected: KyroProviderBridge.accounts)
+        try await ProfileLinkRegistry(identity: identity).link(
+            profile: KyroProfileID(rawValue: profileID), to: account,
+            remoteUserID: remoteUserID, availableAccounts: accounts)
+    }
+
+    func linkedProfile(for account: ProviderAccountRef, remoteUserID: String) async throws -> UUID? {
+        guard let identity else { throw startupError ?? RuntimeError.storageUnavailable }
+        return try await ProfileLinkRegistry(identity: identity)
+            .profile(for: account, remoteUserID: remoteUserID)?.rawValue
+    }
+
+    func unlink(profileID: UUID, from account: ProviderAccountRef) async throws {
+        guard let identity else { throw startupError ?? RuntimeError.storageUnavailable }
+        try await ProfileLinkRegistry(identity: identity).unlink(
+            profile: KyroProfileID(rawValue: profileID), from: account)
+    }
+
     enum RuntimeError: LocalizedError {
         case storageUnavailable, profileUnavailable, incorrectPIN
         var errorDescription: String? {
