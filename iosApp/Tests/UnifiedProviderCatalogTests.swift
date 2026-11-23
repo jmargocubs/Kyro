@@ -85,6 +85,21 @@ final class UnifiedProviderCatalogTests: XCTestCase {
 
     // MARK: Migration
 
+    func testUnifiedSearchWorksWithJellyfinOnlyAndAccountIsolation() async throws {
+        try await importProvider(jellyA, [record("m1", "Arrival", 2016), record("m2", "Heat", 1995)])
+        try await importProvider(jellyB, [record("m1", "Arrival", 2016)])
+        let onlyA = scope(sources: [.init(account: jellyA)])
+        let results = await store.unifiedSearch(onlyA, query: "arri")
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.primary.account, jellyA)
+        let aHeat = await store.unifiedSearch(onlyA, query: "heat")
+        let bHeat = await store.unifiedSearch(scope(sources: [.init(account: jellyB)]), query: "heat")
+        let disconnected = await store.unifiedSearch(scope(), query: "arrival")
+        XCTAssertEqual(aHeat.count, 1)
+        XCTAssertTrue(bHeat.isEmpty)
+        XCTAssertTrue(disconnected.isEmpty)
+    }
+
     func testMigrationIsAdditiveAndLegacyCatalogsReadIdenticallyAfterwards() async throws {
         let version = await store.providerCatalogSchemaVersion()
         XCTAssertEqual(version, XtreamVODCatalogStore.providerCatalogVersion)

@@ -182,6 +182,67 @@ public struct JellyfinPageRequest: Sendable {
 
 // MARK: - Wire DTOs
 
+/// Ephemeral playback negotiation; never persist or log its authenticated headers.
+public struct JellyfinPlaybackPlan: Sendable {
+  public let serverID: String
+  public let userID: String
+  public let itemID: String
+  public let mediaSourceID: String
+  public let playSessionID: String
+  public let directURL: URL?
+  public let transcodingURL: URL?
+  public let headers: [String: String]
+  public let resumePositionSeconds: Double
+
+  public init(serverID: String, userID: String, itemID: String, mediaSourceID: String, playSessionID: String,
+              directURL: URL?, transcodingURL: URL?, headers: [String: String],
+              resumePositionSeconds: Double) {
+    self.serverID = serverID
+    self.userID = userID
+    self.itemID = itemID
+    self.mediaSourceID = mediaSourceID
+    self.playSessionID = playSessionID
+    self.directURL = directURL
+    self.transcodingURL = transcodingURL
+    self.headers = headers
+    self.resumePositionSeconds = resumePositionSeconds
+  }
+}
+
+public enum JellyfinPlaybackPhase: Sendable {
+  case start, progress, stopped
+  var path: String {
+    switch self {
+    case .start: "Sessions/Playing"
+    case .progress: "Sessions/Playing/Progress"
+    case .stopped: "Sessions/Playing/Stopped"
+    }
+  }
+}
+
+public enum JellyfinPlayMethod: String, Sendable {
+  case directPlay = "DirectPlay"
+  case transcode = "Transcode"
+}
+
+struct JFPlaybackInfo: Decodable {
+  struct MediaSource: Decodable {
+    let id: String
+    let supportsDirectPlay: Bool?
+    let supportsTranscoding: Bool?
+    let transcodingURL: String?
+    enum CodingKeys: String, CodingKey {
+      case id = "Id", supportsDirectPlay = "SupportsDirectPlay"
+      case supportsTranscoding = "SupportsTranscoding", transcodingURL = "TranscodingUrl"
+    }
+  }
+  let mediaSources: [MediaSource]
+  let playSessionID: String?
+  enum CodingKeys: String, CodingKey {
+    case mediaSources = "MediaSources", playSessionID = "PlaySessionId"
+  }
+}
+
 struct JFAuthResult: Decodable {
   struct User: Decodable {
     let id: String

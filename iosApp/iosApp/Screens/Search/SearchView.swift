@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import KyroProviders
+#endif
 
 /// Full-screen unified search. One query fans out into independent Silo and Live TV sections.
 struct SearchView: View {
@@ -8,6 +11,7 @@ struct SearchView: View {
     @State private var programVisibleLimit = UnifiedSearchResultsSection.combinedPreviewLimit
     #if os(iOS)
     @State private var vodSearch: KyroVODSearchModel
+    @State private var providerResults: [ProviderSearchResult] = []
     /// The program whose Guide detail sheet is up, resolved at tap time.
     @State private var programDetail: SearchProgramDetail?
     /// Set by the sheet's Watch button; played only after the sheet has gone and the program is
@@ -156,6 +160,29 @@ struct SearchView: View {
             guard !Task.isCancelled else { return }
             await vodSearch.search(viewModel.query)
         }
+        .task(id: "\(viewModel.query)|\(ProviderCatalogMirror.shared.revision)|\(ProviderCatalogMirror.shared.accountsRevision)|\(KyroLocalIdentityDefaults.activeProfileID ?? "none")") {
+            let query = viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty else { providerResults = []; return }
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            await KyroJellyfinConnections.shared.restore()
+            guard let store = await XtreamVODService.shared.unifiedStore() else {
+                providerResults = []
+                return
+            }
+            let accounts = await KyroProviderCatalogBridge.registeredAccounts()
+            let sources = KyroProviderCatalogBridge.sources(accounts)
+            let movies = await store.unifiedSearch(UnifiedIndexScope(
+                kind: .movie, siloScope: nil, siloLibraryIDs: [], providerIDs: [],
+                providerSources: sources), query: query)
+            let series = await store.unifiedSearch(UnifiedIndexScope(
+                kind: .series, siloScope: nil, siloLibraryIDs: [], providerIDs: [],
+                providerSources: sources), query: query)
+            guard !Task.isCancelled, query == viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            providerResults = (movies.map { ProviderSearchResult(card: $0, kind: .movie) }
+                + series.map { ProviderSearchResult(card: $0, kind: .series) })
+                .sorted { $0.card.title.localizedStandardCompare($1.card.title) == .orderedAscending }
+        }
         #endif
         .onChange(of: router.authState) { _, _ in
             coordinator.synchronizeSiloIdentity()
@@ -300,10 +327,13 @@ struct SearchView: View {
         let hasMoreTitles = viewModel.hasMore || viewModel.total > visibleItems.count
         #if os(iOS)
         let vodCount = iptvOnlyTitles.count
+        let providerCount = providerResults.count
         #else
         let vodCount = 0
+        let providerCount = 0
         #endif
         let contentCount = viewModel.results.count + viewModel.people.count + visibleRequestResults.count + vodCount
+            + providerCount
 
         return VStack(alignment: .leading, spacing: SiloTheme.padding) {
             sectionHeader(
@@ -324,6 +354,9 @@ struct SearchView: View {
                 if !matchedIPTVTitles.isEmpty { matchedIPTVSourceControls }
                 #endif
             }
+                #if os(iOS)
+                if !providerResults.isEmpty { providerTitleResults(isCombined: isCombined) }
+                #endif
                 #if os(iOS)
                 if !iptvOnlyTitles.isEmpty { iptvVODResults }
                 if vodSearch.phase == .loading {
@@ -358,6 +391,29 @@ struct SearchView: View {
     }
 
     #if os(iOS)
+    private func providerTitleResults(isCombined: Bool) -> some View {
+        VStack(alignment: .leading, spacing: SiloTheme.padding) {
+            PhoneSectionHeader(title: "Media Servers")
+            ForEach(Array(providerResults.prefix(isCombined ? 6 : 60))) { result in
+                if case let .provider(account, _, contentID, _, _) = UnifiedDetailTarget(card: result.card),
+                   let ref = KyroProviderCatalogBridge.contentRef(account: account, contentID: contentID),
+                   ref.account.kind == .jellyfin {
+                    MediaCard(title: result.card.title, posterUrl: result.card.poster ?? "",
+                              mediaType: result.kind == .movie ? "movie" : "series",
+                              year: result.card.year, action: {
+                        router.presentJellyfinDetail(ref, isSeries: result.kind == .series)
+                    })
+                }
+            }
+        }
+    }
+
+    private struct ProviderSearchResult: Identifiable {
+        let card: UnifiedCatalogCard
+        let kind: XtreamVODKind
+        var id: String { kind.rawValue + ":" + card.id }
+    }
+
     private var iptvOnlyTitles: [UnifiedVODTitle] {
         let entries = viewModel.results.filter { $0.type == "movie" || $0.type == "series" }
             .map(UnifiedVODEntry.init(silo:)) + currentVODItems.map(UnifiedVODEntry.init(iptv:))

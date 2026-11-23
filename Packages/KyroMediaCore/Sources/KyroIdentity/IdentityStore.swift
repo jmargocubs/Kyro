@@ -99,6 +99,32 @@ public struct IdentityStore: Sendable {
     let state = try await database.load(State.self, key: key) ?? State()
     return state.pins[profile.description] != nil
   }
+  /// Edits one local profile without changing its ID, links, grants, or other profiles' PINs.
+  /// `newPIN == nil` preserves the PIN; an empty string removes it.
+  public func edit(_ id: KyroProfileID, name: String, kind: ProfileKind,
+                   avatarEmoji: String?, currentPIN: String?, newPIN: String?) async throws {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { throw IdentityError.invalidProfile }
+    if try await hasPIN(for: id) {
+      guard let currentPIN, try await verifyPIN(currentPIN, for: id) else {
+        throw IdentityError.incorrectPIN
+      }
+    }
+    let replacementPIN = try newPIN.flatMap { $0.isEmpty ? nil : try ProfilePIN(pin: $0) }
+    try await update { state in
+      guard let index = state.profiles.firstIndex(where: { $0.id == id && $0.tombstonedAt == nil }) else {
+        throw IdentityError.missing
+      }
+      state.profiles[index].name = trimmed
+      state.profiles[index].kind = kind
+      state.profiles[index].avatarEmoji = avatarEmoji
+      if newPIN != nil {
+        state.pins[id.description] = replacementPIN
+        state.failures[id.description] = 0
+        state.blockedUntil[id.description] = nil
+      }
+    }
+  }
   public func delete(_ id: KyroProfileID, at date: Date = Date()) async throws {
     try await update { state in
       guard let index = state.profiles.firstIndex(where: { $0.id == id }) else {
@@ -225,5 +251,5 @@ public struct IdentityStore: Sendable {
       return valid
     }
   }
-  public enum IdentityError: Error { case missing, duplicate, deleted, subjectAlreadyWritable, invalidLink }
+  public enum IdentityError: Error { case missing, duplicate, deleted, subjectAlreadyWritable, invalidLink, invalidProfile, incorrectPIN }
 }

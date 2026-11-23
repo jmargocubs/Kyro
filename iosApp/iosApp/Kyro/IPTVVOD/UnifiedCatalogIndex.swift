@@ -407,10 +407,20 @@ extension XtreamVODCatalogStore {
         }
     }
 
+    /// A bounded search of the same active snapshots and provider-qualified rows as Movies and
+    /// Series. The caller supplies the visible account scope; no stale provider can leak through.
+    func unifiedSearch(_ scope: UnifiedIndexScope, query: String, limit: Int = 60) -> [UnifiedCatalogCard] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        return UnifiedCatalogGrouping.cards(from: unifiedRows(
+            scope, direction: .forward(after: nil), limit: min(max(limit, 1), 100), query: trimmed))
+    }
+
     /// Raw keyset read across the sources. Each arm walks its own covering browse index and is
     /// bounded by `limit`; SQLite orders the at most 3×limit candidates. Only the active Silo
     /// snapshot of the current scope and only active IPTV generations are visible.
-    func unifiedRows(_ scope: UnifiedIndexScope, direction: UnifiedPageDirection, limit: Int) -> [UnifiedIndexRow] {
+    func unifiedRows(_ scope: UnifiedIndexScope, direction: UnifiedPageDirection,
+                     limit: Int, query: String? = nil) -> [UnifiedIndexRow] {
         let includeSilo = scope.siloScope != nil && !scope.siloLibraryIDs.isEmpty
         let includeIPTV = !scope.providerIDs.isEmpty
         let providerFilter = XtreamVODCatalogStore.providerSourceFilter(scope.providerSources, alias: "p")
@@ -440,7 +450,7 @@ extension XtreamVODCatalogStore {
                   NULL AS genre, NULL AS rating
                 FROM unified_silo_items s JOIN unified_silo_active a
                   ON a.scope=s.scope AND a.library_id=s.library_id AND a.kind=s.kind AND a.snapshot=s.snapshot
-                WHERE s.scope=?1 AND s.kind=?2 AND s.library_id IN (\(libraries))\(keyset("s"))
+                WHERE s.scope=?1 AND s.kind=?2 AND s.library_id IN (\(libraries))\(keyset("s"))\(query == nil ? "" : " AND instr(lower(s.title),lower(?7))>0")
                 ORDER BY \(ordering("s.")) LIMIT ?3)
                 """)
         }
@@ -454,7 +464,7 @@ extension XtreamVODCatalogStore {
                   ON a.provider=k.provider AND a.kind=k.kind AND a.generation=k.generation
                 JOIN vod_items i ON i.provider=k.provider AND i.kind=k.kind AND i.generation=k.generation
                   AND i.remote_id=k.remote_id
-                WHERE k.kind=?2 AND k.provider IN (\(providers))\(keyset("k"))
+                WHERE k.kind=?2 AND k.provider IN (\(providers))\(keyset("k"))\(query == nil ? "" : " AND instr(lower(i.title),lower(?7))>0")
                 ORDER BY \(ordering("k.")) LIMIT ?3)
                 """)
         }
@@ -466,7 +476,7 @@ extension XtreamVODCatalogStore {
                   NULL AS genre, NULL AS rating
                 FROM unified_provider_items p JOIN unified_provider_active a
                   ON a.account=p.account AND a.library=p.library AND a.kind=p.kind AND a.snapshot=p.snapshot
-                WHERE p.kind=?2 AND (\(providerFilter))\(keyset("p"))
+                WHERE p.kind=?2 AND (\(providerFilter))\(keyset("p"))\(query == nil ? "" : " AND instr(lower(p.title),lower(?7))>0")
                 ORDER BY \(ordering("p.")) LIMIT ?3)
                 """)
         }
@@ -483,6 +493,7 @@ extension XtreamVODCatalogStore {
             bind(cursor.matchKey, at: 5, in: statement)
             bind(cursor.entryKey, at: 6, in: statement)
         }
+        if let query { bind(query, at: 7, in: statement) }
         func text(_ index: Int32) -> String? {
             sqlite3_column_text(statement, index).map { String(cString: $0) }
         }

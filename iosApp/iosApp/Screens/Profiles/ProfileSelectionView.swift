@@ -10,6 +10,9 @@ struct ProfileSelectionView: View {
     @State private var pinError: String?
     @State private var isVerifyingPIN = false
     @State private var showCreateProfile: Bool = false
+    #if os(iOS)
+    @State private var editingLocalProfile: UserProfile?
+    #endif
     @State private var showSignOutConfirm: Bool = false
     /// Kyro's first-run setup owns the screen from the moment an empty Kyro household is found
     /// until it finishes, including after its profile exists and the list is no longer empty.
@@ -98,6 +101,16 @@ struct ProfileSelectionView: View {
             }
             .presentationDetents([.large])
         }
+        #if os(iOS)
+        .sheet(item: $editingLocalProfile) { profile in
+            NavigationStack {
+                KyroLocalProfileEditor(profile: profile, onSaved: {
+                    editingLocalProfile = nil
+                    Task { await viewModel.loadProfiles() }
+                })
+            }
+        }
+        #endif
         #endif
         .sensoryFeedback(.error, trigger: wrongPINCount)
         #if os(tvOS)
@@ -412,6 +425,15 @@ struct ProfileSelectionView: View {
                                 ) {
                                     handleProfileTap(profile)
                                 }
+                                #if os(iOS)
+                                .contextMenu {
+                                    if viewModel.isKyroLocalMode {
+                                        Button("Edit Profile", systemImage: "person.crop.circle.badge.pencil") {
+                                            editingLocalProfile = profile
+                                        }
+                                    }
+                                }
+                                #endif
                             case .add:
                                 AddProfileTile(size: layout?.addSize ?? 0) { handleAddProfileTap() }
                             }
@@ -655,6 +677,80 @@ struct ProfilePickerLayout: Equatable {
         rowSpacing = chosen.option.rowSpacing
         columnWidth = (width / CGFloat(chosen.option.perRow)).rounded(.down)
         scrolls = best == nil
+    }
+}
+#endif
+
+#if os(iOS)
+/// Edits only Kyro's local identity. Silo's separate profile editor and credentials are untouched.
+private struct KyroLocalProfileEditor: View {
+    let profile: UserProfile
+    let onSaved: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var avatarEmoji: String
+    @State private var isChild: Bool
+    @State private var currentPIN = ""
+    @State private var newPIN = ""
+    @State private var changePIN = false
+    @State private var isSaving = false
+    @State private var errorText: String?
+
+    init(profile: UserProfile, onSaved: @escaping () -> Void) {
+        self.profile = profile
+        self.onSaved = onSaved
+        _name = State(initialValue: profile.name)
+        _avatarEmoji = State(initialValue: profile.avatarEmoji ?? "")
+        _isChild = State(initialValue: profile.isChild)
+    }
+
+    var body: some View {
+        Form {
+            Section("Profile") {
+                TextField("Name", text: $name)
+                TextField("Avatar emoji", text: $avatarEmoji)
+                Toggle("Kids profile", isOn: $isChild)
+            }
+            Section("PIN") {
+                if profile.hasPin {
+                    SecureField("Current PIN", text: $currentPIN)
+                        .keyboardType(.numberPad)
+                }
+                Toggle(profile.hasPin ? "Change or remove PIN" : "Set a PIN", isOn: $changePIN)
+                if changePIN {
+                    SecureField("New PIN (leave empty to remove)", text: $newPIN)
+                        .keyboardType(.numberPad)
+                }
+            }
+            if let errorText { Text(errorText).foregroundStyle(.red) }
+        }
+        .navigationTitle("Edit Profile")
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { Task { await save() } }
+                    .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+
+    private func save() async {
+        guard !isSaving else { return }
+        guard !changePIN || ProfilePIN.isAcceptableForCreate(newPIN) else {
+            errorText = "Use exactly four digits for the new PIN, or leave it empty to remove the PIN."
+            return
+        }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            try await KyroLocalIdentityRuntime.shared.editProfile(profile,
+                name: name, isChild: isChild, avatarEmoji: avatarEmoji.isEmpty ? nil : avatarEmoji,
+                currentPIN: profile.hasPin ? currentPIN : nil,
+                newPIN: changePIN ? newPIN : nil)
+            onSaved()
+        } catch {
+            errorText = "Check the current PIN and enter a 4-digit new PIN, then try again."
+        }
     }
 }
 #endif

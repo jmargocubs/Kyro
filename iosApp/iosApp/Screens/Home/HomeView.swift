@@ -268,6 +268,12 @@ struct HomeView: View {
                     feedSection(section, leadsPage: section.id == sections.first?.id)
                         .onAppear { warmRows(after: section) }
                 }
+                #if os(iOS)
+                KyroJellyfinContinueWatching()
+                    .padding(.horizontal, SiloTheme.padding)
+                KyroUniversalHomeCatalog()
+                    .padding(.horizontal, SiloTheme.padding)
+                #endif
             }
             .padding(.bottom, HomeFeedMetrics.bottomRunway)
         }

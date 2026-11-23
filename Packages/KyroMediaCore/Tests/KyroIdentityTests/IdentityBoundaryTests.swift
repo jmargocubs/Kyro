@@ -4,6 +4,46 @@ import KyroIdentity
 import XCTest
 
 @MainActor final class IdentityBoundaryTests: XCTestCase {
+  func testLocalProfileEditsAndPINsRemainIndependentAfterReopen() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("identity.sqlite")
+    let household = HouseholdID()
+    let db = try SQLiteDatabase(path: url)
+    let store = IdentityStore(database: db, household: household)
+    let first = KyroProfile(name: "Alex", kind: .standard)
+    let second = KyroProfile(name: "Sam", kind: .standard)
+    try await store.create(first)
+    try await store.create(second)
+    try await store.setPIN("1234", for: first.id)
+    try await store.setPIN("5678", for: second.id)
+    do {
+      try await store.edit(first.id, name: "Wrong", kind: .kids, avatarEmoji: "🦊",
+                           currentPIN: "0000", newPIN: "4321")
+      XCTFail("Wrong PIN must not edit")
+    } catch { XCTAssertTrue(error is IdentityStore.IdentityError) }
+    try await store.edit(first.id, name: "Alex Jr", kind: .kids, avatarEmoji: "🦊",
+                         currentPIN: "1234", newPIN: "4321")
+    try await db.close()
+    let reopened = try SQLiteDatabase(path: url)
+    let persisted = IdentityStore(database: reopened, household: household)
+    let profiles = try await persisted.profiles()
+    XCTAssertEqual(profiles.first(where: { $0.id == first.id })?.name, "Alex Jr")
+    XCTAssertEqual(profiles.first(where: { $0.id == first.id })?.kind, .kids)
+    XCTAssertEqual(profiles.first(where: { $0.id == first.id })?.avatarEmoji, "🦊")
+    let firstPINValid = try await persisted.verifyPIN("4321", for: first.id)
+    let secondPINValid = try await persisted.verifyPIN("5678", for: second.id)
+    XCTAssertTrue(firstPINValid)
+    XCTAssertTrue(secondPINValid)
+    try await persisted.edit(first.id, name: "Alex", kind: .standard, avatarEmoji: nil,
+                             currentPIN: "4321", newPIN: "")
+    let firstHasPIN = try await persisted.hasPIN(for: first.id)
+    let secondHasPIN = try await persisted.hasPIN(for: second.id)
+    XCTAssertFalse(firstHasPIN)
+    XCTAssertTrue(secondHasPIN)
+    try await reopened.close()
+  }
   func testPINAttemptLimitSurvivesReopen() async throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

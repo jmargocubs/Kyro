@@ -58,7 +58,7 @@ private final class SameHostRedirects: NSObject, URLSessionTaskDelegate, Sendabl
   }
 }
 
-/// Read-only Jellyfin catalog client. No playback or progress reporting.
+/// Authenticated Jellyfin catalog and playback client.
 ///
 /// Passwords are used once for `AuthenticateByName` and never stored. The access token is
 /// persisted as JSON in the injected `CredentialStore` (use `AppleKeychainCredentialStore`
@@ -178,6 +178,85 @@ public actor JellyfinClient {
     let extra = try seasonID.map { [URLQueryItem(name: "SeasonId", value: try segment($0))] } ?? []
     return try await showChildren(
       "Shows/\(try segment(seriesID))/Episodes", extra: extra, startIndex, limit)
+  }
+
+  /// Negotiates one movie or episode. A server-supplied HLS URL is the direct-play fallback.
+  public func playback(itemID: String, resumePositionSeconds: Double = 0) async throws -> JellyfinPlaybackPlan {
+    let s = try requireSession()
+    let id = try segment(itemID)
+    guard resumePositionSeconds.isFinite, resumePositionSeconds >= 0 else { throw JellyfinError.invalidRequest }
+    let ticks = Int64(min(resumePositionSeconds * 10_000_000, Double(Int64.max)))
+    let q = [URLQueryItem(name: "UserId", value: s.userID),
+             URLQueryItem(name: "StartTimeTicks", value: String(ticks)),
+             URLQueryItem(name: "IsPlayback", value: "true"),
+             URLQueryItem(name: "EnableDirectPlay", value: "true"),
+             URLQueryItem(name: "EnableDirectStream", value: "false"),
+             URLQueryItem(name: "EnableTranscoding", value: "true")]
+    // Advertise only paths the shared Aether player can consume. Jellyfin chooses an HLS URL
+    // for unsupported containers/codecs; no unsupported raw stream is optimistically opened.
+    let profile: [String: Any] = [
+      "Name": "Kyro iOS", "MaxStreamingBitrate": 40_000_000,
+      "DirectPlayProfiles": [["Type": "Video", "Container": "mp4,m4v,mov",
+                              "VideoCodec": "h264,hevc", "AudioCodec": "aac,mp3,ac3,eac3"]],
+      "TranscodingProfiles": [["Type": "Video", "Container": "ts", "Protocol": "hls",
+                               "VideoCodec": "h264", "AudioCodec": "aac",
+                               "Context": "Streaming", "MaxAudioChannels": "2"]]
+    ]
+    let body = try JSONSerialization.data(withJSONObject: ["DeviceProfile": profile])
+    let response: JFPlaybackInfo = try decode(try await perform("POST", "Items/\(id)/PlaybackInfo", query: q, body: body))
+    guard let source = response.mediaSources.first(where: { $0.supportsDirectPlay == true || $0.supportsTranscoding == true }),
+          !source.id.isEmpty, let playSessionID = response.playSessionID, !playSessionID.isEmpty else {
+      throw JellyfinError.malformedResponse
+    }
+    var direct: URL?
+    if source.supportsDirectPlay == true {
+      var components = URLComponents(url: baseURL.appendingPathComponent("Videos/\(id)/stream"), resolvingAgainstBaseURL: false)
+      components?.queryItems = [URLQueryItem(name: "Static", value: "true"),
+                                URLQueryItem(name: "MediaSourceId", value: source.id),
+                                URLQueryItem(name: "PlaySessionId", value: playSessionID)]
+      direct = components?.url
+    }
+    let transcoding = source.supportsTranscoding == true
+      ? source.transcodingURL.flatMap(sameOriginURL) : nil
+    guard direct != nil || transcoding != nil else { throw JellyfinError.malformedResponse }
+    return JellyfinPlaybackPlan(serverID: s.serverID, userID: s.userID, itemID: id, mediaSourceID: source.id,
+      playSessionID: playSessionID, directURL: direct, transcodingURL: transcoding,
+      headers: ["Authorization": info.authorizationHeader(token: s.accessToken)],
+      resumePositionSeconds: resumePositionSeconds)
+  }
+
+  public func reportPlayback(_ phase: JellyfinPlaybackPhase, plan: JellyfinPlaybackPlan,
+                             positionSeconds: Double, paused: Bool = false,
+                             method: JellyfinPlayMethod = .directPlay) async throws {
+    let s = try requireSession()
+    guard positionSeconds.isFinite, positionSeconds >= 0 else { throw JellyfinError.invalidRequest }
+    guard s.serverID == plan.serverID, s.userID == plan.userID else { throw JellyfinError.unauthorized }
+    let ticks = Int64(min(positionSeconds * 10_000_000, Double(Int64.max)))
+    let body = try JSONSerialization.data(withJSONObject: [
+      "ItemId": plan.itemID, "MediaSourceId": plan.mediaSourceID,
+      "PlaySessionId": plan.playSessionID, "PositionTicks": ticks,
+      "IsPaused": paused, "PlayMethod": method.rawValue, "UserId": s.userID
+    ])
+    _ = try await perform("POST", phase.path, body: body)
+  }
+
+  public func resumeItems(limit: Int = 30) async throws -> [JellyfinMediaItem] {
+    let s = try requireSession()
+    guard (1...100).contains(limit) else { throw JellyfinError.invalidRequest }
+    let data = try await perform("GET", "Users/\(s.userID)/Items/Resume", query: [
+      URLQueryItem(name: "Limit", value: String(limit)),
+      URLQueryItem(name: "IncludeItemTypes", value: "Movie,Episode"),
+      URLQueryItem(name: "Fields", value: Self.fields)
+    ])
+    let env: JFItemsEnvelope = try decode(data)
+    return env.items.map { map($0, s) }.filter { $0.kind == .movie || $0.kind == .episode }
+  }
+
+  private func sameOriginURL(_ raw: String) -> URL? {
+    guard let url = URL(string: raw, relativeTo: baseURL)?.absoluteURL,
+          url.scheme == baseURL.scheme, url.host == baseURL.host, url.port == baseURL.port,
+          url.user == nil, url.password == nil else { return nil }
+    return url
   }
 
   /// Image URL for an item. Jellyfin serves images without auth, so no token is embedded.

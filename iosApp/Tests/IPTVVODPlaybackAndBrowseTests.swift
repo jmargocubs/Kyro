@@ -10,6 +10,21 @@ import XCTest
 /// iOS test target.
 final class IPTVVODPlaybackAndBrowseTests: XCTestCase {
 
+    func testExternalPlaybackFallbackKeepsOneSessionAndAuthorization() {
+        let direct = URL(string: "https://jellyfin.example/Videos/m1/stream")!
+        let hls = URL(string: "https://jellyfin.example/Videos/m1/master.m3u8")!
+        let request = ExternalPlaybackRequest(url: direct, title: "Movie", sourceLabel: "Jellyfin",
+            startPosition: 42, headers: ["Authorization": "MediaBrowser Token=secret"],
+            fallbackURL: hls)
+        let fallback = request.usingFallback(at: 54)
+        XCTAssertEqual(fallback?.id, request.id)
+        XCTAssertEqual(fallback?.url, hls)
+        XCTAssertEqual(fallback?.startPosition, 54)
+        XCTAssertEqual(fallback?.headers, request.headers)
+        XCTAssertNil(fallback?.fallbackURL)
+        XCTAssertNil(fallback?.usingFallback(at: 60))
+    }
+
     // MARK: Playback failure classification
 
     func testEngineFailuresMapToActionableReasons() {

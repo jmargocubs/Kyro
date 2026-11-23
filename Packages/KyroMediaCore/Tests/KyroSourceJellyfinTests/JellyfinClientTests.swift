@@ -206,5 +206,66 @@ final class JellyfinClientTests: XCTestCase {
     XCTAssertFalse(u.absoluteString.lowercased().contains("token"))
     XCTAssertNil(c.imageURL(itemID: "a/b", kind: .primary, tag: nil))
   }
-}
 
+  func testMovieAndEpisodePlaybackNegotiationAndProgress() async throws {
+    let (client, transport, _) = try await signedIn { request in
+      if request.url.path.hasSuffix("PlaybackInfo") {
+        return json(#"{"PlaySessionId":"play1","MediaSources":[{"Id":"source1","SupportsDirectPlay":true,"SupportsTranscoding":true,"TranscodingUrl":"/Videos/m1/master.m3u8"}]}"#)
+      }
+      return json("", status: 204)
+    }
+    let movie = try await client.playback(itemID: "m1", resumePositionSeconds: 42)
+    XCTAssertEqual(movie.serverID, "srv1")
+    XCTAssertEqual(movie.userID, "u1")
+    XCTAssertEqual(movie.directURL?.path, "/Videos/m1/stream")
+    XCTAssertEqual(movie.transcodingURL?.path, "/Videos/m1/master.m3u8")
+    XCTAssertEqual(movie.resumePositionSeconds, 42)
+    XCTAssertTrue(movie.headers["Authorization"]?.contains("tok-secret") == true)
+    XCTAssertTrue(transport.requests.last?.url.query?.contains("StartTimeTicks=420000000") == true)
+    XCTAssertEqual(transport.requests.last?.method, "POST")
+    let negotiation = try XCTUnwrap(transport.requests.last?.body)
+    XCTAssertTrue(String(decoding: negotiation, as: UTF8.self).contains("TranscodingProfiles"))
+    try await client.reportPlayback(.start, plan: movie, positionSeconds: 42)
+    try await client.reportPlayback(.progress, plan: movie, positionSeconds: 54)
+    try await client.reportPlayback(.stopped, plan: movie, positionSeconds: 60)
+    XCTAssertEqual(transport.requests.suffix(3).map(\.url.path),
+                   ["/Sessions/Playing", "/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"])
+    let body = try XCTUnwrap(transport.requests.last?.body)
+    let report = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    XCTAssertEqual(report["UserId"] as? String, "u1")
+    XCTAssertEqual(report["PlaySessionId"] as? String, "play1")
+    XCTAssertEqual(report["PositionTicks"] as? Int64, 600_000_000)
+    let episode = try await client.playback(itemID: "e1")
+    XCTAssertEqual(episode.directURL?.path, "/Videos/e1/stream")
+  }
+
+  func testPlaybackRejectsOtherAccountAndCrossOriginTranscode() async throws {
+    let (client, transport, _) = try await signedIn { request in
+      if request.url.path.hasSuffix("PlaybackInfo") {
+        return json(#"{"PlaySessionId":"play1","MediaSources":[{"Id":"source1","SupportsDirectPlay":true,"SupportsTranscoding":true,"TranscodingUrl":"https://evil.example/steal"}]}"#)
+      }
+      return json("", status: 204)
+    }
+    let plan = try await client.playback(itemID: "m1")
+    XCTAssertNil(plan.transcodingURL)
+    let other = try JellyfinPlaybackPlan(serverID: "other", userID: "u2", itemID: plan.itemID,
+      mediaSourceID: plan.mediaSourceID, playSessionID: plan.playSessionID,
+      directURL: plan.directURL, transcodingURL: nil, headers: plan.headers,
+      resumePositionSeconds: 0)
+    do {
+      try await client.reportPlayback(.progress, plan: other, positionSeconds: 10)
+      XCTFail("Cross-account report must be rejected")
+    } catch { XCTAssertEqual(error as? JellyfinError, .unauthorized) }
+    XCTAssertEqual(transport.requests.filter { $0.url.path.contains("Sessions/Playing") }.count, 0)
+  }
+
+  func testResumeListUsesAuthenticatedUser() async throws {
+    let (client, transport, _) = try await signedIn { _ in
+      json(#"{"Items":[{"Id":"m1","Name":"Movie","Type":"Movie","UserData":{"PlaybackPositionTicks":100000000}},{"Id":"e1","Name":"Episode","Type":"Episode"},{"Id":"s1","Name":"Show","Type":"Series"}]}"#)
+    }
+    let items = try await client.resumeItems()
+    XCTAssertEqual(items.map(\.kind), [.movie, .episode])
+    XCTAssertEqual(items.first?.userState?.resumePositionSeconds, 10)
+    XCTAssertEqual(transport.requests.last?.url.path, "/Users/u1/Items/Resume")
+  }
+}

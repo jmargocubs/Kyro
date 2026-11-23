@@ -1658,6 +1658,8 @@ class PlayerViewModel {
     /// Provider-owned media (IPTV VOD) this player opened directly. Non-nil routes the engine's
     /// startup, end and failure events away from Silo's session, replan and progress logic.
     @ObservationIgnored private(set) var externalPlayback: ExternalPlaybackRequest?
+    @ObservationIgnored private var externalStartedID: UUID?
+    @ObservationIgnored private var externalLastProgressPosition: Double = 0
     /// Credential-free failure code shown under an external playback error, e.g.
     /// `reason=access_refused engine=sourcerefused code=403 hops=1 status=403 …`.
     var externalPlaybackDiagnosticCode: String?
@@ -2038,6 +2040,9 @@ class PlayerViewModel {
                 }
             case .paused:
                 isPlaying = false
+                if let external = externalPlayback, externalStartedID == external.id {
+                    external.onProgress?(currentTime, duration, true)
+                }
                 pushNowPlayingSnapshot()
             case .idle, .ended, .error:
                 isPlaying = false
@@ -2093,6 +2098,11 @@ class PlayerViewModel {
                 seekFilterTimeoutTask = nil
             }
             currentTime = movieTime
+            if let external = externalPlayback, externalStartedID == external.id,
+               abs(movieTime - externalLastProgressPosition) >= 15 {
+                externalLastProgressPosition = movieTime
+                external.onProgress?(movieTime, duration, !isPlaying)
+            }
             sourceWatch.observePlayhead(movieTime, hasMediaAhead: engineHasMediaAhead)
             updateNextUpPresentation(for: movieTime)
             syncIntroSkipPrompt()
@@ -6854,7 +6864,7 @@ class PlayerViewModel {
             do {
                 let spec = try AetherLoadSpec(
                     directURL: request.url,
-                    headers: [:],
+                    headers: request.headers,
                     startPosition: max(0, request.startPosition),
                     audioOnly: false,
                     preferredAudioLanguages: AetherInitialAudioPreference.languages(
@@ -6900,12 +6910,18 @@ class PlayerViewModel {
         case .firstFrame:
             viewingHasPlayed = true
             isLoading = false
+            if externalStartedID != request.id {
+                externalStartedID = request.id
+                externalLastProgressPosition = currentTime
+                request.onStart?(currentTime)
+            }
             Self.recordExternalPlayback("first_frame", "")
             return true
         case .ended:
             hasReachedEndOfFile = true
             isPlaying = false
             isLoading = false
+            request.onEnd?(max(currentTime, duration))
             Self.recordExternalPlayback("ended", "")
             return true
         case .failure(let failure):
@@ -6931,6 +6947,14 @@ class PlayerViewModel {
     /// playback for a provider connection.
     private func failExternalPlayback(_ failure: PlaybackErrorInfo?, request: ExternalPlaybackRequest) async {
         guard !isDisposed else { return }
+        if let fallback = request.usingFallback(at: currentTime) {
+            if aetherPlaybackController.activeLoadEpoch != nil { disposeAetherPlayback() }
+            activeAetherLoadEpoch = nil
+            establishedAetherLoadEpoch = nil
+            request.onFallback?()
+            loadExternalPlayback(fallback)
+            return
+        }
         if aetherPlaybackController.activeLoadEpoch != nil {
             disposeAetherPlayback()
         }

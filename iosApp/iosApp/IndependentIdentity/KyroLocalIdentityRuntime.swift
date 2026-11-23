@@ -116,6 +116,15 @@ final class KyroLocalIdentityRuntime {
         return result
     }
 
+    func editProfile(_ profile: UserProfile, name: String, isChild: Bool,
+                     avatarEmoji: String?, currentPIN: String?, newPIN: String?) async throws {
+        guard let identity else { throw startupError ?? RuntimeError.storageUnavailable }
+        guard let uuid = UUID(uuidString: profile.id) else { throw RuntimeError.profileUnavailable }
+        try await identity.edit(KyroProfileID(rawValue: uuid), name: name,
+                                kind: isChild ? .kids : .standard, avatarEmoji: avatarEmoji,
+                                currentPIN: currentPIN, newPIN: newPIN)
+    }
+
     func select(_ profile: UserProfile, pin: String?) async throws {
         guard let identity,
               let uuid = UUID(uuidString: profile.id) else { throw RuntimeError.profileUnavailable }
