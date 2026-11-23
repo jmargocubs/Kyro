@@ -215,7 +215,7 @@ jobs:
             EXPECTED_PLATFORM=iPhoneOS
             # Isolation guards: Labs identity, Labs-prefixed extensions, no stable keychain group.
             [ "$(/usr/libexec/PlistBuddy -c 'Print :KyroAppVariant' "$PLIST")" = labs ] || { echo "KyroAppVariant is not labs"; exit 1; }
-            [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST")" = "Kyro Labs" ] || { echo "display name is not Kyro Labs"; exit 1; }
+            [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST")" = "Kyro X Labs" ] || { echo "display name is not Kyro X Labs"; exit 1; }
             for APPEX in "$APP_PATH"/PlugIns/*.appex; do
               EXT_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist")
               case "$EXT_ID" in com.cubbiestream.kyro.labs.*) ;; *) echo "extension $EXT_ID is outside the Labs bundle ID"; exit 1 ;; esac
