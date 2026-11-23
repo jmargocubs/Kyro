@@ -55,7 +55,16 @@ struct AppWordmarkView: View {
 
     #if os(iOS)
     private var kyroWidth: CGFloat {
-        switch placement {
+        // The X asset has much wider transparent margins than the stable KYRO asset.
+        // Compensate at the view level so the visible letters remain legible.
+        if KyroAppIdentity.current.isLabs {
+            switch placement {
+            case .compactHeader: return 140
+            case .topBar: return 176
+            case .loading: return 232
+            }
+        }
+        return switch placement {
         case .compactHeader: 94
         case .topBar: 118
         case .loading: 156

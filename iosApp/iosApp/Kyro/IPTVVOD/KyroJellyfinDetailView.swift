@@ -14,6 +14,7 @@ struct KyroJellyfinDetailView: View {
     @State private var seasons: [JellyfinMediaItem] = []
     @State private var episodes: [JellyfinMediaItem] = []
     @State private var selectedSeasonID: String?
+    @State private var selectedEpisode: EpisodeSelection?
     @State private var errorText: String?
     @State private var scrollState = PhoneDetailScrollState()
 
@@ -50,6 +51,10 @@ struct KyroJellyfinDetailView: View {
                                     .foregroundStyle(Color.siloSecondaryText)
                             }, belowOverview: { EmptyView() }
                         )
+                        if let year = item.year {
+                            Text(String(year)).font(.subheadline).foregroundStyle(.secondary)
+                                .padding(.horizontal, SiloTheme.safePadding)
+                        }
                         if isSeries { episodeSection.padding(.horizontal, SiloTheme.safePadding) }
                     } else if let errorText {
                         ContentUnavailableView("Jellyfin details unavailable", systemImage: "wifi.exclamationmark",
@@ -74,6 +79,33 @@ struct KyroJellyfinDetailView: View {
                 trailingSystemName: nil, onTrailingTap: nil)
         }
         .task(id: ref) { await load() }
+        .sheet(item: $selectedEpisode) { selection in
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(selection.item.title).font(.largeTitle.bold())
+                        if let number = selection.item.indexNumber {
+                            Text("Episode \(number)").font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        if let runtime = selection.item.runtimeSeconds {
+                            Text("\(Int(runtime / 60)) min").font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        if let overview = selection.item.overview {
+                            Text(overview).font(.body)
+                        }
+                        Text("Playback is not available yet")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(SiloTheme.safePadding)
+                }
+                .navigationTitle("Episode details")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { selectedEpisode = nil }
+                } }
+            }
+        }
     }
 
     @ViewBuilder private var episodeSection: some View {
@@ -87,6 +119,7 @@ struct KyroJellyfinDetailView: View {
                 }
                 .onChange(of: selectedSeasonID) { _, _ in Task { await loadEpisodes() } }
                 ForEach(episodes, id: \.contentID.itemID) { episode in
+                    Button { selectedEpisode = EpisodeSelection(item: episode) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(episode.title).font(.headline)
                         if let overview = episode.overview {
@@ -95,6 +128,8 @@ struct KyroJellyfinDetailView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -124,5 +159,10 @@ struct KyroJellyfinDetailView: View {
                                                  seasonID: selectedSeasonID).items
         } catch { episodes = [] }
     }
+}
+
+private struct EpisodeSelection: Identifiable {
+    let item: JellyfinMediaItem
+    var id: String { item.contentID.rawValue }
 }
 #endif

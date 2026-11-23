@@ -147,8 +147,9 @@ struct KyroFirstRunSetupView: View {
 
     private func profileCreated() async {
         do {
-            // A household in first-run setup has exactly the profile just made.
-            guard let created = try await KyroLocalIdentityRuntime.shared.profiles().first else { return }
+            // The local store may already contain an older Home profile after an upgrade.
+            // Creation appends the new identity; never activate a stale first entry.
+            guard let created = try await KyroLocalIdentityRuntime.shared.profiles().last else { return }
             KyroLocalIdentityRuntime.shared.activateNewProfile(created)
             profile = created
             await onProfileCreated()

@@ -58,6 +58,10 @@ final class KyroUnifiedDetailTests: XCTestCase {
             XCTAssertEqual(UnifiedBrowseChrome.title(for: .series), "Series")
         }
         XCTAssertNil(UnifiedBrowseChrome.title(for: .audiobooks))
+        XCTAssertEqual(UnifiedBrowseChrome.startingTab(hasSiloLibraries: false), .library,
+                       "Jellyfin-only Movies and Series must open the provider grid")
+        XCTAssertEqual(UnifiedBrowseChrome.startingTab(hasSiloLibraries: true), .recommended,
+                       "Silo's existing landing tab remains unchanged")
     }
 
     func testSeriesEpisodesRemainProviderPlaybackIdentities() {

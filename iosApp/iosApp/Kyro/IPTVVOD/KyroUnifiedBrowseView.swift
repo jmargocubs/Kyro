@@ -44,7 +44,7 @@ struct KyroUnifiedBrowseView: View {
                         if KyroProviderState.current.isSiloConnected || model.hasProviderSources {
                             EmptyStateView(icon: kind == .movie ? "film" : "tv",
                                            title: "No titles available",
-                                           subtitle: "Check your Silo libraries or IPTV catalog settings.")
+                                           subtitle: "Check your connected media servers or IPTV catalog settings.")
                                 .frame(minHeight: 280)
                         } else {
                             // No media server: offer one, or IPTV (whose Movies & Series switch

@@ -714,9 +714,17 @@ struct CreateProfileView: View {
         defer { isLoading = false }
 
         if isKyroLocalMode {
+            guard let validName = KyroFirstRunSetup.validatedName(name) else {
+                formError = CreateProfileFailure(title: "Name Required", message: "Enter a name of up to 30 characters.")
+                return
+            }
+            guard ProfilePIN.isAcceptableForCreate(pin) else {
+                formError = CreateProfileFailure(title: "Invalid PIN", message: Self.incompletePINHint)
+                return
+            }
             do {
                 try await KyroLocalIdentityRuntime.shared.createProfile(
-                    name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                    name: validName,
                     isChild: isChild,
                     avatarEmoji: activePreset?.ref,
                     pin: pin.isEmpty ? nil : pin

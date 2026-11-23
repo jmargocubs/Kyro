@@ -66,6 +66,7 @@ final class KyroJellyfinConnections {
                 loadedProfileID = profileID
                 connectedAccounts.insert(ref)
                 connectionErrors[ref] = nil
+                startCatalogSync(for: ref)
                 return ref
             } catch {
                 try? await registry.remove(ref)
@@ -125,6 +126,7 @@ final class KyroJellyfinConnections {
                 clients[ref] = client
                 connectedAccounts.insert(ref)
                 connectionErrors[ref] = nil
+                startCatalogSync(for: ref)
             } catch {
                 connectedAccounts.remove(ref)
                 if case JellyfinError.unauthorized = error {
@@ -158,6 +160,7 @@ final class KyroJellyfinConnections {
             loadedProfileID = profileID
             connectedAccounts.insert(ref)
             connectionErrors[ref] = nil
+            startCatalogSync(for: ref)
         } catch {
             if let previousToken { try? await credentials.write(previousToken, for: key) }
             else { try? await credentials.remove(key) }
@@ -187,6 +190,16 @@ final class KyroJellyfinConnections {
 
     private var activeProfileID: UUID? {
         defaults.string(forKey: KyroLocalIdentityDefaults.activeProfileIDKey).flatMap(UUID.init(uuidString:))
+    }
+
+    /// Authentication owns the first catalog fill. A person should not need to visit Movies,
+    /// pull to refresh, or wait for an incidental SwiftUI task identity change to see titles.
+    private func startCatalogSync(for ref: ProviderAccountRef) {
+        Task {
+            _ = await ProviderCatalogMirror.shared.sync(kind: .movie, accounts: [ref.description], force: false)
+            guard !Task.isCancelled else { return }
+            _ = await ProviderCatalogMirror.shared.sync(kind: .series, accounts: [ref.description], force: false)
+        }
     }
 
     private func makeClient(url: URL, id: ProviderAccountID) throws -> JellyfinClient {

@@ -109,7 +109,12 @@ class LibraryPageStructureTests(unittest.TestCase):
             for path in APP.rglob("*.swift")
             if reader in path.read_text()
         }
-        self.assertEqual(readers, {LIBRARIES: 2}, "LibraryPageScrollContainer and LibraryPageStatus only")
+        # The unified provider grid reads controls to own the same scroll container as the
+        # Silo/IPTV tabs; no other page may add a competing reader.
+        self.assertEqual(readers, {
+            LIBRARIES: 2,
+            "iosApp/iosApp/Kyro/IPTVVOD/KyroUnifiedBrowseView.swift": 1,
+        })
 
     def test_every_movies_and_series_tab_scrolls_in_the_shared_container(self):
         tabs = [

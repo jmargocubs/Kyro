@@ -80,13 +80,24 @@ struct KyroBackdropGeometry {
 /// splash and every introduction page share it, so it never moves.
 struct KyroBackdrop: View {
     var body: some View {
-        GeometryReader { proxy in
-            Image(KyroBrand.backdropImageName)
-                .resizable()
-                .interpolation(.high)
-                .aspectRatio(contentMode: .fill)
-                .frame(width: proxy.size.width, height: proxy.size.height)
-                .clipped()
+        Group {
+            if KyroAppIdentity.current.isLabs {
+                // The prepared X portrait has an enormous, already-clipped KYRO baked into
+                // its lower half. It cannot be safely aspect-filled on an iPhone. Keep the
+                // approved red/black palette, and draw the separate complete X wordmark above.
+                LinearGradient(colors: [Color(red: 0.11, green: 0.01, blue: 0.03),
+                                        .black, Color(red: 0.12, green: 0.01, blue: 0.03)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+            } else {
+                GeometryReader { proxy in
+                    Image(KyroBrand.backdropImageName)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+                }
+            }
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)

@@ -312,6 +312,10 @@ private struct LibrarySourceVisibility: ViewModifier {
 }
 
 enum UnifiedBrowseChrome {
+    static func startingTab(hasSiloLibraries: Bool) -> LibraryPageTab {
+        hasSiloLibraries ? .recommended : .library
+    }
+
     /// Independent of the selected tab and active Silo library by design.
     static func title(for category: PrimaryMenuBuiltin?) -> String? {
         switch category {
@@ -451,6 +455,11 @@ struct LibrariesTabView: View {
             fixedLibraryId: fixedLibraryId,
             authority: libraryAuthority
         )) {
+            // Recommended and Collections are Silo features. A Jellyfin-only household must
+            // land on the shared provider catalog, not the Silo-only Recommended placeholder.
+            if unifiedCatalog != nil && !KyroProviderState.current.loadsSiloLibraries {
+                selectedTab = UnifiedBrowseChrome.startingTab(hasSiloLibraries: false)
+            }
             navPrefs.refresh()
             storedLibraryId = storedLibrarySelectionId(for: selectionStorageKey)
             // SwiftUI can preserve this view while a split-view selection
@@ -506,8 +515,8 @@ struct LibrariesTabView: View {
             if selectedTab != .library, activeLibrary == nil, unifiedCatalog != nil {
                 LibraryPageScrollContainer {
                     EmptyStateView(icon: "square.stack.3d.up",
-                                   title: "No Silo libraries available",
-                                   subtitle: "Recommended and Collections use Silo libraries.")
+                                   title: "This view needs a Silo library",
+                                   subtitle: "Your connected media is in Library.")
                         .frame(minHeight: 320)
                 }
             }
@@ -626,10 +635,12 @@ struct LibrariesTabView: View {
                activeLibrary.isMixedLibrary && category != .movies && category != .series {
                 LibraryVideoScopePicker(selection: $selectedVideoScope)
             }
-            LibraryPageTabSelector(selectedTab: pageTabBinding, scrolls: scrollsTabs)
+            if unifiedCatalog == nil || KyroProviderState.current.loadsSiloLibraries {
+                LibraryPageTabSelector(selectedTab: pageTabBinding, scrolls: scrollsTabs)
                 // With the selector's own vertical inset, one standard gap above every tab's first
                 // row. Tabs add no gap of their own above it.
                 .padding(.bottom, SiloTheme.smallPadding)
+            }
         }
     }
 
