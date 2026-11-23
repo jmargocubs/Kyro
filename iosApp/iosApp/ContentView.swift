@@ -4,6 +4,9 @@ import UIKit
 #elseif os(macOS)
 import AppKit
 #endif
+#if os(iOS)
+import KyroProviders
+#endif
 
 struct ContentView: View {
     @State private var router = AppRouter()
@@ -3848,8 +3851,10 @@ private struct ItemDetailSheet: View {
                     // A matched unified title (Build 110) lists its other IPTV sources under the
                     // existing page; no shared detail view changes.
                     .modifier(KyroAlternateSourcesInset(alternates: presentation.alternates,
+                                                         providers: presentation.providerAlternates,
                                                          bottomInset: geometry.safeAreaInsets.bottom,
-                                                         onOpen: router.openAlternateIPTVDetail))
+                                                         onOpen: router.openAlternateIPTVDetail,
+                                                         onOpenProvider: router.openAlternateProviderDetail))
                     .frame(
                         width: geometry.size.width,
                         height: geometry.size.height + geometry.safeAreaInsets.bottom
@@ -3875,6 +3880,14 @@ private struct ItemDetailSheet: View {
                     .environment(\.detailPullBackAction, {
                         withAnimation { router.goBackInItemDetail() }
                     })
+                }
+                .navigationDestination(for: ContentRef.self) { ref in
+                    if ref.account.kind == .jellyfin {
+                        KyroJellyfinDetailView(ref: ref, isSeries: presentation.jellyfinIsSeries,
+                            onClose: { withAnimation { router.goBackInItemDetail() } })
+                    } else {
+                        ContentUnavailableView("Source unavailable", systemImage: "server.rack")
+                    }
                 }
                 .toolbarBackground(.hidden, for: .navigationBar)
         }

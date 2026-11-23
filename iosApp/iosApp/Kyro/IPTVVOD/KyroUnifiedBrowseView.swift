@@ -39,6 +39,11 @@ struct KyroUnifiedBrowseView: View {
             VStack(spacing: 0) {
                 if let controls { controls }
                 VStack(spacing: SiloTheme.padding) {
+                    Text(kind == .movie ? "Movies" : "Series")
+                        .font(.largeTitle.bold())
+                        .foregroundStyle(Color.siloOnSurface)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityAddTraits(.isHeader)
                     status
                     if model.cards.isEmpty && model.hasLoaded && !model.isLoading && !model.isFillingLibrary {
                         if KyroProviderState.current.isSiloConnected || model.hasProviderSources {
@@ -170,16 +175,23 @@ struct KyroUnifiedBrowseView: View {
             let name = liveTV.providers.first { $0.id == item.providerID }?.name ?? "Unavailable provider"
             return KyroIPTVDetailRequest(item: item, providerName: name)
         }
+        let providerRefs = card.members.compactMap { member -> ContentRef? in
+            guard case let .provider(account, _, contentID, _) = member.source else { return nil }
+            return KyroProviderCatalogBridge.contentRef(account: account, contentID: contentID)
+        }
         switch UnifiedDetailTarget(card: card) {
         case let .silo(contentID, libraryID, _, alternates):
             router.presentUnifiedSiloDetail(contentId: contentID, libraryId: libraryID,
-                                            alternates: alternates.map(request))
+                                            alternates: alternates.map(request),
+                                            providerAlternates: providerRefs, isSeries: kind == .series)
         case let .iptv(item, alternates):
             router.presentIPTVDetail(request(item), alternates: alternates.map(request))
         case let .provider(account, _, contentID, _, alternates):
             if let ref = KyroProviderCatalogBridge.contentRef(account: account, contentID: contentID),
                ref.account.kind == .jellyfin {
-                router.presentJellyfinDetail(ref, isSeries: kind == .series)
+                router.presentJellyfinDetail(ref, isSeries: kind == .series,
+                    providerAlternates: providerRefs.filter { $0 != ref },
+                    iptvAlternates: alternates.map(request))
             } else if let first = alternates.first {
                 router.presentIPTVDetail(request(first), alternates: alternates.dropFirst().map(request))
             }

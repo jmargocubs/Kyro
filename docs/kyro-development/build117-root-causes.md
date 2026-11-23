@@ -11,3 +11,22 @@ Confirmed from the Build 116 runtime paths, before repair:
 - Labs launch configuration selects `KyroXLaunchBackground`, a flat color; the cinematic artwork is SwiftUI startup content. The Labs wordmark uses stable Kyro's 1825×498 proportions even though the X image is a different asset. Physical-device visual feedback cannot be reproduced without a device recording or approved run; sizing corrections need device confirmation.
 
 This is source-level evidence, not proof of end-to-end device behavior. No app data was reset.
+
+## Canonical route correction
+
+Following review, the conditional `.recommended` to `.library` workaround was removed. On iOS,
+`ContentView` now enters `KyroMediaSourceRoot` for both Movies and Series, and that root directly
+mounts `KyroUnifiedBrowseView` for every account combination. Silo library fetch is an optional
+catalog input; failure does not replace the page with a Silo-only screen. The unused
+`LibrariesTabView.unifiedCatalog` alternate arm was removed. Pinned Silo libraries and other
+Silo-specific pages retain their own navigation and settings, but they are not the global
+Movies/Series destinations.
+
+Matched cards keep all member identities. The detail sheet now lists IPTV and Jellyfin account
+alternates together, with provider-qualified Jellyfin navigation. Plex/Emby readers and detail
+clients are not implemented, so a future account of those kinds can appear in the source list
+but cannot yet show a detail page.
+
+Home remains a Silo Home when Silo is signed in and a source-setup Home otherwise; it does not
+yet display Jellyfin media rows. Search does not yet query the provider catalog. These are
+confirmed functional gaps, not validation passes. Jellyfin playback/progress also remains absent.

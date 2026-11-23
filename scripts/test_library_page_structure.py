@@ -74,6 +74,27 @@ IPTV = "iosApp/iosApp/Kyro/IPTVVOD/KyroIPTVLibraryContent.swift"
 class LibraryPageStructureTests(unittest.TestCase):
     # Navigation
 
+    def test_movies_and_series_always_use_one_unified_route(self):
+        content = source("iosApp/iosApp/ContentView.swift")
+        root = type_body(source("iosApp/iosApp/Kyro/IPTVVOD/KyroMediaSourceRoot.swift"),
+                         "struct KyroMediaSourceRoot")
+        grid = type_body(source("iosApp/iosApp/Kyro/IPTVVOD/KyroUnifiedBrowseView.swift"),
+                         "struct KyroUnifiedBrowseView")
+        model = source("iosApp/iosApp/Kyro/IPTVVOD/KyroUnifiedBrowseModel.swift")
+        # This route is the same with Silo only, Jellyfin only, IPTV only, or all three.
+        self.assertIn("if category == .movies || category == .series {", content)
+        self.assertIn("KyroMediaSourceRoot(category: category", content)
+        self.assertIn("KyroUnifiedBrowseView(kind: category == .movies ? .movie : .series", root)
+        self.assertNotIn("LibrariesTabView(", root)
+        self.assertNotIn("selectedTab", root)
+        self.assertIn("SiloCatalogMirror.shared.currentScope()", model)
+        self.assertIn("providerSources: KyroProviderCatalogBridge.sources(", model)
+        self.assertIn("providerIDs: providerIDs", model)
+        self.assertIn("router.presentUnifiedSiloDetail", grid)
+        self.assertIn("router.presentJellyfinDetail", grid)
+        self.assertIn("router.presentIPTVDetail", grid)
+
+
     def test_no_media_card_is_wrapped_in_another_tap_target(self):
         """MediaCard is a Button. Inside a NavigationLink or Button label it swallows the tap
         (Build 102) or, with hit testing off, nothing receives it (Builds 100 and 101)."""

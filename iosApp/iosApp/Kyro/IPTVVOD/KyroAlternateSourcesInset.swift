@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import KyroProviders
 
 /// Build 110's interim access to a matched title's other sources: a compact row under the
 /// existing Silo or IPTV detail. It only opens the alternate's own IPTV detail (pushed inside the
@@ -7,13 +8,15 @@ import SwiftUI
 /// the Sources picker.
 struct KyroAlternateSourcesInset: ViewModifier {
     let alternates: [KyroIPTVDetailRequest]
+    let providers: [ContentRef]
     /// The card's bottom safe-area inset. The detail sheet paints through the home-indicator
     /// strip, so the row is lifted above it explicitly.
     var bottomInset: CGFloat = 0
     let onOpen: (KyroIPTVDetailRequest) -> Void
+    let onOpenProvider: (ContentRef) -> Void
 
     func body(content: Content) -> some View {
-        if alternates.isEmpty {
+        if alternates.isEmpty && providers.isEmpty {
             content
         } else {
             content.safeAreaInset(edge: .bottom, spacing: 0) {
@@ -26,19 +29,24 @@ struct KyroAlternateSourcesInset: ViewModifier {
 
     @ViewBuilder
     private var bar: some View {
-        if alternates.count == 1, let only = alternates.first {
+        if alternates.count == 1, providers.isEmpty, let only = alternates.first {
             Button { onOpen(only) } label: { label(text: "Also on IPTV · \(only.providerName)") }
                 .buttonStyle(.plain)
                 .accessibilityHint("Opens this title's IPTV details")
         } else {
             Menu {
+                ForEach(providers, id: \.description) { ref in
+                    Button(ref.account.kind == .jellyfin ? "Jellyfin" : ref.account.kind.rawValue.capitalized) {
+                        onOpenProvider(ref)
+                    }
+                }
                 ForEach(alternates, id: \.pageIdentity) { request in
                     Button("IPTV · \(request.providerName)") { onOpen(request) }
                 }
             } label: {
-                label(text: "Also on \(alternates.count) IPTV sources")
+                label(text: "Also on \(alternates.count + providers.count) sources")
             }
-            .accessibilityHint("Choose an IPTV source to open its details")
+            .accessibilityHint("Choose a source to open its details")
         }
     }
 

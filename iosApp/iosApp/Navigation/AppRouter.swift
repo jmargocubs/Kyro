@@ -183,10 +183,11 @@ final class AppRouter {
         let iptv: KyroIPTVDetailRequest?
         /// Provider-qualified item identity, never a Silo content ID.
         let jellyfin: ContentRef?
-        let jellyfinIsSeries: Bool
+        var jellyfinIsSeries: Bool
         /// The other IPTV sources of a matched unified title (Build 110). The root page stays the
         /// existing Silo or IPTV detail; each alternate opens its own IPTV detail inside the card.
         var alternates: [KyroIPTVDetailRequest] = []
+        var providerAlternates: [ContentRef] = []
         #endif
         /// Presented as large as the window instead of as a page sheet: a
         /// window-sized sheet on iPad, a full-screen cover on iPhone, where
@@ -809,19 +810,27 @@ final class AppRouter {
         openItemDetail(presentation)
     }
 
-    func presentJellyfinDetail(_ ref: ContentRef, isSeries: Bool) {
+    func presentJellyfinDetail(_ ref: ContentRef, isSeries: Bool,
+                              providerAlternates: [ContentRef] = [],
+                              iptvAlternates: [KyroIPTVDetailRequest] = []) {
         itemDetailPath = NavigationPath()
-        openItemDetail(ItemDetailPresentation(jellyfin: ref, isSeries: isSeries))
+        var presentation = ItemDetailPresentation(jellyfin: ref, isSeries: isSeries)
+        presentation.providerAlternates = providerAlternates
+        presentation.alternates = iptvAlternates
+        openItemDetail(presentation)
     }
 
     /// Opens a unified (Build 110) Silo title in the existing Silo detail, carrying every matched
     /// IPTV source. Playback routing is unchanged: Silo plays from the Silo page, each IPTV source
     /// from its own IPTV page.
-    func presentUnifiedSiloDetail(contentId: String, libraryId: Int?, alternates: [KyroIPTVDetailRequest]) {
+    func presentUnifiedSiloDetail(contentId: String, libraryId: Int?, alternates: [KyroIPTVDetailRequest],
+                                  providerAlternates: [ContentRef] = [], isSeries: Bool = false) {
         recordScreenBreadcrumb(target: "itemDetail", action: "present")
         itemDetailPath = NavigationPath()
         var presentation = ItemDetailPresentation(contentId: contentId, libraryId: libraryId)
         presentation.alternates = alternates
+        presentation.providerAlternates = providerAlternates
+        presentation.jellyfinIsSeries = isSeries
         openItemDetail(presentation)
     }
 
@@ -830,6 +839,11 @@ final class AppRouter {
         guard presentedItemDetail != nil else { return presentIPTVDetail(request) }
         recordScreenBreadcrumb(target: "iptvDetail", action: "push")
         itemDetailPath.append(request)
+    }
+
+    func openAlternateProviderDetail(_ ref: ContentRef) {
+        guard presentedItemDetail != nil else { return presentJellyfinDetail(ref, isSeries: false) }
+        itemDetailPath.append(ref)
     }
     #endif
 

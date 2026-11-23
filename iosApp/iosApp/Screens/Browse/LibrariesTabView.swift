@@ -311,21 +311,6 @@ private struct LibrarySourceVisibility: ViewModifier {
     }
 }
 
-enum UnifiedBrowseChrome {
-    static func startingTab(hasSiloLibraries: Bool) -> LibraryPageTab {
-        hasSiloLibraries ? .recommended : .library
-    }
-
-    /// Independent of the selected tab and active Silo library by design.
-    static func title(for category: PrimaryMenuBuiltin?) -> String? {
-        switch category {
-        case .movies: "Movies"
-        case .series: "Series"
-        default: nil
-        }
-    }
-}
-
 /// Root of the Libraries tab.
 ///
 /// Mirrors the Plex/Android flow: the tab lands directly on the active
@@ -338,7 +323,6 @@ struct LibrariesTabView: View {
     let libraryAuthority: MainTabLibraryAuthority?
     let onLibrariesLoaded: ((MainTabLibraryAuthority?, [Library]) -> Void)?
     let alternateSource: LibraryAlternateSource?
-    let unifiedCatalog: (([Library]) -> AnyView)?
 
     @State private var libraries: [Library] = []
     /// Which source is shown and which alternate source's page stays mounted.
@@ -389,15 +373,13 @@ struct LibrariesTabView: View {
         fixedLibraryId: Int? = nil,
         libraryAuthority: MainTabLibraryAuthority? = nil,
         onLibrariesLoaded: ((MainTabLibraryAuthority?, [Library]) -> Void)? = nil,
-        alternateSource: LibraryAlternateSource? = nil,
-        unifiedCatalog: (([Library]) -> AnyView)? = nil
+        alternateSource: LibraryAlternateSource? = nil
     ) {
         self.category = category
         self.fixedLibraryId = fixedLibraryId
         self.libraryAuthority = libraryAuthority
         self.onLibrariesLoaded = onLibrariesLoaded
         self.alternateSource = alternateSource
-        self.unifiedCatalog = unifiedCatalog
         let storageKey = librarySelectionStorageKey(
             category: category,
             fixedLibraryId: fixedLibraryId,
@@ -419,7 +401,7 @@ struct LibrariesTabView: View {
 
     var body: some View {
         Group {
-            if activeLibrary != nil || showsAlternate || unifiedCatalog != nil {
+            if activeLibrary != nil || showsAlternate {
                 loadedContent(activeLibrary: activeLibrary)
             } else if let error, visibleLibraries.isEmpty {
                 ErrorView(state: error, onRetry: { Task { await loadLibraries() } })
@@ -455,11 +437,6 @@ struct LibrariesTabView: View {
             fixedLibraryId: fixedLibraryId,
             authority: libraryAuthority
         )) {
-            // Recommended and Collections are Silo features. A Jellyfin-only household must
-            // land on the shared provider catalog, not the Silo-only Recommended placeholder.
-            if unifiedCatalog != nil && !KyroProviderState.current.loadsSiloLibraries {
-                selectedTab = UnifiedBrowseChrome.startingTab(hasSiloLibraries: false)
-            }
             navPrefs.refresh()
             storedLibraryId = storedLibrarySelectionId(for: selectionStorageKey)
             // SwiftUI can preserve this view while a split-view selection
@@ -509,23 +486,12 @@ struct LibrariesTabView: View {
         // with these controls, so they scroll with the posters. They carry no glass of their own:
         // only the shell's Kyro header is pinned, and it draws the scroll glass.
         ZStack {
-            if selectedTab == .library, let unifiedCatalog {
-                unifiedCatalog(visibleLibraries)
-            }
-            if selectedTab != .library, activeLibrary == nil, unifiedCatalog != nil {
-                LibraryPageScrollContainer {
-                    EmptyStateView(icon: "square.stack.3d.up",
-                                   title: "This view needs a Silo library",
-                                   subtitle: "Your connected media is in Library.")
-                        .frame(minHeight: 320)
-                }
-            }
-            if let activeLibrary, selectedTab != .library || unifiedCatalog == nil {
+            if let activeLibrary {
                 tabContent(activeLibrary: activeLibrary)
                     // Forces the whole tab subtree to reset when switching
                     // libraries, so stale content never flashes on screen.
                     .id("\(activeLibrary.id):\(videoScope(for: activeLibrary)?.rawValue ?? "all")")
-                    .modifier(LibrarySourceVisibility(isVisible: !showsAlternate && !(selectedTab == .library && unifiedCatalog != nil)))
+                    .modifier(LibrarySourceVisibility(isVisible: !showsAlternate))
             }
             if let alternateSource, showsAlternate || sourceState.mountsAlternate(alternateSource.id) {
                 alternateSource.content()
@@ -572,16 +538,10 @@ struct LibrariesTabView: View {
     /// Unified Movies and Series keep one chrome identity across all three tabs. The selected
     /// Silo library is still used by Recommended and Collections, but is not a page heading.
     private func selectorLabel(activeLibrary: Library?) -> (title: String, caption: String) {
-        if unifiedCatalog != nil, let title = UnifiedBrowseChrome.title(for: category) {
-            return (title, "")
-        }
         if showsAlternate, let alternateSource {
             return (alternateSource.name, alternateSource.selectorCaption)
         }
         if let activeLibrary {
-            if unifiedCatalog != nil {
-                return (activeLibrary.name, "Silo · \(LibrarySelectorButton.typeLabel(for: activeLibrary))")
-            }
             return (activeLibrary.name, LibrarySelectorButton.typeLabel(for: activeLibrary))
         }
         return ("Libraries", "")
@@ -595,7 +555,6 @@ struct LibrariesTabView: View {
 
     private func headerStack(activeLibrary: Library?, scrollsTabs: Bool) -> some View {
         let label = selectorLabel(activeLibrary: activeLibrary)
-        let stableUnifiedHeader = unifiedCatalog != nil && UnifiedBrowseChrome.title(for: category) != nil
         return VStack(alignment: .leading, spacing: 0) {
             if hostedHeader != nil {
                 // The shell's Kyro header is the only pinned chrome. The selector is the first
@@ -604,8 +563,8 @@ struct LibrariesTabView: View {
                     LibrarySelectorButton(
                         title: label.title,
                         caption: label.caption,
-                        canSwitch: canSwitchLibraries && (stableUnifiedHeader || selectedTab != .library),
-                        onTap: { if stableUnifiedHeader || selectedTab != .library { showPicker = true } }
+                        canSwitch: canSwitchLibraries && selectedTab != .library,
+                        onTap: { if selectedTab != .library { showPicker = true } }
                     )
                     Spacer(minLength: 8)
                 }
@@ -615,8 +574,8 @@ struct LibrariesTabView: View {
             LibrariesTopBar(
                 title: label.title,
                 caption: label.caption,
-                canSwitch: canSwitchLibraries && (stableUnifiedHeader || selectedTab != .library),
-                onLibraryTap: { if stableUnifiedHeader || selectedTab != .library { showPicker = true } },
+                canSwitch: canSwitchLibraries && selectedTab != .library,
+                onLibraryTap: { if selectedTab != .library { showPicker = true } },
                 onSearch: { router.navigate(to: .search) },
                 onOpenSettings: { router.navigate(to: .settings) },
                 onOpenRequests: { router.navigate(to: .requestsHub) },
@@ -635,12 +594,10 @@ struct LibrariesTabView: View {
                activeLibrary.isMixedLibrary && category != .movies && category != .series {
                 LibraryVideoScopePicker(selection: $selectedVideoScope)
             }
-            if unifiedCatalog == nil || KyroProviderState.current.loadsSiloLibraries {
-                LibraryPageTabSelector(selectedTab: pageTabBinding, scrolls: scrollsTabs)
+            LibraryPageTabSelector(selectedTab: pageTabBinding, scrolls: scrollsTabs)
                 // With the selector's own vertical inset, one standard gap above every tab's first
                 // row. Tabs add no gap of their own above it.
                 .padding(.bottom, SiloTheme.smallPadding)
-            }
         }
     }
 
