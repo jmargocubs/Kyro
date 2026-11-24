@@ -2,6 +2,7 @@ import Foundation
 
 /// Splits an Xtream JSON response body into its top-level members without materializing the whole document.
 struct XtreamJSONStreamScanner {
+    enum StreamError: Error, Sendable { case invalidResponse }
     enum Shape: Equatable, Sendable { case unknown, array, object, null }
 
     struct Member: Equatable, Sendable {
@@ -60,12 +61,12 @@ struct XtreamJSONStreamScanner {
                 case UInt8(ascii: "["): shape = .array; phase = .expectMember
                 case UInt8(ascii: "{"): shape = .object; phase = .expectKey
                 case UInt8(ascii: "n"): shape = .null; phase = .nullLiteral; literal = [byte]
-                default: throw LiveTVError.invalidXtreamResponse
+                default: throw StreamError.invalidResponse
                 }
             case .nullLiteral:
                 literal.append(byte)
                 if literal.count == 4 {
-                    guard literal == Array("null".utf8) else { throw LiveTVError.invalidXtreamResponse }
+                    guard literal == Array("null".utf8) else { throw StreamError.invalidResponse }
                     isComplete = true
                     phase = .trailing
                 }
@@ -77,7 +78,7 @@ struct XtreamJSONStreamScanner {
             case .expectKey:
                 if Self.isWhitespace(byte) || byte == UInt8(ascii: ",") { break }
                 if byte == UInt8(ascii: "}") { isComplete = true; phase = .trailing; break }
-                guard byte == UInt8(ascii: "\"") else { throw LiveTVError.invalidXtreamResponse }
+                guard byte == UInt8(ascii: "\"") else { throw StreamError.invalidResponse }
                 keyBytes.removeAll(keepingCapacity: true)
                 escaped = false
                 phase = .key
@@ -96,7 +97,7 @@ struct XtreamJSONStreamScanner {
                 }
             case .colon:
                 if Self.isWhitespace(byte) { break }
-                guard byte == UInt8(ascii: ":") else { throw LiveTVError.invalidXtreamResponse }
+                guard byte == UInt8(ascii: ":") else { throw StreamError.invalidResponse }
                 phase = .expectMemberValue
             case .expectMemberValue:
                 if Self.isWhitespace(byte) { break }
@@ -132,7 +133,7 @@ struct XtreamJSONStreamScanner {
         case .trailing:
             break
         default:
-            throw LiveTVError.invalidXtreamResponse
+            throw StreamError.invalidResponse
         }
     }
 

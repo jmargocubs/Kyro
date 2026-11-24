@@ -1,6 +1,6 @@
-#if os(iOS) || KYRO_VOD_HOST_TESTS
+#if os(iOS) || KYRO_HOST_TESTS
 import XCTest
-#if !KYRO_VOD_HOST_TESTS
+#if !KYRO_HOST_TESTS
 @testable import Silo
 #endif
 

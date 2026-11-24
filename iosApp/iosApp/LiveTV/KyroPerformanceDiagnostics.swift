@@ -151,9 +151,6 @@ enum KyroPerformanceMetric: String, CaseIterable {
     case liveTVCatalogRefresh = "Live TV catalog refresh"
     case sportsLiveNowReady = "Sports Live Now ready"
     case sportsEventMatch = "Sports event match"
-    case iptvStreamRoute = "IPTV stream route"
-    case iptvOverview = "IPTV overview"
-    case iptvGridPage = "IPTV grid page"
 }
 
 /// Frame pacing over some stretch of active time.

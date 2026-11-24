@@ -1477,3 +1477,27 @@ private extension String {
         return value.isEmpty ? nil : value
     }
 }
+
+/// Safely removes obsolete IPTV VOD cache directories and preferences left over from Builds 98–111
+/// (iOS) or 93–104 (tvOS) without touching Live TV channels, EPG, or Silo state.
+enum LiveTVLegacyVODCleanup {
+    static let defaultCacheFolderName = "IPTVVOD"
+    static let preferenceKeyPrefix = "kyro.iptvvod."
+
+    static func purgeObsoleteArtifacts(
+        defaults: UserDefaults = .standard,
+        cachesDirectory: URL? = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
+        appSupportDirectory: URL? = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+        fileManager: FileManager = .default
+    ) {
+        for base in [cachesDirectory, appSupportDirectory].compactMap({ $0 }) {
+            let legacyDir = base.appendingPathComponent(defaultCacheFolderName, isDirectory: true)
+            if fileManager.fileExists(atPath: legacyDir.path) {
+                try? fileManager.removeItem(at: legacyDir)
+            }
+        }
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(preferenceKeyPrefix) {
+            defaults.removeObject(forKey: key)
+        }
+    }
+}

@@ -221,6 +221,11 @@ final class LiveTVService {
             // in startup, restore, or refresh calls it.
             Task { [weak self] in await self?.restoreCachedState(for: selectedProviderID) }
         }
+        if defaults === UserDefaults.standard {
+            Task.detached(priority: .background) {
+                LiveTVLegacyVODCleanup.purgeObsoleteArtifacts()
+            }
+        }
     }
 
     var channels: [LiveTVChannel] {
