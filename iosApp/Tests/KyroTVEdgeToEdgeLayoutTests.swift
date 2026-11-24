@@ -54,15 +54,14 @@ final class KyroTVEdgeToEdgeLayoutTests: XCTestCase {
     func testAdaptiveColumnsFollowTheWidthInsteadOfAssuming1080p() {
         // Width offered to each grid: the canvas minus the page's side insets.
         func width(_ canvas: CGSize) -> CGFloat { canvas.width - 2 * TVScreenLayout.pageHorizontalInset }
-        let expected: [(canvas: String, liveTV: Int, vod: Int, sports: Int)] = [
-            ("1920x1080", 5, 7, 3),
-            ("1760x960", 4, 6, 3),
-            ("1180x660", 3, 4, 2),
+        let expected: [(canvas: String, liveTV: Int, sports: Int)] = [
+            ("1920x1080", 5, 3),
+            ("1760x960", 4, 3),
+            ("1180x660", 3, 2),
         ]
         for (canvas, row) in zip(canvases, expected) {
             XCTAssertEqual(canvas.name, row.canvas)
             XCTAssertEqual(TVLiveTVPageLayout.columnCount(width: width(canvas.size)), row.liveTV, canvas.name)
-            XCTAssertEqual(TVXtreamVODLayout.columnCount(width: width(canvas.size)), row.vod, canvas.name)
             XCTAssertEqual(TVSportsLayout.columnCount(width: width(canvas.size)), row.sports, canvas.name)
         }
         XCTAssertEqual(TVScreenLayout.adaptiveColumnCount(width: 100, minimum: 300, spacing: 28), 1)

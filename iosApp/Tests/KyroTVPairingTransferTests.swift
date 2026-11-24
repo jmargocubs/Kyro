@@ -60,22 +60,6 @@ final class KyroTVPairingTransferTests: XCTestCase {
         XCTAssertEqual(service.providers.first?.kind, .m3u)
     }
 
-    func testPairedXtreamProviderRetainsApprovedMovieOnlySelection() async throws {
-        let service = makeService()
-        let payload = LiveTVPairingPayload(name: "Paired movies", kind: .xtream, playlistURL: nil,
-                                           xmltvURL: nil, serverURL: "https://example.com",
-                                           username: "viewer", password: "fake-secret")
-        let selection = IPTVContentSelection(liveTV: false, movies: true, series: false)
-        let id = try service.savePairedProvider(payload, selection: selection)
-        XCTAssertEqual(service.providers.first?.contentSelection, selection)
-        await service.startSetup(providerID: id)
-        XCTAssertEqual(service.importProgress?.stage, .ready)
-        XCTAssertEqual(service.importProgress?.count.accepted, 0)
-        XCTAssertTrue(service.channels.isEmpty)
-        XCTAssertThrowsError(try service.savePairedProvider(payload,
-            selection: .init(liveTV: false, movies: false, series: false)))
-    }
-
     func testPairedProviderUsesTheSameMeasuredImportProgress() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [PairingImportPlaylistProtocol.self]

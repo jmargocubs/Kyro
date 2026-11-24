@@ -210,6 +210,11 @@ final class LiveTVService {
             // in startup, restore, or refresh calls it.
             Task { [weak self] in await self?.restoreCachedState(for: selectedProviderID) }
         }
+        if defaults === UserDefaults.standard {
+            Task.detached(priority: .background) {
+                LiveTVLegacyVODCleanup.purgeObsoleteArtifacts()
+            }
+        }
     }
 
     var channels: [LiveTVChannel] {
@@ -315,9 +320,7 @@ final class LiveTVService {
     }
 
     @discardableResult
-    func saveConfiguration(name: String, playlistURL: String, xmltvURL: String?,
-                           selection: IPTVContentSelection = .legacyLiveOnly) throws -> UUID {
-        guard selection.isValid(for: .m3u) else { throw LiveTVError.invalidConfiguration }
+    func saveConfiguration(name: String, playlistURL: String, xmltvURL: String?) throws -> UUID {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanPlaylistURL = playlistURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanXMLTVURL = xmltvURL?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -330,13 +333,11 @@ final class LiveTVService {
             playlistURL: cleanPlaylistURL,
             xmltvURL: cleanXMLTVURL?.nilIfEmpty
         )
-        return try store(configuration, name: cleanName, kind: .m3u, selection: selection)
+        return try store(configuration, name: cleanName, kind: .m3u)
     }
 
     @discardableResult
-    func saveXtreamConfiguration(name: String, serverURL: String, username: String, password: String,
-                                  selection: IPTVContentSelection = .legacyLiveOnly) throws -> UUID {
-        guard selection.isValid(for: .xtream) else { throw LiveTVError.invalidConfiguration }
+    func saveXtreamConfiguration(name: String, serverURL: String, username: String, password: String) throws -> UUID {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanServer = serverURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let cleanUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -346,54 +347,17 @@ final class LiveTVService {
             playlistURL: nil, xmltvURL: nil, kind: .xtream,
             serverURL: cleanServer, username: cleanUsername, password: password
         )
-        return try store(configuration, name: cleanName, kind: .xtream, selection: selection)
+        return try store(configuration, name: cleanName, kind: .xtream)
     }
 
-    func setVODEnabled(_ enabled: Bool, for providerID: UUID) {
-        guard let index = providers.firstIndex(where: { $0.id == providerID && $0.kind == .xtream }) else { return }
-        _ = setContentSelection(.init(liveTV: providers[index].liveEnabled, movies: enabled, series: enabled),
-                                for: providerID)
-    }
-
-    func setVODEnabled(_ enabled: Bool, kind: String, for providerID: UUID) {
-        guard let index = providers.firstIndex(where: { $0.id == providerID && $0.kind == .xtream }) else { return }
-        var selection = providers[index].contentSelection
-        if kind == "movie" { selection.movies = enabled }
-        if kind == "series" { selection.series = enabled }
-        _ = setContentSelection(selection, for: providerID)
-    }
-
-    @discardableResult
-    func setContentSelection(_ selection: IPTVContentSelection, for providerID: UUID) -> Bool {
-        guard let index = providers.firstIndex(where: { $0.id == providerID }),
-              selection.isValid(for: providers[index].kind) else { return false }
-        providers[index].liveEnabled = selection.liveTV
-        providers[index].vodMoviesEnabled = selection.movies
-        providers[index].vodSeriesEnabled = selection.series
-        providers[index].vodEnabled = selection.movies || selection.series
-        persistProviders()
-        return true
-    }
-
-    func xtreamVODConfiguration(for providerID: UUID) -> LiveTVSourceConfiguration? {
-        guard providers.contains(where: { $0.id == providerID && $0.kind == .xtream && $0.vodEnabled }),
-              let source = loadSourceConfiguration(providerID: providerID), source.kind == .xtream else { return nil }
-        return source
-    }
-
-    private func store(_ configuration: LiveTVSourceConfiguration, name: String, kind: LiveTVProviderKind,
-                       selection: IPTVContentSelection) throws -> UUID {
+    private func store(_ configuration: LiveTVSourceConfiguration, name: String, kind: LiveTVProviderKind) throws -> UUID {
         let id = UUID()
         let encoded = try JSONEncoder().encode(configuration)
         guard let serialized = String(data: encoded, encoding: .utf8),
               secretStore.save(serialized, account: Self.secretAccount(id)) else {
             throw LiveTVError.keychainUnavailable
         }
-        var provider = LiveTVProvider(id: id, name: name, channelCount: 0, lastRefreshed: nil, kind: kind)
-        provider.liveEnabled = selection.liveTV
-        provider.vodMoviesEnabled = selection.movies
-        provider.vodSeriesEnabled = selection.series
-        provider.vodEnabled = selection.movies || selection.series
+        let provider = LiveTVProvider(id: id, name: name, channelCount: 0, lastRefreshed: nil, kind: kind)
         providers.append(provider)
         selectedProviderID = id
         scheduleHomePreviewRebuild()
@@ -465,18 +429,10 @@ final class LiveTVService {
         await refresh(providerID: selectedProviderID)
     }
 
-    /// A VOD-only setup deliberately publishes an empty Live TV result without requesting live
-    /// streams or EPG. The full-screen coordinator then starts only the selected VOD catalogs.
     func startSetup(providerID: UUID) async {
-        guard let provider = providers.first(where: { $0.id == providerID }),
+        guard providers.contains(where: { $0.id == providerID }),
               importProgress?.isTerminal != false else { return }
-        if provider.liveEnabled {
-            await refresh(providerID: providerID, presentation: .onboarding)
-        } else {
-            importProgress = LiveTVImportProgress(providerID: providerID, providerName: provider.name,
-                stage: .ready, count: .init(processed: 0, total: nil, accepted: 0),
-                message: "Live TV was not selected.", presentation: .onboarding)
-        }
+        await refresh(providerID: providerID, presentation: .onboarding)
     }
 
     /// Whether a refresh of this provider's live channels can start right now.

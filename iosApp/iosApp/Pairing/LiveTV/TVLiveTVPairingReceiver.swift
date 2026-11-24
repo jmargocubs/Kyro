@@ -72,10 +72,9 @@ final class TVLiveTVPairingReceiver {
     func stop() { teardown(); status = .idle }
 
     /// The TV user pressed Allow.
-    func approve(selection: IPTVContentSelection) {
+    func approve() {
         guard var current = session else { return }
-        guard case .awaitingApproval(let summary, _) = status,
-              selection.isValid(for: summary.kind == .xtream ? .xtream : .m3u) else { return }
+        guard case .awaitingApproval = status else { return }
         let result = current.approve(now: Date())
         session = current
         switch result {
@@ -84,7 +83,7 @@ final class TVLiveTVPairingReceiver {
             finish(.failed(failure))
         case .success(let payload):
             status = .saving
-            save(payload, selection: selection)
+            save(payload)
         }
     }
 
@@ -97,9 +96,9 @@ final class TVLiveTVPairingReceiver {
 
     // MARK: Saving
 
-    private func save(_ payload: LiveTVPairingPayload, selection: IPTVContentSelection) {
+    private func save(_ payload: LiveTVPairingPayload) {
         do {
-            let id = try service.savePairedProvider(payload, selection: selection)
+            let id = try service.savePairedProvider(payload)
             Self.log.notice("Pairing completed; provider saved")
             send(LiveTVPairingFrame(type: .result, ok: true))
             closeConnectionSoon()

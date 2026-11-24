@@ -5,7 +5,7 @@ import SwiftUI
 
 /// What a manual refresh of an existing provider should fetch.
 enum TVProviderRefreshScope: Equatable {
-    case all, liveOnly, vodOnly
+    case all, liveOnly
 }
 
 /// One manual provider refresh at a time, with immediate in-page feedback. It never uses the
@@ -41,62 +41,29 @@ final class TVProviderRefreshCoordinator {
     /// Starts exactly one refresh and returns immediately. A second request while one is running
     /// is refused, and the caller shows that instead of silently doing nothing.
     @discardableResult
-    func refresh(providerID: UUID, scope: TVProviderRefreshScope,
-                 liveTV: LiveTVService, vod: XtreamVODService) -> Start {
-        guard !isRunning, work == nil, !vod.isRefreshing,
+    func refresh(providerID: UUID, scope: TVProviderRefreshScope = .all,
+                 liveTV: LiveTVService) -> Start {
+        guard !isRunning, work == nil,
               liveTV.importProgress?.isTerminal != false else { return .alreadyRunning }
-        guard let provider = liveTV.providers.first(where: { $0.id == providerID }) else {
+        guard liveTV.providers.contains(where: { $0.id == providerID }) else {
             return .nothingToRefresh("This provider is no longer available.")
-        }
-        let wantsLive = scope != .vodOnly && provider.liveEnabled
-        let wantsVOD = scope != .liveOnly && provider.kind == .xtream
-            && (provider.vodMoviesEnabled || provider.vodSeriesEnabled)
-        guard wantsLive || wantsVOD else {
-            let message: String
-            switch scope {
-            case .vodOnly where provider.kind != .xtream:
-                message = "Movies and Series are available only for Xtream Codes providers."
-            case .vodOnly:
-                message = "Movies and Series are turned off. Choose Enable Movies or Enable Series, then Apply & Refresh."
-            case .liveOnly:
-                message = "Live TV is turned off for this provider. Choose Enable Live TV, then Apply & Refresh."
-            case .all:
-                message = "Nothing is selected for this provider. Enable Live TV, Movies, or Series first."
-            }
-            phase = .finished(providerID: providerID, succeeded: false, message: message)
-            return .nothingToRefresh(message)
         }
         phase = .running(providerID: providerID, scope: scope)
         work = Task { [weak self] in
             var failures: [String] = []
-            if wantsLive {
-                await liveTV.refresh(providerID: providerID, presentation: .compact)
-                if let progress = liveTV.importProgress, progress.providerID == providerID,
-                   progress.stage == .failed || progress.stage == .cancelled {
-                    failures.append("Live TV: \(progress.message ?? "refresh failed")")
-                }
-                if liveTV.importProgress?.providerID == providerID,
-                   liveTV.importProgress?.isOnboarding == false { liveTV.clearFinishedImport() }
+            await liveTV.refresh(providerID: providerID, presentation: .compact)
+            if let progress = liveTV.importProgress, progress.providerID == providerID,
+               progress.stage == .failed || progress.stage == .cancelled {
+                failures.append("Live TV: \(progress.message ?? "refresh failed")")
             }
-            if wantsVOD, !Task.isCancelled {
-                await vod.refresh(providerID: providerID, liveTV: liveTV)
-                if let progress = vod.progress, progress.providerID == providerID, progress.stage != .ready {
-                    failures.append(progress.message ?? "Movies and Series refresh failed.")
-                }
-            }
+            if liveTV.importProgress?.providerID == providerID,
+               liveTV.importProgress?.isOnboarding == false { liveTV.clearFinishedImport() }
             guard let self else { return }
             self.work = nil
             let message: String
             if failures.isEmpty {
-                var parts: [String] = []
-                if wantsLive, let provider = liveTV.providers.first(where: { $0.id == providerID }) {
-                    parts.append("\(provider.channelCount.formatted()) channels")
-                }
-                if wantsVOD, let progress = vod.progress, progress.providerID == providerID {
-                    if progress.movieResult != .notSelected { parts.append("\(progress.movies.accepted.formatted()) movies") }
-                    if progress.seriesResult != .notSelected { parts.append("\(progress.series.accepted.formatted()) series") }
-                }
-                message = "Refreshed · " + parts.joined(separator: " · ")
+                let count = liveTV.providers.first(where: { $0.id == providerID })?.channelCount ?? 0
+                message = "Refreshed · \(count.formatted()) channels"
             } else {
                 message = failures.joined(separator: " ")
             }
@@ -112,15 +79,8 @@ final class TVProviderRefreshCoordinator {
 /// The status line under each connected provider.
 enum TVProviderSummary {
     static func line(for provider: LiveTVProvider) -> String {
-        var parts = [provider.kind == .xtream ? "Xtream Codes" : "M3U"]
-        parts.append(provider.liveEnabled ? "\(provider.channelCount.formatted()) channels" : "Live TV off")
-        if provider.kind == .xtream {
-            var vod: [String] = []
-            if provider.vodMoviesEnabled { vod.append("Movies") }
-            if provider.vodSeriesEnabled { vod.append("Series") }
-            parts.append(vod.isEmpty ? "VOD off" : vod.joined(separator: " + "))
-        }
-        return parts.joined(separator: " · ")
+        let kindLabel = provider.kind == .xtream ? "Xtream Codes" : "M3U"
+        return "\(kindLabel) · \(provider.channelCount.formatted()) channels"
     }
 }
 
@@ -158,7 +118,6 @@ struct TVCompactLiveRefreshLine: View {
 struct TVProviderRefreshPanel: View {
     let coordinator: TVProviderRefreshCoordinator
     @Bindable var service: LiveTVService
-    let vod: XtreamVODService
 
     var body: some View {
         switch coordinator.phase {
@@ -216,11 +175,6 @@ struct TVProviderRefreshPanel: View {
         return progress
     }
 
-    private func vodProgress(_ id: UUID) -> XtreamVODImportProgress? {
-        guard vod.activeProviderID == id, let progress = vod.progress, progress.providerID == id else { return nil }
-        return progress
-    }
-
     private func activity(_ id: UUID) -> String {
         if let live = liveProgress(id) {
             switch live.stage {
@@ -233,22 +187,11 @@ struct TVProviderRefreshPanel: View {
             case .ready, .failed, .cancelled: return "Finishing Live TV"
             }
         }
-        if let state = vodProgress(id) {
-            switch state.stage {
-            case .connecting: return "Signing in for Movies and Series"
-            case .downloading(let kind): return "Downloading \(kind.title)"
-            case .importing(let kind): return "Importing \(kind.title)"
-            case .ready, .failed, .cancelled: return "Finishing"
-            }
-        }
         return "Starting"
     }
 
     private func fraction(_ id: UUID) -> Double? {
         if let live = liveProgress(id) { return live.stage == .importing ? live.count.fraction : nil }
-        if let state = vodProgress(id), case .importing(let kind) = state.stage {
-            return (kind == .movie ? state.movies : state.series).fraction
-        }
         return nil
     }
 
@@ -258,10 +201,6 @@ struct TVProviderRefreshPanel: View {
                 return "\(live.count.processed.formatted()) / \(total.formatted()) channel records"
             }
             return "\(live.count.processed.formatted()) channel records processed"
-        }
-        if let state = vodProgress(id), case .importing(let kind) = state.stage {
-            let count = kind == .movie ? state.movies : state.series
-            if count.total > 0 { return "\(count.processed.formatted()) / \(count.total.formatted()) \(kind.title.lowercased()) records" }
         }
         return nil
     }

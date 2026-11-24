@@ -22,38 +22,13 @@ struct TVLibraryTypeTabView: View {
     /// passes false: the user picked the whole library, not a video tab, so
     /// a mixed library keeps both movies and series.
     var scopesMixedLibraries: Bool = true
-    /// The IPTV provider this Movies/Series tab shows instead of a Silo library, chosen in the
-    /// tab's top-bar cascade. `nil` shows the Silo library exactly as before IPTV VOD existed.
-    var vodProvider: LiveTVProvider? = nil
     var focusRequest: Int = 0
     var isTopMenuFocused: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Which page the tab renders. Pure so the source rules can be tested without a view.
-    enum Page: Equatable {
-        case silo
-        case provider(UUID, XtreamVODKind)
-    }
-
-    static func page(for type: TVLibraryTabType, vodProvider: LiveTVProvider?,
-                     scopesMixedLibraries: Bool) -> Page {
-        guard scopesMixedLibraries, let vodProvider,
-              let kind = TVVideoSourceResolver.vodKind(for: type) else { return .silo }
-        return .provider(vodProvider.id, kind)
-    }
-
     var body: some View {
-        switch Self.page(for: type, vodProvider: vodProvider, scopesMixedLibraries: scopesMixedLibraries) {
-        case .provider(_, let kind):
-            if let vodProvider {
-                TVXtreamVODView(provider: vodProvider, kind: kind, focusRequest: focusRequest,
-                                isTopMenuFocused: isTopMenuFocused)
-                    .id("\(vodProvider.id)-\(kind.rawValue)")
-            }
-        case .silo:
-            siloBody
-        }
+        siloBody
     }
 
     private var siloBody: some View {

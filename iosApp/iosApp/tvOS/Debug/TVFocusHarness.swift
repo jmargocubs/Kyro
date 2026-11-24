@@ -39,13 +39,8 @@ struct TVFocusHarnessModifier: ViewModifier {
                 TVFocusHarnessProbe.shared.start()
                 TVScreenLayout.debugDisablesEdgeToEdge =
                     CommandLine.arguments.contains("-kyroTVFocusHarnessNoEdgeToEdge")
-                // Stage Movies before the page is presented, so it mounts once with its catalog
-                // already stored, the way a real provider page opens. No placeholder takes focus first.
-                if requested == .movies {
-                    await TVFocusHarnessFixture.stage(.movie, for: TVFocusHarnessFixture.vodProvider)
-                } else if requested == .series {
-                    await TVFocusHarnessFixture.stage(.series, for: TVFocusHarnessFixture.vodProvider)
-                } else if requested == .shell {
+                // Stage shell fixture when requested.
+                if requested == .shell {
                     await TVFocusHarnessFixture.prepareShell()
                 }
                 // Let the startup splash lift first; the cover must own focus, not the splash.
@@ -62,7 +57,7 @@ struct TVFocusHarnessModifier: ViewModifier {
 }
 
 enum TVFocusHarnessPage: String, Identifiable {
-    case livetv, movies, series, sports, settings, search, shell
+    case livetv, sports, settings, search, shell
     var id: String { rawValue }
 }
 
@@ -72,7 +67,6 @@ private struct TVFocusHarnessShell: View {
     @State private var searchSeed: AppRouter.SearchRequest? =
         TVFocusHarnessModifier.value(after: "-kyroTVFocusHarnessSearchSeed").map { AppRouter.SearchRequest(query: $0) }
     @State private var service = TVFocusHarnessFixture.makeLiveTVService()
-    @State private var vodProvider = TVFocusHarnessFixture.vodProvider
     /// Only Settings reads it: the real screen, offline, with no signed-in session behind it.
     @State private var router = AppRouter()
     @State private var contentFocusRequest = 1
@@ -149,7 +143,6 @@ private struct TVFocusHarnessShell: View {
             TVCascadeSelector(
                 type: .movies,
                 libraries: [TVFocusHarnessFixture.library],
-                providers: TVCascadeProviderRow.rows(for: [TVFocusHarnessFixture.vodProvider]),
                 currentScopeId: TVFocusHarnessFixture.library.id,
                 isVisible: isOpen,
                 entersPanel: isOpen && panelEntered,
@@ -157,7 +150,6 @@ private struct TVFocusHarnessShell: View {
                 focusEntryGeneration: 0,
                 onCommitLibrary: { commitSelection("Library \($0.name)") },
                 onCommitSection: { commitSelection($1.title) },
-                onCommitProvider: { _ in commitSelection("Provider \(TVFocusHarnessFixture.vodProvider.name)") },
                 onClose: closePanelToMenu,
                 onPanelFocusChanged: { hasFocus in
                     if TVTopMenuPanelFocusPolicy.panelReportedFocus(hasFocus: hasFocus, panelEntered: panelEntered) == .enter {
@@ -234,12 +226,6 @@ private struct TVFocusHarnessShell: View {
             TVLiveTVRootView(service: service, profileID: "focus-harness",
                              focusRequest: contentFocusRequest, isTopMenuFocused: menuOwnsFocus,
                              onTopMenuFocusRequest: focusMenu)
-        case .movies:
-            TVXtreamVODView(provider: vodProvider, kind: .movie, focusRequest: contentFocusRequest,
-                            isTopMenuFocused: menuOwnsFocus)
-        case .series:
-            TVXtreamVODView(provider: vodProvider, kind: .series, focusRequest: contentFocusRequest,
-                            isTopMenuFocused: menuOwnsFocus)
         case .sports:
             TVSportsHubView(service: service, focusRequest: contentFocusRequest,
                             isTopMenuFocused: menuOwnsFocus)
@@ -350,31 +336,6 @@ enum TVFocusHarnessFixture {
     }
 
     static let library = Library(id: 9101, name: "Harness Movies", type: "movie", sortOrder: 0)
-
-    static var vodProvider: LiveTVProvider {
-        var provider = LiveTVProvider(id: UUID(uuidString: "6B1D2C9E-0F4A-4C1B-9A57-3E1F0D0C0A99")!,
-                                      name: "Harness VOD", channelCount: 0, lastRefreshed: Date(), kind: .xtream)
-        provider.vodEnabled = true
-        provider.vodMoviesEnabled = true
-        provider.vodSeriesEnabled = true
-        return provider
-    }
-
-    /// Stages 120 fictional movies for the fixture provider in the shared VOD catalog store.
-    static func stage(_ kind: XtreamVODKind, for provider: LiveTVProvider) async {
-        let id = provider.id
-        let prefix = kind == .movie ? "Harness Movie" : "Harness Series"
-        let items = (1...120).map { index in
-            XtreamVODItem(providerID: id, kind: kind, remoteID: index, title: "\(prefix) \(index)",
-                          category: categories[index % categories.count], poster: nil, fileExtension: "mp4",
-                          summary: nil, genre: nil, rating: nil)
-        }
-        guard let store = try? XtreamVODCatalogStore() else { return }
-        await store.remove(providerID: id)
-        try? await store.stage(items, generation: "harness")
-        try? await store.promote(providerID: id, kind: kind, generation: "harness")
-        await store.close()
-    }
 
     static var playlist: String {
         var lines = ["#EXTM3U"]
