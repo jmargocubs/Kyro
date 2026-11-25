@@ -81,6 +81,7 @@ enum SettingsBackupPlanner {
             var items: [RestorePreviewItem] = []
             for setting in registry.settings(in: group) {
                 guard let value = values[setting.id] else { continue }
+                let normalized = setting.normalize(value)
                 let current = setting.read()
                 let currentText = current.map(setting.label)
                 let status: RestoreItemStatus
@@ -90,15 +91,15 @@ enum SettingsBackupPlanner {
                     status = .unsupported(reason)
                 } else if !setting.validate(value) {
                     status = .invalid("This value isn't supported by this version of Kyro.")
-                } else if current == value {
+                } else if current == normalized {
                     status = .unchanged
                 } else {
                     status = .willChange
                 }
                 items.append(RestorePreviewItem(
                     id: setting.id, group: group, title: setting.title,
-                    current: currentText, incoming: setting.validate(value) ? setting.label(value) : value.plainText,
-                    status: status, incomingValue: value))
+                    current: currentText, incoming: setting.validate(value) ? setting.label(normalized) : value.plainText,
+                    status: status, incomingValue: normalized))
             }
             groups.append(RestorePreviewGroup(group: group, items: items, groupUnsupportedReason: groupReason))
         }

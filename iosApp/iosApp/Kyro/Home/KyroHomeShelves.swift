@@ -62,6 +62,7 @@ final class KyroHomeShelfHost {
     /// Silo's sections from the latest Home load, for Customize Home opened
     /// from Settings.
     var siloSections: [KyroHomeSiloSection] = []
+    private(set) var siloSectionsScope: String?
     var pendingWatch: KyroSportsGame?
     /// The selected provider's cached channels are being read from disk.
     private(set) var isRestoringLiveTV = false
@@ -88,6 +89,14 @@ final class KyroHomeShelfHost {
         guard current != scope else { return }
         scope = current
         arrangement = KyroHomeArrangementStore.load(scope: current, from: defaults)
+        siloSections = []
+        siloSectionsScope = nil
+    }
+
+    func setSiloSections(_ sections: [KyroHomeSiloSection], scope: String?) {
+        guard scope == self.scope else { return }
+        siloSections = sections
+        siloSectionsScope = scope
     }
 
     /// Re-reads the stored arrangement (after a settings restore).
@@ -465,7 +474,7 @@ struct KyroHomeCustomizeButton: View {
                         .overlay(Capsule().strokeBorder(KyroTheme.selectedBorder, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .accessibilityHint("Show, hide and move Kyro's Live TV and sports shelves")
+                .accessibilityHint("Show, hide and move Silo and Kyro Home shelves")
             }
             .padding(.horizontal, SiloTheme.padding)
         }

@@ -1,21 +1,15 @@
 #if os(iOS)
 import SwiftUI
 
-/// Customize Home (Build 121). Lists Home in its real order: Silo's server
-/// sections stay where the server puts them and cannot be edited here; Kyro's
-/// six shelves can be shown, hidden and moved among them. Everything is saved
-/// on this device for the current server, account and profile, and backed up
-/// with Settings Backup; nothing is written to the Silo server.
+/// One local editor for server-owned Silo content and Kyro's six shelves.
 struct KyroHomeCustomizationView: View {
     var host: KyroHomeShelfHost = .shared
     @Environment(\.editMode) private var editMode
+    @State private var isLoadingSections = false
+    @State private var sectionsUnavailable = false
 
     /// Silo's sections as Home last loaded them.
     private var sections: [KyroHomeSiloSection] { host.siloSections }
-    /// Before Home has loaded this session the server rows are unknown, and a
-    /// move would lose each shelf's place among them; show/hide still works.
-    private var canMove: Bool { !sections.isEmpty }
-
     private var entries: [KyroHomeEntry] { host.arrangement.allEntries(for: sections) }
     private var titles: [String: String] {
         Dictionary(sections.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
@@ -28,7 +22,6 @@ struct KyroHomeCustomizationView: View {
                     row(entry)
                 }
                 .onMove { offsets, destination in
-                    guard canMove else { return }
                     var updated = entries
                     updated.move(fromOffsets: offsets, toOffset: destination)
                     host.update { $0.setOrder(updated) }
@@ -36,9 +29,15 @@ struct KyroHomeCustomizationView: View {
             } header: {
                 Text("Home order")
             } footer: {
-                Text(canMove
-                     ? "Kyro shelves can sit anywhere among your server's rows. Server rows keep the order set on the server. Empty shelves hide themselves and keep their place."
-                     : "Open Home once to move shelves among your server's rows. You can show or hide shelves here now.")
+                Text("Drag any row to reorder it. Empty or unavailable server rows retain their settings; nothing changes on the server.")
+            }
+
+            if isLoadingSections {
+                Section { ProgressView("Loading Silo shelves") }
+            } else if sectionsUnavailable {
+                Section { Text("Silo shelves are unavailable. Your saved arrangement remains intact.") }
+            } else if sections.isEmpty {
+                Section { Text("No Silo shelves are available for this profile yet.") }
             }
 
             Section {
@@ -66,7 +65,25 @@ struct KyroHomeCustomizationView: View {
         .navigationTitle("Customize Home")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .primaryAction) { EditButton() } }
-        .onAppear { host.favorites.reload() }
+        .onAppear { host.refreshScope(); host.favorites.reload() }
+        .task { await loadSectionsIfNeeded() }
+    }
+
+    private func loadSectionsIfNeeded() async {
+        host.refreshScope()
+        let activeScope = host.scope
+        let hasScopedCache = host.siloSectionsScope == activeScope
+        isLoadingSections = !hasScopedCache
+        do {
+            let response = try await StartupContentPrefetcher.fetchHomeSections()
+            guard host.scope == activeScope else { isLoadingSections = false; return }
+            host.setSiloSections(response.sections.map {
+                KyroHomeSiloSection(id: $0.id, type: $0.sectionType, title: $0.displayTitle(in: .current))
+            }, scope: activeScope)
+        } catch {
+            if host.scope == activeScope && !hasScopedCache { sectionsUnavailable = true }
+        }
+        isLoadingSections = false
     }
 
     @ViewBuilder
@@ -75,14 +92,15 @@ struct KyroHomeCustomizationView: View {
         case .silo(let id):
             HStack(spacing: 12) {
                 Image(systemName: "server.rack").foregroundStyle(.secondary).frame(width: 24)
-                Text(titles[id].flatMap { $0.isEmpty ? nil : $0 } ?? "Server row")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("Server").font(.caption).foregroundStyle(.tertiary)
+                Toggle(titles[id].flatMap { $0.isEmpty ? nil : $0 } ?? "Unavailable Silo shelf", isOn: Binding(
+                    get: { !host.arrangement.hiddenSilo.contains(id) },
+                    set: { shown in host.update { $0.setHiddenSilo(id, !shown) } }))
+                Text("Silo").font(.caption2).foregroundStyle(.tertiary)
+                if editMode?.wrappedValue != .active { moveButtons(entry) }
             }
-            .moveDisabled(true)
-            .accessibilityElement(children: .combine)
-            .accessibilityHint("Set by your server")
+            .accessibilityHint("Silo shelf; local visibility and order")
+            .accessibilityAction(named: Text("Move up")) { move(entry, by: -1) }
+            .accessibilityAction(named: Text("Move down")) { move(entry, by: 1) }
         case .kyro(let shelf):
             HStack(spacing: 12) {
                 Image(systemName: shelf.isLiveTV ? "dot.radiowaves.left.and.right" : "sportscourt")
@@ -90,33 +108,38 @@ struct KyroHomeCustomizationView: View {
                 Toggle(shelf.title, isOn: Binding(
                     get: { !host.arrangement.hidden.contains(shelf) },
                     set: { shown in host.update { $0.setHidden(shelf, !shown) } }))
-                if canMove, editMode?.wrappedValue != .active {
-                    moveButtons(shelf)
+                Text("Kyro").font(.caption2).foregroundStyle(.tertiary)
+                if editMode?.wrappedValue != .active {
+                    moveButtons(entry)
                 }
             }
-            .moveDisabled(!canMove)
-            .accessibilityAction(named: Text("Move up")) { move(shelf, by: -1) }
-            .accessibilityAction(named: Text("Move down")) { move(shelf, by: 1) }
+            .accessibilityHint("Kyro shelf; local visibility and order")
+            .accessibilityAction(named: Text("Move up")) { move(entry, by: -1) }
+            .accessibilityAction(named: Text("Move down")) { move(entry, by: 1) }
         }
     }
 
-    private func moveButtons(_ shelf: KyroHomeShelf) -> some View {
-        let index = entries.firstIndex(of: .kyro(shelf)) ?? 0
+    private func moveButtons(_ entry: KyroHomeEntry) -> some View {
+        let index = entries.firstIndex(of: entry) ?? 0
+        let title: String
+        switch entry {
+        case .silo(let id): title = titles[id] ?? "Silo shelf"
+        case .kyro(let shelf): title = shelf.title
+        }
         return HStack(spacing: 4) {
-            Button { move(shelf, by: -1) } label: { Image(systemName: "chevron.up") }
+            Button { move(entry, by: -1) } label: { Image(systemName: "chevron.up") }
                 .disabled(index == 0)
-                .accessibilityLabel("Move \(shelf.title) up")
-            Button { move(shelf, by: 1) } label: { Image(systemName: "chevron.down") }
+                .accessibilityLabel("Move \(title) up")
+            Button { move(entry, by: 1) } label: { Image(systemName: "chevron.down") }
                 .disabled(index == entries.count - 1)
-                .accessibilityLabel("Move \(shelf.title) down")
+                .accessibilityLabel("Move \(title) down")
         }
         .buttonStyle(.borderless)
         .foregroundStyle(KyroTheme.accentInk)
     }
 
-    private func move(_ shelf: KyroHomeShelf, by delta: Int) {
-        guard canMove else { return }
-        host.update { $0.move(shelf, by: delta, sections: sections) }
+    private func move(_ entry: KyroHomeEntry, by delta: Int) {
+        host.update { $0.move(entry, by: delta, sections: sections) }
     }
 
     @ViewBuilder

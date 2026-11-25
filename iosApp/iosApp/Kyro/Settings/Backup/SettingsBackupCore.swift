@@ -204,6 +204,9 @@ struct BackupSetting {
     let validate: @MainActor (BackupValue) -> Bool
     let read: @MainActor () -> BackupValue?
     let write: @MainActor (BackupValue) throws -> Void
+    /// Converts a portable incoming value to its destination-scoped form before
+    /// preview, journaling and read-after-write verification.
+    let normalize: @MainActor (BackupValue) -> BackupValue
     /// Non-nil when this device cannot use the setting; the text says why.
     let unsupportedReason: @MainActor () -> String?
     let label: @MainActor (BackupValue) -> String
@@ -215,6 +218,7 @@ struct BackupSetting {
         validate: @escaping @MainActor (BackupValue) -> Bool,
         read: @escaping @MainActor () -> BackupValue?,
         write: @escaping @MainActor (BackupValue) throws -> Void,
+        normalize: @escaping @MainActor (BackupValue) -> BackupValue = { $0 },
         unsupportedReason: @escaping @MainActor () -> String? = { nil },
         label: @escaping @MainActor (BackupValue) -> String = { $0.plainText }
     ) {
@@ -224,6 +228,7 @@ struct BackupSetting {
         self.validate = validate
         self.read = read
         self.write = write
+        self.normalize = normalize
         self.unsupportedReason = unsupportedReason
         self.label = label
     }
@@ -613,7 +618,13 @@ enum SettingsBackupExporter {
     ) throws -> Data {
         var values: [(id: String, group: SettingsBackupGroup, value: BackupValue)] = []
         for setting in registry.settings where groups.contains(setting.group) {
-            guard setting.unsupportedReason() == nil, let value = setting.read(), setting.validate(value) else { continue }
+            guard setting.unsupportedReason() == nil else { continue }
+            let value = setting.read()
+            guard let value, setting.validate(value) else {
+                // Never silently omit an oversized or malformed Home arrangement.
+                if setting.id == "home.localShelves" { throw SettingsBackupError.registryUnsafe(id: setting.id) }
+                continue
+            }
             values.append((setting.id, setting.group, value))
         }
         return try SettingsBackupCodec.encode(values: values, app: app, now: now)

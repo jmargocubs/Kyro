@@ -168,7 +168,10 @@ struct HomeView: View {
                     }
                 }
                 .modifier(KyroHomeShelfHostModifier(host: kyroShelfHost))
-                .onChange(of: kyroSections, initial: true) { _, sections in kyroShelfHost.siloSections = sections }
+                .onChange(of: kyroSections, initial: true) { _, sections in
+                    kyroShelfHost.refreshScope()
+                    kyroShelfHost.setSiloSections(sections, scope: KyroHomeShelfHost.currentScope())
+                }
                 #else
                 if !viewModel.sections.isEmpty {
                     scrollContent
@@ -341,6 +344,9 @@ struct HomeView: View {
                                   onManageServers: { router.navigate(to: .serverList) })
                     } else if viewModel.isLoading {
                         PosterRowsSkeleton()
+                    } else if kyroShelfHost.arrangement.entries(for: []).isEmpty {
+                        EmptyStateView(icon: "rectangle.stack", title: "All Home shelves are hidden",
+                            subtitle: "Choose Customize Home to show a shelf.")
                     } else {
                         EmptyStateView(icon: "play.rectangle.on.rectangle",
                             title: AppLanguage.string(.homeEmpty, locale: locale),
@@ -389,6 +395,11 @@ struct HomeView: View {
                 KyroHomeCustomizeButton()
                 let byID = Dictionary(sections.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                 let entries = kyroShelfHost.arrangement.entries(for: kyroSections)
+                if entries.isEmpty {
+                    EmptyStateView(icon: "rectangle.stack", title: "All Home shelves are hidden",
+                                   subtitle: "Choose Customize Home to show a shelf.")
+                        .frame(minHeight: 280)
+                }
                 let leadID = entries.lazy.compactMap { entry -> String? in
                     if case .silo(let id) = entry { return id }
                     return nil
@@ -469,9 +480,18 @@ struct HomeView: View {
     /// Decode the leading cards of the rows below one that appeared, so
     /// scrolling down reveals painted artwork rather than thumbhashes.
     private func warmRows(after section: ResolvedSection) {
+        #if os(iOS)
+        let byID = Dictionary(feedSections.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let visible = kyroShelfHost.arrangement.entries(for: kyroSections).compactMap { entry -> ResolvedSection? in
+            guard case .silo(let id) = entry else { return nil }
+            return byID[id]
+        }
+        #else
         let sections = feedSections
-        guard let index = sections.firstIndex(where: { $0.id == section.id }) else { return }
-        let next = sections.dropFirst(index + 1).prefix(ArtworkLookahead.rowsAhead)
+        let visible = sections
+        #endif
+        guard let index = visible.firstIndex(where: { $0.id == section.id }) else { return }
+        let next = visible.dropFirst(index + 1).prefix(ArtworkLookahead.rowsAhead)
         ArtworkLookahead.warmRows(next, items: \.items) { section, item in
             HomeFeedRow.cardArtwork(for: item, in: section)
         }

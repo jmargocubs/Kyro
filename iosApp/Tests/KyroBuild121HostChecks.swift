@@ -4,7 +4,7 @@ import CryptoKit
 import CoreGraphics
 import ImageIO
 
-// Build 121 host checks (no Simulator): integrated Home arrangement, its
+// Build 121/122 host checks (no Simulator): integrated Home arrangement, its
 // storage and backup, the repaired sports shelves, and source/asset contracts
 // for the launch animation, Crimson Noir accent and preserved features.
 // Supersedes KyroBuild120HostChecks, whose append-only Home assertions no
@@ -27,11 +27,12 @@ enum KyroBuild121HostChecks {
 
     static func main() throws {
         try arrangement()
+        unifiedArrangement()
         try storageAndBackup()
         sports()
         navigationPills()
         try sourceAndAssetContracts()
-        print("Build 121: \(count) focused host checks passed.")
+        print("Build 122: \(count) focused host checks passed.")
     }
 
     // MARK: Arrangement
@@ -72,16 +73,16 @@ enum KyroBuild121HostChecks {
         check(afterReorder.firstIndex(of: .kyro(.myTeams))! == afterReorder.firstIndex(of: .silo("movies"))! + 1,
               "server reorder: shelf follows its anchor section")
         check(afterReorder.filter { if case .silo = $0 { return true }; return false }
-              == [.silo("nu"), .silo("cw"), .silo("shows"), .silo("movies"), .silo("surprise")],
-              "server reorder: Silo rows follow the server (leading rows first)")
+              == [.silo("cw"), .silo("nu"), .silo("surprise"), .silo("movies"), .silo("shows")],
+              "custom Silo ordering remains exact after a server reorder")
         let removed = custom.entries(for: [hero, cw, nextUp, shows])
         check(removed.contains(.kyro(.myTeams)) && removed.count == 4 + 6, "server removal: shelf survives")
         check(removed.firstIndex(of: .kyro(.myTeams))! < removed.firstIndex(of: .silo("shows"))!,
               "server removal: shelf falls back to the previous surviving row")
         let added = custom.entries(for: [hero, cw, nextUp, silo("new"), movies, shows])
-        check(added.firstIndex(of: .silo("new"))! < added.firstIndex(of: .silo("movies"))!
+        check(added.firstIndex(of: .silo("new"))! > added.firstIndex(of: .silo("shows"))!
               && added.firstIndex(of: .kyro(.myTeams))! == added.firstIndex(of: .silo("movies"))! + 1,
-              "server addition: new row in server order, shelves unaffected")
+              "server addition: new row appended without moving customized rows")
 
         // Hide keeps the position.
         var hidden = custom
@@ -112,6 +113,43 @@ enum KyroBuild121HostChecks {
 
     // MARK: Storage and backup
 
+    static func unifiedArrangement() {
+        let sections = [
+            KyroHomeSiloSection(id: "cw", type: "continue_watching", title: "Continue Watching"),
+            KyroHomeSiloSection(id: "nu", type: "next_up", title: "Next Up"),
+            KyroHomeSiloSection(id: "movies", type: "latest", title: "Movies"),
+        ]
+        var custom = KyroHomeArrangement()
+        custom.move(.silo("nu"), by: -1, sections: sections)
+        check(custom.entries(for: sections).first == .silo("nu"), "Next Up is movable ahead of Continue Watching")
+        custom.move(.silo("cw"), by: 1, sections: sections)
+        check(custom.entries(for: sections).firstIndex(of: .silo("cw")) == 2,
+              "Continue Watching moves among Kyro shelves")
+        custom.setHiddenSilo("cw", true)
+        custom.setHidden(.sportsToday, true)
+        check(!custom.entries(for: sections).contains(.silo("cw"))
+              && !custom.entries(for: sections).contains(.kyro(.sportsToday)), "both row types hide individually")
+        check(custom.allEntries(for: sections).contains(.silo("cw")), "hidden server row stays editable")
+        check(!custom.entries(for: Array(sections.dropFirst(2))).contains(.silo("cw")), "absent row stays hidden")
+        custom.setHiddenSilo("cw", false)
+        check(custom.entries(for: sections).contains(.silo("cw")), "temporarily absent row returns")
+        let renamed = sections.map { $0.id == "movies" ? KyroHomeSiloSection(id: $0.id, type: $0.type, title: "Films") : $0 }
+        check(custom.entries(for: renamed) == custom.entries(for: sections), "title changes do not change identity")
+        let recreated = [KyroHomeSiloSection(id: "new-movies", type: "latest", title: "Movies")]
+        check(custom.entries(for: recreated).contains(.silo("new-movies"))
+              && !custom.entries(for: recreated).contains(.silo("movies")), "recreated row gets a new identity")
+        let withNew = sections + [KyroHomeSiloSection(id: "sports", type: "custom", title: "Sports")]
+        check(custom.allEntries(for: withNew).last == .silo("sports"), "new server row appends without reordering saved rows")
+        var allHidden = custom
+        allHidden.setOrder(allHidden.allEntries(for: sections))
+        for section in sections { allHidden.setHiddenSilo(section.id, true) }
+        for shelf in KyroHomeShelf.allCases { allHidden.setHidden(shelf, true) }
+        check(allHidden.entries(for: sections).isEmpty, "all rows hidden is an explicit empty arrangement")
+        let legacy = Data(#"{"tokens":["silo:cw","kyro:myTeams"],"hidden":[]}"#.utf8)
+        check((try? JSONDecoder().decode(KyroHomeArrangement.self, from: legacy))?.hiddenSilo == [],
+              "Build 121 stored arrangement migrates without losing its order")
+    }
+
     static func storageAndBackup() throws {
         let suite = "kyro.build121.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -135,10 +173,36 @@ enum KyroBuild121HostChecks {
         let registry = SettingsBackupRegistry(settings: KyroHomeBackupSettings.make(defaults: defaults, scope: { scope }),
                                               deviceIdiom: "phone")
         let setting = registry.setting(id: "home.localShelves")!
-        check(setting.read() == KyroHomeBackupSettings.encode(mine), "backup reads the active profile's arrangement")
-        check(KyroHomeBackupSettings.decode(KyroHomeBackupSettings.encode(mine)) == mine, "v2 round trip")
+        check(setting.read() == KyroHomeBackupSettings.encode(mine, scope: scope), "backup reads the active profile's arrangement")
+        check(KyroHomeBackupSettings.decode(KyroHomeBackupSettings.encode(mine)) == mine, "v3 round trip")
         check(KyroHomeBackupSettings.decode(KyroHomeBackupSettings.encode(KyroHomeArrangement())) == KyroHomeArrangement(),
               "default round trip")
+        let many = KyroHomeArrangement(tokens: (0..<100).map { "silo:row-\($0)" } + ["kyro:myTeams"],
+                                       hidden: [.sportsToday], hiddenSilo: ["row-17"])
+        let manyValue = KyroHomeBackupSettings.encode(many, scope: "s.a.p1")
+        check(KyroHomeBackupSettings.decode(manyValue) == many, "more than 64 rows round-trip in bounded pages")
+        check(setting.validate(manyValue), "large arrangement passes the allowlisted setting validator")
+        KyroHomeArrangementStore.save(many, scope: "s.a.p1", to: defaults)
+        let largeExport = try SettingsBackupExporter.export(registry: registry, groups: [.general],
+            app: .init(version: "1.0.122", build: "122", platform: "iOS", idiom: "phone"), now: .now)
+        let largeDecoded = try SettingsBackupCodec.decode(largeExport)
+        check(largeDecoded.groups["general"]?["home.localShelves"] == manyValue,
+              "large arrangement survives the global backup codec")
+        let oversized = KyroHomeArrangement(tokens: (0..<513).map { "silo:row-\($0)" })
+        KyroHomeArrangementStore.save(oversized, scope: "s.a.p1", to: defaults)
+        do {
+            _ = try SettingsBackupExporter.export(registry: registry, groups: [.general],
+                app: .init(version: "1.0.122", build: "122", platform: "iOS", idiom: "phone"), now: .now)
+            check(false, "oversized arrangement must not export silently")
+        } catch {
+            check(true, "oversized arrangement fails explicitly rather than truncating")
+        }
+        KyroHomeArrangementStore.save(mine, scope: "s.a.p1", to: defaults)
+        scope = "other.a.p1"
+        let portable = KyroHomeBackupSettings.decode(setting.normalize(manyValue))
+        check(portable?.tokens == ["kyro:myTeams"] && portable?.hiddenSilo.isEmpty == true,
+              "cross-server restoration excludes server-local IDs but preserves Kyro settings")
+        scope = "s.a.p1"
         let legacy = BackupValue.record([
             "order": .array(KyroHomeShelf.allCases.map { .string($0.rawValue) }),
             "hidden": .array([.string("myLeagues")]),
@@ -162,7 +226,7 @@ enum KyroBuild121HostChecks {
         let exported = try SettingsBackupExporter.export(registry: registry, groups: [.general, .sports],
             app: .init(version: "1.0.121", build: "121", platform: "iOS", idiom: "phone"), now: now)
         let decoded = try SettingsBackupCodec.decode(exported)
-        check(decoded.groups["general"]?["home.localShelves"] == KyroHomeBackupSettings.encode(mine), "export includes arrangement")
+        check(decoded.groups["general"]?["home.localShelves"] == KyroHomeBackupSettings.encode(mine, scope: "s.a.p1"), "export includes arrangement")
         check(decoded.groups["sports"]?["sports.favoriteLeagues"] == .array([.string("nfl")]), "export includes shared favorites")
 
         // Restore into a fresh profile, then undo.
@@ -174,7 +238,8 @@ enum KyroBuild121HostChecks {
             fatalError("restore failed")
         }
         check(changes.count == 2 && undoAvailable, "restore applies arrangement and favorites")
-        check(KyroHomeArrangementStore.load(scope: "s.a.p9", from: defaults) == mine, "restore writes the active profile")
+        check(KyroHomeArrangementStore.load(scope: "s.a.p9", from: defaults).tokens == ["kyro:myTeams"],
+              "cross-profile restore retains portable Kyro placement but excludes Silo ids")
         check(KyroHomeArrangementStore.load(scope: "s.a.p1", from: defaults) == mine, "restore leaves other profiles alone")
         let undo = applier.undo()
         check(undo.isClean, "undo succeeds")
@@ -287,7 +352,7 @@ enum KyroBuild121HostChecks {
         let home = try source("iosApp/iosApp/Screens/Home/HomeView.swift")
         check(home.contains("kyroShelfHost.arrangement.entries(for: kyroSections)") && !home.contains("KyroHomeShelves()"),
               "shelves are placed inside the feed, not appended after it")
-        check(home.contains("KyroHomeCustomizeButton()") && home.contains("kyroShelfHost.siloSections = sections"), "Customize Home at the top of Home, sharing Home's sections")
+        check(home.contains("KyroHomeCustomizeButton()") && home.contains("kyroShelfHost.setSiloSections(sections"), "Customize Home at the top of Home, sharing scoped Home sections")
         let shelves = try source("iosApp/iosApp/Kyro/Home/KyroHomeShelves.swift")
         check(!shelves.contains("Text(\"Kyro Home\")"), "no separate Kyro Home heading")
         check(shelves.contains("liveTV.restoreCachedState(for: provider)"), "Home restores the cached Live TV catalog itself")
@@ -302,8 +367,8 @@ enum KyroBuild121HostChecks {
         check(capacity.contains("productionMaximumChannels = 100_000"), "100K production capacity retained")
         let project = try source("iosApp/project.yml")
         check(project.contains("revision: f470d8dc610537929c83ef31877287e9d2ad9d28"), "accepted Aether revision retained")
-        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 121").count == 4, "app and two extensions target Build 121")
-        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.121\"").count == 4, "version 1.0.121")
+        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 122").count == 4, "app and two extensions target Build 122")
+        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.122\"").count == 4, "version 1.0.122")
         let libraries = try source("iosApp/iosApp/Screens/Browse/LibrariesTabView.swift")
         check(libraries.contains("LibraryDockModel()") && libraries.contains(".floatingPageDock(dock, isShown: !dockIsInSlot)"),
               "accepted navigation pills untouched")

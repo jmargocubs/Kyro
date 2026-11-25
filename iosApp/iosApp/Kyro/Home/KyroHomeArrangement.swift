@@ -42,17 +42,9 @@ struct KyroHomeSiloSection: Equatable, Sendable {
     }
 }
 
-/// The device-local Home arrangement (Build 121). Silo's feed stays
-/// authoritative: its sections, their content and their relative order come
-/// from the server on every load, and nothing here is written back. Kyro only
-/// decides where its six shelves sit among those sections, and which are
-/// hidden.
-///
-/// Placement is stored as an ordered token list (`KyroHomeEntry.token`): each
-/// Kyro shelf is anchored after the nearest Silo section before it in that
-/// list, so server additions, removals and reordering never shift a shelf by
-/// array offset. A shelf whose anchor disappears falls back to the previous
-/// surviving section (or the top); new server sections appear in server order.
+/// Device-local presentation order. Server rows remain server-owned; missing
+/// identifiers stay in the preference list so a temporarily absent row returns
+/// to its chosen position without matching another row by title.
 struct KyroHomeArrangement: Codable, Equatable, Sendable {
     /// Kyro's default shelf order, after Continue Watching and Next Up.
     static let defaultShelfOrder: [KyroHomeShelf] = [
@@ -62,13 +54,24 @@ struct KyroHomeArrangement: Codable, Equatable, Sendable {
     /// Customized placement; nil keeps the default, which adapts to the feed.
     var tokens: [String]?
     var hidden: Set<KyroHomeShelf> = []
+    var hiddenSilo: Set<String> = []
 
-    init(tokens: [String]? = nil, hidden: Set<KyroHomeShelf> = []) {
+    init(tokens: [String]? = nil, hidden: Set<KyroHomeShelf> = [], hiddenSilo: Set<String> = []) {
         self.tokens = tokens
         self.hidden = hidden
+        self.hiddenSilo = hiddenSilo
     }
 
-    var isDefault: Bool { tokens == nil && hidden.isEmpty }
+    private enum CodingKeys: String, CodingKey { case tokens, hidden, hiddenSilo }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        tokens = try values.decodeIfPresent([String].self, forKey: .tokens)
+        hidden = try values.decodeIfPresent(Set<KyroHomeShelf>.self, forKey: .hidden) ?? []
+        hiddenSilo = try values.decodeIfPresent(Set<String>.self, forKey: .hiddenSilo) ?? []
+    }
+
+    var isDefault: Bool { tokens == nil && hidden.isEmpty && hiddenSilo.isEmpty }
 
     /// Silo sections in Home order: server order, except that Continue
     /// Watching and Next Up lead (their own server order kept).
@@ -79,64 +82,66 @@ struct KyroHomeArrangement: Codable, Equatable, Sendable {
     /// Every row, hidden shelves included, for the customization list.
     func allEntries(for sections: [KyroHomeSiloSection]) -> [KyroHomeEntry] {
         let silo = Self.siloOrder(deduplicated(sections))
-        let present = Set(silo.map(\.id))
-        var groups: [String?: [KyroHomeShelf]] = [:]
-        var placed = Set<KyroHomeShelf>()
-
-        if let tokens {
-            var anchor: String?
-            for token in tokens {
-                switch KyroHomeEntry(token: token) {
-                case .silo(let id)?:
-                    if present.contains(id) { anchor = id }
-                case .kyro(let shelf)?:
-                    guard placed.insert(shelf).inserted else { continue }
-                    groups[anchor, default: []].append(shelf)
-                case nil:
-                    continue
-                }
-            }
+        guard let tokens else {
+            let leadCount = silo.prefix(while: \.leadsHome).count
+            return silo.prefix(leadCount).map { .silo($0.id) }
+                + Self.defaultShelfOrder.map(KyroHomeEntry.kyro)
+                + silo.dropFirst(leadCount).map { .silo($0.id) }
         }
-        // Default placement, and any shelf a stored list does not mention yet.
-        let defaultAnchor = silo.last(where: \.leadsHome)?.id
-        for shelf in Self.defaultShelfOrder where !placed.contains(shelf) {
-            groups[defaultAnchor, default: []].append(shelf)
+        var result: [KyroHomeEntry] = []
+        var seen = Set<KyroHomeEntry>()
+        for token in tokens {
+            guard let entry = KyroHomeEntry(token: token), seen.insert(entry).inserted else { continue }
+            result.append(entry)
         }
-
-        var result = (groups[nil] ?? []).map(KyroHomeEntry.kyro)
+        // New server rows are appended in server order; existing positions do
+        // not move when the server changes its order or a row disappears.
         for section in silo {
-            result.append(.silo(section.id))
-            result += (groups[section.id] ?? []).map(KyroHomeEntry.kyro)
+            let entry = KyroHomeEntry.silo(section.id)
+            if seen.insert(entry).inserted { result.append(entry) }
+        }
+        for shelf in Self.defaultShelfOrder {
+            let entry = KyroHomeEntry.kyro(shelf)
+            if seen.insert(entry).inserted { result.append(entry) }
         }
         return result
     }
 
     /// The rows Home draws, without hidden shelves.
     func entries(for sections: [KyroHomeSiloSection]) -> [KyroHomeEntry] {
-        allEntries(for: sections).filter {
+        let present = Set(sections.map(\.id))
+        return allEntries(for: sections).filter {
             if case .kyro(let shelf) = $0 { return !hidden.contains(shelf) }
-            return true
+            if case .silo(let id) = $0 { return present.contains(id) && !hiddenSilo.contains(id) }
+            return false
         }
     }
 
     /// Records a customized order (the customization list after a move).
-    /// Silo rows only anchor; their order still comes from the server.
     mutating func setOrder(_ entries: [KyroHomeEntry]) {
         tokens = entries.map(\.token)
     }
 
-    /// Moves one Kyro shelf a row up or down among all rows.
-    mutating func move(_ shelf: KyroHomeShelf, by delta: Int, sections: [KyroHomeSiloSection]) {
+    /// Moves either row type, including currently unavailable server rows.
+    mutating func move(_ entry: KyroHomeEntry, by delta: Int, sections: [KyroHomeSiloSection]) {
         var entries = allEntries(for: sections)
-        guard let index = entries.firstIndex(of: .kyro(shelf)) else { return }
+        guard let index = entries.firstIndex(of: entry) else { return }
         let target = index + delta
         guard entries.indices.contains(target) else { return }
         entries.swapAt(index, target)
         setOrder(entries)
     }
 
+    mutating func move(_ shelf: KyroHomeShelf, by delta: Int, sections: [KyroHomeSiloSection]) {
+        move(.kyro(shelf), by: delta, sections: sections)
+    }
+
     mutating func setHidden(_ shelf: KyroHomeShelf, _ isHidden: Bool) {
         if isHidden { hidden.insert(shelf) } else { hidden.remove(shelf) }
+    }
+
+    mutating func setHiddenSilo(_ id: String, _ isHidden: Bool) {
+        if isHidden { hiddenSilo.insert(id) } else { hiddenSilo.remove(id) }
     }
 
     private func deduplicated(_ sections: [KyroHomeSiloSection]) -> [KyroHomeSiloSection] {

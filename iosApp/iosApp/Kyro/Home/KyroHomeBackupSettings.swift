@@ -1,5 +1,6 @@
 #if os(iOS) || KYRO_STANDALONE_TESTS
 import Foundation
+import CryptoKit
 
 /// Settings Backup entries for Kyro's Home (Build 121).
 ///
@@ -17,10 +18,15 @@ enum KyroHomeBackupSettings {
     static func make(defaults: UserDefaults, scope: @escaping @MainActor () -> String? = { nil }) -> [BackupSetting] {
         [BackupSetting(id: "home.localShelves", group: .general, title: "Kyro Home arrangement",
             validate: { decode($0) != nil },
-            read: { encode(KyroHomeArrangementStore.load(scope: scope(), from: defaults)) },
+            read: { encode(KyroHomeArrangementStore.load(scope: scope(), from: defaults), scope: scope()) },
             write: { value in
                 guard let arrangement = decode(value) else { throw InvalidValue() }
                 KyroHomeArrangementStore.save(arrangement, scope: scope(), to: defaults)
+            }, normalize: { value in
+                guard let arrangement = decode(value) else { return value }
+                let portable = arrangement.forRestore(
+                    matchingOrigin: origin(for: scope()), sourceOrigin: sourceOrigin(value))
+                return encode(portable, scope: scope())
             }, label: { _ in "Home shelf order and visibility" })] + [
                 ("sports.favoriteLeagues", KyroSportsFavorites.leaguesKey, "Favorite sports leagues"),
                 ("sports.favoriteTeams", KyroSportsFavorites.teamsKey, "Favorite sports teams")
@@ -35,18 +41,62 @@ enum KyroHomeBackupSettings {
             }
     }
 
-    static func encode(_ arrangement: KyroHomeArrangement) -> BackupValue {
+    private static let maxArrangementEntries = 512
+
+    static func encode(_ arrangement: KyroHomeArrangement, scope: String? = nil) -> BackupValue {
         .record([
-            "version": .int(2),
-            "order": .array((arrangement.tokens ?? []).map(BackupValue.string)),
+            "version": .int(3),
+            "origin": .string(origin(for: scope)),
+            "order": chunks(arrangement.tokens ?? []),
             "hidden": .array(KyroHomeShelf.allCases.filter(arrangement.hidden.contains).map { .string($0.rawValue) }),
+            "siloHidden": chunks(arrangement.hiddenSilo.sorted()),
         ])
+    }
+
+    private static func origin(for scope: String?) -> String {
+        let digest = SHA256.hash(data: Data((scope ?? "device").utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func sourceOrigin(_ value: BackupValue) -> String? {
+        guard case .record(let fields) = value, case .string(let origin) = fields["origin"] else { return nil }
+        return origin
+    }
+
+    private static func chunks(_ strings: [String]) -> BackupValue {
+        .array(stride(from: 0, to: strings.count, by: SettingsBackupSafety.maxArrayMembers).map { start in
+            .array(strings[start..<min(start + SettingsBackupSafety.maxArrayMembers, strings.count)].map(BackupValue.string))
+        })
+    }
+
+    private static func unchunk(_ value: BackupValue?) -> [String]? {
+        guard case .array(let pages) = value, pages.count <= SettingsBackupSafety.maxArrayMembers else { return nil }
+        var result: [String] = []
+        for page in pages {
+            guard case .array(let members) = page, members.count <= SettingsBackupSafety.maxArrayMembers else { return nil }
+            for member in members {
+                guard case .string(let text) = member, !text.isEmpty, text.count <= 256 else { return nil }
+                result.append(text)
+                guard result.count <= maxArrangementEntries else { return nil }
+            }
+        }
+        return Set(result).count == result.count ? result : nil
     }
 
     static func decode(_ value: BackupValue) -> KyroHomeArrangement? {
         guard case .record(let fields) = value, case .array(let hiddenValues) = fields["hidden"],
               let hidden = shelves(hiddenValues) else { return nil }
         switch Set(fields.keys) {
+        case ["version", "origin", "order", "hidden", "siloHidden"]:
+            guard fields["version"] == .int(3),
+                  case .string(let origin) = fields["origin"], origin.count == 64,
+                  origin.allSatisfy({ $0.isHexDigit }),
+                  let tokens = unchunk(fields["order"]),
+                  let hiddenIDs = unchunk(fields["siloHidden"]),
+                  tokens.allSatisfy({ KyroHomeEntry(token: $0) != nil }),
+                  hiddenIDs.allSatisfy({ !$0.isEmpty && $0.count <= 251 }) else { return nil }
+            return KyroHomeArrangement(tokens: tokens.isEmpty ? nil : tokens, hidden: Set(hidden),
+                                       hiddenSilo: Set(hiddenIDs))
         case ["version", "order", "hidden"]:
             guard fields["version"] == .int(2), case .array(let tokenValues) = fields["order"],
                   tokenValues.count <= SettingsBackupSafety.maxArrayMembers else { return nil }
@@ -86,6 +136,16 @@ enum KyroHomeBackupSettings {
             return raw
         }
         return strings.count == values.count && Set(strings).count == strings.count ? strings : nil
+    }
+}
+
+private extension KyroHomeArrangement {
+    func forRestore(matchingOrigin destination: String, sourceOrigin: String?) -> Self {
+        guard sourceOrigin == destination else {
+            return Self(tokens: tokens?.filter { if case .kyro? = KyroHomeEntry(token: $0) { return true }; return false },
+                        hidden: hidden)
+        }
+        return self
     }
 }
 #endif
