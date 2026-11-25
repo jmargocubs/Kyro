@@ -98,7 +98,7 @@ enum LiveTVCatalogNotice {
 /// never overtaken by a write that was already running.
 actor LiveTVChannelSnapshotStore {
     static let maximumChannels = LiveTVCatalogLimits.maximumChannels
-    /// About 250 bytes per channel entry: 40,000 channels need roughly 10 MB.
+    /// About 250 bytes per channel entry: 100,000 channels need roughly 25 MB.
     static let maximumFileBytes = 32 * 1024 * 1024
     nonisolated let directory: URL
 

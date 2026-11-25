@@ -14,7 +14,8 @@ struct LiveTVChannel: Hashable, Identifiable, Sendable {
     var streamID: Int? = nil
 }
 
-enum LiveTVCatalogLimits { static let maximumChannels = 40_000 }
+// Host stub tracks the production cap in LiveTVModels.swift.
+enum LiveTVCatalogLimits { static let maximumChannels = 100_000 }
 
 @main
 enum LiveTVChannelStoreBenchmark {

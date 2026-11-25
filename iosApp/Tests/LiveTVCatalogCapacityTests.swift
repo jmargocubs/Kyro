@@ -11,16 +11,10 @@ final class LiveTVCatalogCapacityTests: XCTestCase {
 
     // MARK: Production cap
 
-    /// The 100K validation override is compile-time only; an ordinary build must keep 40,000.
-    func testProductionCapIsFortyThousandWithoutValidationFlag() {
-        #if KYRO_LIVETV_100K_VALIDATION
+    func testProductionCapIsOneHundredThousandWithoutValidationFlag() {
         XCTAssertEqual(LiveTVCatalogLimits.maximumChannels, 100_000)
-        XCTAssertTrue(LiveTVCatalogLimits.isValidationOverrideActive)
-        #else
-        XCTAssertEqual(LiveTVCatalogLimits.maximumChannels, 40_000)
-        XCTAssertFalse(LiveTVCatalogLimits.isValidationOverrideActive)
-        #endif
-        XCTAssertEqual(LiveTVCatalogLimits.productionMaximumChannels, 40_000)
+        XCTAssertEqual(LiveTVCatalogLimits.productionMaximumChannels, 100_000)
+        XCTAssertEqual(LiveTVCatalogLimits.maximumPlaylistBytes, 110 * 1024 * 1024)
     }
 
     // MARK: Identity
@@ -74,8 +68,21 @@ final class LiveTVCatalogCapacityTests: XCTestCase {
         XCTAssertEqual(Set(parsed.channels.map(\.id)).count, 40_000)
         XCTAssertEqual(parsed.channels.last?.name, KyroSyntheticCatalog.name(39_999), "the tail, where event groups sit, is kept")
 
-        let over = try LiveTVM3UParser.parseResult(data: KyroSyntheticCatalog.playlist(count: 40_001), providerID: providerID)
-        XCTAssertEqual(over.channels.count, LiveTVCatalogLimits.maximumChannels)
+        let over = try LiveTVM3UParser.parseResult(data: KyroSyntheticCatalog.playlist(count: 40_001), providerID: providerID, limit: 40_000)
+        XCTAssertEqual(over.channels.count, 40_000)
+        XCTAssertTrue(over.hitChannelLimit)
+    }
+
+    func testProduction100kM3UImportAndTruncation() throws {
+        let exact = try LiveTVM3UParser.parseResult(
+            data: KyroSyntheticCatalog.playlist(count: 100_000), providerID: providerID)
+        XCTAssertEqual(exact.channels.count, 100_000)
+        XCTAssertFalse(exact.hitChannelLimit)
+        XCTAssertEqual(exact.channels.last?.name, KyroSyntheticCatalog.name(99_999))
+
+        let over = try LiveTVM3UParser.parseResult(
+            data: KyroSyntheticCatalog.playlist(count: 100_001), providerID: providerID)
+        XCTAssertEqual(over.channels.count, 100_000)
         XCTAssertTrue(over.hitChannelLimit)
     }
 
@@ -105,9 +112,7 @@ final class LiveTVCatalogCapacityTests: XCTestCase {
         XCTAssertTrue(restored?.channels.allSatisfy { $0.streamURL.absoluteString == "about:blank" } == true,
                       "no stream address is persisted")
 
-        let tooMany = channels + [LiveTVChannel(id: "\(providerID.uuidString):\(String(repeating: "a", count: 64))", guideID: nil,
-                                                name: "Extra", streamURL: URL(string: "https://x.example/1.ts")!,
-                                                logoURL: nil, category: "Other")]
+        let tooMany = channels + Array(repeating: channels[0], count: 60_001)
         let refused = await store.save(providerID: providerID, channels: tooMany)
         XCTAssertEqual(refused, .refusedOverChannelLimit)
         let kept = await store.loadCatalog(providerID: providerID)

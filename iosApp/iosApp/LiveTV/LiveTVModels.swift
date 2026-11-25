@@ -1293,22 +1293,10 @@ struct LiveTVM3UParseResult: Sendable, Equatable {
 
 /// Live TV catalog capacity, shared by import, the channel snapshot and Sports Hub matching.
 enum LiveTVCatalogLimits {
-    /// Build 38 raised the cap from 20,000 to 40,000 channels.
-    static let productionMaximumChannels = 40_000
-    #if KYRO_LIVETV_100K_VALIDATION
-    /// DEVELOPMENT ONLY. Defined solely by an explicit validation build setting
-    /// (`SWIFT_ACTIVE_COMPILATION_CONDITIONS=KYRO_LIVETV_100K_VALIDATION`); never in a normal
-    /// project configuration, so ordinary releases keep the 40,000 production cap.
-    static let maximumChannels = 100_000
-    static let maximumPlaylistBytes = 110 * 1024 * 1024
-    static let isValidationOverrideActive = true
-    #else
+    /// Shared production cap for imports, persistence, browsing, and Sports Hub matching.
+    static let productionMaximumChannels = 100_000
     static let maximumChannels = productionMaximumChannels
-    /// M3U and Xtream stream-list downloads. 40,000 Xtream records run about 16–20 MB, past the
-    /// old 16 MiB cap, so the cap rose with the channel limit.
-    static let maximumPlaylistBytes = 40 * 1024 * 1024
-    static let isValidationOverrideActive = false
-    #endif
+    static let maximumPlaylistBytes = 110 * 1024 * 1024
 }
 
 enum LiveTVM3UParser {
