@@ -19,6 +19,7 @@ struct SiloTabBar<Item: Identifiable, Content: View>: View where Item.ID: Hashab
 
     #if os(iOS)
     @Environment(\.kyroShellTab) private var shellTab
+    @Environment(PageDockHost.self) private var dockHost: PageDockHost?
     #endif
 
     var body: some View {
@@ -45,7 +46,11 @@ struct SiloTabBar<Item: Identifiable, Content: View>: View where Item.ID: Hashab
                 }
             }
         }
+        #if os(iOS)
+        .siloTabBarMinimizeOnScroll(isEnabled: dockHost?.pageIsTooShortToMinimize != true)
+        #else
         .siloTabBarMinimizeOnScroll()
+        #endif
     }
 
     #if os(iOS)
@@ -76,7 +81,7 @@ struct SiloTabBar<Item: Identifiable, Content: View>: View where Item.ID: Hashab
             }
             ForEach(items.dropFirst(index)) { item in itemTab(item, slot: slot.wrappedValue) }
         }
-        .siloTabBarMinimizeOnScroll()
+        .siloTabBarMinimizeOnScroll(isEnabled: dockHost?.pageIsTooShortToMinimize != true)
         .onChange(of: selection) { _, _ in
             // The binding is derived from the same global store, so this is a
             // no-op adapter update after a media destination was selected.

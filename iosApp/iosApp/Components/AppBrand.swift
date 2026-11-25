@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The app's own name, as users read it. The iPhone and iPad app is Kyro;
+/// The app's own name, as users read it. The iPhone and iPad app is Kyro X;
 /// Apple TV and Mac keep their existing wording for now.
 ///
 /// This is the app's identity only. The backend is still Silo Server, so
@@ -8,14 +8,14 @@ import SwiftUI
 /// device names sent to the server and internal identifiers never use it.
 enum AppBrand {
     #if os(iOS)
-    static let name = "Kyro"
+    static let name = "Kyro X"
     #else
     static let name = "Silo"
     #endif
 }
 
 /// The app's wordmark wherever a screen identifies the app. On iPhone and
-/// iPad it is the approved C3 metallic KYRO mark; Apple TV and Mac keep the
+/// iPad it is the approved independent Kyro X wordmark; Apple TV and Mac keep the
 /// Silo wordmark and its sizes unchanged.
 struct AppWordmarkView: View {
     enum Placement {
@@ -31,9 +31,7 @@ struct AppWordmarkView: View {
 
     var body: some View {
         #if os(iOS)
-        // The C3 image carries its glow inside the frame: letters fill about
-        // 94% of its width and 78% of its height. Widths are chosen for letter
-        // height (about 20, 25 and 33pt), close to the old mark's weight.
+        // Keep the existing header placements; only the approved asset changes.
         Image(KyroBrand.wordmarkImageName)
             .resizable()
             .interpolation(.high)

@@ -9,7 +9,7 @@ import UIKit
 // touches the server, the Keychain, a provider, a library ID or a profile identity, and a setting
 // that is not listed cannot be exported or restored. Excluded on purpose: server-authoritative values,
 // Live TV providers and their credentials, provider-specific pins and hidden categories, recent
-// categories, favorites, the selected Sports league or screen, and internal flags,
+// categories, channel favorites, the selected Sports league or screen, and internal flags,
 // diagnostics, and authentication or pairing state.
 
 /// The device-local player preferences a backup may carry, as their own setters. The synced player
@@ -98,6 +98,7 @@ enum SettingsBackupLiveRegistry {
     @MainActor
     static func make(_ d: Dependencies) -> SettingsBackupRegistry {
         var settings: [BackupSetting] = []
+        settings.append(contentsOf: KyroHomeBackupSettings.make(defaults: d.defaults))
 
         // Only the behavior is portable. The containing launch-state record also holds server IDs,
         // remembered profile IDs and PIN state; never serialize that record wholesale.

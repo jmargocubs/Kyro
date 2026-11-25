@@ -155,6 +155,13 @@ struct HomeView: View {
                 .ignoresSafeArea()
 
             Group {
+                #if os(iOS)
+                if !viewModel.sections.isEmpty {
+                    scrollContent
+                } else {
+                    homeWithoutServerRows
+                }
+                #else
                 if !viewModel.sections.isEmpty {
                     scrollContent
                 } else if let error = viewModel.error {
@@ -173,6 +180,7 @@ struct HomeView: View {
                         subtitle: AppLanguage.string(.homeEmptyBody, locale: locale)
                     )
                 }
+                #endif
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -314,6 +322,32 @@ struct HomeView: View {
     // MARK: - Content
 
     #if os(iOS)
+    /// Preserve the original server loading/error/empty states, while local
+    /// Live TV and Sports shelves stay independent of an empty or failed feed.
+    private var homeWithoutServerRows: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
+                Group {
+                    if let error = viewModel.error {
+                        ErrorView(state: error, onRetry: { Task { await viewModel.loadSections() } },
+                                  onManageServers: { router.navigate(to: .serverList) })
+                    } else if viewModel.isLoading {
+                        PosterRowsSkeleton()
+                    } else {
+                        EmptyStateView(icon: "play.rectangle.on.rectangle",
+                            title: AppLanguage.string(.homeEmpty, locale: locale),
+                            subtitle: AppLanguage.string(.homeEmptyBody, locale: locale))
+                    }
+                }
+                .frame(minHeight: 280)
+                KyroHomeShelves()
+            }
+            .padding(.top, topRunwaySpacing(topSafeAreaInset: 0))
+            .padding(.bottom, HomeFeedMetrics.bottomRunway)
+        }
+        .reportsPageChromeScroll(to: activeChromeScrollState)
+    }
+
     private var scrollContent: some View {
         feedScrollView(topSafeAreaInset: 0)
     }
@@ -341,6 +375,9 @@ struct HomeView: View {
                     feedSection(section, leadsPage: section.id == sections.first?.id)
                         .onAppear { warmRows(after: section) }
                 }
+                #if os(iOS)
+                KyroHomeShelves()
+                #endif
             }
             // Clear runway under the pinned header. The first row starts right
             // below it, at the same height as on the Libraries and For You tabs.

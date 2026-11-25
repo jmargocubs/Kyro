@@ -154,6 +154,13 @@ struct SettingsView: View {
 
     private var preferencesSection: some View {
         Section {
+            #if os(iOS)
+            NavigationLink {
+                KyroHomeCustomizationView()
+            } label: {
+                Label("Kyro Home Shelves", systemImage: "rectangle.stack")
+            }
+            #endif
             NavigationLink {
                 GeneralSettingsView()
             } label: {

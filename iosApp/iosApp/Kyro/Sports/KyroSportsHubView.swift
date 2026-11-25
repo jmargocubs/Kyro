@@ -53,6 +53,7 @@ private struct KyroTabRootContainer<Content: View>: View {
 
 /// The Sports tab.
 struct KyroSportsHubView: View {
+    var isSecondaryDestination = false
     @Environment(\.kyroShellHeader) private var shellHeader
     @State private var fallbackScrollState = PageChromeScrollState()
     @State private var store = KyroSportsHubStore(preferences: .standard)
@@ -180,7 +181,7 @@ struct KyroSportsHubView: View {
         .siloScrollEdgeEffect()
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
-                Color.clear.frame(height: shellHeader?.runway ?? 0)
+                Color.clear.frame(height: isSecondaryDestination ? 0 : (shellHeader?.runway ?? 0))
                 #if os(iOS)
                 // Build 46: the tapped event plays here, above the feed, which scrolls beneath it.
                 KyroSportsInlinePlayer(service: liveTV, games: store.liveGames + store.scheduleGames,
@@ -202,7 +203,9 @@ struct KyroSportsHubView: View {
             }
         }
         .siloPageBackground()
-        .toolbar(.hidden, for: .navigationBar)
+        .toolbar(isSecondaryDestination ? .visible : .hidden, for: .navigationBar)
+        .navigationTitle(isSecondaryDestination ? "Sports" : "")
+        .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("kyroSportsHub")
         .refreshable { await store.refresh() }
         .task {
@@ -230,6 +233,7 @@ struct KyroSportsHubView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .kyroSettingsDidRestore)) { _ in
             store.reloadDashboardModesFromPreferences()
+            KyroSportsFavoritesStore.shared.reload()
         }
         .onChange(of: isFeedVisible) { _, visible in feedVisibilityChanged(visible) }
         .task(id: pinnedRefreshKey) {
@@ -411,6 +415,7 @@ struct KyroSportsHubView: View {
         Button { eventPreview = KyroSportsEventSelection(game: game) } label: {
             card.contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+        .contextMenu { KyroSportsFavoriteActions(game: game) }
         .buttonStyle(.plain)
         .accessibilityHint("Shows event details")
         .accessibilityIdentifier("kyroSportsDetails-\(game.id.stringValue)")
@@ -515,7 +520,7 @@ struct KyroSportsHubView: View {
     }
 }
 
-private struct KyroSportsTennisMatchRow: View, Equatable {
+struct KyroSportsTennisMatchRow: View, Equatable {
     let game: KyroSportsGame
     let showsLeague: Bool
     /// Strong streams when the match can be played from here; nil keeps the card informational.
@@ -1218,7 +1223,7 @@ private struct KyroSportsSectionHeader: View {
     }
 }
 
-private struct KyroSportsGameRow: View, Equatable {
+struct KyroSportsGameRow: View, Equatable {
     let game: KyroSportsGame
     let usesCompactLayout: Bool
     var showsLeague: Bool = true

@@ -923,7 +923,7 @@ struct ContentView: View {
 
     private var usesKyroStartup: Bool {
         #if os(iOS)
-        KyroBrand.usesCinematicStartup
+        true
         #else
         false
         #endif
@@ -2412,6 +2412,9 @@ extension MainTabDestinationID {
         case .app(let tab): self = .app(tab)
         case .libraryCategory(let category): self = .libraryCategory(category)
         case .library(let id): self = .library(id)
+        #if os(iOS)
+        case .sports: self = .kyroRoot(.sports)
+        #endif
         }
     }
 }
@@ -3242,6 +3245,11 @@ struct MainTabView: View {
                 router.navigate(to: .secondaryDestination(routeID))
             }
         }
+        if !kyroNavigation.tabDestinations.contains(.sports) {
+            items.append(KyroMoreMenuItem(id: "kyro-sports", title: "Sports", systemImage: "trophy") {
+                router.navigate(to: .secondaryDestination(.sports))
+            })
+        }
         return KyroMoreMenuContext(items: items)
     }
 #endif
@@ -3681,6 +3689,20 @@ struct MainTabView: View {
 
     @ViewBuilder
     private func secondaryDestinationContent(for id: MainTabDestinationID) -> some View {
+        #if os(iOS)
+        if id == .kyroRoot(.sports) {
+            KyroSportsHubView(isSecondaryDestination: true)
+                .environment(\.kyroShellHeader, nil)
+        } else {
+            resolvedSecondaryDestinationContent(for: id)
+        }
+        #else
+        resolvedSecondaryDestinationContent(for: id)
+        #endif
+    }
+
+    @ViewBuilder
+    private func resolvedSecondaryDestinationContent(for id: MainTabDestinationID) -> some View {
         if let destination = secondaryDestination(for: id) {
             destinationContent(for: destination)
                 .environment(\.secondaryDestinationTitle, destination.title)
@@ -3704,7 +3726,16 @@ struct MainTabView: View {
             return .library(id: libraryId, label: library?.name ?? "Library",
                             icon: library?.navigationIcon ?? "rectangle.stack",
                             selectedIcon: library?.selectedNavigationIcon ?? "rectangle.stack.fill")
-        case .liveTV, .kyroRoot:
+        #if os(iOS)
+        case .kyroRoot(.sports):
+            return MainTabDestination.global(.sports)
+        case .kyroRoot(.favorites):
+            return nil
+        #else
+        case .kyroRoot:
+            return nil
+        #endif
+        case .liveTV:
             return nil
         }
     }

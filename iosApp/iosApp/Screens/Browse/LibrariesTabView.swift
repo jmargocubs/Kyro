@@ -280,6 +280,18 @@ struct LibrariesTabView: View {
     @Environment(AppRouter.self) private var router
     #if os(iOS)
     @Environment(\.statusColumn) private var statusColumn
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(PageDockHost.self) private var dockHost: PageDockHost?
+    @Environment(SiloControlClient.self) private var siloControl
+    @Environment(AudioPlaybackStore.self) private var audioStore
+    @State private var dock = LibraryDockModel()
+    @State private var isDockVisible = false
+    @State private var mountedTabs: Set<LibraryPageTab> = [.recommended]
+    @State private var scrollToTopRequests: [LibraryPageTab: Int] = [:]
+    @State private var browseReloadRequests = 0
+    @State private var browseIsStale = false
+    @State private var scrollClaimLinks = Dictionary(uniqueKeysWithValues:
+        LibraryPageTab.allCases.map { ($0, LibraryPageScrollClaimLink()) })
     #endif
     #if os(iOS)
     @Environment(\.kyroShellHeader) private var shellHeader
@@ -377,6 +389,18 @@ struct LibrariesTabView: View {
 
     @ViewBuilder
     private func loadedContent(activeLibrary: Library) -> some View {
+        #if os(iOS)
+        if usesDockLayout {
+            dockedContent(activeLibrary: activeLibrary)
+        } else {
+            legacyLoadedContent(activeLibrary: activeLibrary)
+        }
+        #else
+        legacyLoadedContent(activeLibrary: activeLibrary)
+        #endif
+    }
+
+    private func legacyLoadedContent(activeLibrary: Library) -> some View {
         // Switch tab content directly here so we can hoist the top bar + tab
         // selector into a single `safeAreaInset` overlay shared by all three
         // tabs.
@@ -467,8 +491,10 @@ struct LibrariesTabView: View {
             if activeLibrary.isMixedLibrary && category != .movies && category != .series {
                 LibraryVideoScopePicker(selection: $selectedVideoScope)
             }
-            LibraryPageTabSelector(selectedTab: $selectedTab, scrolls: scrollsTabs)
-                .padding(.bottom, SiloTheme.padding)
+            if !usesDockLayout {
+                LibraryPageTabSelector(selectedTab: $selectedTab, scrolls: scrollsTabs)
+                    .padding(.bottom, SiloTheme.padding)
+            }
         }
     }
 
@@ -480,6 +506,109 @@ struct LibrariesTabView: View {
         #else
         false
         #endif
+    }
+
+    /// The secondary dock is a library-page component, not a dependency on
+    /// upstream's single Libraries primary root. Keep Kyro's authored roots.
+    private var usesDockLayout: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact && statusColumn == nil
+        #else
+        false
+        #endif
+    }
+
+    #if os(iOS)
+    private var dockIsInSlot: Bool {
+        router.path.isEmpty && secondaryTitle == nil
+            && PageDockHost.slotIsAvailable && isDockVisible && dockHost?.dock === dock
+            && !NowPlayingShelf.hasActiveAccessory(control: siloControl, audio: audioStore)
+    }
+
+    private func dockedContent(activeLibrary: Library) -> some View {
+        ZStack {
+            ForEach([selectedTab] + LibraryPageTab.allCases.filter { $0 != selectedTab }, id: \.self) { tab in
+                if mountedTabs.contains(tab) || selectedTab == tab {
+                    libraryPage(tab, activeLibrary: activeLibrary)
+                        .environment(\.libraryPageScrollToTopRequest, scrollToTopRequests[tab, default: 0])
+                        .environment(\.libraryPageReloadRequest, tab == .library ? browseReloadRequests : nil)
+                        .environment(\.libraryPageScrollClaimLink, scrollClaimLinks[tab])
+                        .background(LibraryPageScrollClaim(isActive: selectedTab == tab,
+                            link: scrollClaimLinks[tab]!))
+                        .opacity(selectedTab == tab ? 1 : 0)
+                        .allowsHitTesting(selectedTab == tab)
+                        .accessibilityHidden(selectedTab != tab)
+                        .zIndex(selectedTab == tab ? 1 : 0)
+                }
+            }
+        }
+        .id("\(activeLibrary.id):\(videoScope(for: activeLibrary)?.rawValue ?? "all")")
+        .environment(hostedHeader?.state ?? chromeScrollState)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            topChrome(activeLibrary: activeLibrary)
+                .background { PageChromeGlass(scrollState: hostedHeader?.state ?? chromeScrollState) }
+        }
+        .floatingPageDock(dock, isShown: !dockIsInSlot)
+        .onAppear {
+            configureDock(activeLibrary)
+            isDockVisible = true
+            // A library pushed from More has no visible TabView accessory.
+            // Keep its secondary dock in the page instead of sending it to a hidden slot.
+            if router.path.isEmpty && secondaryTitle == nil { dockHost?.present(dock) }
+        }
+        .onDisappear {
+            isDockVisible = false
+            dockHost?.withdraw(dock)
+        }
+        .onChange(of: selectedTab) { _, tab in
+            dock.selectedTab = tab
+            mountedTabs.insert(tab)
+            if tab == .library, browseIsStale {
+                browseIsStale = false
+                browseReloadRequests += 1
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+            if mountedTabs.contains(.library) { browseIsStale = true }
+        }
+        .onChange(of: activeLibrary) { old, library in
+            if old.id != library.id {
+                mountedTabs = [selectedTab]
+                browseIsStale = false
+            }
+            configureDock(library)
+        }
+        .onChange(of: visibleLibraries) { _, libraries in dock.libraries = libraries }
+    }
+
+    private func configureDock(_ library: Library) {
+        dock.library = library
+        dock.libraries = visibleLibraries
+        // Keep Collections reachable, including a library whose collection
+        // presence has not loaded yet. Its own empty/error state is authoritative.
+        dock.hasCollections = true
+        dock.selectedTab = selectedTab
+        dock.onSelect = { selectedTab = $0 }
+        dock.onScrollToTop = { scrollToTopRequests[$0, default: 0] += 1 }
+        dock.onPickLibrary = { id in
+            selectedLibraryId = id
+            persistLibrarySelection(id)
+            StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
+        }
+    }
+    #endif
+
+    @ViewBuilder
+    private func libraryPage(_ tab: LibraryPageTab, activeLibrary: Library) -> some View {
+        switch tab {
+        case .recommended:
+            LibraryRecommendedView(libraryId: activeLibrary.id, mediaScope: videoScope(for: activeLibrary))
+        case .library:
+            BrowseView(libraryId: activeLibrary.id, title: nil, showsSearchShortcut: false,
+                       libraryType: activeLibrary.type, mediaScope: videoScope(for: activeLibrary))
+        case .collections:
+            LibraryCollectionsView(libraryId: activeLibrary.id, mediaScope: videoScope(for: activeLibrary))
+        }
     }
 
     private func videoScope(for library: Library) -> LibraryVideoScope? {

@@ -6,6 +6,10 @@ enum SecondaryDestinationID: Hashable {
     case app(AppTab)
     case libraryCategory(PrimaryMenuBuiltin)
     case library(Int)
+    #if os(iOS)
+    /// Sports stays reachable when the configurable fourth tab is another destination.
+    case sports
+    #endif
 }
 
 /// All navigable destinations in the Silo app.

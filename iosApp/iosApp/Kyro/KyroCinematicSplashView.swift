@@ -38,17 +38,24 @@ struct KyroCinematicSplashView: View {
 
                 KyroHaloBloom(geometry: geometry, intensity: bloom)
 
+                Image(KyroBrand.logoImageName)
+                    .resizable().scaledToFit()
+                    .frame(width: min(proxy.size.width * 0.5, 240))
+                    .scaleEffect(wordmarkVisible || reduceMotion ? 1 : 0.92)
+                    .opacity(wordmarkVisible ? 1 : 0)
+                    .position(x: proxy.size.width / 2, y: proxy.size.height * 0.34)
+
                 KyroWordmark(shimmerProgress: shimmerProgress)
                     .frame(width: wordmarkWidth)
                     .scaleEffect(wordmarkVisible || reduceMotion ? 1 : 0.96)
                     .opacity(wordmarkVisible ? 1 : 0)
-                    .position(x: proxy.size.width / 2, y: geometry.y(Self.wordmarkCenterFraction))
+                    .position(x: proxy.size.width / 2, y: proxy.size.height * 0.58)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .ignoresSafeArea()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Loading Kyro")
+        .accessibilityLabel("Loading Kyro X")
         .task { await play() }
     }
 

@@ -33,7 +33,7 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
         case .accountConnections: "Account & Connections"
         case .privacy: "Privacy"
         case .advancedDiagnostics: "Advanced & Diagnostics"
-        case .aboutKyro: "About Kyro"
+        case .aboutKyro: "About Kyro X"
         }
     }
 
@@ -44,7 +44,7 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
         case .liveTV:
             KyroLiveTVSettingsEntry.searchTerms
         case .appearanceNavigation:
-            ["appearance & navigation", "appearance", "interface", "navigation", "menu", "cards", "posters", "theme music", "theme song", "features", "extra features", "experimental", "audiobooks", "watch party"]
+            ["appearance & navigation", "appearance", "interface", "navigation", "menu", "cards", "posters", "theme music", "theme song", "features", "extra features", "experimental", "audiobooks", "watch party", "home", "shelves", "teams", "leagues"]
         case .downloadsStorage:
             ["downloads & storage", "downloads", "offline", "quality", "cleanup", "storage"]
         case .accountConnections:
@@ -322,6 +322,9 @@ private struct IOSAppearanceNavigationSettingsView: View {
     var body: some View {
         List {
             Section("Appearance & Navigation") {
+                NavigationLink { KyroHomeCustomizationView() } label: {
+                    SettingsOverviewRow(title: "Kyro Home Shelves", subtitle: "Local shelf order, visibility and sports favorites", systemImage: "rectangle.stack")
+                }
                 NavigationLink { InterfaceCustomizationView() } label: {
                     SettingsOverviewRow(title: "Interface", subtitle: "Cards, posters, title pages, and menu presentation", systemImage: "rectangle.3.group.fill", value: uiCustomization.cardPresentation.preset?.title ?? "Custom")
                 }
@@ -533,17 +536,17 @@ private struct IOSAboutKyroSettingsView: View {
 
     var body: some View {
         List {
-            Section("About Kyro") {
-                SettingsOverviewRow(title: "Version", subtitle: "Installed Kyro app version and build", systemImage: "info.circle.fill", value: SettingsViewModel.versionString)
+            Section("About Kyro X") {
+                SettingsOverviewRow(title: "Version", subtitle: "Installed Kyro X app version and build", systemImage: "info.circle.fill", value: SettingsViewModel.versionString)
                 NavigationLink { AcknowledgementsView() } label: {
-                    SettingsOverviewRow(title: "Acknowledgements", subtitle: "Services Kyro uses and open source licenses", systemImage: "curlybraces")
+                    SettingsOverviewRow(title: "Acknowledgements", subtitle: "Services Kyro X uses and open source licenses", systemImage: "curlybraces")
                 }
                 Link(destination: SiloLegalLinks.sourceCode) {
                     SettingsOverviewRow(title: "Source Code", subtitle: "Get Silo's source code under the AGPL", systemImage: "chevron.left.forwardslash.chevron.right", showsChevron: true)
                 }
                 if KyroBrand.usesCinematicStartup {
                     Button { showsKyroIntroduction = true } label: {
-                        SettingsOverviewRow(title: "Replay Introduction", subtitle: "See Kyro's three-screen introduction again", systemImage: "sparkles.rectangle.stack.fill", showsChevron: true)
+                        SettingsOverviewRow(title: "Replay Introduction", subtitle: "See Kyro X's three-screen introduction again", systemImage: "sparkles.rectangle.stack.fill", showsChevron: true)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("settings.replayIntroduction")
@@ -551,7 +554,7 @@ private struct IOSAboutKyroSettingsView: View {
             }
         }
         .settingsListChrome()
-        .navigationTitle("About Kyro")
+        .navigationTitle("About Kyro X")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
         .fullScreenCover(isPresented: $showsKyroIntroduction) {

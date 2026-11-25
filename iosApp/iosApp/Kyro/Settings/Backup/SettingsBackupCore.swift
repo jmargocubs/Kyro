@@ -405,6 +405,13 @@ enum SettingsBackupCodec {
             groups[entry.group.rawValue, default: [:]][entry.id] = entry.value
         }
         guard !groups.isEmpty else { throw SettingsBackupError.nothingToExport }
+        // Local-only backups can now include ordered Home preferences too.
+        // Keep legacy scalar files at schema 1; use the already validated
+        // structured encoder for records/arrays rather than emitting an
+        // unreadable schema-1 envelope or weakening the decoder's safety gate.
+        if groups.values.contains(where: { $0.values.contains { $0.isRecord || $0.requiresSchema4 } }) {
+            return try makeUnifiedDocument(groups: groups, scope: nil, app: app, now: now)
+        }
         return try makeDocument(
             groups: groups, schemaVersion: 1, minReaderVersion: 1, app: app, now: now)
     }

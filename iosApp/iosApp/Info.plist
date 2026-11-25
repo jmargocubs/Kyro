@@ -11,17 +11,17 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Kyro</string>
+	<string>Kyro X</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconName</key>
-	<string>KyroAppIcon</string>
+	<string>KyroXAppIcon</string>
 	<key>CFBundleIcons</key>
 	<dict>
 		<key>CFBundlePrimaryIcon</key>
 		<dict>
 			<key>CFBundleIconName</key>
-			<string>KyroAppIcon</string>
+			<string>KyroXAppIcon</string>
 		</dict>
 	</dict>
 	<key>CFBundleIdentifier</key>
@@ -65,7 +65,7 @@
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Kyro uses your local network to find Silo servers, and to set up, find, and control Silo on your TV.</string>
+	<string>Kyro X uses your local network to find Silo servers, and to set up, find, and control Silo on your TV.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_silopair._tcp</string>
@@ -94,7 +94,7 @@
 			<key>UTTypeIdentifier</key>
 			<string>com.cubbiestream.kyro.settings-backup</string>
 			<key>UTTypeDescription</key>
-			<string>Kyro Settings Backup</string>
+			<string>Kyro X Settings Backup</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.json</string>

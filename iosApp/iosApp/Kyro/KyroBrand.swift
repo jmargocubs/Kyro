@@ -1,31 +1,25 @@
 import SwiftUI
 import UIKit
 
-/// Kyro's C3 "Cinematic Halo" identity for iPhone: the approved portrait
-/// backdrop, the metallic KYRO wordmark, and the halo colours the glass
-/// symbols and controls draw with.
-///
-/// The artwork is raster (`KyroBrand.xcassets`): the backdrop is an
-/// upscaled 1320×2868 image and the wordmark an RGBA image with its glow in
-/// the alpha channel. The colours are sampled to sit with the halo; they are
-/// not Silo design tokens.
+/// Approved independent Kyro X artwork and Crimson Noir brand surfaces.
+/// The original Silo content theme and upstream attribution remain unchanged.
 enum KyroBrand {
-    static let backdropImageName = "KyroSplashBackground"
-    static let wordmarkImageName = "KyroWordmark"
+    static let wordmarkImageName = "KyroXWordmark"
+    static let logoImageName = "KyroXLogo"
 
-    /// Pixel size of the approved backdrop. Layout is placed in its
-    /// coordinates so text and symbols stay locked to the halo on every
-    /// iPhone, whatever the crop.
+    /// Preserve the introduction's existing portrait layout coordinates.
     static let backdropPixelSize = CGSize(width: 1320, height: 2868)
-    /// Wordmark image aspect (1825×498, glow padding included).
-    static let wordmarkAspect: CGFloat = 498.0 / 1825.0
+    /// Approved wordmark aspect, glow padding included.
+    static let wordmarkAspect: CGFloat = 500.0 / 1850.0
 
-    static let blue = Color(red: 0.18, green: 0.36, blue: 1.0)
-    static let violet = Color(red: 0.54, green: 0.24, blue: 1.0)
-    static let pink = Color(red: 1.0, green: 0.25, blue: 0.64)
-    static let orange = Color(red: 1.0, green: 0.48, blue: 0.10)
+    // Crimson Noir palette from the independent Kyro X theme. Brand surfaces only;
+    // Silo's content, controls and user-selected theme keep their existing colors.
+    static let blue = Color(hex: "#8C263B")
+    static let violet = Color(hex: "#B53B4D")
+    static let pink = Color(hex: "#F06A7C")
+    static let orange = Color(hex: "#8C263B")
 
-    /// The halo sweep, blue on the left through to orange on the right.
+    /// Existing introduction symbols now use the approved crimson palette.
     static let haloGradient = LinearGradient(
         colors: [blue, violet, pink, orange],
         startPoint: .leading,
@@ -72,17 +66,16 @@ struct KyroBackdropGeometry {
     }
 }
 
-/// The approved backdrop, aspect-filled edge to edge. It is static: the
-/// splash and every introduction page share it, so it never moves.
+/// Background presentation reused from independent KyroStartupView, using
+/// its Crimson Noir palette rather than importing the universal app theme.
 struct KyroBackdrop: View {
     var body: some View {
-        GeometryReader { proxy in
-            Image(KyroBrand.backdropImageName)
-                .resizable()
-                .interpolation(.high)
-                .aspectRatio(contentMode: .fill)
-                .frame(width: proxy.size.width, height: proxy.size.height)
-                .clipped()
+        ZStack {
+            Color(red: 16.0 / 255, green: 9.0 / 255, blue: 12.0 / 255)
+            RadialGradient(colors: [KyroBrand.blue.opacity(0.28), .clear],
+                           center: .init(x: 0.76, y: 0.36), startRadius: 4, endRadius: 280)
+            RadialGradient(colors: [KyroBrand.violet.opacity(0.16), .clear],
+                           center: .init(x: 0.2, y: 0.72), startRadius: 4, endRadius: 300)
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)
@@ -120,7 +113,7 @@ struct KyroWordmark: View {
                 }
                 .allowsHitTesting(false)
             }
-            .accessibilityLabel("Kyro")
+            .accessibilityLabel("Kyro X")
     }
 }
 

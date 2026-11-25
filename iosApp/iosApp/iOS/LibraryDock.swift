@@ -375,10 +375,10 @@ final class LibraryPageScrollClaimView: UIView {
     private func reportLength() {
         guard isActive, window != nil, let scrollView = claimedScrollView, let dockHost else { return }
         let insets = scrollView.adjustedContentInset
-        let range = scrollView.contentSize.height + insets.top + insets.bottom - scrollView.bounds.height
-        let height = scrollView.bounds.height
-        let isShort = dockHost.pageIsTooShortToMinimize ? range < height + 80 : range < height
-        dockHost.setPageIsTooShortToMinimize(isShort)
+        let range = TabDockScrollRange(content: scrollView.contentSize.height,
+            viewport: scrollView.bounds.height, insets: insets.top + insets.bottom)
+        dockHost.setPageIsTooShortToMinimize(!range.permitsMinimizing(
+            previous: !dockHost.pageIsTooShortToMinimize))
     }
 
     /// The first vertical scroll view drawn after this marker and before
