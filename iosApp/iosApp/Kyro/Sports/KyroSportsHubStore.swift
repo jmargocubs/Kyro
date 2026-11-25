@@ -444,6 +444,20 @@ final class KyroSportsHubStore {
         states[league] ?? LeagueState()
     }
 
+    /// Every game this store has loaded for `league` (its provider window and
+    /// any day fetches), whatever day or sport is selected. Read-only; Home's
+    /// My Teams and My Leagues use it from their own store instance.
+    func loadedGames(for league: KyroSportLeague) -> [KyroSportsGame] { leagueGames(league) }
+
+    /// Whether `league` has nothing trustworthy loaded: its last fetch failed
+    /// or the device is offline.
+    func hasFailure(for league: KyroSportLeague) -> Bool {
+        switch state(for: league).phase {
+        case .failed, .offline: return true
+        default: return state(for: league).lastRefreshError != nil && leagueGames(league).isEmpty
+        }
+    }
+
     private func leagueGames(_ league: KyroSportLeague) -> [KyroSportsGame] {
         let current = state(for: league)
         if !current.games.isEmpty { return current.games }

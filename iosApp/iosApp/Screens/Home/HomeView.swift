@@ -19,6 +19,10 @@ struct HomeView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
+    #if os(iOS)
+    /// Kyro's shelves among Silo's sections (Build 121).
+    @State private var kyroShelfHost = KyroHomeShelfHost.shared
+    #endif
     @State private var watchStateRefresh: Task<Void, Never>?
     @State private var watchStateRefreshPending = false
     @State private var hasObservedWatchState = false
@@ -156,11 +160,15 @@ struct HomeView: View {
 
             Group {
                 #if os(iOS)
-                if !viewModel.sections.isEmpty {
-                    scrollContent
-                } else {
-                    homeWithoutServerRows
+                Group {
+                    if !viewModel.sections.isEmpty {
+                        scrollContent
+                    } else {
+                        homeWithoutServerRows
+                    }
                 }
+                .modifier(KyroHomeShelfHostModifier(host: kyroShelfHost))
+                .onChange(of: kyroSections, initial: true) { _, sections in kyroShelfHost.siloSections = sections }
                 #else
                 if !viewModel.sections.isEmpty {
                     scrollContent
@@ -340,7 +348,10 @@ struct HomeView: View {
                     }
                 }
                 .frame(minHeight: 280)
-                KyroHomeShelves()
+                KyroHomeCustomizeButton()
+                ForEach(kyroShelfHost.arrangement.entries(for: []), id: \.self) { entry in
+                    if case .kyro(let shelf) = entry { KyroHomeShelfRow(shelf: shelf) }
+                }
             }
             .padding(.top, topRunwaySpacing(topSafeAreaInset: 0))
             .padding(.bottom, HomeFeedMetrics.bottomRunway)
@@ -371,12 +382,33 @@ struct HomeView: View {
                 Color.clear.frame(height: 0)
                 #endif
 
+                #if os(iOS)
+                // Kyro's shelves sit among Silo's sections by stable section
+                // id (`KyroHomeArrangement`); Silo's rows and content are
+                // unchanged and keep the server's relative order.
+                KyroHomeCustomizeButton()
+                let byID = Dictionary(sections.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                let entries = kyroShelfHost.arrangement.entries(for: kyroSections)
+                let leadID = entries.lazy.compactMap { entry -> String? in
+                    if case .silo(let id) = entry { return id }
+                    return nil
+                }.first
+                ForEach(entries, id: \.self) { entry in
+                    switch entry {
+                    case .silo(let id):
+                        if let section = byID[id] {
+                            feedSection(section, leadsPage: section.id == leadID)
+                                .onAppear { warmRows(after: section) }
+                        }
+                    case .kyro(let shelf):
+                        KyroHomeShelfRow(shelf: shelf)
+                    }
+                }
+                #else
                 ForEach(sections) { section in
                     feedSection(section, leadsPage: section.id == sections.first?.id)
                         .onAppear { warmRows(after: section) }
                 }
-                #if os(iOS)
-                KyroHomeShelves()
                 #endif
             }
             // Clear runway under the pinned header. The first row starts right
@@ -386,6 +418,15 @@ struct HomeView: View {
         }
         .reportsPageChromeScroll(to: activeChromeScrollState)
     }
+
+    #if os(iOS)
+    /// What the Home arrangement needs from Silo's sections.
+    private var kyroSections: [KyroHomeSiloSection] {
+        viewModel.sections.map {
+            KyroHomeSiloSection(id: $0.id, type: $0.sectionType, title: $0.displayTitle(in: locale))
+        }
+    }
+    #endif
 
     /// The displayed rows in feed order. The Mac draws the first featured
     /// section as a hero at the top of the page wherever it sits in the Home

@@ -158,7 +158,7 @@ struct SettingsView: View {
             NavigationLink {
                 KyroHomeCustomizationView()
             } label: {
-                Label("Kyro Home Shelves", systemImage: "rectangle.stack")
+                Label("Customize Home", systemImage: "rectangle.stack")
             }
             #endif
             NavigationLink {

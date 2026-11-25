@@ -323,7 +323,7 @@ private struct IOSAppearanceNavigationSettingsView: View {
         List {
             Section("Appearance & Navigation") {
                 NavigationLink { KyroHomeCustomizationView() } label: {
-                    SettingsOverviewRow(title: "Kyro Home Shelves", subtitle: "Local shelf order, visibility and sports favorites", systemImage: "rectangle.stack")
+                    SettingsOverviewRow(title: "Customize Home", subtitle: "Place, show and hide Live TV and sports shelves among your Home rows", systemImage: "rectangle.stack")
                 }
                 NavigationLink { InterfaceCustomizationView() } label: {
                     SettingsOverviewRow(title: "Interface", subtitle: "Cards, posters, title pages, and menu presentation", systemImage: "rectangle.3.group.fill", value: uiCustomization.cardPresentation.preset?.title ?? "Custom")

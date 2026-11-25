@@ -2,7 +2,8 @@
 import Foundation
 import Observation
 
-/// Only additive, device-local shelves. Silo's server feed is never stored or reordered here.
+/// Kyro's six local Home shelves. Their placement among Silo's sections is
+/// `KyroHomeArrangement`; Silo's server feed is never stored or edited here.
 enum KyroHomeShelf: String, CaseIterable, Codable, Identifiable, Sendable {
     case recentLiveTV, favoriteLiveTV, sportsToday, myTeams, myLeagues, upcomingSports
     var id: String { rawValue }
@@ -16,29 +17,15 @@ enum KyroHomeShelf: String, CaseIterable, Codable, Identifiable, Sendable {
         case .upcomingSports: "Upcoming Sports"
         }
     }
+
+    var isLiveTV: Bool { self == .recentLiveTV || self == .favoriteLiveTV }
+    var isFavoriteSports: Bool { self == .myTeams || self == .myLeagues }
 }
 
-/// Adapted from independent Kyro X's UniversalHomePreferences, scoped strictly
-/// to the six local additions. Emptiness and load errors never mutate these preferences.
-struct KyroHomePreferences: Codable, Equatable {
-    static let key = "kyrox.home.localShelves.v1"
-    var order: [KyroHomeShelf] = KyroHomeShelf.allCases
-    var hidden: Set<KyroHomeShelf> = []
-
-    init() {}
-    init(data: Data?) {
-        self = data.flatMap { try? JSONDecoder().decode(Self.self, from: $0) } ?? Self()
-        var seen = Set<KyroHomeShelf>()
-        order = (order + KyroHomeShelf.allCases).filter { seen.insert($0).inserted }
-    }
-    var data: Data { (try? JSONEncoder().encode(self)) ?? Data() }
-    var enabled: [KyroHomeShelf] { order.filter { !hidden.contains($0) } }
-    static func load(from defaults: UserDefaults) -> Self { .init(data: defaults.data(forKey: key)) }
-    func save(to defaults: UserDefaults) { defaults.set(data, forKey: Self.key) }
-}
-
-/// The independent SportsHubStore's durable favorites pattern, shared by
-/// Sports Hub and Home. Keep the established keys; never export channel/provider identities.
+/// Sports team and league favorites, shared by Sports Hub (touch and hold an
+/// event) and Home (My Teams, My Leagues, and Customize Home). These are the
+/// only sports favorites the app keeps; the keys are unchanged from Build 120.
+/// Never stores channel or provider identities.
 struct KyroSportsFavorites: Equatable {
     static let leaguesKey = "kyrox.sports.leagues"
     static let teamsKey = "kyrox.sports.teams"
@@ -49,9 +36,43 @@ struct KyroSportsFavorites: Equatable {
         leagues = Set(defaults.stringArray(forKey: Self.leaguesKey) ?? [])
         teams = Set(defaults.stringArray(forKey: Self.teamsKey) ?? [])
     }
-    func includes(_ team: KyroSportsTeam) -> Bool {
-        teams.contains(Self.teamKey(team.fullName, league: team.league))
+
+    /// Leagues whose events My Teams and My Leagues need: favorite leagues and
+    /// the leagues of favorite teams, in the app's league order.
+    var relevantLeagues: [KyroSportLeague] {
+        let teamLeagues = Set(teams.compactMap { $0.split(separator: "|", maxSplits: 1).first.map(String.init) })
+        return KyroSportLeague.allCases.filter { leagues.contains($0.rawValue) || teamLeagues.contains($0.rawValue) }
     }
+
+    /// Exact key first. Providers name some teams differently (Sleeper's NFL
+    /// feed can omit the city ESPN sends), so a pro team also matches on its
+    /// nickname when one side has no location. College nicknames repeat
+    /// across schools ("Knights"), so college teams need the full name.
+    func includes(_ team: KyroSportsTeam) -> Bool {
+        if teams.contains(Self.teamKey(team.fullName, league: team.league)) { return true }
+        let prefix = team.league.rawValue + "|"
+        let names = teams.filter { $0.hasPrefix(prefix) }.map { Self.normalized(String($0.dropFirst(prefix.count))) }
+        guard !names.isEmpty else { return false }
+        let full = Self.normalized(team.fullName)
+        if names.contains(full) { return true }
+        if team.alternateNames.map(Self.normalized).contains(where: names.contains) { return true }
+        guard Self.nicknameLeagues.contains(team.league) else { return false }
+        let nickname = Self.normalized(team.nickname)
+        guard !nickname.isEmpty else { return false }
+        return names.contains { name in
+            name == nickname || (team.location?.isEmpty ?? true) && name.hasSuffix(" " + nickname)
+        }
+    }
+
+    static let nicknameLeagues: Set<KyroSportLeague> = [.nfl, .nba, .mlb, .nhl]
+
+    static func normalized(_ name: String) -> String {
+        name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     func save(to defaults: UserDefaults) {
         defaults.set(leagues.sorted(), forKey: Self.leaguesKey)
         defaults.set(teams.sorted(), forKey: Self.teamsKey)
@@ -60,27 +81,57 @@ struct KyroSportsFavorites: Equatable {
 
 /// Pure selection over original Sports Hub models, not a universal catalog.
 enum KyroHomeSportsSelection {
+    static let maximumCards = 40
+
+    /// - Sports Today: live now, or starting today.
+    /// - Upcoming Sports: scheduled after now.
+    /// - My Teams / My Leagues: the favorites' live, upcoming and today's
+    ///   finished events, live first, then by start time; older results and
+    ///   canceled or postponed events are left out.
     static func games(_ games: [KyroSportsGame], for shelf: KyroHomeShelf,
                       favorites: KyroSportsFavorites, now: Date, calendar: Calendar = .current) -> [KyroSportsGame] {
         var seen = Set<KyroGameID>()
-        let relevant = games.filter { game in
-            guard seen.insert(game.id).inserted else { return false }
-            if game.status.isLive { return true }
-            guard let start = game.startTime else { return false }
-            return calendar.isDate(start, inSameDayAs: now) || start > now
-        }.sorted {
-            let lhs = $0.startTime ?? .distantFuture, rhs = $1.startTime ?? .distantFuture
-            return lhs == rhs ? $0.id.stringValue < $1.id.stringValue : lhs < rhs
+        let unique = games.filter { seen.insert($0.id).inserted }
+        func isToday(_ game: KyroSportsGame) -> Bool {
+            game.startTime.map { calendar.isDate($0, inSameDayAs: now) } == true
         }
-        return Array(relevant.filter { game in
-            switch shelf {
-            case .sportsToday: return game.startTime.map { calendar.isDate($0, inSameDayAs: now) } == true || game.status.isLive
-            case .myTeams: return favorites.includes(game.home.team) || favorites.includes(game.away.team)
-            case .myLeagues: return favorites.leagues.contains(game.league.rawValue)
-            case .upcomingSports: return game.status == .scheduled && (game.startTime ?? .distantPast) > now
-            case .recentLiveTV, .favoriteLiveTV: return false
+        func isUpcoming(_ game: KyroSportsGame) -> Bool {
+            game.status == .scheduled && (game.startTime ?? .distantPast) > now
+        }
+        let selected: [KyroSportsGame]
+        switch shelf {
+        case .sportsToday:
+            selected = unique.filter { $0.status.isLive || (isToday($0) && !Self.isCalledOff($0)) }
+        case .upcomingSports:
+            selected = unique.filter(isUpcoming)
+        case .myTeams, .myLeagues:
+            selected = unique.filter { game in
+                let matches = shelf == .myTeams
+                    ? favorites.includes(game.home.team) || favorites.includes(game.away.team)
+                    : favorites.leagues.contains(game.league.rawValue)
+                guard matches else { return false }
+                return game.status.isLive || isUpcoming(game) || (game.status.isFinal && isToday(game))
             }
-        }.prefix(40))
+        case .recentLiveTV, .favoriteLiveTV:
+            selected = []
+        }
+        return Array(selected.sorted(by: order).prefix(maximumCards))
+    }
+
+    private static func isCalledOff(_ game: KyroSportsGame) -> Bool {
+        game.status == .canceled || game.status == .postponed
+    }
+
+    /// Live first, then upcoming by start, then finished.
+    private static func order(_ lhs: KyroSportsGame, _ rhs: KyroSportsGame) -> Bool {
+        func rank(_ game: KyroSportsGame) -> Int {
+            if game.status.isLive { return 0 }
+            if game.status.isFinal { return 2 }
+            return 1
+        }
+        if rank(lhs) != rank(rhs) { return rank(lhs) < rank(rhs) }
+        let left = lhs.startTime ?? .distantFuture, right = rhs.startTime ?? .distantFuture
+        return left == right ? lhs.id.stringValue < rhs.id.stringValue : left < right
     }
 }
 
@@ -95,14 +146,27 @@ final class KyroSportsFavoritesStore {
         self.defaults = defaults
         preferences = .init(defaults: defaults)
     }
-    func reload() { preferences = .init(defaults: defaults) }
+    func reload() {
+        let stored = KyroSportsFavorites(defaults: defaults)
+        if stored != preferences { preferences = stored }
+    }
     func toggle(_ league: KyroSportLeague) {
         if !preferences.leagues.insert(league.rawValue).inserted { preferences.leagues.remove(league.rawValue) }
     }
     func toggle(_ team: KyroSportsTeam) {
         let key = KyroSportsFavorites.teamKey(team.fullName, league: team.league)
-        guard preferences.teams.contains(key) || (preferences.teams.count < 64 && key.count <= 64) else { return }
-        if !preferences.teams.insert(key).inserted { preferences.teams.remove(key) }
+        if preferences.includes(team) {
+            // Remove the stored spelling too, not only today's provider spelling.
+            let matching = preferences.teams.filter { stored in
+                var probe = preferences
+                probe.teams = [stored]
+                return probe.includes(team)
+            }
+            preferences.teams.subtract(matching)
+            return
+        }
+        guard preferences.teams.count < 64, key.count <= 64 else { return }
+        preferences.teams.insert(key)
     }
 }
 #endif
