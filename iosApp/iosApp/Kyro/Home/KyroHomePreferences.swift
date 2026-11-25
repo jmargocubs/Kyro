@@ -135,6 +135,85 @@ enum KyroHomeSportsSelection {
     }
 }
 
+/// Home's Add Team and Add League cards. They use `KyroSportsFavoritesStore`
+/// and never a second favorites list. A shelf that Customize Home has hidden
+/// stays hidden, including its card.
+enum KyroHomeQuickAdd {
+    struct TeamChoice: Equatable, Identifiable {
+        let team: KyroSportsTeam
+        var id: String { KyroSportsFavorites.teamKey(team.fullName, league: team.league) }
+    }
+
+    static func title(for shelf: KyroHomeShelf) -> String {
+        switch shelf {
+        case .myTeams: "Add Team"
+        case .myLeagues: "Add League"
+        default: ""
+        }
+    }
+
+    static func isAvailable(for shelf: KyroHomeShelf, hidden: Set<KyroHomeShelf>) -> Bool {
+        shelf.isFavoriteSports && !hidden.contains(shelf)
+    }
+
+    /// Favorite shelves stay on Home for the card when they have no events.
+    /// Every other shelf still disappears when it has nothing to show.
+    static func drawsRail(gameCount: Int, shelf: KyroHomeShelf, hidden: Set<KyroHomeShelf>) -> Bool {
+        guard !hidden.contains(shelf) else { return false }
+        return gameCount > 0 || isAvailable(for: shelf, hidden: hidden)
+    }
+
+    static func leagues(matching query: String) -> [KyroSportLeague] {
+        let needle = KyroSportsFavorites.normalized(query)
+        guard !needle.isEmpty else { return KyroSportLeague.allCases }
+        return KyroSportLeague.allCases.filter { league in
+            KyroSportsFavorites.normalized(league.displayName).contains(needle)
+                || KyroSportsFavorites.normalized(league.shortName).contains(needle)
+        }
+    }
+
+    /// Teams already on a loaded schedule, one row per favorite key.
+    static func teams(in games: [KyroSportsGame], matching query: String) -> [TeamChoice] {
+        var seen = Set<String>()
+        var choices: [TeamChoice] = []
+        for game in games {
+            for team in [game.away.team, game.home.team] {
+                let choice = TeamChoice(team: team)
+                guard seen.insert(choice.id).inserted else { continue }
+                choices.append(choice)
+            }
+        }
+        choices.sort { lhs, rhs in
+            let order = lhs.team.fullName.localizedCaseInsensitiveCompare(rhs.team.fullName)
+            return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
+        }
+        let needle = KyroSportsFavorites.normalized(query)
+        guard !needle.isEmpty else { return choices }
+        return choices.filter { choice in
+            let team = choice.team
+            let fields = [team.fullName, team.nickname, team.abbreviation, team.location ?? "", team.league.displayName, team.league.shortName]
+            return fields.contains { KyroSportsFavorites.normalized($0).contains(needle) }
+        }
+    }
+
+    /// Turns a favorite on or off through the shared store. Asking for a team
+    /// or league that is already stored does nothing, so a second tap cannot
+    /// write another key.
+    @MainActor
+    static func select(_ league: KyroSportLeague, favorites: KyroSportsFavoritesStore, wants: Bool) {
+        let has = favorites.preferences.leagues.contains(league.rawValue)
+        guard wants != has else { return }
+        favorites.toggle(league)
+    }
+
+    @MainActor
+    static func select(_ team: KyroSportsTeam, favorites: KyroSportsFavoritesStore, wants: Bool) {
+        let has = favorites.preferences.includes(team)
+        guard wants != has else { return }
+        favorites.toggle(team)
+    }
+}
+
 @MainActor @Observable
 final class KyroSportsFavoritesStore {
     static let shared = KyroSportsFavoritesStore()

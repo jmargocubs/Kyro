@@ -20,6 +20,8 @@ struct KyroHomeShelfDiagnostic: Equatable, Identifiable {
         case failed(String)
         /// Sources resolved, but nothing falls in the shelf's window.
         case emptyWindow(String)
+        /// My Teams or My Leagues is on Home with its quick-add card. Games may be absent.
+        case quickAdd(String)
     }
 
     let shelf: KyroHomeShelf
@@ -41,6 +43,7 @@ struct KyroHomeShelfDiagnostic: Equatable, Identifiable {
         case .unresolved(let reason): return "Hidden · \(reason) · \(counts)"
         case .failed(let reason): return "Hidden · \(reason)"
         case .emptyWindow(let reason): return "Hidden · \(reason) · \(counts)"
+        case .quickAdd(let reason): return "Shown · \(reason) · \(counts)"
         }
     }
 }
@@ -216,11 +219,24 @@ final class KyroHomeShelfHost {
             .init(shelf: shelf, status: status, sourceCount: model.games.count, resolvedCount: resolved)
         }
         if resolved > 0 { return make(.shown) }
-        if shelf == .myTeams, favorites.preferences.teams.isEmpty {
-            return make(.noSource("no favorite teams"))
-        }
-        if shelf == .myLeagues, favorites.preferences.leagues.isEmpty {
-            return make(.noSource("no favorite leagues"))
+        if shelf.isFavoriteSports {
+            let reason: String
+            if shelf == .myTeams, favorites.preferences.teams.isEmpty {
+                reason = "quick add, no favorite teams yet"
+            } else if shelf == .myLeagues, favorites.preferences.leagues.isEmpty {
+                reason = "quick add, no favorite leagues yet"
+            } else if model.isLoading && model.games.isEmpty {
+                reason = "quick add, loading sports schedules"
+            } else if !model.failedLeagues.isEmpty && model.games.isEmpty {
+                reason = "quick add, schedules unavailable: \(model.failedLeagues.map(\.displayName).joined(separator: ", "))"
+            } else if !model.hasLoaded {
+                reason = "quick add, waiting for the first schedule load"
+            } else if shelf == .myTeams {
+                reason = "quick add, no live or upcoming games for favorite teams"
+            } else {
+                reason = "quick add, no live or upcoming events in favorite leagues"
+            }
+            return make(.quickAdd(reason))
         }
         if model.isLoading && model.games.isEmpty { return make(.loading("sports schedules")) }
         if !model.failedLeagues.isEmpty && model.games.isEmpty {
@@ -228,8 +244,6 @@ final class KyroHomeShelfHost {
         }
         if !model.hasLoaded { return make(.loading("waiting for the first schedule load")) }
         switch shelf {
-        case .myTeams: return make(.emptyWindow("no live or upcoming games for favorite teams"))
-        case .myLeagues: return make(.emptyWindow("no live or upcoming events in favorite leagues"))
         case .upcomingSports: return make(.emptyWindow("nothing scheduled later today or tomorrow"))
         default: return make(.emptyWindow("no events today"))
         }
@@ -391,10 +405,11 @@ struct KyroHomeShelfHostModifier: ViewModifier {
 }
 
 /// One Kyro shelf in the Home feed. Draws nothing when the shelf has nothing
-/// to show (the diagnostics say why).
+/// to show, except My Teams and My Leagues, which keep their quick-add card.
 struct KyroHomeShelfRow: View {
     let shelf: KyroHomeShelf
     @Environment(\.kyroHomeShelfHost) private var host
+    @State private var quickAdd: KyroHomeShelf?
 
     var body: some View {
         if let host {
@@ -408,7 +423,8 @@ struct KyroHomeShelfRow: View {
 
     @ViewBuilder
     private func gameRail(_ games: [KyroSportsGame], host: KyroHomeShelfHost) -> some View {
-        if !games.isEmpty {
+        let showQuickAdd = KyroHomeQuickAdd.isAvailable(for: shelf, hidden: host.arrangement.hidden)
+        if KyroHomeQuickAdd.drawsRail(gameCount: games.count, shelf: shelf, hidden: host.arrangement.hidden) {
             KyroHomeRail(title: shelf.title) {
                 ForEach(games) { game in
                     Button { host.event = KyroSportsEventSelection(game: game) } label: {
@@ -425,6 +441,16 @@ struct KyroHomeShelfRow: View {
                     .buttonStyle(.plain)
                     .contextMenu { KyroSportsFavoriteActions(game: game) }
                 }
+                if showQuickAdd {
+                    Button { quickAdd = shelf } label: {
+                        KyroHomeQuickAddCard(title: KyroHomeQuickAdd.title(for: shelf))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("kyroHomeQuickAdd-\(shelf.rawValue)")
+                }
+            }
+            .sheet(item: $quickAdd) { selection in
+                KyroHomeFavoritePicker(shelf: selection, host: host)
             }
         }
     }
@@ -478,6 +504,28 @@ struct KyroHomeCustomizeButton: View {
             }
             .padding(.horizontal, SiloTheme.padding)
         }
+    }
+}
+
+/// The plus card at the end of My Teams or My Leagues. Same width, corner
+/// radius and Crimson Noir card fill as the event cards beside it.
+private struct KyroHomeQuickAddCard: View {
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "plus")
+                .font(.system(size: 34, weight: .medium))
+                .foregroundStyle(KyroTheme.accentInk)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(KyroTheme.textPrimary)
+        }
+        .frame(width: 310, height: 148)
+        .kyroSportsCardChrome(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityLabel(title)
     }
 }
 

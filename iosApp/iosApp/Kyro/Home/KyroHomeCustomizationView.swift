@@ -193,4 +193,82 @@ struct KyroSportsFavoriteActions: View {
                systemImage: "star") { favorites.toggle(team) }
     }
 }
+
+/// Searchable league and team choices opened from the Home quick-add cards.
+/// Writes go through `KyroHomeQuickAdd.select`, which uses the shared store.
+struct KyroHomeFavoritePicker: View {
+    let shelf: KyroHomeShelf
+    var host: KyroHomeShelfHost
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if shelf == .myLeagues {
+                    leagueRows
+                } else {
+                    teamRows
+                }
+            }
+            .searchable(text: $query, prompt: shelf == .myTeams ? "Search teams" : "Search leagues")
+            .navigationTitle(KyroHomeQuickAdd.title(for: shelf))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task { await loadTeamsIfNeeded() }
+        }
+        .tint(KyroTheme.accentInk)
+    }
+
+    private func loadTeamsIfNeeded() async {
+        guard shelf == .myTeams else { return }
+        await host.today.load()
+        let leagues = host.favorites.preferences.relevantLeagues
+        guard !leagues.isEmpty else { return }
+        await host.followed.load(leagues: leagues)
+    }
+
+    @ViewBuilder
+    private var leagueRows: some View {
+        let leagues = KyroHomeQuickAdd.leagues(matching: query)
+        if leagues.isEmpty {
+            Text("No matching leagues").foregroundStyle(.secondary)
+        }
+        ForEach(leagues) { league in
+            Toggle(league.displayName, isOn: Binding(
+                get: { host.favorites.preferences.leagues.contains(league.rawValue) },
+                set: { wants in KyroHomeQuickAdd.select(league, favorites: host.favorites, wants: wants) }))
+        }
+    }
+
+    @ViewBuilder
+    private var teamRows: some View {
+        let choices = KyroHomeQuickAdd.teams(in: host.today.games + host.followed.games, matching: query)
+        if host.today.isLoading && choices.isEmpty {
+            ProgressView("Loading teams")
+        } else if choices.isEmpty {
+            Text(host.today.failedLeagues.isEmpty
+                 ? "No teams in the current schedule."
+                 : "The sports schedule is unavailable. Add Team stays on Home.")
+                .foregroundStyle(.secondary)
+        }
+        ForEach(choices) { choice in
+            Toggle(isOn: Binding(
+                get: { host.favorites.preferences.includes(choice.team) },
+                set: { wants in KyroHomeQuickAdd.select(choice.team, favorites: host.favorites, wants: wants) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(choice.team.fullName)
+                    Text(choice.team.league.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("kyroHomeFavoriteTeam-\(choice.id)")
+        }
+    }
+}
 #endif

@@ -32,7 +32,7 @@ enum KyroBuild121HostChecks {
         sports()
         navigationPills()
         try sourceAndAssetContracts()
-        print("Build 122: \(count) focused host checks passed.")
+        print("Build 123: \(count) focused host checks passed.")
     }
 
     // MARK: Arrangement
@@ -308,6 +308,51 @@ enum KyroBuild121HostChecks {
         let many = (0..<60).map { game("m\($0)", Double($0 + 1) * 60, .scheduled) }
         check(KyroHomeSportsSelection.games(many, for: .myTeams, favorites: favorites.preferences, now: now, calendar: calendar).count
               == KyroHomeSportsSelection.maximumCards, "bounded cards")
+        quickAdd(favorites: favorites, defaults: defaults, bears: bears, lions: lions)
+    }
+
+    static func quickAdd(favorites: KyroSportsFavoritesStore, defaults: UserDefaults, bears: KyroSportsTeam, lions: KyroSportsTeam) {
+        check(KyroHomeQuickAdd.isAvailable(for: .myTeams, hidden: []), "My Teams quick add while the shelf is enabled")
+        check(KyroHomeQuickAdd.isAvailable(for: .myLeagues, hidden: []), "My Leagues quick add while the shelf is enabled")
+        check(!KyroHomeQuickAdd.isAvailable(for: .myTeams, hidden: [.myTeams]), "Customize Home hides the whole My Teams shelf")
+        check(!KyroHomeQuickAdd.isAvailable(for: .myLeagues, hidden: [.myLeagues]), "Customize Home hides the whole My Leagues shelf")
+        check(!KyroHomeQuickAdd.isAvailable(for: .sportsToday, hidden: []), "Sports Today has no quick-add card")
+        check(KyroHomeQuickAdd.drawsRail(gameCount: 0, shelf: .myTeams, hidden: []), "no favorites still shows My Teams")
+        check(KyroHomeQuickAdd.drawsRail(gameCount: 0, shelf: .myLeagues, hidden: []), "no leagues still shows My Leagues")
+        check(KyroHomeQuickAdd.drawsRail(gameCount: 0, shelf: .myTeams, hidden: [.upcomingSports]),
+              "an empty schedule still shows the Add Team card")
+        check(!KyroHomeQuickAdd.drawsRail(gameCount: 0, shelf: .sportsToday, hidden: []), "an empty Sports Today shelf stays hidden")
+        check(!KyroHomeQuickAdd.drawsRail(gameCount: 4, shelf: .myLeagues, hidden: [.myLeagues]), "a hidden shelf draws nothing")
+        check(KyroHomeQuickAdd.drawsRail(gameCount: 2, shelf: .upcomingSports, hidden: []), "event shelves still draw their games")
+        check(KyroHomeQuickAdd.title(for: .myTeams) == "Add Team" && KyroHomeQuickAdd.title(for: .myLeagues) == "Add League",
+              "card titles")
+
+        check(KyroHomeQuickAdd.leagues(matching: "").count == KyroSportLeague.allCases.count, "every league is selectable")
+        check(KyroHomeQuickAdd.leagues(matching: "atp") == [.atp], "league search matches the short name")
+        check(KyroHomeQuickAdd.leagues(matching: "women") == [.collegeBasketballWomen], "league search matches the display name")
+
+        let cubs = KyroSportsTeam(id: "espn.mlb.16", league: .mlb, abbreviation: "CHC", nickname: "Cubs", location: "Chicago")
+        let cubsAgain = KyroSportsTeam(id: "sleeper.mlb.CHC", league: .mlb, abbreviation: "CHC", nickname: "Cubs", location: "Chicago")
+        func listed(_ id: String, _ status: KyroGameStatus, home: KyroSportsTeam, away: KyroSportsTeam, league: KyroSportLeague = .mlb) -> KyroSportsGame {
+            KyroSportsGame(id: .init(provider: "fixture", league: league, rawID: id), league: league,
+                           startTime: .now, status: status, home: .init(team: home), away: .init(team: away))
+        }
+        let games = [listed("1", .scheduled, home: cubs, away: lions), listed("2", .live, home: cubsAgain, away: bears)]
+        let choices = KyroHomeQuickAdd.teams(in: games, matching: "")
+        check(choices.count == 3, "schedule teams are listed once per favorite key")
+        check(KyroHomeQuickAdd.teams(in: games, matching: "cubs").map(\.id) == ["mlb|Chicago Cubs"], "team search")
+        check(KyroHomeQuickAdd.teams(in: [], matching: "cubs").isEmpty, "an unavailable schedule has no invented teams")
+
+        let before = favorites.preferences.teams.count
+        KyroHomeQuickAdd.select(cubs, favorites: favorites, wants: true)
+        KyroHomeQuickAdd.select(cubs, favorites: favorites, wants: true)
+        KyroHomeQuickAdd.select(cubsAgain, favorites: favorites, wants: true)
+        check(favorites.preferences.teams.count == before + 1, "selecting a team twice stores one favorite")
+        check(favorites.preferences.includes(cubsAgain), "the stored team matches the other provider spelling")
+        KyroHomeQuickAdd.select(.atp, favorites: favorites, wants: true)
+        KyroHomeQuickAdd.select(.atp, favorites: favorites, wants: true)
+        check(favorites.preferences.leagues.filter { $0 == KyroSportLeague.atp.rawValue }.count == 1, "selecting a league twice stores one favorite")
+        check(KyroSportsFavorites(defaults: defaults) == favorites.preferences, "quick add persists in the shared favorites store")
     }
 
     /// Accepted Build 120 navigation pill policy, unchanged.
@@ -360,6 +405,15 @@ enum KyroBuild121HostChecks {
         check(shelves.contains("liveTV.playSportsEvent(game)") && shelves.contains("KyroSportsEventPreview(game:")
               && shelves.contains(".secondaryDestination(.sports)"), "events keep the Sports details and playback route")
         check(shelves.contains("store.loadedGames(for: league)"), "My Teams/My Leagues read each favorite league's window")
+        check(shelves.contains("kyroHomeQuickAdd-\\(shelf.rawValue)") && shelves.contains("KyroHomeQuickAddCard"),
+              "My Teams and My Leagues end with a quick-add card")
+        check(shelves.contains("KyroSportsGameRow(game: game, usesCompactLayout: true)")
+              && shelves.contains(".contextMenu { KyroSportsFavoriteActions(game: game) }"),
+              "event cards, scores and long-press favorites stay in place")
+        let picker = try source("iosApp/iosApp/Kyro/Home/KyroHomeCustomizationView.swift")
+        check(picker.contains("struct KyroHomeFavoritePicker") && picker.contains(".searchable(text: $query"),
+              "quick add opens the searchable favorites picker")
+        check(picker.contains("KyroHomeQuickAdd.select"), "the picker writes through the shared favorites store")
         let registryFile = try source("iosApp/iosApp/Kyro/Settings/Backup/SettingsBackupLiveRegistry.swift")
         check(registryFile.contains("scope: { KyroHomeShelfHost.currentScope() }"), "backup uses the active profile's arrangement")
 
@@ -367,8 +421,8 @@ enum KyroBuild121HostChecks {
         check(capacity.contains("productionMaximumChannels = 100_000"), "100K production capacity retained")
         let project = try source("iosApp/project.yml")
         check(project.contains("revision: f470d8dc610537929c83ef31877287e9d2ad9d28"), "accepted Aether revision retained")
-        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 122").count == 4, "app and two extensions target Build 122")
-        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.122\"").count == 4, "version 1.0.122")
+        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 123").count == 4, "app and two extensions target Build 123")
+        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.123\"").count == 4, "version 1.0.123")
         let libraries = try source("iosApp/iosApp/Screens/Browse/LibrariesTabView.swift")
         check(libraries.contains("LibraryDockModel()") && libraries.contains(".floatingPageDock(dock, isShown: !dockIsInSlot)"),
               "accepted navigation pills untouched")
