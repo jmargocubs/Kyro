@@ -201,12 +201,33 @@ struct KyroSportsFavoriteActions: View {
 /// Searchable league and team choices opened from the Home quick-add cards.
 /// Writes go through `KyroHomeQuickAdd.select`, which uses the shared store.
 struct KyroHomeFavoritePicker: View {
+    @Environment(\.dismiss) private var dismiss
     let shelf: KyroHomeShelf
     var host: KyroHomeShelfHost
-    @Environment(\.dismiss) private var dismiss
-    @State private var query = ""
-    @State private var routeID = KyroSportsDirectoryRoute.all[0].id
     private let directory = KyroSportsDirectory.shared
+    private let scheduleProvider = ESPNSportsProvider()
+    @State private var query = ""
+    @State private var request = DirectoryRequest()
+    @State private var isLoading = false
+    @State private var fallbackGames: [String: [KyroSportsGame]] = [:]
+    @State private var failedSchedules: Set<String> = []
+
+    private enum LoadAction: Hashable, Sendable { case automatic, more, retry }
+    private struct DirectoryRequest: Hashable, Sendable {
+        var scope = KyroSportsDirectoryScope()
+        var action = LoadAction.automatic
+        var revision = 0
+    }
+
+    private var scope: KyroSportsDirectoryScope { request.scope }
+    private var results: [KyroSportsDirectoryEntry] {
+        directory.results(in: scope, matching: query,
+            schedules: host.today.games + host.followed.games + fallbackGames.values.flatMap { $0 })
+    }
+    private var missing: [KyroSportsDirectoryRoute] { scope.routes.filter { $0.hasTeamDirectory && directory.entries[$0.id] == nil } }
+    private var canRetry: Bool {
+        scope.routes.contains { directory.failures.contains($0.id) || failedSchedules.contains($0.id) }
+    }
 
     var body: some View {
         NavigationStack {
@@ -214,7 +235,11 @@ struct KyroHomeFavoritePicker: View {
                 if shelf == .myLeagues {
                     leagueRows
                 } else {
-                    teamRows
+                    KyroSportsDirectoryFilters(scope: Binding(get: { scope }, set: {
+                        request = DirectoryRequest(scope: $0, revision: request.revision + 1)
+                    }))
+                    followingRows
+                    resultRows
                 }
             }
             .searchable(text: $query, prompt: shelf == .myTeams ? "Search teams" : "Search leagues")
@@ -225,22 +250,64 @@ struct KyroHomeFavoritePicker: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .task(id: routeID) {
-                if shelf == .myTeams, let route = KyroSportsDirectoryRoute.all.first(where: { $0.id == routeID }) {
-                    await directory.load(route)
-                    if directory.failures.contains(route.id) { await loadTeamsIfNeeded() }
-                }
-            }
+            .task(id: request) { [request] in await load(request) }
         }
         .tint(KyroTheme.accentInk)
     }
 
-    private func loadTeamsIfNeeded() async {
-        guard shelf == .myTeams else { return }
-        await host.today.load()
-        let leagues = host.favorites.preferences.relevantLeagues
-        guard !leagues.isEmpty else { return }
-        await host.followed.load(leagues: leagues)
+    private func load(_ current: DirectoryRequest) async {
+        guard shelf == .myTeams, current == request, !Task.isCancelled else { return }
+        isLoading = true
+        defer { if request == current { isLoading = false } }
+        let routes = current.scope.routes
+        let batch: [KyroSportsDirectoryRoute]
+        switch current.action {
+        case .automatic:
+            batch = routes.count == 1 ? routes :
+                Array(directory.undiscovered(in: current.scope).prefix(8)) + routes.filter { !$0.hasTeamDirectory }
+        case .more:
+            batch = Array(directory.undiscovered(in: current.scope).prefix(8))
+        case .retry:
+            batch = Array(routes.filter {
+                directory.failures.contains($0.id) || failedSchedules.contains($0.id)
+            }.prefix(8))
+        }
+        let directory = directory
+        await withTaskGroup(of: Void.self) { group in
+            for route in batch where route.hasTeamDirectory {
+                group.addTask { await directory.load(route, force: current.action == .retry) }
+            }
+        }
+        // For broad discovery, use existing schedule data rather than issuing
+        // a second round of requests for every unavailable team directory.
+        for route in batch where !route.hasTeamDirectory || (routes.count == 1 || current.action == .retry) {
+            guard current == request, !Task.isCancelled else { return }
+            if directory.entries[route.id] == nil {
+                await loadSchedule(route, request: current)
+            }
+        }
+    }
+
+    private func loadSchedule(_ route: KyroSportsDirectoryRoute, request current: DirectoryRequest) async {
+        guard fallbackGames[route.id] == nil || current.action == .retry else { return }
+        do {
+            let now = Date()
+            let competition = route.league == .soccer ? route.slug : nil
+            let payload = try await scheduleProvider.client.fetchScoreboard(league: route.league,
+                dates: ESPNSportsProvider.espnDayString(for: now), policy: .today, competitionKey: competition)
+            let games = try scheduleProvider.mapValidated(payload.response, league: route.league,
+                competitionKey: competition, competitionName: competition == nil ? nil : route.title)
+            guard request == current, !Task.isCancelled else { return }
+            fallbackGames[route.id] = games
+            failedSchedules.remove(route.id)
+        } catch {
+            guard request == current, !Task.isCancelled else { return }
+            failedSchedules.insert(route.id)
+        }
+    }
+
+    private func start(_ action: LoadAction) {
+        request = DirectoryRequest(scope: scope, action: action, revision: request.revision + 1)
     }
 
     @ViewBuilder
@@ -257,10 +324,14 @@ struct KyroHomeFavoritePicker: View {
     }
 
     @ViewBuilder
-    private var teamRows: some View {
+    private var followingRows: some View {
+        let entries = directory.allEntries
         Section("Following") {
+            if host.favorites.preferences.teams.isEmpty {
+                Text("No favorites yet").foregroundStyle(.secondary)
+            }
             ForEach(host.favorites.preferences.teams.sorted(), id: \.self) { key in
-                let entry = directory.allEntries.first {
+                let entry = entries.first {
                     var single = host.favorites.preferences
                     single.teams = [key]
                     return single.includes($0.team)
@@ -273,31 +344,35 @@ struct KyroHomeFavoritePicker: View {
                 }
             }
         }
-        Section("Browse by sport and league") {
-            Picker("Directory", selection: $routeID) {
-                ForEach(KyroSportsDirectoryRoute.all) { route in Text(route.title).tag(route.id) }
+    }
+
+    private var resultRows: some View {
+        let entries = results
+        let includesTennis = scope.routes.contains { !$0.hasTeamDirectory }
+        let loading = isLoading || scope.routes.contains { directory.loading.contains($0.id) }
+        return Section("Teams and players") {
+            if loading { ProgressView("Loading teams and players…") }
+            if entries.isEmpty && !loading {
+                Text(missing.isEmpty && !includesTennis ? "No matching teams" : "No matches in available results")
+                    .foregroundStyle(.secondary)
             }
-            Button("Refresh selected directory (once per minute)") {
-                if let route = KyroSportsDirectoryRoute.all.first(where: { $0.id == routeID }) {
-                    Task { await directory.load(route, force: true) }
-                }
+            if !missing.isEmpty {
+                Text(scope.routeID == nil
+                     ? "Some leagues aren’t loaded. Results may be incomplete."
+                     : "The team directory isn’t loaded. Available schedule results are shown.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
-            .disabled(directory.loading.contains(routeID))
-            if directory.loading.contains(routeID) { ProgressView("Loading directory") }
-            if directory.failures.contains(routeID) {
-                Text("Directory unavailable. Cached teams and loaded schedule teams remain available.").foregroundStyle(.secondary)
+            if includesTennis {
+                Text("Tennis players come from available match schedules.").font(.footnote).foregroundStyle(.secondary)
             }
-            Text("Search includes all downloaded directories and loaded schedules. Choose a league to download its directory. ATP and WTA players are available from loaded matches only. Up to 64 favorites are supported.").font(.caption).foregroundStyle(.secondary)
-            Button("Load schedule teams & tennis players") { Task { await loadTeamsIfNeeded() } }
-        }
-        Section("Teams and players") {
-            let records = query.isEmpty ? directory.entries[routeID] ?? [] : directory.allEntries
-            ForEach(records.filter { $0.matches(query) }, id: \.id) { entry in
+            if !loading && !directory.undiscovered(in: scope).isEmpty {
+                Button("Search More Leagues") { start(.more) }
+            }
+            if !loading && canRetry {
+                Button("Retry Unavailable Leagues") { start(.retry) }
+            }
+            ForEach(entries) { entry in
                 teamToggle(entry.team, affiliation: entry.affiliation)
-            }
-            let choices = KyroHomeQuickAdd.teams(in: host.today.games + host.followed.games, matching: query)
-            ForEach(choices.filter { choice in !records.contains { $0.team.id == choice.team.id } }) { choice in
-                teamToggle(choice.team, affiliation: choice.team.league.displayName + " · Schedule")
             }
         }
     }
@@ -316,6 +391,31 @@ struct KyroHomeFavoritePicker: View {
             VStack(alignment: .leading) {
                 Text(team.fullName)
                 Text(affiliation).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct KyroSportsDirectoryFilters: View {
+    @Binding var scope: KyroSportsDirectoryScope
+
+    var body: some View {
+        Section {
+            Picker("Sport", selection: Binding(get: { scope.sport }, set: {
+                scope = .init(sport: $0)
+            })) {
+                Text("All Sports").tag(nil as KyroSportsDirectorySport?)
+                ForEach(KyroSportsDirectorySport.allCases, id: \.self) { sport in
+                    Text(sport.title).tag(Optional(sport))
+                }
+            }
+            if let sport = scope.sport {
+                Picker("League", selection: $scope.routeID) {
+                    Text("All Leagues").tag(nil as String?)
+                    ForEach(KyroSportsDirectoryScope(sport: sport).routes) { route in
+                        Text(route.title).tag(Optional(route.id))
+                    }
+                }
             }
         }
     }
