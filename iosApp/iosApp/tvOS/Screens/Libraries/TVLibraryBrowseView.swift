@@ -29,11 +29,12 @@ struct TVLibraryBrowseView: View {
     @State private var loadGeneration = 0
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     // MARK: - Derived
 
     private var contentSections: [ResolvedSection] {
-        sections.filter { !$0.isFeatured && !$0.items.isEmpty }
+        sections.filter { !$0.isFeatured && $0.hasCards }
     }
 
     // MARK: - Body
@@ -45,7 +46,7 @@ struct TVLibraryBrowseView: View {
                     .tvPageFocusOwner(
                         focusRequest: focusRequest,
                         isTopMenuFocused: isTopMenuFocused,
-                        accessibilityLabel: "Loading \(library.name)"
+                        accessibilityLabel: AppLanguage.string(.libraryLoadingNamed(library.name), locale: locale)
                     )
             } else if let error = sectionsError, sections.isEmpty {
                 ErrorView(state: error, onRetry: { Task { await loadContent() } },
@@ -67,14 +68,20 @@ struct TVLibraryBrowseView: View {
                                 libraryId: library.id
                             )
                         )
+                    },
+                    onExploreAll: { section in
+                        router.navigate(to: .sectionCatalog(SectionCatalogTarget(
+                            section, scope: .library(library.id), mediaScope: mediaScope
+                        )))
                     }
                 )
+                .environment(\.browseMediaScope, mediaScope)
                 .id(library.id)
             }
         }
         .overlay(alignment: .bottom) {
             if scopeIncomplete {
-                Text("Some shelves could not be fully loaded. Open Browse to see this media type.")
+                Text(.libraryErrorSomeShelvesOpenBrowse)
                     .font(.caption).padding().background(.ultraThinMaterial)
             }
         }
@@ -86,14 +93,18 @@ struct TVLibraryBrowseView: View {
     private var emptyHint: some View {
         EmptyStateView(
             icon: emptyLibraryIcon,
-            title: scopeIncomplete ? "Some shelves could not be loaded" : mediaScope != nil ? "No titles for this tab" : "\(library.name) is empty",
-            subtitle: mediaScope != nil ? "Open Browse to see titles matching this tab." : "Add media to this library on the server to see it here."
+            title: AppLanguage.string(
+                scopeIncomplete ? .libraryErrorSomeShelvesTitle
+                    : mediaScope != nil ? .libraryNoTitlesForTab : .libraryEmptyNamed(library.name),
+                locale: locale
+            ),
+            subtitle: AppLanguage.string(mediaScope != nil ? .libraryNoTitlesForTabBody : .libraryEmptyNamedBody, locale: locale)
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tvPageFocusOwner(
             focusRequest: focusRequest,
             isTopMenuFocused: isTopMenuFocused,
-            accessibilityLabel: "\(library.name) is empty"
+            accessibilityLabel: AppLanguage.string(.libraryEmptyNamed(library.name), locale: locale)
         )
     }
 
@@ -227,7 +238,7 @@ private struct TVLibraryBrowseLoadingView: View {
                     .controlSize(.regular)
                     .tint(.white)
 
-                Text("Loading \(libraryName)")
+                Text(.libraryLoadingNamed(libraryName))
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(Color.siloOnSurface.opacity(0.72))
             }

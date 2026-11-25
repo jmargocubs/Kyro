@@ -9,7 +9,6 @@ struct IOSSettingsOverview: View {
     let viewModel: SettingsViewModel
     let diagnosticsModel: DiagnosticsViewModel
     let uiCustomization: UICustomizationPreferences
-    @Binding var showSignOutConfirm: Bool
 
     @Environment(AppRouter.self) private var router
     @State private var navPrefs = AppNavPreferences.shared
@@ -19,6 +18,7 @@ struct IOSSettingsOverview: View {
     @State private var showsSignInTV = false
     @State private var showsKyroIntroduction = false
     @State private var accountSignIn = AccountSignInModel.live()
+    @Environment(\.locale) private var locale
 
     var body: some View {
         List {
@@ -27,7 +27,7 @@ struct IOSSettingsOverview: View {
                     avatar: viewModel.activeProfile?.avatarEmoji,
                     avatarImageUrl: viewModel.activeProfile?.avatarImageUrl,
                     name: viewModel.displayName,
-                    subtitle: viewModel.accountSubtitleLine,
+                    subtitle: .verbatim(viewModel.accountSubtitleLine),
                     isAdministrator: viewModel.userInfo?.isAdmin == true,
                     action: switchProfile
                 )
@@ -87,15 +87,15 @@ struct IOSSettingsOverview: View {
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
         .background(Color.siloBackground.ignoresSafeArea())
-        .navigationTitle("Settings")
+        .navigationTitle(Text(.settingsTitle))
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
         .onAppear(perform: navPrefs.refresh)
         .task { await accountSignIn.load() }
         .sheet(isPresented: $showsSignInTV) {
-            SignInTVView(onSwitchAccount: { server, link, choosingAccount in
+            SignInTVView(onAddAccount: { server, link, choosingAccount in
                 showsSignInTV = false
-                router.switchAccount(forTVApproval: link, on: server, choosingAccount: choosingAccount)
+                router.addAccount(forTVApproval: link, on: server, choosingAccount: choosingAccount)
             }, onClose: { showsSignInTV = false })
         }
         .fullScreenCover(isPresented: $showsKyroIntroduction) {
@@ -112,14 +112,14 @@ struct IOSSettingsOverview: View {
     @ViewBuilder
     private var preferencesSection: some View {
         if matchesGeneral || matchesInterface {
-            Section("Preferences") {
+            Section(.settingsOverviewPreferences) {
                 if matchesGeneral {
                     NavigationLink {
                         GeneralSettingsView()
                     } label: {
                         SettingsOverviewRow(
-                            title: "General",
-                            subtitle: "Profile selection and app startup",
+                            title: .settingsGeneral,
+                            subtitle: .settingsOverviewGeneralSubtitle,
                             systemImage: "gearshape.fill",
                             value: launchPreferences.behavior.title
                         )
@@ -131,10 +131,10 @@ struct IOSSettingsOverview: View {
                         InterfaceCustomizationView()
                     } label: {
                         SettingsOverviewRow(
-                            title: "Interface",
-                            subtitle: "Navigation, cards, and poster presentation",
+                            title: .settingsInterfaceTitle,
+                            subtitle: .settingsOverviewInterfaceSubtitle,
                             systemImage: "rectangle.3.group.fill",
-                            value: uiCustomization.cardPresentation.preset?.title ?? "Custom"
+                            value: uiCustomization.cardPresentation.posterSize.title
                         )
                     }
                 }
@@ -154,10 +154,10 @@ struct IOSSettingsOverview: View {
                         PlaybackSettingsView(viewModel: viewModel)
                     } label: {
                         SettingsOverviewRow(
-                            title: "Playback",
-                            subtitle: "Quality, language, and episode behavior",
+                            title: .settingsPlayback,
+                            subtitle: .settingsOverviewPlaybackSubtitle,
                             systemImage: "play.fill",
-                            value: viewModel.preferredQualityLabel
+                            value: .verbatim(viewModel.preferredQualityLabel)
                         )
                     }
                 }
@@ -167,10 +167,10 @@ struct IOSSettingsOverview: View {
                         SubtitleSettingsView(viewModel: viewModel)
                     } label: {
                         SettingsOverviewRow(
-                            title: "Subtitles",
-                            subtitle: "Language, behavior, and appearance",
+                            title: .settingsSubtitles,
+                            subtitle: .settingsOverviewSubtitlesSubtitle,
                             systemImage: "captions.bubble.fill",
-                            value: viewModel.subtitleLanguageName
+                            value: .verbatim(viewModel.subtitleLanguageName)
                         )
                     }
                 }
@@ -180,8 +180,8 @@ struct IOSSettingsOverview: View {
                         DownloadsSettingsView()
                     } label: {
                         SettingsOverviewRow(
-                            title: "Downloads",
-                            subtitle: "Quality, cleanup, and storage",
+                            title: .settingsDownloadsTitle,
+                            subtitle: .settingsOverviewDownloadsSubtitle,
                             systemImage: "arrow.down.circle.fill"
                         )
                     }
@@ -191,7 +191,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var diagnosticsSection: some View {
-        Section("Support") {
+        Section(.settingsOverviewSupport) {
             NavigationLink {
                 DiagnosticsSettingsView(
                     model: diagnosticsModel,
@@ -199,8 +199,8 @@ struct IOSSettingsOverview: View {
                 )
             } label: {
                 SettingsOverviewRow(
-                    title: "Diagnostics",
-                    subtitle: "Capture, review, and send support reports",
+                    title: .settingsDiagnostics,
+                    subtitle: .settingsOverviewDiagnosticsSubtitle,
                     systemImage: "stethoscope",
                     value: diagnosticsModel.featureState.title
                 )
@@ -211,15 +211,15 @@ struct IOSSettingsOverview: View {
     /// Shown only when the server has an external sign-in provider or the
     /// account already has a provider identity.
     private var accountSignInSection: some View {
-        Section("Account") {
+        Section(.settingsOverviewAccount) {
             NavigationLink {
                 AccountSignInView(model: accountSignIn)
             } label: {
                 SettingsOverviewRow(
-                    title: "Sign-in",
-                    subtitle: "Connect or disconnect your sign-in provider",
+                    title: .settingsSignInTitle,
+                    subtitle: .settingsOverviewSignInSubtitle,
                     systemImage: "person.badge.key.fill",
-                    value: accountSignIn.identities.first?.providerName
+                    value: accountSignIn.identities.first.map { .verbatim($0.providerName) }
                 )
             }
             .accessibilityIdentifier("settings.accountSignIn")
@@ -227,19 +227,19 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesAccountSignIn: Bool {
-        accountSignIn.showsEntry && matches("sign-in", "sign in", "account", "provider", "sso", "single sign-on", "connect")
+        accountSignIn.showsEntry && matches(.settingsSearchIosTermsAccountSignIn, "sign-in", "sign in", "account", "provider", "sso", "single sign-on", "connect")
     }
 
     private var connectionSection: some View {
-        Section("Connection") {
+        Section(.settingsOverviewConnection) {
             Button {
-                router.navigate(to: .serverList)
+                router.navigate(to: .accounts)
             } label: {
                 SettingsOverviewRow(
-                    title: "Server",
-                    subtitle: "Manage this device's Silo connection",
-                    systemImage: "server.rack",
-                    value: viewModel.serverDisplayName,
+                    title: .accountsTitle,
+                    subtitle: .settingsOverviewAccountsSubtitle,
+                    systemImage: "person.2.fill",
+                    value: .verbatim(viewModel.serverDisplayName),
                     showsChevron: true
                 )
             }
@@ -248,8 +248,8 @@ struct IOSSettingsOverview: View {
                     showsSignInTV = true
                 } label: {
                     SettingsOverviewRow(
-                        title: "Sign in a TV",
-                        subtitle: "Approve a TV's sign-in code with this account",
+                        title: .signInTvSettingsLabel,
+                        subtitle: .settingsOverviewSignInTvSubtitle,
                         systemImage: "tv",
                         showsChevron: true
                     )
@@ -259,7 +259,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesSignInTV: Bool {
-        matches("sign in a tv", "tv", "apple tv", "android tv", "code", "device")
+        matches(.settingsSearchIosTermsSignInTv, "sign in a tv", "sign in a device", "approve", "tv", "apple tv", "android tv", "code", "device", "app")
     }
 
     private var aboutSection: some View {
@@ -284,13 +284,13 @@ struct IOSSettingsOverview: View {
                 title: "Version",
                 subtitle: "Installed Kyro app version",
                 systemImage: "info.circle.fill",
-                value: SettingsViewModel.versionString
+                value: .verbatim(SettingsViewModel.versionString)
             )
 
             Link(destination: SiloLegalLinks.privacyPolicy) {
                 SettingsOverviewRow(
-                    title: "Privacy Policy",
-                    subtitle: "Learn how Silo handles your information",
+                    title: .settingsAboutPrivacyPolicy,
+                    subtitle: .settingsOverviewPrivacyPolicySubtitle,
                     systemImage: "hand.raised.fill",
                     showsChevron: true
                 )
@@ -308,8 +308,8 @@ struct IOSSettingsOverview: View {
 
             Link(destination: SiloLegalLinks.sourceCode) {
                 SettingsOverviewRow(
-                    title: "Source Code",
-                    subtitle: "Get Silo's source code under the AGPL",
+                    title: .settingsAboutSourceCode,
+                    subtitle: .settingsOverviewSourceCodeSubtitle,
                     systemImage: "chevron.left.forwardslash.chevron.right",
                     showsChevron: true
                 )
@@ -320,11 +320,11 @@ struct IOSSettingsOverview: View {
     private var experimentalSection: some View {
         // A query naming the section shows every row; otherwise each row
         // appears only for its own terms.
-        Section("Extra Features") {
+        Section(.settingsExperimentalExtraFeatures) {
             if matchesExperimentalName || matchesAudiobooks {
                 SettingsOverviewToggleRow(
-                    title: "Show Audiobooks",
-                    subtitle: "Add Audiobooks to the main navigation",
+                    title: .settingsExperimentalShowAudiobooks,
+                    subtitle: .settingsExperimentalShowAudiobooksSubtitle,
                     systemImage: "book.closed.fill",
                     isOn: Binding(
                         get: { navPrefs.showAudiobooks },
@@ -334,7 +334,7 @@ struct IOSSettingsOverview: View {
             }
 
             ForEach(ExperimentalFeature.allCases.filter {
-                matchesExperimentalName || matches($0.title, $0.subtitle)
+                matchesExperimentalName || matches(feature: $0)
             }, id: \.self) { feature in
                 SettingsOverviewToggleRow(
                     title: feature.title,
@@ -351,8 +351,10 @@ struct IOSSettingsOverview: View {
 
     private var signOutSection: some View {
         Section {
-            Button("Sign Out", role: .destructive) {
-                showSignOutConfirm = true
+            // Signs out of the current account; the router confirms first,
+            // naming the account, its server, and its downloads.
+            Button(.settingsSignOut, role: .destructive) {
+                router.signOutAndReset()
             }
             .frame(maxWidth: .infinity)
             .foregroundStyle(Color.red)
@@ -364,40 +366,42 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesPlayback: Bool {
-        matches("playback", "quality", "resolution", "bitrate", "buffering", "speed", "limit", "cellular", "mobile data", "audio", "dolby vision", "episodes", "skipping", "skip interval", "rewind", "fast forward", "audiobooks", "spoilers", "blur", "thumbnails", "descriptions")
+        matches(.settingsSearchIosTermsPlayback, "playback", "quality", "resolution", "bitrate", "buffering", "speed", "limit", "cellular", "mobile data", "audio", "dolby vision", "episodes", "skipping", "skip interval", "rewind", "fast forward", "audiobooks", "spoilers", "blur", "thumbnails", "descriptions")
     }
 
     private var matchesInterface: Bool {
-        matches("interface", "appearance", "navigation", "menu", "cards", "posters", "captions", "theme music", "theme song")
+        matches(.settingsSearchIosTermsInterface, "interface", "appearance", "cards", "posters", "title art", "theme music", "theme song")
     }
 
     private var matchesGeneral: Bool {
-        matches("general", "profile", "selection", "launch", "startup", "automatic", "every time", "hours", "who's watching", "pin")
+        matches(.settingsSearchIosTermsGeneral, "general", "profile", "selection", "launch", "startup", "automatic", "every time", "hours", "who's watching", "pin")
     }
 
     private var matchesSubtitles: Bool {
-        matches("subtitles", "captions", "language", "behavior", "appearance")
+        matches(.settingsSearchIosTermsSubtitles, "subtitles", "captions", "language", "behavior", "appearance")
     }
 
     private var matchesDownloads: Bool {
         DownloadManager.shared.downloadsEnabled
-            && matches("downloads", "offline", "quality", "cleanup", "storage")
+            && matches(.settingsSearchIosTermsDownloads, "downloads", "offline", "quality", "cleanup", "storage")
     }
 
     private var matchesDiagnostics: Bool {
-        matches("diagnostics", "support", "reports", "debug", "crash")
+        matches(.settingsSearchTermsDiagnostics, "diagnostics", "support", "reports", "debug", "crash")
     }
 
     private var matchesAudiobooks: Bool {
-        matches("audiobooks", "navigation", "library")
+        matches(.settingsSearchIosTermsAudiobooks, "audiobooks", "navigation", "library")
     }
 
     private var matchesConnectionSection: Bool {
-        matches("server", "connection", viewModel.serverDisplayName) || matchesSignInTV
+        matches(.settingsSearchIosTermsConnection, "server", "connection", "account", "sign out", viewModel.serverDisplayName)
+            || matchesSignInTV
     }
 
     private var matchesAboutSection: Bool {
         matches(
+            .settingsSearchIosTermsAbout,
             "about",
             "version",
             SettingsViewModel.versionString,
@@ -423,17 +427,17 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesExperimentalName: Bool {
-        matches("extra features", "experimental")
+        matches(.settingsSearchIosTermsExtraFeatures, "extra features", "experimental")
     }
 
     private var matchesExperimentalSection: Bool {
         matchesExperimentalName
             || matchesAudiobooks
-            || ExperimentalFeature.allCases.contains { matches($0.title, $0.subtitle) }
+            || ExperimentalFeature.allCases.contains { matches(feature: $0) }
     }
 
     private var matchesSignOut: Bool {
-        matches("sign out", "account")
+        matches(.settingsSearchTermsSignOut, "sign out", "account")
     }
 
     private var matchesLiveTV: Bool { KyroLiveTVSettingsEntry.matches(searchText) }
@@ -461,10 +465,36 @@ struct IOSSettingsOverview: View {
             || matchesSignOut
     }
 
-    private func matches(_ terms: String...) -> Bool {
+    /// The English terms always match (they are matching data, never shown),
+    /// and so do the catalog's terms in the app language. Translations may
+    /// separate them with their own script's comma.
+    private func matches(_ catalogTerms: LocalizedStringResource, _ terms: String...) -> Bool {
+        guard let query else { return true }
+        let translated = AppLanguage.string(catalogTerms, locale: locale)
+            .split(whereSeparator: { ",、，،".contains($0) })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        return Self.matches(query, terms + translated)
+    }
+
+    /// An extra feature's row matches its title and subtitle as shown, and
+    /// in English.
+    private func matches(feature: ExperimentalFeature) -> Bool {
+        guard let query else { return true }
+        return Self.matches(query, [feature.title, feature.subtitle].flatMap {
+            [AppLanguage.string($0, locale: locale), AppLanguage.string($0, locale: Self.english)]
+        })
+    }
+
+    private static let english = Locale(identifier: "en")
+
+    /// The trimmed search text; nil when empty, which matches every row.
+    private var query: String? {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return true }
-        return terms.contains { $0.localizedCaseInsensitiveContains(query) }
+        return query.isEmpty ? nil : query
+    }
+
+    private static func matches(_ query: String, _ terms: [String]) -> Bool {
+        terms.contains { $0.localizedCaseInsensitiveContains(query) }
     }
 }
 #endif

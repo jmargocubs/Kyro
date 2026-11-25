@@ -211,22 +211,6 @@ struct TVMainTabView: View {
         .overlayPreferenceValue(TVTopMenuAnchorKey.self) { anchors in
             panelOverlay(anchors: anchors)
         }
-        .allowsHitTesting(!showSignOutConfirm)
-        .overlay {
-            if showSignOutConfirm {
-                TVSettingsConfirmationOverlay(
-                    title: "Sign Out",
-                    message: "Choose whether to keep or remove this server from this Apple TV.",
-                    confirmTitle: "Sign Out",
-                    additionalDestructiveTitle: "Sign Out & Remove Server",
-                    cancel: dismissSignOutConfirmation,
-                    confirm: router.signOutAndReset,
-                    additionalDestructiveAction: router.signOutRemoveServerAndReset
-                )
-                .transition(.opacity)
-            }
-        }
-        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSignOutConfirm)
         .ignoresSafeArea(edges: [.top, .horizontal])
         .tint(.siloOnSurface)
         .tvObserveFocus("Shell", value: selectedRoot)
@@ -842,7 +826,9 @@ struct TVMainTabView: View {
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
             onSwitchServer: { closePanel(then: { navigateFromBar(.serverList) }) },
-            onSignOut: { closePanel(then: { showSignOutConfirm = true }) }
+            // Upstream 54cf0f34: the router presents the shared account
+            // confirmation (sign out, or sign out and remove the server).
+            onSignOut: { closePanel(then: { router.signOutAndReset() }) }
         )
     }
 
@@ -1441,8 +1427,8 @@ struct TVMainTabView: View {
             HistoryView()
         case .collections:
             CollectionsView()
-        case .collectionDetail(let id):
-            CollectionDetailView(collectionId: id)
+        case .collectionDetail(let id, let title):
+            CollectionDetailView(collectionId: id, title: title)
         case .watchParty:
             #if os(iOS) || os(tvOS)
             WatchPartyHubView(session: .shared)

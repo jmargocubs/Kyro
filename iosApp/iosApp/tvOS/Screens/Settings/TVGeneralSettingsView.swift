@@ -26,12 +26,12 @@ struct TVGeneralSettingsPane: View {
 
             TVSettingsPickerRow(
                 title: "Paired \(AppBrand.name) Profile",
-                value: pairedProfileName,
+                value: .verbatim(pairedProfileName),
                 action: changePairedProfile
             )
             .focused(detailFocus, equals: .generalAppleTVUser)
 
-            TVSettingsFooter(pairingDescription)
+            TVSettingsFooter(.verbatim(pairingDescription))
 
             TVSettingsSectionHeader("PROFILE AT LAUNCH")
 
@@ -54,7 +54,7 @@ struct TVGeneralSettingsPane: View {
 
             if let message = preferences.capabilityMessage {
                 TVSettingsSectionHeader("SERVER SUPPORT")
-                TVSettingsFooter(message)
+                TVSettingsFooter(.verbatim(message))
             }
 
             if preferences.hasDeviceOverrides {
@@ -88,7 +88,7 @@ struct TVGeneralSettingsPane: View {
 
                 TVSettingsFooter("Show a suggested minimum viewer age, such as Common Sense Media’s, on movie and show details. This does not change what the profile may watch.")
                 if let writeError = advisoryAgePreference.writeError {
-                    TVSettingsFooter(writeError)
+                    TVSettingsFooter(.verbatim(writeError))
                 }
             }
 
@@ -96,7 +96,7 @@ struct TVGeneralSettingsPane: View {
 
             TVSettingsPickerRow(
                 title: "Poster Size",
-                value: preferences.cardPresentation.posterSize.title
+                value: .verbatim(preferences.cardPresentation.posterSize.title)
             ) { activePicker = .posterSize }
             .disabled(
                 !preferences.allowsEditing
@@ -105,7 +105,7 @@ struct TVGeneralSettingsPane: View {
 
             TVSettingsPickerRow(
                 title: "Captions",
-                value: preferences.cardPresentation.caption.title
+                value: .verbatim(preferences.cardPresentation.caption.title)
             ) { activePicker = .caption }
             .disabled(
                 !preferences.allowsEditing
@@ -131,7 +131,7 @@ struct TVGeneralSettingsPane: View {
             if let message = preferences.syncErrorMessage,
                message != preferences.capabilityMessage,
                message != HeldSettingChange.message {
-                TVSettingsFooter(message)
+                TVSettingsFooter(.verbatim(message))
             }
             if preferences.hasHeldChanges {
                 TVHeldSettingChangesRows(
@@ -196,7 +196,7 @@ struct TVGeneralSettingsPane: View {
             TVSettingsFooter("Use logo artwork as the title when available. Only affects this Apple TV. Your other devices keep their own setting.")
         }
         if let message = titleArt.errorMessage ?? titleArt.readErrorMessage {
-            TVSettingsFooter(message)
+            TVSettingsFooter(.verbatim(message))
         }
     }
 
@@ -226,13 +226,16 @@ struct TVGeneralSettingsPane: View {
 
         TVSettingsFooter("Play a title's theme song from your library while its page is open. Only affects this Apple TV.")
         if let message = themeMusic.errorMessage {
-            TVSettingsFooter(message)
+            TVSettingsFooter(.verbatim(message))
         }
     }
 
     private var pairedProfileName: String {
-        guard let serverID = registry.activeServerId,
-              let remembered = launchPreferences.rememberedProfile(for: serverID) else {
+        // Upstream 54cf0f34: a remembered profile belongs to an account.
+        guard registry.activeServerId != nil,
+              let remembered = launchPreferences.rememberedProfile(
+                  forAccount: AccountScope.current?.localAccountId
+              ) else {
             return "Not paired"
         }
         guard let activeProfile,
@@ -252,7 +255,7 @@ struct TVGeneralSettingsPane: View {
     private var presetRow: some View {
         let row = TVSettingsPickerRow(
             title: "Preset",
-            value: preferences.cardPresentation.preset?.title ?? "Custom"
+            value: .verbatim(preferences.cardPresentation.preset?.title ?? "Custom")
         ) { activePicker = .preset }
 
         if preferences.cardPresentationUsesDeviceOverride || !preferences.allowsEditing {
@@ -284,7 +287,7 @@ struct TVGeneralSettingsPane: View {
             TVSettingsPickerSheet(
                 title: "Card Preset",
                 options: CardPresentationPreset.allCases.map {
-                    TVSettingsOption(id: $0.rawValue, label: $0.title)
+                    TVSettingsOption(id: $0.rawValue, label: .verbatim($0.title))
                 } + (preferences.cardPresentation.preset == nil
                     ? [TVSettingsOption(id: Self.customPresetId, label: "Custom")]
                     : []),
@@ -298,13 +301,13 @@ struct TVGeneralSettingsPane: View {
                     }
                 ),
                 allowsSelection: preferences.allowsEditing,
-                disabledMessage: preferences.capabilityMessage
+                disabledMessage: preferences.capabilityMessage.map { LocalizedStringResource.verbatim($0) }
             )
         case .posterSize:
             TVSettingsPickerSheet(
                 title: "Poster Size",
                 options: CardPosterSize.allCases.map {
-                    TVSettingsOption(id: $0.rawValue, label: $0.title)
+                    TVSettingsOption(id: $0.rawValue, label: .verbatim($0.title))
                 },
                 selection: Binding(
                     get: { preferences.cardPresentation.posterSize.rawValue },
@@ -314,13 +317,13 @@ struct TVGeneralSettingsPane: View {
                     }
                 ),
                 allowsSelection: preferences.allowsEditing,
-                disabledMessage: preferences.capabilityMessage
+                disabledMessage: preferences.capabilityMessage.map { LocalizedStringResource.verbatim($0) }
             )
         case .caption:
             TVSettingsPickerSheet(
                 title: "Card Captions",
                 options: CardCaptionStyle.allCases.map {
-                    TVSettingsOption(id: $0.rawValue, label: $0.title)
+                    TVSettingsOption(id: $0.rawValue, label: .verbatim($0.title))
                 },
                 selection: Binding(
                     get: { preferences.cardPresentation.caption.rawValue },
@@ -330,7 +333,7 @@ struct TVGeneralSettingsPane: View {
                     }
                 ),
                 allowsSelection: preferences.allowsEditing,
-                disabledMessage: preferences.capabilityMessage
+                disabledMessage: preferences.capabilityMessage.map { LocalizedStringResource.verbatim($0) }
             )
         }
     }
@@ -381,7 +384,7 @@ private struct TVMenuCustomizationSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     if let message = preferences.capabilityMessage {
-                        TVSettingsFooter(message)
+                        TVSettingsFooter(.verbatim(message))
                     }
 
                     if preferences.primaryMenuUsesDeviceOverride {
@@ -425,7 +428,7 @@ private struct TVMenuCustomizationSheet: View {
                         VStack(spacing: 10) {
                             ForEach(libraries.sorted(by: librarySort)) { library in
                                 TVSettingsToggleRow(
-                                    title: library.name,
+                                    title: .verbatim(library.name),
                                     isOn: preferences.isLibraryPinned(library.id)
                                 ) {
                                     preferences.setLibraryPinned(

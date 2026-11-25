@@ -19,13 +19,14 @@ struct TVLibraryTypeTabView: View {
     @Binding var selectedPill: TVLibraryPill
     /// Whether this body is a Movies/Series category tab, which narrows a
     /// mixed library to that tab's media type. A pinned library shortcut
-    /// passes false: the user picked the whole library, not a video tab, so
+    /// (Kyro keeps them) passes false: the user picked the whole library, so
     /// a mixed library keeps both movies and series.
     var scopesMixedLibraries: Bool = true
     var focusRequest: Int = 0
     var isTopMenuFocused: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.locale) private var locale
 
     var body: some View {
         siloBody
@@ -51,14 +52,14 @@ struct TVLibraryTypeTabView: View {
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up",
-                    title: "No \(type.title.lowercased()) libraries",
-                    subtitle: "Libraries visible to this profile will appear here."
+                    title: AppLanguage.string(noLibrariesTitle, locale: locale),
+                    subtitle: AppLanguage.string(.libraryNoLibrariesVisibleBody, locale: locale)
                 )
                 .padding(.top, TVTopMenuLayout.contentTopInset)
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "No \(type.title.lowercased()) libraries"
+                    accessibilityLabel: AppLanguage.string(noLibrariesTitle, locale: locale)
                 )
             }
         }
@@ -69,13 +70,21 @@ struct TVLibraryTypeTabView: View {
         Self.mediaScope(for: type, library: activeLibrary, scopesMixedLibraries: scopesMixedLibraries)
     }
 
-    /// The media type a mixed library is narrowed to. Only an explicitly
-    /// selected Movies or Series category tab narrows; single-type libraries
-    /// and library shortcuts are never narrowed.
+    private var noLibrariesTitle: LocalizedStringResource {
+        switch type {
+        case .movies: return .libraryNoLibrariesOfTypeMovies
+        case .series: return .libraryNoLibrariesOfTypeSeries
+        case .music: return .libraryNoLibrariesOfTypeMusic
+        case .audiobooks: return .libraryNoLibrariesOfTypeAudiobooks
+        }
+    }
+
+    /// The media type a mixed library is narrowed to: the Movies or Series
+    /// tab it was opened from. Single-type libraries are never narrowed.
     static func mediaScope(
         for type: TVLibraryTabType,
         library: Library?,
-        scopesMixedLibraries: Bool
+        scopesMixedLibraries: Bool = true
     ) -> LibraryVideoScope? {
         guard scopesMixedLibraries, library?.isMixedLibrary == true else { return nil }
         switch type {

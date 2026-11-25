@@ -5,12 +5,22 @@ import SwiftUI
 /// layouts stay structural rather than incidental.
 struct HomeFeedRow: View {
     let section: ResolvedSection
+    /// Opens the row's full page from its title and a trailing Explore all
+    /// card, unless the row already shows all of it.
+    var onExploreAll: (() -> Void)? = nil
     /// Long-press actions, forwarded to every card in the row.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
-    @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var visibleItemId: String?
     @Environment(AppRouter.self) private var router
+    @Environment(\.browseLibraryId) private var browseLibraryId
+    /// The app language, so a switch re-renders the title.
+    @Environment(\.locale) private var locale
+
+    /// Nil when the row already shows all its page would.
+    private var exploreAll: (() -> Void)? {
+        section.showsWholeSection ? nil : onExploreAll
+    }
 
     private var isResume: Bool { HomeFeed.isResume(section) }
     private var usesStills: Bool { Self.usesStills(section) }
@@ -55,13 +65,18 @@ struct HomeFeedRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
-            HomeSectionHeader(
-                title: section.title,
-                icon: isResume ? "play.circle.fill" : nil
-            )
+        if section.holdsCollections {
+            HomeCollectionsRow(section: section)
+        } else {
+            VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
+                HomeSectionHeader(
+                    title: section.displayTitle(in: locale),
+                    icon: isResume ? "play.circle.fill" : nil,
+                    action: exploreAll
+                )
 
-            rowScroller
+                rowScroller
+            }
         }
     }
 
@@ -104,8 +119,6 @@ struct HomeFeedRow: View {
                             HomeStillCard(
                                 item: item,
                                 width: Self.stillWidth,
-                                showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
-                                showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 opensResumeContext: isResume,
                                 onRemoveFromContinueWatching: removalAction(for: item),
                                 onSetWatched: watchedAction(for: item)
@@ -114,8 +127,6 @@ struct HomeFeedRow: View {
                             HomePosterCard(
                                 item: item,
                                 width: Self.posterWidth,
-                                showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
-                                showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 showsProgress: isResume,
                                 opensResumeContext: isResume,
                                 aspect: isAudiobookRow ? .square : .poster,
@@ -126,11 +137,26 @@ struct HomeFeedRow: View {
                         }
                     }
                     .id(item.contentId)
-                    .onAppear { warmCards(after: item) }
+                    .onAppear {
+                        warmCards(after: item)
+                        DetailPrewarmer.shared.offer(prewarmTarget(for: item), router: router)
+                    }
+                    .onDisappear { DetailPrewarmer.shared.withdraw(prewarmTarget(for: item)) }
+                }
+                if let exploreAll, !section.items.isEmpty {
+                    SectionExploreAllCard(
+                        size: usesStills
+                            ? HomeStillCard.artworkSize(width: Self.stillWidth)
+                            : HomePosterCard.artworkSize(width: Self.posterWidth, aspect: isAudiobookRow ? .square : .poster),
+                        cornerRadius: usesStills ? HomeFeedMetrics.stillRadius : HomeFeedMetrics.posterRadius,
+                        rowTitle: section.displayTitle(in: locale),
+                        action: exploreAll
+                    )
                 }
             }
             .scrollTargetLayout()
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
         }
         .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
         .scrollClipDisabled()
@@ -140,6 +166,11 @@ struct HomeFeedRow: View {
     private func warmCards(after item: SectionItem) {
         guard let index = section.items.firstIndex(where: { $0.id == item.id }) else { return }
         ArtworkLookahead.warmCards(after: index, in: section.items) { Self.cardArtwork(for: $0, in: section) }
+    }
+
+    /// The page this row's card opens, as `HomeCardTap` opens it.
+    private func prewarmTarget(for item: SectionItem) -> DetailPrewarmTarget? {
+        .homeCard(item, opensResumeContext: isResume, libraryId: browseLibraryId)
     }
 
     private func validSelectionId(preferred: String?) -> String? {
@@ -153,7 +184,7 @@ struct HomeFeedRow: View {
     /// Episode context for accessibility when episode-discovery cards are
     /// visually captioned with their series name.
     private func episodeAccessibilityLabel(for item: SectionItem) -> String? {
-        EpisodeCardCaption.accessibilityLabel(for: item)
+        EpisodeCardCaption.accessibilityLabel(for: item, locale: locale)
     }
 
     /// Removal is only offered where it means something: Continue Watching
