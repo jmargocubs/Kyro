@@ -1,6 +1,6 @@
 # Kyro X iOS Build 120 readiness
 
-**Status: implementation committed locally; Release compilation is not verified.** The single requested Xcode compile failed with a secondary Sports route type error. That error was corrected and focused checks/syntax parsing were rerun, but there was no second Xcode compile under the one-compile instruction. Build 120 is not yet cleared for physical acceptance or packaging.
+**Status: iOS Release compilation verified; physical-device acceptance pending.** On November 25, 2026, the user authorized revalidation after the earlier compiler failure. The corrected implementation at `f7dc7fbdbedd56373adf6160098bbd9b35bd85fd` passed the generic signing-disabled iOS Release build with `-jobs 2` (exit 0, `BUILD SUCCEEDED`). No further implementation corrections were needed. No IPA packaging or device execution was performed.
 
 ## Scope and source
 
@@ -99,11 +99,13 @@ No IPTV VOD, universal media catalog, extra media-server integration, Simulator 
 
 ## Validation
 
-- `bash scripts/run-build120-host-checks.sh`: 59 Build 120 focused checks; 20 existing codec checks; 101 existing unified backup checks. The final run is recorded in `artifacts/build120-readiness/host-checks.log`.
+- `bash scripts/run-build120-host-checks.sh`: 59 Build 120 focused checks; 20 existing codec checks; 101 existing unified backup checks. Original evidence is retained in `artifacts/build120-readiness/host-checks.log`; the post-build revalidation is recorded in `artifacts/build120-readiness/host-checks-revalidation.log`.
 - Behavioral checks cover order normalization, visibility, relaunch, empty-result preference retention, exact favorites, sports date/status selection and bounds, validated export/decode/preview/restore/read-back/Undo, and native-dock scroll-range hysteresis.
 - Source/asset contracts supplement those behavioral checks for approved image hashes, original channel/Sports routing calls, additive original feed order, upstream dock/scroll-claim wiring, accessory availability/priority, primary tabs/Live TV, Aether revision and capacity.
 - `shellcheck scripts/run-build120-host-checks.sh`, Swift iOS syntax parsing and `git diff --check` passed.
-- One generic signing-disabled Release compile (`-jobs 2`, shared default DerivedData): **failed, exit 65**. The compiler reported `SecondaryDestinationID` had no `kyroRoot` member at the new Home Sports fallback call. The call now uses the explicit iOS-only `.sports` secondary route, mapped to the original Hub, with native Back and non-primary-tab access. This correction is syntax/source-contract checked but **not recompiled with Xcode**. Evidence: `artifacts/build120-readiness/ios-release.log`.
+- Earlier compilation: **failed, exit 65** because `SecondaryDestinationID` had no `kyroRoot` member at the new Home Sports fallback call. Commit `f7dc7fbdbedd56373adf6160098bbd9b35bd85fd` corrected the call to the explicit iOS-only `.sports` secondary route, mapped to the original Hub, with native Back and non-primary-tab access. Earlier evidence is retained in `artifacts/build120-readiness/ios-release.log`.
+- Authorized revalidation: **passed, exit 0, `BUILD SUCCEEDED`**, using `xcodebuild build -project Silo.xcodeproj -scheme Silo -configuration Release -destination 'generic/platform=iOS' -jobs 2 -disableAutomaticPackageResolution -skipPackageUpdates CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' SILO_BUILD_CHANNEL=sideload`. Shared default DerivedData was reused; no clean, archive or package operation was run. Evidence: `artifacts/build120-readiness/ios-release-revalidation.log`.
+- Built app metadata verified: display name `Kyro X`, bundle `com.cubbiestream.kyro`, version `1.0.120`, build `120`, minimum iOS `18.0`, binary architecture `arm64`. This is compilation evidence, not an installable IPA or a physical-device test.
 - Existing warnings included Swift-6-isolation warnings in `AppLanguagePreferences`/`HomeWatchStateRealtime`, a non-Sendable default function in `KyroSportsPinnedEvent`, and an unused mutable variable in `ContentView`. Unrelated warning remediation was not included.
 
 Host/source checks and compilation do not validate native UI animations, real streams or device rendering. There was no Simulator or physical-device execution for Build 120.
@@ -111,7 +113,7 @@ Host/source checks and compilation do not validate native UI animations, real st
 ## Remaining limitations
 
 - Physical acceptance is still required; Build 119 acceptance is the baseline, not acceptance of these new behaviors.
-- A new successful Release compilation of the corrected source is required before readiness can be claimed. The one-compile attempt was not repeated.
+- The compiler gate is satisfied for the corrected implementation. Physical-device acceptance is still required for the new UI and playback entry points.
 - Primary minimization/inline secondary placement requires the relevant native iOS versions. Older systems intentionally use the compatibility behavior above.
 - Sports Home covers today and tomorrow, refreshes on entry/foreground or Retry, and is not a continuously polled scoreboard. Longer-range sports browsing remains in Sports Hub.
 - Team favorites use the independent league/name identity pattern; provider-side team-name changes can require re-favoriting. There was no pre-existing Build 119 team/league favorite state to migrate.
