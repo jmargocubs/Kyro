@@ -49,8 +49,11 @@ struct RecommendationsView: View {
     /// iPhone, outside the iPhone Duo's cover screen, shows recommendations,
     /// the watchlist and favorites as pages switched from a dock, as the
     /// Libraries tab does. iPad and Mac keep the shortcut row.
+    /// Kyro: the dock stays off while Kyro's shared header hosts For You or it
+    /// is pushed from the profile menu; the Kyro shell owns that navigation.
     private var usesDockLayout: Bool {
         UIDevice.current.userInterfaceIdiom == .phone && statusColumn == nil
+            && hostedHeader == nil && secondaryTitle == nil
     }
     #endif
 

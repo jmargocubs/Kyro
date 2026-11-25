@@ -434,6 +434,7 @@ enum PlaybackSettingsLayout {
     static let advancedEntryFooter = "Seek cache, thumbnail previews, buffering, lossless audio, and deinterlacing. The defaults suit most devices."
     static let advancedPageFooter = "Change these only to fix a playback problem on this device. Thumbnail Previews use Seekr when a key is configured; playback still works when they are off or unavailable."
     static let advancedAudioFooter = "If surround plays as stereo, turn off Lossless Multichannel Audio. With TrueHD Atmos and DTS:X on, those tracks keep their height channels but play as compressed audio."
+    static let advancedAudioFooterWithoutObjectAudio = "If surround plays as stereo, turn off Lossless Multichannel Audio."
 }
 
 #if os(iOS)
@@ -578,11 +579,16 @@ struct PlaybackAdvancedSettingsSections: View {
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
 
-            Toggle("TrueHD Atmos and DTS:X", isOn: $viewModel.trueHDAtmosEnabled)
-                .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloSwitchOn)
+            // Upstream 5ac5267b: shown only where Aether can render it.
+            if AetherObjectAudioPolicy.isAvailable {
+                Toggle("TrueHD Atmos and DTS:X", isOn: $viewModel.trueHDAtmosEnabled)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .tint(.siloSwitchOn)
+            }
         } footer: {
-            Text(PlaybackSettingsLayout.advancedAudioFooter)
+            Text(AetherObjectAudioPolicy.isAvailable
+                ? PlaybackSettingsLayout.advancedAudioFooter
+                : PlaybackSettingsLayout.advancedAudioFooterWithoutObjectAudio)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)

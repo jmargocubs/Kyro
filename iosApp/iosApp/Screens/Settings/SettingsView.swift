@@ -38,13 +38,12 @@ struct SettingsView: View {
             macOSBody
             #endif
         }
-        .alert(Text(.menuSignOut), isPresented: $showSignOutConfirm) {
-            Button(.menuSignOut, role: .destructive) {
-                router.signOutAndReset()
-            }
-            Button(.commonCancel, role: .cancel) {}
-        } message: {
-            Text("Are you sure you want to sign out?")
+        // Upstream's signOutAndReset presents the shared account-removal
+        // confirmation, so Kyro's Sign Out row hands straight to it.
+        .onChange(of: showSignOutConfirm) { _, requested in
+            guard requested else { return }
+            showSignOutConfirm = false
+            router.signOutAndReset()
         }
     }
     #endif

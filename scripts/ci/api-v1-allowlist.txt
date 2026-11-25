@@ -6,4 +6,5 @@ iosApp/Tests/DiagnosticsPathTemplateTests.swift	54
 iosApp/Tests/Fixtures/DiagnosticsContract/fixtures/valid/loglines.jsonl	1
 iosApp/Tests/Fixtures/SettingsContract/SOURCE	1
 iosApp/Tests/HTTPClientRequestPathTests.swift	2
+iosApp/iosApp/Kyro/Sports/TheSportsDB/TheSportsDBSupplement.swift	1
 iosApp/iosApp/Networking/ConnectionMonitor.swift	1
