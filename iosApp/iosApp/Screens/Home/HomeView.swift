@@ -19,6 +19,12 @@ struct HomeView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
+    @State private var watchStateRefresh: Task<Void, Never>?
+    @State private var watchStateRefreshPending = false
+    @State private var hasObservedWatchState = false
+    #if os(macOS)
+    @State private var watchStateWindowVisible = false
+    #endif
     #if !os(tvOS)
     /// Feeds the glass strip behind the floating header as rows scroll under it.
     @State private var chromeScrollState = PageChromeScrollState()
@@ -51,14 +57,34 @@ struct HomeView: View {
         SiloTheme.smallPadding + (statusColumn == nil ? 0 : 6)
     }
     @Environment(\.statusColumn) private var statusColumn
-    /// The LazyVStack already contributes its normal section spacing after the
-    /// header runway. Adding a second large header gap pushed the first row
-    /// far down the screen.
-    private let headerToContentGap: CGFloat = 0
     #endif
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.locale) private var locale
+
+    private var observesWatchState: Bool {
+        guard scenePhase == .active, router.path.isEmpty, router.presentedPlayer == nil else { return false }
+        #if os(iOS)
+        return router.presentedItemDetail == nil
+        #elseif os(macOS)
+        return watchStateWindowVisible
+        #else
+        return true
+        #endif
+    }
+
+    private struct WatchStateScope: Equatable {
+        let serverID: String?
+        let owner: SessionOwner?
+        let credential: CredentialOwnerSnapshot
+    }
+
+    private var watchStateScope: WatchStateScope? {
+        guard observesWatchState else { return nil }
+        return WatchStateScope(serverID: ServerRegistry.shared.activeServerId, owner: SessionOwner.current(),
+                               credential: TokenStore.shared.ownerSnapshot)
+    }
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -81,6 +107,9 @@ struct HomeView: View {
                     isTopMenuFocused: isTopMenuFocused,
                     onTopMenuFocusRequest: onTopMenuFocusRequest,
                     onItemTap: navigateToDetail,
+                    onExploreAll: { section in
+                        router.navigate(to: .sectionCatalog(SectionCatalogTarget(section, scope: .home)))
+                    },
                     onRemoveFromContinueWatching: dismissContinueWatching,
                     onSetWatched: setWatched
                 )
@@ -96,19 +125,19 @@ struct HomeView: View {
                     .tvPageFocusOwner(
                         focusRequest: homeFocusRequest,
                         isTopMenuFocused: isTopMenuFocused,
-                        accessibilityLabel: "Loading home",
+                        accessibilityLabel: AppLanguage.string(.homeLoading, locale: locale),
                         onMoveUp: onTopMenuFocusRequest
                     )
             } else {
                 EmptyStateView(
                     icon: "play.rectangle.on.rectangle",
-                    title: "Nothing to watch yet",
-                    subtitle: "Add media to your libraries or start watching to see it here."
+                    title: AppLanguage.string(.homeEmpty, locale: locale),
+                    subtitle: AppLanguage.string(.homeEmptyBody, locale: locale)
                 )
                 .tvPageFocusOwner(
                     focusRequest: homeFocusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Nothing to watch yet",
+                    accessibilityLabel: AppLanguage.string(.homeEmpty, locale: locale),
                     onMoveUp: onTopMenuFocusRequest
                 )
             }
@@ -140,8 +169,8 @@ struct HomeView: View {
                 } else {
                     EmptyStateView(
                         icon: "play.rectangle.on.rectangle",
-                        title: "Nothing to watch yet",
-                        subtitle: "Add media to your libraries or start watching to see it here."
+                        title: AppLanguage.string(.homeEmpty, locale: locale),
+                        subtitle: AppLanguage.string(.homeEmptyBody, locale: locale)
                     )
                 }
             }
@@ -149,7 +178,7 @@ struct HomeView: View {
 
             if showsOwnHeader {
             HStack(alignment: .center, spacing: 12) {
-                SidebarToggleButton()
+                SidebarToggleButton(chromeScrollState: chromeScrollState)
                 // The wordmark is pinned with the utilities so it stays put
                 // over the glass strip instead of scrolling away with the feed.
                 // It occupies the same 44pt row as the icon buttons so its
@@ -175,8 +204,8 @@ struct HomeView: View {
                     onSwitchProfile: {
                         router.switchProfile()
                     },
-                    onSwitchServer: { router.navigate(to: .serverList) },
-                    onSignOut: { router.signOutAndReset() }
+                    onSignOut: { router.signOutAndReset() },
+                    chromeScrollState: chromeScrollState
                 )
             }
             .clearsWindowControls()
@@ -217,7 +246,11 @@ struct HomeView: View {
         #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
-            Task { await viewModel.loadSections() }
+            scheduleWatchStateRefresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .titleMarkedNotInterested)) { note in
+            guard let contentId = note.userInfo?[NotInterestedSync.contentIdKey] as? String else { return }
+            viewModel.removeNotInterested(contentId: contentId)
         }
         // Home stays mounted while the app is away. A load that failed or
         // was cut off meanwhile runs again as the app returns, instead of
@@ -228,15 +261,54 @@ struct HomeView: View {
                 Task { await viewModel.reloadIfInterrupted() }
             }
         }
+        #if os(macOS)
+        .background(MacWindowVisibilityReader { watchStateWindowVisible = $0 })
+        #endif
+        .task(id: watchStateScope) {
+            cancelWatchStateRefresh()
+            guard observesWatchState else { return }
+            // Return to the server even if the socket is unavailable.
+            if hasObservedWatchState { scheduleWatchStateRefresh() }
+            hasObservedWatchState = true
+            await HomeWatchStateRealtime.observe { scheduleWatchStateRefresh() }
+        }
+        .onDisappear { cancelWatchStateRefresh() }
         .alert(
-            "Couldn’t Update Item",
+            Text(.homeUpdateFailedTitle),
             isPresented: $viewModel.isShowingActionError
         ) {
-            Button("OK", role: .cancel) {}
+            Button(.homeUpdateFailedOk, role: .cancel) {}
         } message: {
-            Text(viewModel.actionError?.message ?? "The item could not be updated. Try again.")
+            if let message = viewModel.actionError?.message {
+                Text(message)
+            } else {
+                Text(.homeUpdateFailedMessage)
+            }
         }
         .personalStateNoticeAlert($viewModel.personalStateNotice)
+    }
+
+    private func scheduleWatchStateRefresh() {
+        guard observesWatchState else { return }
+        watchStateRefreshPending = true
+        guard watchStateRefresh == nil else { return }
+        let scope = watchStateScope
+        watchStateRefresh = Task {
+            while watchStateRefreshPending && !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+                guard watchStateScope == scope else { break }
+                watchStateRefreshPending = false
+                StartupContentPrefetcher.invalidateHomeSectionsInFlight()
+                await viewModel.loadSections()
+            }
+            if !Task.isCancelled { watchStateRefresh = nil }
+        }
+    }
+
+    private func cancelWatchStateRefresh() {
+        watchStateRefresh?.cancel()
+        watchStateRefresh = nil
+        watchStateRefreshPending = false
     }
 
     // MARK: - Content
@@ -259,16 +331,20 @@ struct HomeView: View {
         let sections = feedSections
         return ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
-                // Clear runway under the pinned header so the first row
-                // starts below the wordmark and utilities.
-                Color.clear
-                    .frame(height: topRunwaySpacing(topSafeAreaInset: topSafeAreaInset))
+                #if os(macOS)
+                // The stack's section spacing after this marker is the Mac's
+                // only top gap; the featured hero takes it back.
+                Color.clear.frame(height: 0)
+                #endif
 
                 ForEach(sections) { section in
                     feedSection(section, leadsPage: section.id == sections.first?.id)
                         .onAppear { warmRows(after: section) }
                 }
             }
+            // Clear runway under the pinned header. The first row starts right
+            // below it, at the same height as on the Libraries and For You tabs.
+            .padding(.top, topRunwaySpacing(topSafeAreaInset: topSafeAreaInset))
             .padding(.bottom, HomeFeedMetrics.bottomRunway)
         }
         .reportsPageChromeScroll(to: activeChromeScrollState)
@@ -306,6 +382,7 @@ struct HomeView: View {
     private func feedRow(_ section: ResolvedSection) -> some View {
         HomeFeedRow(
             section: section,
+            onExploreAll: { router.navigate(to: .sectionCatalog(SectionCatalogTarget(section, scope: .home))) },
             onRemoveFromContinueWatching: dismissContinueWatching,
             onSetWatched: setWatched
         )
@@ -319,6 +396,9 @@ struct HomeView: View {
         let next = sections.dropFirst(index + 1).prefix(ArtworkLookahead.rowsAhead)
         ArtworkLookahead.warmRows(next, items: \.items) { section, item in
             HomeFeedRow.cardArtwork(for: item, in: section)
+        }
+        ArtworkLookahead.warmRows(next, items: \.collections) { _, card in
+            HomeCollectionsRow.cardArtwork(for: card)
         }
     }
     #endif
@@ -356,9 +436,9 @@ struct HomeView: View {
 
     #if !os(tvOS)
     private func topRunwaySpacing(topSafeAreaInset: CGFloat) -> CGFloat {
-        // Mirror the floating header's vertical footprint (icon-frame height +
-        // bottom padding) so the first row clears it. LazyVStack supplies the
-        // remaining row gap; don't double-count it here.
+        // Mirror the floating header's vertical footprint (top inset +
+        // icon-frame height + bottom padding) so the first row starts right
+        // below it, as it does under the Libraries and For You headers.
         #if os(macOS)
         // The Mac sidebar carries the logo and utilities, so Home has no
         // floating header to clear, and the feed already starts below the
@@ -367,7 +447,7 @@ struct HomeView: View {
         #else
         var runway = topSafeAreaInset + SiloTheme.topBarIconHitSize + SiloTheme.smallPadding
         #if os(iOS)
-        runway += headerTopInset + headerToContentGap
+        runway += headerTopInset
         #else
         runway += SiloTheme.largePadding + SiloTheme.smallPadding
         #endif

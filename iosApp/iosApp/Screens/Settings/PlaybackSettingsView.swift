@@ -9,6 +9,9 @@ struct PlaybackSettingsView: View {
     @State private var spoilers = EpisodeSpoilerPreferences.shared
     @State private var showUseProfileSettingsConfirmation = false
 
+    /// The app language, so a switch re-renders the labels.
+    @Environment(\.locale) private var locale
+
     var body: some View {
         List {
             if viewModel.hasHeldPlaybackChanges {
@@ -39,19 +42,19 @@ struct PlaybackSettingsView: View {
         // Reloads on another network, whose speed and limit differ.
         .task(id: BandwidthProbeScheduler.shared.connectionRevision) { await viewModel.loadPlaybackConnection() }
         .settingsListChrome()
-        .navigationTitle("Playback")
+        .navigationTitle(Text(.settingsPlayback))
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
         .alert(
-            SettingsViewModel.useProfileSettingsTitle,
+            Text(SettingsViewModel.useProfileSettingsTitle),
             isPresented: $showUseProfileSettingsConfirmation
         ) {
-            Button("Use Profile Settings", role: .destructive) {
+            Button(.settingsProfileSettingsUseAll, role: .destructive) {
                 Task { await viewModel.resetPlaybackDeviceSettings() }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(.commonCancel, role: .cancel) {}
         } message: {
-            Text(viewModel.useProfileSettingsMessage)
+            Text(verbatim: viewModel.useProfileSettingsMessage)
         }
     }
 
@@ -62,17 +65,17 @@ struct PlaybackSettingsView: View {
     /// 4K one. Each writes and clears only its own setting, as on the web.
     private var qualitySection: some View {
         Section {
-            choiceRow("Resolution", .resolution, value: viewModel.qualityResolutionLabel, options: resolutionChoices)
+            choiceRow(.settingsControlResolution, .resolution, value: .verbatim(viewModel.qualityResolutionLabel), options: resolutionChoices)
 
-            choiceRow("Maximum Bitrate", .maxBitrate, value: viewModel.maxBitrateLabel, options: maxBitrateChoices)
+            choiceRow(.settingsControlBitrate, .maxBitrate, value: viewModel.maxBitrateLabel, options: maxBitrateChoices)
 
             // Three-way (labels fixed by the contract).
             if viewModel.showsBufferingQualityMode {
                 choiceRow(
                     SettingsViewModel.bufferingQualityTitle,
                     .bufferingQualityMode,
-                    value: viewModel.bufferingQualityMode.label,
-                    options: BufferingQualityMode.allCases.map { SettingsChoice(id: $0.wireValue, label: $0.label) }
+                    value: .verbatim(viewModel.bufferingQualityMode.label),
+                    options: BufferingQualityMode.allCases.map { SettingsChoice(id: $0.wireValue, label: .verbatim($0.label)) }
                 )
             }
 
@@ -82,7 +85,7 @@ struct PlaybackSettingsView: View {
             choiceRow(
                 "Cellular Quality",
                 .cellularQuality,
-                value: viewModel.cellularQualityLabel,
+                value: .verbatim(viewModel.cellularQualityLabel),
                 options: cellularQualityChoices
             )
             #endif
@@ -90,7 +93,7 @@ struct PlaybackSettingsView: View {
             Text(PlaybackSettingsLayout.Group.streamingQuality.title)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
-            Text(qualityFooterText)
+            Text(verbatim: qualityFooterText)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -101,10 +104,10 @@ struct PlaybackSettingsView: View {
     private var qualityFooterText: String {
         var lines = [viewModel.qualityFooterText]
         if viewModel.showsBufferingQualityMode {
-            lines.append(SettingsViewModel.bufferingQualityDescription)
+            lines.append(AppLanguage.string(SettingsViewModel.bufferingQualityDescription, locale: locale))
         }
         #if os(iOS)
-        lines.append(SettingsViewModel.cellularQualityFooterText)
+        lines.append(AppLanguage.string(SettingsViewModel.cellularQualityFooterText, locale: locale))
         #endif
         return lines.joined(separator: "\n")
     }
@@ -120,7 +123,7 @@ struct PlaybackSettingsView: View {
                     .foregroundStyle(Color.siloOnSurface)
                 // "measured 3 minutes ago" moves on while the page is open.
                 TimelineView(.everyMinute) { context in
-                    Text(viewModel.connectionSpeedLine(at: context.date))
+                    Text(verbatim: viewModel.connectionSpeedLine(at: context.date))
                         .font(.footnote)
                         .foregroundStyle(Color.siloSecondaryText)
                 }
@@ -140,7 +143,7 @@ struct PlaybackSettingsView: View {
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             if let footer = connectionFooterText {
-                Text(footer)
+                Text(verbatim: footer)
                     .foregroundStyle(Color.siloSecondaryText)
             }
         }
@@ -149,7 +152,8 @@ struct PlaybackSettingsView: View {
 
     /// The budget, then the last test's answer, one line each.
     private var connectionFooterText: String? {
-        let lines = [viewModel.autoBudgetText, viewModel.connectionSpeedMessage].compactMap { $0 }
+        let message = viewModel.connectionSpeedMessage.map { AppLanguage.string($0, locale: locale) }
+        let lines = [viewModel.autoBudgetText, message].compactMap { $0 }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
@@ -157,13 +161,13 @@ struct PlaybackSettingsView: View {
 
     private var audioVideoSection: some View {
         Section {
-            choiceRow("Audio Language", .audioLanguage, value: audioLanguageLabel, options: audioLanguageChoices)
+            choiceRow(.settingsControlAudioLanguage, .audioLanguage, value: .verbatim(audioLanguageLabel), options: audioLanguageChoices)
 
-            Toggle("HDR", isOn: $viewModel.hdrEnabled)
+            Toggle(.settingsManifestPlayerHdrEnabledLabel, isOn: $viewModel.hdrEnabled)
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
 
-            Toggle("Dolby Vision", isOn: $viewModel.dolbyVisionEnabled)
+            Toggle(.settingsManifestPlayerDolbyVisionEnabledLabel, isOn: $viewModel.dolbyVisionEnabled)
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
                 .disabled(!viewModel.hdrEnabled)
@@ -172,7 +176,7 @@ struct PlaybackSettingsView: View {
             // lifecycle notifications, which macOS does not post — a toggle
             // there would control nothing.
             #if os(iOS)
-            Toggle("Background Playback", isOn: $viewModel.backgroundPlaybackEnabled)
+            Toggle(.settingsPlaybackBackgroundPlayback, isOn: $viewModel.backgroundPlaybackEnabled)
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
             #endif
@@ -217,32 +221,43 @@ struct PlaybackSettingsView: View {
             // On / Off choices rather than switches: a switch has no third
             // position for going back to the profile's choice.
             choiceRow(
-                "Auto-Play Next Episode",
+                .settingsControlAutoplay,
                 .autoPlayNext,
-                value: viewModel.autoPlayNext ? "On" : "Off",
+                value: viewModel.autoPlayNext ? .settingsOn : .settingsOff,
                 options: onOffChoices
             )
 
+            // The Mac player has no Next Up screen, so the limit does not apply there.
+            #if !os(macOS)
+            // Client-local, so there is no profile value to go back to.
+            SettingsChoiceRow(
+                title: .settingsManifestPlayerPassoutThresholdLabel,
+                value: SettingsViewModel.stillWatchingLabel(viewModel.stillWatchingThreshold),
+                options: SettingsViewModel.stillWatchingChoices.map { SettingsChoice(id: $0.id, label: $0.label) },
+                selection: $viewModel.stillWatchingSelection
+            )
+            #endif
+
             choiceRow(
-                "Show Next Up",
+                .settingsNextUpTitle,
                 .nextUpPrompt,
                 value: nextUpPromptOptions.first { $0.0 == viewModel.nextUpPromptSeconds }?.1
-                    ?? "\(viewModel.nextUpPromptSeconds) seconds before end",
+                    ?? .settingsNextUpSecondsBeforeEnd(viewModel.nextUpPromptSeconds),
                 options: nextUpPromptOptions.map { SettingsChoice(id: String($0.0), label: $0.1) }
             )
 
             // Three-way (labels fixed by the contract).
             choiceRow(
-                "Skip Intros",
+                .settingsControlIntros,
                 .introSkipMode,
-                value: viewModel.introSkipMode.label,
-                options: IntroSkipMode.allCases.map { SettingsChoice(id: $0.wireValue, label: $0.label) }
+                value: .verbatim(viewModel.introSkipMode.label),
+                options: IntroSkipMode.allCases.map { SettingsChoice(id: $0.wireValue, label: .verbatim($0.label)) }
             )
 
             choiceRow(
-                "Skip Credits",
+                .settingsControlCredits,
                 .autoSkipCredits,
-                value: viewModel.skipCredits ? "On" : "Off",
+                value: viewModel.skipCredits ? .settingsOn : .settingsOff,
                 options: onOffChoices
             )
         } header: {
@@ -256,11 +271,11 @@ struct PlaybackSettingsView: View {
 
     private var rejectedChangeSection: some View {
         Section {
-            Button("OK") {
+            Button(.settingsPlaybackRejectedOk) {
                 Task { await viewModel.acknowledgeRejectedPlaybackChange() }
             }
         } header: {
-            Text("Not Saved")
+            Text(.settingsHeldChangeHeader)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             Text(SettingsViewModel.rejectedPlaybackChangeMessage)
@@ -273,11 +288,11 @@ struct PlaybackSettingsView: View {
 
     private var resetSection: some View {
         Section {
-            Button("Use Profile Settings", role: .destructive) {
+            Button(.settingsProfileSettingsUseAll, role: .destructive) {
                 showUseProfileSettingsConfirmation = true
             }
         } footer: {
-            Text("Removes the settings changed on this device, so it uses your profile's settings again.")
+            Text(.settingsProfileSettingsResetFooter)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -289,9 +304,9 @@ struct PlaybackSettingsView: View {
     /// wherever it comes from; the choice list leads with "Use Profile
     /// Setting", checked while this device has no value of its own.
     private func choiceRow(
-        _ title: String,
+        _ title: LocalizedStringResource,
         _ setting: ProfileBackedPlaybackSetting,
-        value: String,
+        value: LocalizedStringResource,
         options: [SettingsChoice]
     ) -> some View {
         SettingsChoiceRow(
@@ -311,7 +326,7 @@ struct PlaybackSettingsView: View {
 
     private var resolutionChoices: [SettingsChoice] {
         SiloQualityPresets.resolutionChoices.map {
-            SettingsChoice(id: $0, label: SiloQualityPresets.resolutionLabel($0))
+            SettingsChoice(id: $0, label: .verbatim(SiloQualityPresets.resolutionLabel($0)))
         }
     }
 
@@ -332,15 +347,17 @@ struct PlaybackSettingsView: View {
         if !viewModel.usesProfileSetting(.cellularQuality), viewModel.cellularQualityPresetId == nil {
             choices.append(SettingsChoice(
                 id: SettingsViewModel.customQualityTag,
-                label: viewModel.cellularQualityLabel
+                label: .verbatim(viewModel.cellularQualityLabel)
             ))
         }
-        return choices + SiloQualityPresets.all.map { SettingsChoice(id: $0.id, label: $0.label) }
+        return choices + SiloQualityPresets.all.map { SettingsChoice(id: $0.id, label: .verbatim($0.label)) }
     }
     #endif
 
     private var noAudioLanguageLabel: String {
-        SettingPresentationMetadata.definitions[.playbackAudioLanguage]?.unsetLabel ?? "No preference"
+        SettingPresentationMetadata.unsetLabel(
+            for: .playbackAudioLanguage, fallback: "No preference", language: AppLanguage.language(of: locale)
+        )
     }
 
     private var audioLanguageLabel: String {
@@ -351,25 +368,25 @@ struct PlaybackSettingsView: View {
 
     private var audioLanguageChoices: [SettingsChoice] {
         let stored = viewModel.hasStoredNoAudioLanguagePreference
-            ? [SettingsChoice(id: "", label: noAudioLanguageLabel)]
+            ? [SettingsChoice(id: "", label: .verbatim(noAudioLanguageLabel))]
             : []
-        return stored + viewModel.audioLanguageOptions.map { SettingsChoice(id: $0.code, label: $0.label) }
+        return stored + viewModel.audioLanguageOptions.map { SettingsChoice(id: $0.code, label: .verbatim($0.label)) }
     }
 
     private var onOffChoices: [SettingsChoice] {
         [
-            SettingsChoice(id: SettingsViewModel.onTag, label: "On"),
-            SettingsChoice(id: SettingsViewModel.offTag, label: "Off"),
+            SettingsChoice(id: SettingsViewModel.onTag, label: .settingsOn),
+            SettingsChoice(id: SettingsViewModel.offTag, label: .settingsOff),
         ]
     }
 
-    private var nextUpPromptOptions: [(Int, String)] {
+    private var nextUpPromptOptions: [(Int, LocalizedStringResource)] {
         [
-            (0, "At end"),
-            (10, "10 seconds before end"),
-            (30, "30 seconds before end"),
-            (60, "1 minute before end"),
-            (120, "2 minutes before end"),
+            (0, .settingsNextUpAtEnd),
+            (10, .settingsNextUpSecondsBeforeEnd(10)),
+            (30, .settingsNextUpSecondsBeforeEnd(30)),
+            (60, .settingsNextUpMinutesBeforeEnd(1)),
+            (120, .settingsNextUpMinutesBeforeEnd(2)),
         ]
     }
 }
@@ -411,9 +428,9 @@ enum PlaybackSettingsLayout {
     }
 
     static let learnedLimitGroupTitle = "Learned Connection Limit"
-    static let spoilerProtectionTitle = "Spoiler Protection"
-    static let videoSkipTitle = "Video Skip Intervals"
-    static let audiobookSkipTitle = "Audiobook Skip Intervals"
+    static let spoilerProtectionTitle: LocalizedStringResource = "Spoiler Protection"
+    static let videoSkipTitle: LocalizedStringResource = "Video Skip Intervals"
+    static let audiobookSkipTitle: LocalizedStringResource = "Audiobook Skip Intervals"
     static let advancedEntryFooter = "Seek cache, thumbnail previews, buffering, lossless audio, and deinterlacing. The defaults suit most devices."
     static let advancedPageFooter = "Change these only to fix a playback problem on this device. Thumbnail Previews use Seekr when a key is configured; playback still works when they are off or unavailable."
     static let advancedAudioFooter = "If surround plays as stereo, turn off Lossless Multichannel Audio. With TrueHD Atmos and DTS:X on, those tracks keep their height channels but play as compressed audio."
@@ -614,7 +631,12 @@ struct PlaybackAdvancedSettingsSections: View {
 
 struct SettingsChoice: Identifiable, Hashable {
     let id: String
-    let label: String
+    let label: LocalizedStringResource
+
+    // `LocalizedStringResource` isn't `Hashable`; equal choices share an id.
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }
 
 /// A settings row whose trailing text is the value that applies, which a
@@ -622,14 +644,14 @@ struct SettingsChoice: Identifiable, Hashable {
 /// Setting". Looks like the navigation-link pickers beside it on iOS and a
 /// menu picker on macOS.
 struct SettingsChoiceRow: View {
-    let title: String
-    let value: String
+    let title: LocalizedStringResource
+    let value: LocalizedStringResource
     let options: [SettingsChoice]
     @Binding var selection: String
 
     var body: some View {
         #if os(macOS)
-        LabeledContent(title) {
+        LabeledContent {
             Menu {
                 Picker(title, selection: $selection) {
                     ForEach(options) { Text($0.label).tag($0.id) }
@@ -640,13 +662,20 @@ struct SettingsChoiceRow: View {
                 Text(value)
             }
             .fixedSize()
+        } label: {
+            Text(title)
         }
         .foregroundStyle(Color.siloOnSurface)
         #else
         NavigationLink {
             SettingsChoiceList(title: title, options: options, selection: $selection)
         } label: {
-            LabeledContent(title, value: value)
+            LabeledContent {
+                Text(value)
+            } label: {
+                Text(title)
+            }
+            .accessibilityElement(children: .combine)
         }
         .foregroundStyle(Color.siloOnSurface)
         #endif
@@ -657,7 +686,7 @@ struct SettingsChoiceRow: View {
 /// The pushed choice list, in the style of the navigation-link picker it
 /// stands in for: a checkmark on the selected row, and back on choosing.
 struct SettingsChoiceList: View {
-    let title: String
+    let title: LocalizedStringResource
     let options: [SettingsChoice]
     @Binding var selection: String
     @Environment(\.dismiss) private var dismiss
@@ -688,7 +717,7 @@ struct SettingsChoiceList: View {
             .listRowBackground(Color.siloGroupedCell)
         }
         .settingsListChrome()
-        .navigationTitle(title)
+        .navigationTitle(Text(title))
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
     }

@@ -195,7 +195,7 @@ struct IOSSettingsOverview: View {
                     avatar: viewModel.activeProfile?.avatarEmoji,
                     avatarImageUrl: viewModel.activeProfile?.avatarImageUrl,
                     name: viewModel.displayName,
-                    subtitle: viewModel.accountSubtitleLine,
+                    subtitle: .verbatim(viewModel.accountSubtitleLine),
                     isAdministrator: viewModel.userInfo?.isAdmin == true,
                     action: router.switchProfile
                 )
@@ -223,7 +223,7 @@ struct IOSSettingsOverview: View {
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
         .background(Color.siloBackground.ignoresSafeArea())
-        .navigationTitle("Settings")
+        .navigationTitle(Text(.settingsTitle))
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
         // Runs on each appearance and again when the active server changes, so
@@ -368,7 +368,7 @@ private struct IOSAccountConnectionsSettingsView: View {
         List {
             Section("Account") {
                 NavigationLink { GeneralSettingsView() } label: {
-                    SettingsOverviewRow(title: "General", subtitle: "Profile selection and app startup", systemImage: "person.crop.circle.badge.checkmark", value: launchPreferences.behavior.title)
+                    SettingsOverviewRow(title: "General", subtitle: "Profile selection and app startup", systemImage: "person.crop.circle.badge.checkmark", value: AppLanguage.string(launchPreferences.behavior.title))
                 }
                 NavigationLink { SettingsBackupView() } label: {
                     SettingsOverviewRow(title: "Backup & Restore", subtitle: "Export or import this device's preferences", systemImage: "externaldrive.badge.checkmark")
@@ -403,9 +403,9 @@ private struct IOSAccountConnectionsSettingsView: View {
         .siloToolbarColorSchemeDark()
         .task { await accountSignIn.load() }
         .sheet(isPresented: $showsSignInTV) {
-            SignInTVView(onSwitchAccount: { server, link, choosingAccount in
+            SignInTVView(onAddAccount: { server, link, choosingAccount in
                 showsSignInTV = false
-                router.switchAccount(forTVApproval: link, on: server, choosingAccount: choosingAccount)
+                router.addAccount(forTVApproval: link, on: server, choosingAccount: choosingAccount)
             }, onClose: { showsSignInTV = false })
         }
     }
@@ -509,7 +509,7 @@ private struct IOSAdvancedDiagnosticsSettingsView: View {
             Section("Troubleshooting") {
                 if model.shouldShowSettings {
                     NavigationLink { DiagnosticsSettingsView(model: model, profile: profile) } label: {
-                        SettingsOverviewRow(title: "Diagnostics", subtitle: "Capture, review, and send support reports", systemImage: "stethoscope", value: model.featureState.title)
+                        SettingsOverviewRow(title: "Diagnostics", subtitle: "Capture, review, and send support reports", systemImage: "stethoscope", value: AppLanguage.string(model.featureState.title))
                     }
                 }
                 NavigationLink { PlaybackHealthView() } label: {

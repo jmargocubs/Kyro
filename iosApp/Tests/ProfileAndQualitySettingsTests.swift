@@ -108,7 +108,8 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     /// table exists to prevent.
     func testPresetTableMatchesTheOtherClients() {
         let expected: [(id: String, label: String, resolution: String, bitrate: Int?)] = [
-            ("auto", "Auto", "auto", nil),
+            ("auto-10mbps", "Auto, up to 10 Mbps", "auto", 10_000),
+            ("auto", "Auto, no limit", "auto", nil),
             ("2160p", "4K", "2160p", nil),
             ("1080p-high", "1080p High", "1080p", 10_000),
             ("1080p", "1080p", "1080p", 6_000),
@@ -154,7 +155,8 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(SiloQualityPresets.describe(resolution: "720p", bitrateKbps: 1_800), "720p at 1.8 Mbps")
         // A covered pair answers with the preset's own label.
         XCTAssertEqual(SiloQualityPresets.describe(resolution: "720p", bitrateKbps: 4_000), "720p High")
-        XCTAssertEqual(SiloQualityPresets.describe(resolution: "auto", bitrateKbps: nil), "Auto")
+        XCTAssertEqual(SiloQualityPresets.describe(resolution: "auto", bitrateKbps: 10_000), "Auto, up to 10 Mbps")
+        XCTAssertEqual(SiloQualityPresets.describe(resolution: "auto", bitrateKbps: nil), "Auto, no limit")
         XCTAssertEqual(SiloQualityPresets.describe(resolution: "2160p", bitrateKbps: nil), "4K")
     }
 
@@ -407,7 +409,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await harness.settings.refreshFromServer()
 
         XCTAssertEqual(SiloQualityPresets.resolutionLabel(harness.settings.preferredQualityResolution), "4K")
-        XCTAssertEqual(SiloQualityPresets.bitrateLabel(harness.settings.maxBitrateKbps), "3 Mbps")
+        XCTAssertEqual(AppLanguage.string(SiloQualityPresets.bitrateLabel(harness.settings.maxBitrateKbps)), "3 Mbps")
         let choices = SiloQualityPresets.bitrateChoices(including: harness.settings.maxBitrateKbps)
         XCTAssertEqual(
             choices,
@@ -418,7 +420,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         // A cap a choice already covers is not listed twice.
         XCTAssertEqual(SiloQualityPresets.bitrateChoices(including: 6_000), SiloQualityPresets.bitrateChoicesKbps)
         XCTAssertEqual(SiloQualityPresets.bitrateChoices(including: nil), SiloQualityPresets.bitrateChoicesKbps)
-        XCTAssertEqual(SiloQualityPresets.bitrateLabel(nil), "No limit")
+        XCTAssertEqual(AppLanguage.string(SiloQualityPresets.bitrateLabel(nil)), "No limit")
     }
 
     func testEveryResolutionChoiceIsAContractMemberThatRoundTrips() {
@@ -452,10 +454,10 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         ]
     }
 
-    func testTheCellularPairDefaultsToThe720pPresetAndSavesAPresetAsBothKeys() async throws {
+    func testTheCellularPairDefaultsToAuto10MbpsPresetAndSavesAPresetAsBothKeys() async throws {
         let harness = try PlayerSettingsHarness()
         XCTAssertEqual(harness.settings.cellularQualityAxes, PlayerSettings.defaultCellularQuality)
-        XCTAssertEqual(harness.settings.currentCellularQualityPreset?.id, "720p")
+        XCTAssertEqual(harness.settings.currentCellularQualityPreset?.id, "auto-10mbps")
 
         await harness.settings.refreshFromServer()
         harness.transport.reset()
@@ -502,7 +504,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(harness.settings.cellularQualityAxes, stored)
         XCTAssertTrue(harness.settings.hasDeviceOverride(.cellularQuality))
         #if os(iOS)
-        XCTAssertEqual(harness.settings.playbackQualityAxes(onMeteredNetwork: true), stored)
+        XCTAssertEqual(harness.settings.playbackQualityAxes(for: .metered), stored)
         #endif
 
         // After the upgrade the owed change goes.
@@ -1349,7 +1351,10 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await editor.setSubtitleLanguage("not a tag")
 
         XCTAssertEqual(transport.writes().count, 1)
-        XCTAssertEqual(editor.saveState, .failed("not a language tag"))
+        guard case .failed(let message) = editor.saveState else {
+            return XCTFail("expected a failed save, got \(String(describing: editor.saveState))")
+        }
+        XCTAssertEqual(AppLanguage.string(message), "not a language tag")
         XCTAssertFalse(editor.hasHeldChanges)
     }
 
@@ -1786,7 +1791,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             "the editor must show the still-winning device override, not the ineffective optimistic profile value"
         )
         XCTAssertTrue(
-            editor.subtitleProfileOverrideMessage?.contains("This device, for this profile") == true,
+            editor.subtitleProfileOverrideMessage.map { AppLanguage.string($0) }?.contains("This device, for this profile") == true,
             "the UI needs a visible explanation for why the saved profile value did not become effective"
         )
     }

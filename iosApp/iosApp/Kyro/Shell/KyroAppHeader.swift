@@ -127,7 +127,6 @@ struct KyroAppHeader: View {
                 onOpenRequests: { router.navigate(to: .requestsHub) },
                 onOpenForYou: { KyroShellHeader.openForYou(router: router, store: store) },
                 onSwitchProfile: { router.switchProfile() },
-                onSwitchServer: { router.navigate(to: .serverList) },
                 onSignOut: { router.signOutAndReset() }
             )
         }

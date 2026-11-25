@@ -68,6 +68,7 @@ docs/*
 !docs/kyro-development/**
 !docs/tvos-focus.md
 !docs/mac-builder.md
+!docs/i18n.md
 !docs/tvos-player/
 docs/tvos-player/*
 !docs/tvos-player/aetherengine-replacement-spec.md

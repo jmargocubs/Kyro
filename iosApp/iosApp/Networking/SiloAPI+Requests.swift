@@ -3,8 +3,8 @@ import Foundation
 // MARK: - Media requests
 
 /// User-facing endpoints of the server's media-request system
-/// (`/api/v2/requests`, TMDB movies + series): search, create, track, and
-/// cancel. Request administration (approve, decline, retry, limits) is
+/// (`/api/v2/requests`, TMDB movies + series): search, create, track,
+/// cancel, and remove a failed request. Request administration (approve, decline, retry, limits) is
 /// web-admin only and has no client here.
 extension SiloAPI {
     /// Profile-scoped capability probe. Entry points gate on
@@ -25,9 +25,15 @@ extension SiloAPI {
     }
 
     /// Curated TMDB carousels (trending/popular/upcoming/on-air).
-    func requestsDiscover() async throws -> [RequestDiscoverySection] {
+    func requestsDiscover() async throws -> RequestDiscoverLayout {
         try await reprobingWhenRequestsAreOff {
-            try await apiV2Client.requestDiscoverSections()
+            try await apiV2Client.requestDiscoverLayout()
+        }
+    }
+
+    func requestsDiscoverRow(key: String, page: Int) async throws -> RequestDiscoverySection {
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.requestDiscoverRow(key: key, page: page)
         }
     }
 
@@ -56,6 +62,14 @@ extension SiloAPI {
     func cancelRequest(id: String, reason: String? = nil) async throws -> MediaRequest {
         try await reprobingWhenRequestsAreOff {
             try await apiV2Client.cancelRequest(id: id, reason: reason)
+        }
+    }
+
+    /// Owner-remove of a failed request that delivered nothing. Detect it
+    /// with `RequestsFeatureStore.removeFailedSupported`.
+    func removeFailedRequest(id: String) async throws {
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.removeFailedRequest(id: id)
         }
     }
 

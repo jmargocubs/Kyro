@@ -133,7 +133,19 @@ enum StartupContentPrefetcher {
 
     static func fetchHomeSections() async throws -> SectionsResponse {
         let profileGeneration = profileScopedGeneration
-        let homeGeneration = homeSectionsGeneration
+        while true {
+            try Task.checkCancellation()
+            let homeGeneration = homeSectionsGeneration
+            do {
+                return try await fetchHomeSections(profileGeneration: profileGeneration, homeGeneration: homeGeneration)
+            } catch where profileScopedGeneration == profileGeneration && homeSectionsGeneration != homeGeneration {
+                // Another Home window superseded the shared read. Join its
+                // current generation so this window also receives fresh rows.
+            }
+        }
+    }
+
+    private static func fetchHomeSections(profileGeneration: Int, homeGeneration: Int) async throws -> SectionsResponse {
         let requestProfileID = AuthService.shared.profileId
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("home_sections", isOriginator: !homeSections.isInFlight)
@@ -163,11 +175,19 @@ enum StartupContentPrefetcher {
             #if os(iOS) || os(tvOS)
             probe.finish(error: error)
             #endif
+            try validateProfileScopedGeneration(profileGeneration)
+            try validateHomeSectionsGeneration(homeGeneration)
             if let requestProfileID,
                Self.indicatesInvalidProfile(error) {
                 await AuthService.shared.recoverFromInvalidProfile(
                     expectedProfileID: requestProfileID
                 )
+            } else if requestProfileID != nil, Self.indicatesNotFound(error) {
+                // A deleted profile is a plain `not_found` too. The account's
+                // profile list tells them apart, and `fetchProfiles`
+                // reconciles the active profile against it. Awaited, so the
+                // return to Who's Watching comes before Home sees the error.
+                _ = try? await fetchProfiles()
             }
             throw error
         }
@@ -179,6 +199,11 @@ enum StartupContentPrefetcher {
         // apart from any other missing resource.
         guard case .problem(let problem) = error as? APIv2Error else { return false }
         return problem.identifier == "profile_verification_required"
+    }
+
+    private static func indicatesNotFound(_ error: Error) -> Bool {
+        guard case .problem(let problem) = error as? APIv2Error else { return false }
+        return problem.status == 404 && problem.identifier == "not_found"
     }
 
     #if os(iOS) || os(tvOS)
@@ -612,7 +637,7 @@ enum StartupContentPrefetcher {
             prefetchProfiles()
         case .needsProfile:
             prefetchProfiles()
-        case .loading, .needsServerSetup, .needsLogin, .serverRecovery:
+        case .loading, .needsServerSetup, .needsLogin, .serverRecovery, .needsPasswordChange:
             break
         }
     }
@@ -642,6 +667,7 @@ enum StartupContentPrefetcher {
                 }
             }
             #else
+            // Kyro keeps one Movies and one Series root (navigation batch).
             let registry = ServerRegistry.shared
             let authority = MainTabLibraryAuthority(
                 serverId: registry.activeServerId,
@@ -718,7 +744,8 @@ enum StartupContentPrefetcher {
     /// uses: Skyline rows on tvOS, Home's rows or `SectionRow` elsewhere.
     private static func rowCardArtwork(for item: SectionItem, in section: ResolvedSection, onHome: Bool) -> CardArtwork? {
         #if os(tvOS)
-        return MediaRow.cardArtwork(for: item, layout: SectionRow.layout(for: section), cardWidth: SiloTheme.Skyline.densePosterCardWidth)
+        let layout = SectionRow.layout(for: section)
+        return MediaRow.cardArtwork(for: item, layout: layout, cardWidth: SiloTheme.Skyline.denseCardWidth(for: layout))
         #else
         if onHome || section.isContinueWatchingSection {
             return HomeFeedRow.cardArtwork(for: item, in: section)

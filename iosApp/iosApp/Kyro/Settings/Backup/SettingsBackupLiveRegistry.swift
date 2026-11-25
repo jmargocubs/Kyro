@@ -103,13 +103,13 @@ enum SettingsBackupLiveRegistry {
         // remembered profile IDs and PIN state; never serialize that record wholesale.
         settings.append(enumSetting(
             "general.launchBehavior", .general, "Profile selection",
-            label: { (value: ProfileLaunchBehavior) in value.title },
+            label: { (value: ProfileLaunchBehavior) in AppLanguage.string(value.title) },
             read: { d.launch.behavior }, write: { d.launch.behavior = $0 }))
 
         // The Calendar screen stores only this preset. The visible week and selected day are memory.
         settings.append(enumSetting(
             "calendar.filter", .calendar, "Calendar filter",
-            label: { (filter: CalendarFilter) in filter.displayLabel },
+            label: { (filter: CalendarFilter) in AppLanguage.string(filter.displayLabel) },
             read: { CalendarFilterPreference.load(from: d.defaults) },
             write: { CalendarFilterPreference.save($0, to: d.defaults) }))
 
@@ -209,7 +209,7 @@ enum SettingsBackupLiveRegistry {
             read: { d.downloads.defaultMaxStorageGB }, write: { d.downloads.defaultMaxStorageGB = $0 }))
         settings.append(enumSetting(
             "downloads.sortOption", .downloads, "Downloads sort order",
-            label: { (option: DownloadSortOption) in option.displayName },
+            label: { (option: DownloadSortOption) in AppLanguage.string(option.displayName) },
             read: { d.downloads.sortOption },
             write: { d.downloads.sortOption = $0 }))
         settings.append(boolSetting(

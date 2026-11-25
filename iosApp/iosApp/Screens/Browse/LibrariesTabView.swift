@@ -1,5 +1,29 @@
 import SwiftUI
 
+/// The media type a library groups under. A mixed library matches both
+/// Movies and Series (upstream; used by the Mac sidebar).
+enum LibraryMediaCategory: CaseIterable {
+    case movies
+    case series
+    case audiobooks
+
+    func matches(_ library: Library) -> Bool {
+        switch self {
+        case .movies: return library.isMovieLibrary || library.isMixedLibrary
+        case .series: return library.isSeriesLibrary || library.isMixedLibrary
+        case .audiobooks: return library.isAudiobookLibrary
+        }
+    }
+
+    var navigationIcon: String {
+        switch self {
+        case .movies: return "film.stack"
+        case .series: return "tv"
+        case .audiobooks: return "book.closed"
+        }
+    }
+}
+
 func libraryMatchesPrimaryMenuCategory(
     _ library: Library,
     category: PrimaryMenuBuiltin
@@ -621,7 +645,6 @@ private struct LibrariesTopBar: View {
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
-                onSwitchServer: onSwitchServer,
                 onSignOut: onSignOut
             )
         }
