@@ -436,6 +436,11 @@ final class KyroSportsHubStore {
                 selectedLeague = league
             }
         }
+        #if os(iOS)
+        let dashboard = KyroSportsDashboardPreferences.load(preferences)
+        let initial = dashboard.defaultLeague == "lastUsed" ? selectedCategory : KyroSportsCategory(rawValue: dashboard.defaultLeague) ?? .all
+        selectedCategory = initial.league.map { dashboard.hidden.contains($0) } == true ? .all : initial
+        #endif
     }
 
     // MARK: Per-league state

@@ -146,6 +146,10 @@ struct KyroHomeCustomizationView: View {
     private var sportsFavoritesSections: some View {
         let favorites = host.favorites
         Section {
+            NavigationLink("Manage Favorite Teams") { KyroHomeFavoritePicker(shelf: .myTeams, host: host) }
+            NavigationLink("Manage Favorite Leagues") { KyroHomeFavoritePicker(shelf: .myLeagues, host: host) }
+        }
+        Section {
             ForEach(KyroSportLeague.allCases) { league in
                 Toggle(league.displayName, isOn: Binding(
                     get: { favorites.preferences.leagues.contains(league.rawValue) },
@@ -162,7 +166,7 @@ struct KyroHomeCustomizationView: View {
             }
             ForEach(favorites.preferences.teams.sorted(), id: \.self) { key in
                 HStack {
-                    Text(key.replacingOccurrences(of: "|", with: " · "))
+                    Text(KyroSportsFavorites.storedName(key))
                     Spacer()
                     Button("Remove") { favorites.preferences.teams.remove(key) }
                         .buttonStyle(.borderless)
@@ -201,6 +205,8 @@ struct KyroHomeFavoritePicker: View {
     var host: KyroHomeShelfHost
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var routeID = KyroSportsDirectoryRoute.all[0].id
+    private let directory = KyroSportsDirectory.shared
 
     var body: some View {
         NavigationStack {
@@ -219,7 +225,12 @@ struct KyroHomeFavoritePicker: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .task { await loadTeamsIfNeeded() }
+            .task(id: routeID) {
+                if shelf == .myTeams, let route = KyroSportsDirectoryRoute.all.first(where: { $0.id == routeID }) {
+                    await directory.load(route)
+                    if directory.failures.contains(route.id) { await loadTeamsIfNeeded() }
+                }
+            }
         }
         .tint(KyroTheme.accentInk)
     }
@@ -247,27 +258,65 @@ struct KyroHomeFavoritePicker: View {
 
     @ViewBuilder
     private var teamRows: some View {
-        let choices = KyroHomeQuickAdd.teams(in: host.today.games + host.followed.games, matching: query)
-        if host.today.isLoading && choices.isEmpty {
-            ProgressView("Loading teams")
-        } else if choices.isEmpty {
-            Text(host.today.failedLeagues.isEmpty
-                 ? "No teams in the current schedule."
-                 : "The sports schedule is unavailable. Add Team stays on Home.")
-                .foregroundStyle(.secondary)
-        }
-        ForEach(choices) { choice in
-            Toggle(isOn: Binding(
-                get: { host.favorites.preferences.includes(choice.team) },
-                set: { wants in KyroHomeQuickAdd.select(choice.team, favorites: host.favorites, wants: wants) })) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(choice.team.fullName)
-                    Text(choice.team.league.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        Section("Following") {
+            ForEach(host.favorites.preferences.teams.sorted(), id: \.self) { key in
+                let entry = directory.allEntries.first {
+                    var single = host.favorites.preferences
+                    single.teams = [key]
+                    return single.includes($0.team)
+                }
+                HStack {
+                    if let entry { teamLabel(entry.team, affiliation: entry.affiliation) }
+                    else { Text(KyroSportsFavorites.storedName(key)) }
+                    Spacer()
+                    Button("Remove") { host.favorites.preferences.teams.remove(key) }.buttonStyle(.borderless)
                 }
             }
-            .accessibilityIdentifier("kyroHomeFavoriteTeam-\(choice.id)")
+        }
+        Section("Browse by sport and league") {
+            Picker("Directory", selection: $routeID) {
+                ForEach(KyroSportsDirectoryRoute.all) { route in Text(route.title).tag(route.id) }
+            }
+            Button("Refresh selected directory (once per minute)") {
+                if let route = KyroSportsDirectoryRoute.all.first(where: { $0.id == routeID }) {
+                    Task { await directory.load(route, force: true) }
+                }
+            }
+            .disabled(directory.loading.contains(routeID))
+            if directory.loading.contains(routeID) { ProgressView("Loading directory") }
+            if directory.failures.contains(routeID) {
+                Text("Directory unavailable. Cached teams and loaded schedule teams remain available.").foregroundStyle(.secondary)
+            }
+            Text("Search includes all downloaded directories and loaded schedules. Choose a league to download its directory. ATP and WTA players are available from loaded matches only. Up to 64 favorites are supported.").font(.caption).foregroundStyle(.secondary)
+            Button("Load schedule teams & tennis players") { Task { await loadTeamsIfNeeded() } }
+        }
+        Section("Teams and players") {
+            let records = query.isEmpty ? directory.entries[routeID] ?? [] : directory.allEntries
+            ForEach(records.filter { $0.matches(query) }, id: \.id) { entry in
+                teamToggle(entry.team, affiliation: entry.affiliation)
+            }
+            let choices = KyroHomeQuickAdd.teams(in: host.today.games + host.followed.games, matching: query)
+            ForEach(choices.filter { choice in !records.contains { $0.team.id == choice.team.id } }) { choice in
+                teamToggle(choice.team, affiliation: choice.team.league.displayName + " · Schedule")
+            }
+        }
+    }
+
+    private func teamToggle(_ team: KyroSportsTeam, affiliation: String) -> some View {
+        Toggle(isOn: Binding(get: { host.favorites.preferences.includes(team) },
+            set: { KyroHomeQuickAdd.select(team, favorites: host.favorites, wants: $0) })) {
+                teamLabel(team, affiliation: affiliation)
+            }
+            .disabled(!host.favorites.preferences.includes(team) && host.favorites.preferences.teams.count >= 64)
+    }
+
+    private func teamLabel(_ team: KyroSportsTeam, affiliation: String) -> some View {
+        HStack {
+            KyroSportsTeamLogo(team: team, size: 32)
+            VStack(alignment: .leading) {
+                Text(team.fullName)
+                Text(affiliation).font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 }

@@ -69,6 +69,8 @@ struct KyroSportsHubView: View {
     /// never races the sheet's dismissal.
     @State private var pendingChoice: KyroSportsStreamChoice?
     @State private var eventPreview: KyroSportsEventSelection?
+    @State private var showsSportsSettings = false
+    private let dashboardSettings = KyroSportsDashboardSettings.shared
     /// Build 65: Event Details' own lookups (statistics, Players), over the shared providers.
     @State private var previewDetailStore = KyroSportsEventDetailStore()
     @State private var pendingPreviewWatch: KyroSportsGame?
@@ -223,6 +225,10 @@ struct KyroSportsHubView: View {
             startRefreshLoopIfNeeded()
         }
         .onChange(of: liveNowTrigger) { _, _ in updateLiveNow() }
+        .onChange(of: dashboardSettings.value) { _, prefs in
+            if let league = store.selectedCategory.league, prefs.hidden.contains(league) { store.selectCategory(.all) }
+            updateLiveNow()
+        }
         .onChange(of: liveNow.status, initial: true) { _, status in
             guard status != .checking, let opened = liveNowOpenedAt else { return }
             liveNowOpenedAt = nil
@@ -234,6 +240,7 @@ struct KyroSportsHubView: View {
         .onReceive(NotificationCenter.default.publisher(for: .kyroSettingsDidRestore)) { _ in
             store.reloadDashboardModesFromPreferences()
             KyroSportsFavoritesStore.shared.reload()
+            dashboardSettings.reload()
         }
         .onChange(of: isFeedVisible) { _, visible in feedVisibilityChanged(visible) }
         .task(id: pinnedRefreshKey) {
@@ -253,7 +260,10 @@ struct KyroSportsHubView: View {
         .onChange(of: store.refreshInterval) { _, _ in
             startRefreshLoopIfNeeded()
         }
-        .onAppear { liveTV.presentation.inlineHostAppeared() }
+        .onAppear {
+            dashboardSettings.reload()
+            liveTV.presentation.inlineHostAppeared()
+        }
         .onDisappear {
             cancelRefreshLoop()
             selectionLoadTask?.cancel()
@@ -291,6 +301,9 @@ struct KyroSportsHubView: View {
                 break
             }
         }
+        .sheet(isPresented: $showsSportsSettings, onDismiss: { store.reloadDashboardModesFromPreferences() }) {
+            KyroSportsSettingsView()
+        }
         .sheet(item: $discovery, onDismiss: discoveryDismissed) { item in
             KyroSportsStreamMatchSheet(discovery: item, service: liveTV,
                                        choose: { match in
@@ -319,11 +332,19 @@ struct KyroSportsHubView: View {
             LazyVStack(alignment: .leading, spacing: SiloTheme.padding) {
                 // Build 67: the player and its tabs already say where you are.
                 if pinnedGameID == nil {
-                    KyroSportsHubHeading()
+                    HStack {
+                        KyroSportsHubHeading()
+                        Spacer()
+                        sportsSettingsButton
+                    }
+                } else {
+                    HStack { Spacer(); sportsSettingsButton }
                 }
+                if dashboardSettings.value.showLive && (store.selectedCategory == .all || store.selectedCategory.league.map { !dashboardSettings.value.hidden.contains($0) } == true) {
                 KyroSportsLiveNowSection(model: liveNow, category: store.selectedCategory,
                                          activeGameID: activeGameID, pinnedGameID: pinnedGameID,
                                          isLoadingScores: store.isLoadingSelectedDay) { watch($0) }
+                }
                 KyroSportsScheduleHeader(selection: store.selectedCategory) { category in
                     guard category != store.selectedCategory else { return }
                     // Changing a sport preserves the feed's position and avoids an animated
@@ -386,7 +407,7 @@ struct KyroSportsHubView: View {
     }
 
     private func updateLiveNow() {
-        liveNow.update(games: store.liveGames, now: store.clockNow)
+        liveNow.update(games: store.liveGames.filter(dashboardSettings.value.includes), now: store.clockNow)
     }
 
     private func discoveryDismissed() {
@@ -424,6 +445,23 @@ struct KyroSportsHubView: View {
 
     // MARK: Sections
 
+    private var sportsSettingsButton: some View {
+        Button { showsSportsSettings = true } label: { Image(systemName: "slider.horizontal.3").padding(10) }
+            .tint(KyroTheme.accentInk)
+            .accessibilityLabel("Sports Settings")
+            .accessibilityIdentifier("kyroSportsSettings")
+    }
+
+    private var dashboardRows: [KyroSportsScheduleRow] {
+        let prefs = dashboardSettings.value
+        let games = store.scheduleGames.filter(prefs.includes)
+        guard store.selectedCategory == .all else { return games.map(KyroSportsScheduleRow.game) }
+        return prefs.order.flatMap { league -> [KyroSportsScheduleRow] in
+            let group = games.filter { $0.league == league }
+            return group.isEmpty ? [] : [.sportHeader(league, gameCount: group.count)] + group.map(KyroSportsScheduleRow.game)
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
         switch store.phase {
@@ -454,7 +492,10 @@ struct KyroSportsHubView: View {
                     // One lazy row per header and per card, so scrolling builds and recycles one
                     // card at a time. Each card carries its sport's accent instead of a rule
                     // running down a whole section.
-                    ForEach(store.scheduleRows) { row in
+                    if dashboardRows.isEmpty {
+                        Text("No games match your dashboard preferences. Change them in Sports Settings.").foregroundStyle(.secondary)
+                    }
+                    ForEach(dashboardRows) { row in
                         switch row {
                         case .sportHeader(let league, let count):
                             KyroSportsSportHeader(league: league, gameCount: count)
@@ -952,7 +993,9 @@ private struct KyroSportsSportMenu: View {
     var body: some View {
         Menu {
             Picker("Sport", selection: Binding(get: { selection }, set: { action($0) })) {
-                ForEach(KyroSportsCategory.filterOrder) { category in
+                ForEach([KyroSportsCategory.all] + KyroSportsDashboardSettings.shared.value.order.filter {
+                    !KyroSportsDashboardSettings.shared.value.hidden.contains($0)
+                }.map { KyroSportsCategory(league: $0) }) { category in
                     Label(category.menuName, systemImage: category.symbolName)
                         .tag(category)
                         .accessibilityIdentifier("kyroSportsCategory-\(category.rawValue)")

@@ -16,7 +16,14 @@ enum KyroHomeBackupSettings {
 
     @MainActor
     static func make(defaults: UserDefaults, scope: @escaping @MainActor () -> String? = { nil }) -> [BackupSetting] {
-        [BackupSetting(id: "home.localShelves", group: .general, title: "Kyro Home arrangement",
+        [BackupSetting(id: "sports.dashboard", group: .sports, title: "Sports dashboard",
+            validate: { dashboard($0) != nil },
+            read: { dashboardValue(.load(defaults)) },
+            write: { value in
+                guard let prefs = dashboard(value) else { throw InvalidValue() }
+                defaults.set(try JSONEncoder().encode(prefs), forKey: KyroSportsDashboardPreferences.key)
+            }, label: { _ in "Sports dashboard visibility, order and default" }),
+         BackupSetting(id: "home.localShelves", group: .general, title: "Kyro Home arrangement",
             validate: { decode($0) != nil },
             read: { encode(KyroHomeArrangementStore.load(scope: scope(), from: defaults), scope: scope()) },
             write: { value in
@@ -42,6 +49,29 @@ enum KyroHomeBackupSettings {
     }
 
     private static let maxArrangementEntries = 512
+
+    static func dashboardValue(_ prefs: KyroSportsDashboardPreferences) -> BackupValue {
+        .record(["order": .array(prefs.order.map { .string($0.rawValue) }),
+                 "hidden": .array(prefs.order.filter(prefs.hidden.contains).map { .string($0.rawValue) }),
+                 "live": .bool(prefs.showLive), "upcoming": .bool(prefs.showUpcoming),
+                 "completed": .bool(prefs.showCompleted), "default": .string(prefs.defaultLeague)])
+    }
+    static func dashboard(_ value: BackupValue) -> KyroSportsDashboardPreferences? {
+        guard case .record(let f) = value, Set(f.keys) == ["order", "hidden", "live", "upcoming", "completed", "default"],
+              case .array(let order) = f["order"], case .array(let hidden) = f["hidden"],
+              case .bool(let live) = f["live"], case .bool(let upcoming) = f["upcoming"],
+              case .bool(let completed) = f["completed"], case .string(let start) = f["default"],
+              ["all", "lastUsed"].contains(start) || KyroSportLeague(rawValue: start) != nil else { return nil }
+        func leagues(_ values: [BackupValue]) -> [KyroSportLeague]? {
+            let parsed = values.compactMap { value -> KyroSportLeague? in
+                guard case .string(let raw) = value else { return nil }; return KyroSportLeague(rawValue: raw)
+            }
+            return parsed.count == values.count && Set(parsed).count == parsed.count ? parsed : nil
+        }
+        guard let ordered = leagues(order), Set(ordered) == Set(KyroSportLeague.allCases), let hidden = leagues(hidden) else { return nil }
+        return .init(order: ordered, hidden: Set(hidden), showLive: live, showUpcoming: upcoming,
+                     showCompleted: completed, defaultLeague: start)
+    }
 
     static func encode(_ arrangement: KyroHomeArrangement, scope: String? = nil) -> BackupValue {
         .record([

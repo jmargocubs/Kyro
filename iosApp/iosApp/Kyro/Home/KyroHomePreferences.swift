@@ -2,6 +2,37 @@
 import Foundation
 import Observation
 
+struct KyroSportsDashboardPreferences: Codable, Equatable {
+    static let key = "kyrox.sports.dashboard.v124"
+    var order: [KyroSportLeague] = [.nfl, .collegeFootball, .collegeBasketballMen,
+                                  .collegeBasketballWomen, .nba, .nhl, .mlb, .soccer, .atp, .wta]
+    var hidden: Set<KyroSportLeague> = []
+    var showLive = true
+    var showUpcoming = true
+    var showCompleted = true
+    var defaultLeague: String = "lastUsed"
+    static func load(_ defaults: UserDefaults) -> Self {
+        guard let data = defaults.data(forKey: key), let value = try? JSONDecoder().decode(Self.self, from: data),
+              Set(value.order) == Set(KyroSportLeague.allCases), value.order.count == KyroSportLeague.allCases.count,
+              ["all", "lastUsed"].contains(value.defaultLeague) || KyroSportLeague(rawValue: value.defaultLeague) != nil else { return Self() }
+        return value
+    }
+    func includes(_ game: KyroSportsGame) -> Bool {
+        !hidden.contains(game.league) && (game.status.isLive ? showLive : game.status.isFinal ? showCompleted : showUpcoming)
+    }
+}
+
+@MainActor @Observable
+final class KyroSportsDashboardSettings {
+    static let shared = KyroSportsDashboardSettings()
+    private let defaults: UserDefaults
+    var value: KyroSportsDashboardPreferences {
+        didSet { if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: KyroSportsDashboardPreferences.key) } }
+    }
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults; value = .load(defaults) }
+    func reload() { value = .load(defaults) }
+}
+
 /// Kyro's six local Home shelves. Their placement among Silo's sections is
 /// `KyroHomeArrangement`; Silo's server feed is never stored or edited here.
 enum KyroHomeShelf: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -32,6 +63,17 @@ struct KyroSportsFavorites: Equatable {
     var leagues: Set<String> = []
     var teams: Set<String> = []
     static func teamKey(_ name: String, league: KyroSportLeague) -> String { "\(league.rawValue)|\(name)" }
+    /// New ESPN selections carry identity and a bounded readable fallback. Existing
+    /// name-only favorites remain untouched; never guess a migration from a nickname.
+    static func favoriteKey(_ team: KyroSportsTeam) -> String {
+        guard team.id.hasPrefix("espn.\(team.league.rawValue).") else { return teamKey(team.fullName, league: team.league) }
+        let prefix = "\(team.league.rawValue)|@\(team.id.split(separator: ".").last ?? "")~"
+        return prefix + team.fullName.prefix(max(0, 64 - prefix.count))
+    }
+    static func storedName(_ key: String) -> String {
+        let value = key.split(separator: "|", maxSplits: 1).last.map(String.init) ?? key
+        return value.hasPrefix("@") ? value.split(separator: "~", maxSplits: 1).last.map(String.init) ?? value : value
+    }
     init(defaults: UserDefaults) {
         leagues = Set(defaults.stringArray(forKey: Self.leaguesKey) ?? [])
         teams = Set(defaults.stringArray(forKey: Self.teamsKey) ?? [])
@@ -49,9 +91,15 @@ struct KyroSportsFavorites: Equatable {
     /// nickname when one side has no location. College nicknames repeat
     /// across schools ("Knights"), so college teams need the full name.
     func includes(_ team: KyroSportsTeam) -> Bool {
+        let stablePrefix = "\(team.league.rawValue)|@\(team.id.split(separator: ".").last ?? "")~"
+        if team.id.hasPrefix("espn.\(team.league.rawValue)."), teams.contains(where: { $0.hasPrefix(stablePrefix) }) { return true }
         if teams.contains(Self.teamKey(team.fullName, league: team.league)) { return true }
         let prefix = team.league.rawValue + "|"
-        let names = teams.filter { $0.hasPrefix(prefix) }.map { Self.normalized(String($0.dropFirst(prefix.count))) }
+        let names = teams.filter {
+            guard $0.hasPrefix(prefix) else { return false }
+            // Different ESPN IDs must never merge just because names match.
+            return !team.id.hasPrefix("espn.") || !$0.hasPrefix(prefix + "@")
+        }.map { Self.normalized(Self.storedName($0)) }
         guard !names.isEmpty else { return false }
         let full = Self.normalized(team.fullName)
         if names.contains(full) { return true }
@@ -233,7 +281,7 @@ final class KyroSportsFavoritesStore {
         if !preferences.leagues.insert(league.rawValue).inserted { preferences.leagues.remove(league.rawValue) }
     }
     func toggle(_ team: KyroSportsTeam) {
-        let key = KyroSportsFavorites.teamKey(team.fullName, league: team.league)
+        let key = KyroSportsFavorites.favoriteKey(team)
         if preferences.includes(team) {
             // Remove the stored spelling too, not only today's provider spelling.
             let matching = preferences.teams.filter { stored in

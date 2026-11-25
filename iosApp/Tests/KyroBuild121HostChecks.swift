@@ -32,7 +32,7 @@ enum KyroBuild121HostChecks {
         sports()
         navigationPills()
         try sourceAndAssetContracts()
-        print("Build 123: \(count) focused host checks passed.")
+        print("Build 123/124: \(count) focused host checks passed.")
     }
 
     // MARK: Arrangement
@@ -262,7 +262,7 @@ enum KyroBuild121HostChecks {
                                       nickname: "Gamecocks", location: "Jacksonville State", alternateNames: ["Jax State"])
 
         favorites.toggle(bears)
-        check(favorites.preferences.teams == ["nfl|Chicago Bears"], "favorite stored by league and full name")
+        check(favorites.preferences.teams == [KyroSportsFavorites.favoriteKey(bears)], "favorite stored by stable provider identity with readable name")
         check(favorites.preferences.includes(sleeperBears), "Sleeper's city-less NFL team matches the ESPN favorite")
         check(!favorites.preferences.includes(lions), "other teams don't match")
         favorites.toggle(ucfKnights)
@@ -271,7 +271,7 @@ enum KyroBuild121HostChecks {
         favorites.preferences.teams.insert("collegeBasketballMen|Jax State")
         check(favorites.preferences.includes(jaxState), "provider alternate names match")
         favorites.toggle(sleeperBears)
-        check(!favorites.preferences.teams.contains("nfl|Chicago Bears"), "unfavoriting removes the stored spelling")
+        check(!favorites.preferences.includes(bears), "unfavoriting removes the stored identity and spelling")
         favorites.toggle(bears)
         favorites.toggle(.nba)
         check(favorites.preferences.relevantLeagues == [.nfl, .nba, .collegeFootball, .collegeBasketballMen],
@@ -421,8 +421,8 @@ enum KyroBuild121HostChecks {
         check(capacity.contains("productionMaximumChannels = 100_000"), "100K production capacity retained")
         let project = try source("iosApp/project.yml")
         check(project.contains("revision: f470d8dc610537929c83ef31877287e9d2ad9d28"), "accepted Aether revision retained")
-        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 123").count == 4, "app and two extensions target Build 123")
-        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.123\"").count == 4, "version 1.0.123")
+        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 124").count == 4, "app and two extensions target Build 124")
+        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.124\"").count == 4, "version 1.0.124")
         let libraries = try source("iosApp/iosApp/Screens/Browse/LibrariesTabView.swift")
         check(libraries.contains("LibraryDockModel()") && libraries.contains(".floatingPageDock(dock, isShown: !dockIsInSlot)"),
               "accepted navigation pills untouched")
