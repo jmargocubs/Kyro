@@ -814,103 +814,7 @@ struct KyroRadioNowPlayingPresentation: ViewModifier {
     }
 }
 
-struct KyroRadioNowPlayingView: View {
-    private let player = KyroRadioPlayer.shared
-    private let library = KyroRadioLibrary.shared
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(spacing: 22) {
-            Spacer(minLength: 12)
-            KyroRadioArtwork(station: player.station, size: 240)
-                .shadow(color: KyroTheme.accent.opacity(0.35), radius: 24, y: 10)
-            VStack(spacing: 8) {
-                liveBadge
-                Text(player.station?.name ?? "")
-                    .font(.title2.bold())
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-                if let track = player.track, player.state == .playing {
-                    VStack(spacing: 2) {
-                        Text(track.title).font(.headline).foregroundStyle(KyroTheme.textPrimary)
-                        if let artist = track.artist { Text(artist).font(.subheadline).foregroundStyle(KyroTheme.textSecondary) }
-                    }
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .accessibilityElement(children: .combine)
-                } else if let location = player.station?.location, !location.isEmpty {
-                    Text(location).font(.subheadline).foregroundStyle(KyroTheme.textSecondary)
-                }
-                if case .failed(let error) = player.state {
-                    Text(error.message).font(.footnote).foregroundStyle(Color.siloErrorInk).multilineTextAlignment(.center)
-                }
-            }
-            .padding(.horizontal, 24)
-
-            HStack(spacing: 36) {
-                if let station = player.station {
-                    Button { library.toggleFavorite(station) } label: {
-                        Image(systemName: library.isFavorite(station.id) ? "heart.fill" : "heart").font(.title2)
-                    }
-                    .accessibilityLabel(library.isFavorite(station.id) ? "Remove from Library" : "Save to Library")
-                }
-                KyroRadioTransportButton(player: player, size: 72)
-                Button { player.stop(); dismiss() } label: {
-                    Image(systemName: "stop.fill").font(.title2)
-                }
-                .accessibilityLabel("Stop")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(KyroTheme.accentInk)
-
-            KyroRadioRoutePicker()
-                .frame(width: 44, height: 44)
-                .accessibilityLabel("Audio output, AirPlay and Bluetooth")
-            if let station = player.station, let format = station.formatLine {
-                Text(format).font(.caption).foregroundStyle(KyroTheme.textSecondary)
-            }
-            Spacer(minLength: 12)
-        }
-        .frame(maxWidth: .infinity)
-        .background(LinearGradient(colors: [KyroTheme.depth, Color.siloPageCanvas], startPoint: .top, endPoint: .bottom).ignoresSafeArea())
-        .accessibilityIdentifier("kyroRadioNowPlaying")
-    }
-
-    @ViewBuilder
-    private var liveBadge: some View {
-        switch player.state {
-        case .playing:
-            Text("LIVE").font(.caption.bold()).padding(.horizontal, 8).padding(.vertical, 3)
-                .background(KyroTheme.live, in: Capsule()).foregroundStyle(.white)
-        default:
-            Text(KyroRadioStatusText.line(player: player).isEmpty ? " " : stateTitle)
-                .font(.caption.bold()).foregroundStyle(KyroTheme.textSecondary)
-        }
-    }
-
-    private var stateTitle: String {
-        switch player.state {
-        case .connecting: "CONNECTING"
-        case .reconnecting: "RECONNECTING"
-        case .paused: "PAUSED"
-        case .failed: "UNAVAILABLE"
-        case .idle, .playing: ""
-        }
-    }
-}
-
-/// The system output picker: AirPlay, Bluetooth and this iPhone.
-private struct KyroRadioRoutePicker: UIViewRepresentable {
-    func makeUIView(context: Context) -> AVRoutePickerView {
-        let view = AVRoutePickerView()
-        view.activeTintColor = UIColor(KyroTheme.accentInk)
-        view.tintColor = UIColor(KyroTheme.textSecondary)
-        view.prioritizesVideoDevices = false
-        return view
-    }
-
-    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
-}
+// Build 132: `KyroRadioNowPlayingView` (the turntable) lives in KyroRadioTurntable.swift.
 
 // MARK: - Settings
 
@@ -967,6 +871,8 @@ struct KyroRadioSettingsForm: View {
 
     var body: some View {
         Form {
+            // Build 132: the expanded player's theme.
+            KyroRadioPlayerAppearanceSection()
             KyroRadioRegionPickers(
                 countryCode: binding(\.countryCode), countryName: binding(\.countryName),
                 state: binding(\.state), language: binding(\.language))

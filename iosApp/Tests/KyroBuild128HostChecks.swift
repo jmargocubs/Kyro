@@ -438,7 +438,7 @@ enum KyroBuild128HostChecks {
         var scope: String? = "s.a.p1"
         let settings = KyroRadioBackupSettings.make(library: lib, defaults: defaults, scope: { scope })
         func setting(_ id: String) -> BackupSetting { settings.first { $0.id == id }! }
-        check(settings.map(\.id) == ["radio.favorites", "radio.preferences", "radio.homeShelves"]
+        check(settings.map(\.id) == ["radio.favorites", "radio.preferences", "radio.homeShelves", "radio.playerTheme"]
               && settings.allSatisfy { $0.group == .radio && !SettingsBackupSafety.isSensitiveName($0.id) },
               "radio backup entries in their own group; no history entry")
         let favorites = setting("radio.favorites").read()!

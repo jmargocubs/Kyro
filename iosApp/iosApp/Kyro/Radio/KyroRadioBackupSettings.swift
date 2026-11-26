@@ -10,6 +10,9 @@ import Foundation
 ///   its ID the first time Radio needs them. Holds the newest 200 favorites.
 /// - `radio.preferences`: Discover's country, region and language.
 /// - `radio.homeShelves`: whether the two radio Home shelves are on.
+/// - `radio.playerTheme` (Build 132): the expanded player's theme. Builds
+///   128–131 skip it as an unrecognized setting; a backup without it leaves
+///   the theme as it is (Crimson Noir on a fresh install).
 ///
 /// Listening history is never included.
 enum KyroRadioBackupSettings {
@@ -20,8 +23,10 @@ enum KyroRadioBackupSettings {
 
     @MainActor
     static func make(library: KyroRadioLibrary, defaults: UserDefaults,
+                     appearance: KyroRadioPlayerAppearance? = nil,
                      scope: @escaping @MainActor () -> String? = { nil }) -> [BackupSetting] {
-        [
+        let appearance = appearance ?? .shared
+        return [
             BackupSetting(id: "radio.favorites", group: .radio, title: "Favorite radio stations",
                 validate: { favorites($0) != nil },
                 read: { encodeFavorites(library.favorites) },
@@ -58,6 +63,14 @@ enum KyroRadioBackupSettings {
                     let shown = shelves(value) ?? []
                     return shown.isEmpty ? "Off" : shown.count == 2 ? "Both on" : "One on"
                 }),
+            BackupSetting(id: "radio.playerTheme", group: .radio, title: "Radio player appearance",
+                validate: { playerTheme($0) != nil },
+                read: { .string(appearance.theme.rawValue) },
+                write: { value in
+                    guard let theme = playerTheme(value) else { throw InvalidValue() }
+                    appearance.select(theme)
+                },
+                label: { value in playerTheme(value)?.title ?? "Custom" }),
         ]
     }
 
@@ -136,6 +149,13 @@ enum KyroRadioBackupSettings {
                                     countryName: name.isEmpty ? nil : name,
                                     state: region.isEmpty ? nil : region,
                                     language: language.isEmpty ? nil : language).normalized
+    }
+
+    // MARK: Player theme
+
+    static func playerTheme(_ value: BackupValue) -> KyroRadioPlayerTheme? {
+        guard case .string(let raw) = value else { return nil }
+        return KyroRadioPlayerTheme(rawValue: raw)
     }
 
     // MARK: Home shelves

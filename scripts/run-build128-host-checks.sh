@@ -13,6 +13,7 @@ xcrun swiftc -D KYRO_STANDALONE_TESTS -parse-as-library -o "$OUTPUT/build128" \
   iosApp/iosApp/Kyro/Radio/KyroRadioDiscoverModel.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioPlaybackMachine.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioBackupSettings.swift \
+  iosApp/iosApp/Kyro/Radio/KyroRadioPlayerTheme.swift \
   iosApp/iosApp/Kyro/Home/KyroHomePreferences.swift \
   iosApp/iosApp/Kyro/Home/KyroHomeArrangement.swift \
   iosApp/iosApp/Kyro/Home/KyroHomeBackupSettings.swift \

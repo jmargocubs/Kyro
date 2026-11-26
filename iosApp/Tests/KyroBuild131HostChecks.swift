@@ -259,8 +259,8 @@ enum KyroBuild131HostChecks {
         check(player.contains("@ObservationIgnored private(set) var machine"), "radio state isolation stays")
 
         let project = try source("iosApp/project.yml")
-        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 131").count == 4, "app and extensions target Build 131")
-        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.131\"").count == 4, "version 1.0.131")
+        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 132").count == 4, "app and extensions target Build 132")
+        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.132\"").count == 4, "version 1.0.132")
     }
 }
 #endif
