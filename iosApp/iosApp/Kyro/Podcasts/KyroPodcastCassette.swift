@@ -37,12 +37,7 @@ struct KyroPodcastMiniPlayer: View {
                         Spacer(minLength: 0)
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityHint("Opens cassette player")
-                Button(action: player.toggle) {
-                    Image(systemName: player.state == .playing || player.state == .loading ? "pause.fill" : "play.fill")
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(player.state == .playing || player.state == .loading ? "Pause" : "Play")
+                KyroPodcastMiniTransport(player: player)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, isInline ? 4 : 8)
@@ -51,6 +46,24 @@ struct KyroPodcastMiniPlayer: View {
             .padding(.bottom, style == .card ? 8 : 0)
             .accessibilityIdentifier("kyroPodcastMiniPlayer")
         }
+    }
+}
+
+private struct KyroPodcastMiniTransport: View {
+    let player: KyroPodcastPlayer
+    private let library = KyroPodcastLibrary.shared
+
+    var body: some View {
+        let canPause = player.state == .playing || player.state == .loading
+        Button(action: player.toggle) {
+            Image(systemName: canPause ? "pause.fill" : "play.fill")
+                .font(.body.weight(.semibold))
+                .frame(width: 44, height: 44)
+                .modifier(KyroAudioMiniTransportFinish(theme: library.preferences.theme))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(canPause ? "Pause" : "Play")
     }
 }
 
@@ -71,40 +84,21 @@ private struct KyroPodcastCassettePlayer: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 22) {
-                HStack {
-                    Text("KYRO X  /  CASSETTE DECK").tracking(2).font(.caption.monospaced().weight(.heavy))
-                    Spacer()
-                    Button("Close", systemImage: "xmark.circle.fill") { dismiss() }
-                        .labelStyle(.iconOnly).font(.title2).frame(minWidth: 44, minHeight: 44)
-                        .buttonStyle(.plain)
-                }
-                KyroCassetteDeck(entry: entry, palette: palette, wood: wood, clock: player.clock,
+            VStack(spacing: 18) {
+                header
+                KyroCassetteDeck(entry: entry, palette: palette, wood: wood, player: player,
                                  state: player.state, playing: player.isAdvancing, visible: visible && dialog == nil,
                                  active: scenePhase == .active,
                                  reduceMotion: reduceMotion, draftPosition: draftPosition)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(entry.episode.title).font(.title2.bold()).fixedSize(horizontal: false, vertical: true)
-                    Text(entry.showTitle).font(.subheadline).foregroundStyle(.secondary)
-                    if player.state == .failed { Text("This episode couldn’t play. Tap Play to retry.").font(.footnote) }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                KyroCassetteTimeline(player: player, draftPosition: $draftPosition)
+                KyroPodcastEpisodePanel(entry: entry, player: player, palette: palette, draftPosition: $draftPosition)
                 KyroCassetteControls(entry: entry, player: player, palette: palette)
-                HStack(spacing: 12) {
-                    KyroCassetteVolume().frame(minWidth: 70, maxWidth: .infinity).frame(height: 40)
-                    KyroCassetteRoute().frame(width: 44, height: 44)
-                    if entry.episode.chaptersURL != nil {
-                        Button("Chapters", systemImage: "list.bullet.rectangle") { dialog = .chapters }
-                            .labelStyle(.iconOnly).frame(width: 44, height: 44)
-                    }
-                    Button("Queue", systemImage: "list.number") { dialog = .queue }
-                        .labelStyle(.iconOnly).frame(width: 44, height: 44)
-                }
-            }.frame(maxWidth: 520).padding(.horizontal, 20).padding(.vertical, 24)
+                outputControls
+            }.frame(maxWidth: 520).padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 24)
                 .frame(maxWidth: .infinity)
         }
+        .scrollBounceBehavior(.basedOnSize)
         .foregroundStyle(palette.headerText)
-        .tint(palette.controlIcon)
+        .tint(palette.isModern ? palette.edgeGlow : palette.controlIcon)
         .background(LinearGradient(colors: [palette.backgroundTop, palette.backgroundBottom],
                                    startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea())
         .environment(\.colorScheme, .dark)
@@ -124,13 +118,79 @@ private struct KyroPodcastCassettePlayer: View {
         }
         .accessibilityIdentifier("kyroCassettePlayer")
     }
+
+    private var header: some View {
+        HStack {
+            Button("Close", systemImage: "chevron.down") { dismiss() }
+                .labelStyle(.iconOnly)
+                .buttonStyle(KyroHardwareButtonStyle(palette: palette, diameter: 44))
+            Spacer()
+            VStack(spacing: 4) {
+                AppWordmarkView(placement: .compactHeader)
+                Text("PODCASTS")
+                    .font(.caption2.weight(.medium)).tracking(3)
+                    .foregroundStyle(palette.headerText.opacity(0.85))
+            }
+            Spacer()
+            KyroAudioThemeMenu(selection: library.preferences.theme, palette: palette, select: library.selectTheme)
+        }
+    }
+
+    private var outputControls: some View {
+        HStack(spacing: 8) {
+            KyroCassetteVolume(tint: palette.isModern ? palette.edgeGlow : palette.controlIcon)
+                .frame(height: 40)
+            KyroAudioOutputPicker(tint: palette.controlIcon, activeTint: palette.miniAccent)
+                .frame(width: 44, height: 44)
+                .accessibilityLabel("Audio output, AirPlay and Bluetooth")
+            if entry.episode.chaptersURL != nil {
+                Button("Chapters", systemImage: "list.bullet.rectangle") { dialog = .chapters }
+                    .labelStyle(.iconOnly).frame(width: 44, height: 44)
+            }
+            Button("Queue", systemImage: "list.number") { dialog = .queue }
+                .labelStyle(.iconOnly).frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .background(Color.black.opacity(0.20), in: .rect(cornerRadius: 14))
+    }
+}
+
+private struct KyroPodcastEpisodePanel: View {
+    let entry: PodcastEntry
+    let player: KyroPodcastPlayer
+    let palette: KyroRadioPlayerPalette
+    @Binding var draftPosition: Double?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(entry.showTitle)
+                .font(.subheadline.weight(.semibold)).foregroundStyle(palette.panelSecondary)
+            Text(entry.episode.title)
+                .font(.system(.title2, design: palette.titleDesign, weight: .bold))
+                .foregroundStyle(palette.panelPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
+            if player.state == .failed {
+                Label("This episode couldn’t play. Tap Play to retry.", systemImage: "exclamationmark.circle")
+                    .font(.footnote).foregroundStyle(palette.panelPrimary)
+            } else if player.state == .loading || (player.state == .playing && !player.isAdvancing) {
+                Label("Buffering…", systemImage: "ellipsis")
+                    .font(.footnote).foregroundStyle(palette.panelSecondary)
+            }
+            KyroCassetteTimeline(player: player, palette: palette, draftPosition: $draftPosition)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background { palette.panel() }
+    }
 }
 
 private struct KyroCassetteDeck: View {
     let entry: PodcastEntry
     let palette: KyroRadioPlayerPalette
     let wood: UIImage?
-    let clock: PodcastPlaybackClock
+    let player: KyroPodcastPlayer
     let state: KyroPodcastPlayer.State
     let playing: Bool
     let visible: Bool
@@ -145,16 +205,16 @@ private struct KyroCassetteDeck: View {
                 Spacer()
                 Circle().fill(playing ? palette.lamp : palette.metalDark).frame(width: 7, height: 7)
                     .shadow(color: playing ? palette.lamp : .clear, radius: 5)
-                Text(playing ? "PLAY" : (state == .loading || state == .playing) ? "LOAD" : "STANDBY")
+                Text(playing ? "PLAY" : state == .failed ? "ERROR" : (state == .loading || state == .playing) ? "LOAD" : "STANDBY")
             }
             .font(.system(size: 10, weight: .semibold, design: .monospaced))
             .foregroundStyle(palette.controlIcon)
-            KyroCassetteShell(entry: entry, palette: palette, clock: clock, playing: playing,
+            KyroCassetteShell(entry: entry, palette: palette, player: player, playing: playing,
                               visible: visible, active: active, reduceMotion: reduceMotion, draftPosition: draftPosition)
             HStack {
                 Image(systemName: "minus.circle.fill")
                 Spacer()
-                Text("HIGH FIDELITY  •  TYPE II").tracking(1).lineLimit(1)
+                Text(palette.isModern ? "KYRO X  /  STREAM SERIES" : "HIGH FIDELITY  •  TYPE II").tracking(1).lineLimit(1)
                 Spacer()
                 Image(systemName: "minus.circle.fill")
             }
@@ -183,7 +243,7 @@ private struct KyroCassetteDeck: View {
 private struct KyroCassetteShell: View {
     let entry: PodcastEntry
     let palette: KyroRadioPlayerPalette
-    let clock: PodcastPlaybackClock
+    let player: KyroPodcastPlayer
     let playing: Bool
     let visible: Bool
     let active: Bool
@@ -195,16 +255,17 @@ private struct KyroCassetteShell: View {
             HStack(spacing: 8) {
                 KyroPodcastArtwork(url: entry.showArtwork ?? entry.artwork, size: 38)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.showTitle).font(.system(.subheadline, design: .serif, weight: .heavy)).lineLimit(2)
-                    Text("PODCAST SERIES").tracking(2).font(.system(size: 8, weight: .bold, design: .monospaced))
+                    Text(entry.showTitle).font(.system(.subheadline, design: palette.titleDesign, weight: .semibold)).lineLimit(2)
+                    Text("PODCAST SERIES").tracking(1.5).font(.system(size: 9, weight: .semibold, design: .monospaced))
                 }
                 Spacer(minLength: 2)
                 Text("A").font(.system(size: 21, weight: .heavy, design: .monospaced)).padding(.horizontal, 5)
             }
             .foregroundStyle(Color(uiColor: palette.labelInk))
-            .padding(7)
-            .background(Color(uiColor: palette.label), in: .rect(cornerRadius: 4))
-            KyroTapeWindow(palette: palette, clock: clock, playing: playing, visible: visible,
+            .padding(8)
+            .background(Color(uiColor: palette.label), in: .rect(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color(uiColor: palette.labelRing).opacity(0.55)))
+            KyroTapeWindow(palette: palette, player: player, playing: playing, visible: visible,
                            active: active, reduceMotion: reduceMotion, draftPosition: draftPosition)
             HStack(spacing: 7) {
                 Circle().fill(palette.metalLinear).frame(width: 6, height: 6)
@@ -214,7 +275,7 @@ private struct KyroCassetteShell: View {
             }.padding(.top, 2)
         }
         .padding(11)
-        .background(LinearGradient(colors: [Color(white: 0.24), .black, Color(white: 0.13)],
+        .background(LinearGradient(colors: [palette.isModern ? palette.plinthTop : Color(white: 0.24), .black, palette.plinthBottom],
                                    startPoint: .top, endPoint: .bottom), in: .rect(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.19)))
         .overlay(RoundedRectangle(cornerRadius: 10).inset(by: 3).strokeBorder(.black.opacity(0.8)))
@@ -223,10 +284,11 @@ private struct KyroCassetteShell: View {
 
 private struct KyroTapeWindow: View {
     let palette: KyroRadioPlayerPalette
-    let clock: PodcastPlaybackClock
+    let player: KyroPodcastPlayer
     let playing, visible, active, reduceMotion: Bool
     let draftPosition: Double?
     var body: some View {
+        let clock = player.clock
         let fraction = draftPosition.map { clock.duration > 0 ? $0 / clock.duration : 0 } ?? clock.fraction
         let tape = PodcastCassetteMotion.tapeSizes(fraction: fraction)
         let seeking = clock.seeking || draftPosition != nil
@@ -236,7 +298,8 @@ private struct KyroTapeWindow: View {
             let diameter = min(67, geometry.size.width * 0.30)
             ZStack {
                 RoundedRectangle(cornerRadius: 12).fill(Color(white: 0.065))
-                Capsule().fill(LinearGradient(colors: [Color(red: 0.33, green: 0.18, blue: 0.11), .black],
+                Capsule().fill(LinearGradient(colors: [palette.isModern ? palette.edgeGlow.opacity(0.38) :
+                                                        Color(red: 0.33, green: 0.18, blue: 0.11), .black],
                                                startPoint: .top, endPoint: .bottom))
                     .frame(width: geometry.size.width * 0.55, height: 5)
                     .offset(y: 16)
@@ -248,7 +311,7 @@ private struct KyroTapeWindow: View {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(LinearGradient(colors: [.white.opacity(0.19), .clear, palette.sheen],
                                          startPoint: .topLeading, endPoint: .bottomTrailing))
-                RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.28))
+                RoundedRectangle(cornerRadius: 12).strokeBorder(palette.isModern ? palette.panelStroke : .white.opacity(0.28))
             }
         }.frame(height: 78)
     }
@@ -262,7 +325,7 @@ private struct KyroTapeWindow: View {
                 .frame(width: diameter * amount, height: diameter * amount)
             Circle().strokeBorder(.white.opacity(0.13), lineWidth: 1).frame(width: diameter * amount, height: diameter * amount)
             KyroCassetteHubRotation(spins: spins, fast: seeking,
-                                    color: palette.usesWood ? UIColor(red: 0.78, green: 0.67, blue: 0.47, alpha: 1) : .lightGray)
+                                    color: UIColor(palette.isModern ? palette.lamp : palette.metalLight))
                 .frame(width: diameter * 0.36, height: diameter * 0.36)
         }.frame(width: diameter, height: diameter)
     }
@@ -336,6 +399,7 @@ private struct KyroCassetteHubRotation: UIViewRepresentable {
 
 private struct KyroCassetteTimeline: View {
     let player: KyroPodcastPlayer
+    let palette: KyroRadioPlayerPalette
     @Binding var draftPosition: Double?
 
     var body: some View {
@@ -348,6 +412,7 @@ private struct KyroCassetteTimeline: View {
                 else if let value = draftPosition { player.seek(value); draftPosition = nil }
             })
             .disabled(clock.duration <= 0 || player.state == .loading || player.state == .failed)
+            .tint(palette.isModern ? palette.edgeGlow : palette.panelPrimary)
             .accessibilityLabel("Playback Position")
             .accessibilityAdjustableAction { direction in
                 if direction == .increment { player.skip(15) }
@@ -357,7 +422,9 @@ private struct KyroCassetteTimeline: View {
                 Text(Self.time(value))
                 Spacer()
                 Text(Self.time(clock.duration))
-            }.font(.caption.monospacedDigit())
+            }
+            .font(.caption.weight(.medium).monospacedDigit())
+            .foregroundStyle(palette.panelSecondary)
         }
     }
 
@@ -375,8 +442,8 @@ private struct KyroCassetteControls: View {
     private let library = KyroPodcastLibrary.shared
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 9) {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
                 metalKey("Back \(library.preferences.back) seconds", icon: "gobackward", seconds: library.preferences.back) {
                     player.skip(-Double(library.preferences.back))
                 }
@@ -399,8 +466,11 @@ private struct KyroCassetteControls: View {
                         }
                     }
                 } label: {
-                    Text(library.preferences.speed.formatted() + "×").frame(maxWidth: .infinity, minHeight: 44)
-                }.accessibilityLabel("Playback Speed")
+                    Text(library.preferences.speed.formatted() + "×")
+                        .monospacedDigit().frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .accessibilityLabel("Playback Speed")
+                .accessibilityValue(library.preferences.speed.formatted() + "×")
                 Menu {
                     ForEach(PodcastPreferences.sleepOptions, id: \.self) { minutes in
                         Button(KyroPodcastSettings.sleepLabel(minutes)) { player.setSleep(minutes) }
@@ -417,8 +487,13 @@ private struct KyroCassetteControls: View {
                         .labelStyle(.iconOnly).frame(maxWidth: .infinity, minHeight: 44)
                 }
             }
-            .font(.subheadline.bold())
-            .background(.black.opacity(0.23), in: .rect(cornerRadius: 9))
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(palette.controlIcon)
+            .tint(palette.controlIcon)
+            .background {
+                let shape = RoundedRectangle(cornerRadius: 14)
+                shape.fill(palette.plinthTop).overlay(shape.strokeBorder(palette.plinthEdge))
+            }
         }
     }
 
@@ -426,41 +501,38 @@ private struct KyroCassetteControls: View {
                           primary: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 20, weight: .semibold))
+                Image(systemName: icon).font(.system(size: primary ? 24 : 18, weight: .semibold))
                 if let seconds { Text(String(seconds)).font(.caption.monospacedDigit().bold()) }
             }
-            .foregroundStyle(primary || palette.usesWood ? Color.black : palette.controlIcon)
-            .frame(maxWidth: .infinity, minHeight: 48)
+            .foregroundStyle(primary ? palette.transportInk : palette.controlIcon)
+            .frame(maxWidth: .infinity, minHeight: 54)
             .background {
-                let key = RoundedRectangle(cornerRadius: 8)
-                key.fill(primary || palette.usesWood ? palette.metalLinear :
-                            LinearGradient(colors: [Color(white: 0.27), Color(white: 0.1)], startPoint: .top, endPoint: .bottom))
-                    .overlay(key.strokeBorder(palette.metalMid, lineWidth: 0.8))
-                    .shadow(color: primary ? palette.edgeGlow.opacity(0.5) : .black.opacity(0.6), radius: 4, y: 3)
+                let key = RoundedRectangle(cornerRadius: palette.isModern ? 18 : 12)
+                let surface = LinearGradient(colors: primary
+                    ? (palette.isModern ? [palette.lamp, palette.edgeGlow] : [palette.metalLight, palette.metalMid])
+                    : [palette.plinthTop, palette.plinthBottom], startPoint: .top, endPoint: .bottom)
+                key.fill(surface)
+                    .overlay(key.strokeBorder(primary && palette.isModern ? palette.lamp : palette.metalMid, lineWidth: 0.8))
+                    .shadow(color: primary ? palette.edgeGlow.opacity(0.22) : .black.opacity(0.4), radius: 5, y: 3)
             }
         }.buttonStyle(.plain).accessibilityLabel(title)
     }
 }
 
 private struct KyroCassetteVolume: UIViewRepresentable {
+    let tint: Color
+
     func makeUIView(context: Context) -> MPVolumeView {
         let view = MPVolumeView()
         view.showsRouteButton = false
         view.accessibilityLabel = "Volume"
         return view
     }
-    func updateUIView(_ view: MPVolumeView, context: Context) {}
-}
-
-private struct KyroCassetteRoute: UIViewRepresentable {
-    func makeUIView(context: Context) -> AVRoutePickerView {
-        let view = AVRoutePickerView()
-        view.tintColor = .white
-        view.activeTintColor = .systemPink
-        view.prioritizesVideoDevices = false
-        return view
+    func updateUIView(_ view: MPVolumeView, context: Context) {
+        for case let slider as UISlider in view.subviews {
+            slider.minimumTrackTintColor = UIColor(tint)
+        }
     }
-    func updateUIView(_ view: AVRoutePickerView, context: Context) {}
 }
 
 private struct KyroCassetteChapters: View {

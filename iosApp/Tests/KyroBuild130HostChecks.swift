@@ -199,7 +199,7 @@ enum KyroBuild130HostChecks {
         check(radioView.contains(".safeAreaInset(edge: .bottom, spacing: 0)"),
               "the page bar is a bottom safe-area inset, which reserves scroll space")
         check(radioView.contains("KyroRadioNavigationPolicy.pageHostsNowPlayingBar("), "the page follows the bar policy")
-        let pageBar = body(of: "private struct KyroRadioPageNowPlayingBar: View", in: views)
+        let pageBar = body(of: "struct KyroRadioPageNowPlayingBar: View", in: views)
         check(pageBar.contains("NowPlayingShelf(style: .card)"), "the page bar is the app's single Now Playing shelf")
         check(pageBar.contains("keyboardWillShowNotification") && pageBar.contains("VStack(spacing: 0)"),
               "the page bar steps aside for the keyboard and keeps observing it")
@@ -220,9 +220,6 @@ enum KyroBuild130HostChecks {
         check(rails.contains("KyroHomeRail(title: shelf.title, sizing: .tallestCard)"),
               "sports shelves keep tallest-card sizing")
 
-        let project = try source("iosApp/project.yml")
-        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 132").count == 4, "app and extensions target Build 132")
-        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.132\"").count == 4, "version 1.0.132")
     }
 }
 #endif

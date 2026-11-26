@@ -36,8 +36,9 @@ enum KyroBuild133HostChecks {
         try await libraryAndCache(parsed)
         try playback(parsed)
         try backup(parsed)
+        try playerAppearance()
         try sourceBoundaries()
-        print("Build 133: \(count) host checks passed.")
+        print("Build 133 podcast regressions + Build 134 appearance: \(count) host checks passed.")
         if CommandLine.arguments.contains("--live") { try await live() }
     }
 
@@ -238,8 +239,106 @@ enum KyroBuild133HostChecks {
         let home = try source("Kyro/Home/KyroHomeShelves.swift")
         require(home.contains("KyroHomeSportsHeightProbe.games(games)") && home.contains("isHeightProbe: true"), "sports tallest-card probe preserved")
         let project = try String(contentsOfFile: "iosApp/project.yml", encoding: .utf8)
-        require(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 133").count == 4 &&
-                project.components(separatedBy: "MARKETING_VERSION: \"1.0.133\"").count == 4, "iOS app and extensions target Build 133")
+        require(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 134").count == 4 &&
+                project.components(separatedBy: "MARKETING_VERSION: \"1.0.134\"").count == 4, "iOS app and extensions target Build 134")
+
+        let cassette = try source("Kyro/Podcasts/KyroPodcastCassette.swift")
+        let radio = try source("Kyro/Radio/KyroRadioTurntable.swift")
+        let radioViews = try source("Kyro/Radio/KyroRadioViews.swift")
+        let settings = try source("Kyro/Podcasts/KyroPodcastBrowser.swift")
+        require(cassette.contains("select: library.selectTheme") && settings.contains("select: library.selectTheme") &&
+                radio.contains("select: appearance.select"), "theme selection writes appearance directly, not playback")
+        require(cassette.components(separatedBy: "player.clock").count == 3 &&
+                cassette.contains("let clock = player.clock\n        let fraction") &&
+                cassette.contains("let clock = player.clock\n        let value"), "clock reads stay in the reel window and timeline")
+        require(cassette.contains("PodcastCassetteMotion.spins(playing:") &&
+                cassette.contains("active: active, reduceMotion: reduceMotion") &&
+                cassette.contains("visible: visible && dialog == nil") && !cassette.contains("TimelineView"),
+                "cassette motion respects visibility, backgrounding, and Reduce Motion without a frame loop")
+        require(cassette.contains("player.state == .failed") && cassette.contains("!player.isAdvancing") &&
+                cassette.contains("Label(\"Buffering…\"") && cassette.contains("Tap Play to retry"),
+                "podcast shows errors and buffering without showing the reels as advancing")
+        require(radio.contains("case .connecting, .reconnecting: ProgressView()") &&
+                radio.contains("case .failed: Image(systemName: \"arrow.clockwise\")") &&
+                radio.contains("case .playing: Image(systemName: \"pause.fill\")") &&
+                radio.contains("case .idle, .paused: Image(systemName: \"play.fill\")"),
+                "radio retains transport affordances for all playback states")
+        for action in ["action: player.toggle", "player.skip(-Double(library.preferences.back))",
+                       "player.skip(Double(library.preferences.forward))", "player.seek(value)",
+                       "player.updatePreferences(prefs)", "player.setSleep(minutes)", "library.toggleSaved(entry)",
+                       "dialog = .queue", "dialog = .chapters", "KyroAudioOutputPicker(", "KyroCassetteVolume("] {
+            require(cassette.contains(action), "cassette keeps \(action)")
+        }
+        require(cassette.contains("decodeSize: 46") &&
+                radioViews.contains("decodeSize: KyroRadioMiniPlayerView.artworkDecodeSize") &&
+                radio.contains(".task(id: station?.id) { await loadArtwork() }"),
+                "theme switching does not change artwork requests or task identities")
+    }
+
+    private static func playerAppearance() throws {
+        let defaults = UserDefaults(suiteName: "kyro.134.appearance.\(UUID())")!
+        let appearance = KyroRadioPlayerAppearance(defaults: defaults)
+        let radio = KyroRadioLibrary(defaults: defaults)
+        let podcast = KyroPodcastLibrary(defaults: defaults)
+        var preferred = podcast.preferences
+        preferred.speed = 1.5
+        preferred.forward = 45
+        podcast.updatePreferences(preferred)
+        require(podcast.preferences == preferred, "non-theme podcast preferences are set")
+
+        let updated = OSAllocatedUnfairLock(initialState: [false, false])
+        withObservationTracking { _ = appearance.theme } onChange: { updated.withLock { $0[0] = true } }
+        withObservationTracking { _ = podcast.preferences.theme } onChange: { updated.withLock { $0[1] = true } }
+        appearance.select(.modernStream)
+        require(updated.withLock { $0 } == [true, false] && podcast.preferences.theme == .crimsonNoir,
+                "Radio switches immediately without changing Podcast appearance")
+        podcast.selectTheme(.modernStream)
+        preferred.theme = .modernStream
+        require(updated.withLock { $0 } == [true, true] && podcast.preferences == preferred,
+                "Podcast switches immediately without changing transport preferences")
+        require(KyroRadioPlayerAppearance(defaults: defaults).theme == .modernStream &&
+                KyroPodcastLibrary(defaults: defaults).preferences == preferred, "Modern Stream persists in both stores")
+
+        let radioSettings = KyroRadioBackupSettings.make(library: radio, defaults: defaults, appearance: appearance)
+        let podcastSettings = KyroPodcastBackup.make(library: podcast, defaults: defaults)
+        let registry = SettingsBackupRegistry(settings: radioSettings + podcastSettings, deviceIdiom: "phone")
+        let scratch = URL(fileURLWithPath: ProcessInfo.processInfo.environment["KYRO_TEST_TEMP"]!)
+        let applier = SettingsBackupApplier(registry: registry, journal: FileRestoreJournalStore(url: scratch.appendingPathComponent("appearance-restore.json")))
+
+        func preview(_ values: [(id: String, group: SettingsBackupGroup, value: BackupValue)], build: Int) throws -> RestorePreview {
+            let app = SettingsBackupAppInfo(version: "1.0.\(build)", build: "\(build)", platform: "iOS", idiom: "phone")
+            let data = try SettingsBackupCodec.encode(values: values, app: app, now: Date())
+            return SettingsBackupPlanner.preview(try SettingsBackupCodec.decode(data), registry: registry)
+        }
+
+        let appearanceEntries = registry.settings.filter { ["radio.playerTheme", "podcasts.preferences"].contains($0.id) }
+        let modern = appearanceEntries.compactMap { setting in setting.read().map { (setting.id, setting.group, $0) } }
+        appearance.select(.classicWalnut)
+        podcast.selectTheme(.crimsonNoir)
+        let modernPreview = try preview(modern, build: 134)
+        require(modernPreview.totalChanges == 2 && modernPreview.groups.flatMap(\.items).allSatisfy { $0.incoming == "Modern Stream" },
+                "Settings Backup recognizes and previews both Modern Stream values")
+        if case .applied(let changes, _) = applier.apply(preview: modernPreview, selectedGroups: [.radio, .podcasts]) {
+            require(changes.count == 2 && appearance.theme == .modernStream && podcast.preferences == preferred,
+                    "Settings Backup restores both themes without dropping podcast settings")
+        } else { require(false, "Modern Stream restore applies") }
+
+        let legacyNoTheme = try preview([(id: "radio.preferences", group: .radio,
+            value: KyroRadioBackupSettings.encodePreferences(KyroRadioPreferences(countryCode: "CA", countryName: "Canada")))], build: 131)
+        if case .applied(let changes, _) = applier.apply(preview: legacyNoTheme, selectedGroups: [.radio, .podcasts]) {
+            require(changes.map(\.id) == ["radio.preferences"] && appearance.theme == .modernStream &&
+                    podcast.preferences == preferred, "older backup without theme fields leaves both choices intact")
+        } else { require(false, "legacy radio preferences restore applies") }
+
+        var legacyPodcast = preferred
+        legacyPodcast.theme = .crimsonNoir
+        let older = try preview([(id: "radio.playerTheme", group: .radio, value: .string("classicWalnut")),
+                                 (id: "podcasts.preferences", group: .podcasts, value: KyroPodcastBackup.preferenceValue(legacyPodcast))],
+                                build: 133)
+        if case .applied = applier.apply(preview: older, selectedGroups: [.radio, .podcasts]) {
+            require(appearance.theme == .classicWalnut && podcast.preferences == legacyPodcast,
+                    "Build 133 explicit choices still restore independently")
+        } else { require(false, "Build 133 themes restore applies") }
     }
 
     private static func live() async throws {

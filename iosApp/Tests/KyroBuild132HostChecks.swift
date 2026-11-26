@@ -31,7 +31,8 @@ enum KyroBuild132HostChecks {
     static func themePersistence() {
         let defaults = freshDefaults()
         check(KyroRadioPlayerTheme.default == .crimsonNoir, "Crimson Noir is the default theme")
-        check(KyroRadioPlayerTheme.allCases == [.crimsonNoir, .classicWalnut], "two themes, Crimson Noir first")
+        check(KyroRadioPlayerTheme.allCases == [.crimsonNoir, .classicWalnut, .modernStream],
+              "three themes in display order")
         let appearance = KyroRadioPlayerAppearance(defaults: defaults)
         check(appearance.theme == .crimsonNoir, "a fresh install starts on Crimson Noir")
         appearance.select(.classicWalnut)
@@ -153,9 +154,10 @@ enum KyroBuild132HostChecks {
         check(views.contains("KyroRadioNowPlayingView()\n                .presentationDetents([.large])"),
               "Now Playing is presented as before (sheet, large detent)")
         check(views.contains("KyroRadioPlayerAppearanceSection()"), "Radio Settings has Player Appearance")
-        let mini = views.components(separatedBy: "struct KyroRadioMiniPlayerView").last ?? ""
-        check(!mini.prefix(2000).contains("Appearance") && !mini.prefix(2000).contains("KyroTurntable"),
-              "the mini-player does not read the player theme or turntable")
+        let mini = views.components(separatedBy: "struct KyroRadioMiniPlayerView").last?
+            .components(separatedBy: "private struct KyroRadioTransportButton").first ?? ""
+        check(!mini.isEmpty && !mini.contains("Appearance") && !mini.contains("KyroTurntable"),
+              "the mini-player artwork and metadata do not observe the theme or render the turntable")
 
         let shelf = try source("iosApp/iosApp/Control/iOS/NowPlayingShelf.swift")
         let shelves = try source("iosApp/iosApp/Kyro/Home/KyroHomeShelves.swift")
@@ -163,9 +165,6 @@ enum KyroBuild132HostChecks {
               "Home and the app-wide slot never observe the theme")
         check(shelves.contains("ForEach(KyroHomeSportsHeightProbe.games(games))"), "Build 131 sports rail fix stays")
 
-        let project = try source("iosApp/project.yml")
-        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 132").count == 4, "app and extensions target Build 132")
-        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.132\"").count == 4, "version 1.0.132")
     }
 }
 #endif

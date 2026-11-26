@@ -2,11 +2,11 @@
 import Foundation
 import Observation
 
-/// Build 132: the expanded Radio player's look. Both themes share one layout;
-/// only colours, materials and hardware finish differ.
+/// Shared theme catalog; Radio and Podcasts persist their choices independently.
 enum KyroRadioPlayerTheme: String, CaseIterable, Codable, Identifiable, Sendable {
     case crimsonNoir
     case classicWalnut
+    case modernStream
 
     /// Crimson Noir until the listener picks another.
     static let `default`: Self = .crimsonNoir
@@ -17,6 +17,7 @@ enum KyroRadioPlayerTheme: String, CaseIterable, Codable, Identifiable, Sendable
         switch self {
         case .crimsonNoir: "Crimson Noir"
         case .classicWalnut: "Classic Walnut"
+        case .modernStream: "Modern Stream"
         }
     }
 
@@ -24,13 +25,14 @@ enum KyroRadioPlayerTheme: String, CaseIterable, Codable, Identifiable, Sendable
         switch self {
         case .crimsonNoir: "Burgundy, matte black and rose-gold metal"
         case .classicWalnut: "Walnut wood, brass and cream panels"
+        case .modernStream: "Charcoal, brushed steel and vivid green"
         }
     }
 }
 
 /// The chosen player theme, kept apart from Radio's library so a theme change
-/// redraws only the views that read it (the expanded player and the Settings
-/// previews), never the mini-player or Home.
+/// redraws only audio player and Settings views that read it, never the shell
+/// or Home itself.
 @MainActor @Observable
 final class KyroRadioPlayerAppearance {
     static let shared = KyroRadioPlayerAppearance()

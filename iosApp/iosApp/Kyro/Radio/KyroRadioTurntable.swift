@@ -6,8 +6,7 @@ import Nuke
 import SwiftUI
 import UIKit
 
-// Build 132: the expanded Radio player as a vintage turntable, in two themes
-// (Crimson Noir, Classic Walnut) over one shared layout.
+// The expanded Radio player as a turntable, with one layout across all finishes.
 //
 // Performance rules this file keeps:
 // - The record turns as a Core Animation rotation on one layer; SwiftUI does
@@ -20,8 +19,7 @@ import UIKit
 
 // MARK: - Palette
 
-/// Colours and finishes for one theme. Every component reads these, so the
-/// two themes share layout and code.
+/// Shared finishes for the iOS turntable and cassette players.
 struct KyroRadioPlayerPalette {
     let theme: KyroRadioPlayerTheme
     let backgroundTop: Color
@@ -78,6 +76,20 @@ struct KyroRadioPlayerPalette {
                  sheen: Color(hex: 0xFFE2B0).opacity(0.16),
                  label: UIColor(hex: 0xEADCBE), labelRing: UIColor(hex: 0x6E1E22), labelInk: UIColor(hex: 0x4A2316),
                  cartridge: Color(hex: 0x3A2A1E), usesWood: true)
+        case .modernStream:
+            Self(theme: theme,
+                 backgroundTop: Color(hex: 0x191F1D), backgroundBottom: Color(hex: 0x090C0B),
+                 plinthTop: Color(hex: 0x282E2D), plinthBottom: Color(hex: 0x111514),
+                 plinthEdge: Color(hex: 0x424E48), edgeGlow: Color(hex: 0x52F598),
+                 metalLight: Color(hex: 0xC5D0CB), metalMid: Color(hex: 0x707D77), metalDark: Color(hex: 0x25302C),
+                 lamp: Color(hex: 0x6BFFAA),
+                 panelTop: Color(hex: 0x232C28), panelBottom: Color(hex: 0x151B19),
+                 panelStroke: Color(hex: 0x46574E),
+                 panelPrimary: Color(hex: 0xF1F7F3), panelSecondary: Color(hex: 0xB1C2B8),
+                 headerText: Color(hex: 0xF1F7F3), controlIcon: Color(hex: 0xE6F1EA),
+                 sheen: Color(hex: 0x65CE9A).opacity(0.12),
+                 label: UIColor(hex: 0x202B25), labelRing: UIColor(hex: 0x6BFFAA), labelInk: UIColor(hex: 0xDFF7E9),
+                 cartridge: Color(hex: 0x34443D), usesWood: false)
         }
     }
 
@@ -88,6 +100,37 @@ struct KyroRadioPlayerPalette {
 
     var metalLinear: LinearGradient {
         LinearGradient(colors: [metalLight, metalMid, metalDark], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    var isModern: Bool { theme == .modernStream }
+    var titleDesign: Font.Design { isModern ? .default : .serif }
+    var transportInk: Color { isModern ? Color(hex: 0x0B2115) : metalDark }
+    var miniAccent: Color {
+        switch theme {
+        case .crimsonNoir: Color(hex: 0xF06C83)
+        case .classicWalnut: Color(hex: 0xD9AC62)
+        case .modernStream: edgeGlow
+        }
+    }
+
+    func panel(cornerRadius: CGFloat = 20) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius)
+        return shape.fill(LinearGradient(colors: [panelTop, panelBottom], startPoint: .topLeading, endPoint: .bottomTrailing))
+            .overlay(shape.strokeBorder(panelStroke, lineWidth: 1))
+    }
+}
+
+/// Keeps the shell's accessory material and footprint intact.
+struct KyroAudioMiniTransportFinish: ViewModifier {
+    let theme: KyroRadioPlayerTheme
+
+    func body(content: Content) -> some View {
+        let accent = KyroRadioPlayerPalette.of(theme).miniAccent
+        content.background {
+            Circle().fill(accent.opacity(0.19))
+                .overlay(Circle().strokeBorder(accent.opacity(0.52), lineWidth: 1))
+                .padding(3)
+        }
     }
 }
 
@@ -273,7 +316,7 @@ enum KyroRadioTextures {
             ctx.setFillColor(palette.label.cgColor)
             ctx.fillEllipse(in: rect)
             ctx.setStrokeColor(palette.labelRing.cgColor)
-            ctx.setLineWidth(points * 0.035)
+            ctx.setLineWidth(points * (palette.isModern ? 0.015 : 0.027))
             ctx.strokeEllipse(in: rect.insetBy(dx: points * 0.03, dy: points * 0.03))
             ctx.setStrokeColor(palette.labelRing.withAlphaComponent(0.5).cgColor)
             ctx.setLineWidth(points * 0.006)
@@ -299,8 +342,9 @@ enum KyroRadioTextures {
             let paragraph = NSMutableParagraphStyle()
             paragraph.alignment = .center
             paragraph.lineBreakMode = .byTruncatingTail
-            let nameFont = UIFont(descriptor: UIFont.systemFont(ofSize: points * 0.075, weight: .semibold)
-                .fontDescriptor.withDesign(.serif) ?? UIFont.systemFont(ofSize: 1).fontDescriptor, size: points * 0.075)
+            let baseFont = UIFont.systemFont(ofSize: points * 0.083, weight: .semibold)
+            let descriptor = palette.isModern ? nil : baseFont.fontDescriptor.withDesign(.serif)
+            let nameFont = descriptor.map { UIFont(descriptor: $0, size: baseFont.pointSize) } ?? baseFont
             let nameText = NSAttributedString(string: name.uppercased(), attributes: [
                 .font: nameFont, .foregroundColor: palette.labelInk, .paragraphStyle: paragraph, .kern: points * 0.008,
             ])
@@ -654,9 +698,8 @@ struct KyroTurntableDeck: View {
         .clipShape(shape)
         .overlay(shape.strokeBorder(palette.plinthEdge, lineWidth: palette.usesWood ? 2 : 1))
         .overlay(shape.inset(by: 4).strokeBorder(Color.white.opacity(palette.usesWood ? 0.10 : 0.05), lineWidth: 1))
-        // Crimson Noir's red accent light along the lower edge; Walnut's warm drop shadow.
-        .shadow(color: palette.usesWood ? .black.opacity(0.5) : palette.edgeGlow.opacity(0.45),
-                radius: palette.usesWood ? 10 : 14, y: palette.usesWood ? 8 : 6)
+        .shadow(color: .black.opacity(0.50), radius: 12, y: 7)
+        .shadow(color: palette.usesWood ? .clear : palette.edgeGlow.opacity(0.24), radius: 10, y: 5)
     }
 
     private var screws: some View {
@@ -777,31 +820,32 @@ struct KyroTurntableDeck: View {
 // MARK: - Hardware controls
 
 /// A machined round button.
-private struct KyroHardwareButtonStyle: ButtonStyle {
+struct KyroHardwareButtonStyle: ButtonStyle {
     let palette: KyroRadioPlayerPalette
     let diameter: CGFloat
     var isPrimary = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         ZStack {
-            Circle().fill(isPrimary ? AnyShapeStyle(palette.metal)
+            Circle().fill(isPrimary ? (palette.isModern ? AnyShapeStyle(palette.edgeGlow) : AnyShapeStyle(palette.metal))
                                     : AnyShapeStyle(LinearGradient(colors: [palette.plinthTop, palette.plinthBottom],
                                                                    startPoint: .top, endPoint: .bottom)))
-            if isPrimary {
+            if isPrimary && !palette.isModern {
                 Circle().fill(RadialGradient(colors: [palette.metalLight, palette.metalMid], center: UnitPoint(x: 0.4, y: 0.3),
                                              startRadius: 0, endRadius: diameter * 0.45))
                     .padding(diameter * 0.09)
             }
-            Circle().strokeBorder(palette.metalMid.opacity(isPrimary ? 1 : 0.7), lineWidth: isPrimary ? 2 : 1)
+            Circle().strokeBorder(palette.isModern && isPrimary ? palette.lamp : palette.metalMid.opacity(0.7), lineWidth: 1)
             configuration.label
-                .foregroundStyle(isPrimary ? palette.metalDark : palette.controlIcon)
+                .foregroundStyle(isPrimary ? palette.transportInk : palette.controlIcon)
         }
         .frame(width: diameter, height: diameter)
-        .shadow(color: isPrimary && !palette.usesWood ? palette.edgeGlow.opacity(0.55) : .black.opacity(0.45),
-                radius: isPrimary ? 12 : 4, y: isPrimary ? 4 : 2)
-        .scaleEffect(configuration.isPressed ? 0.95 : 1)
+        .shadow(color: isPrimary && !palette.usesWood ? palette.edgeGlow.opacity(0.28) : .black.opacity(0.45),
+                radius: isPrimary ? 8 : 4, y: isPrimary ? 4 : 2)
+        .scaleEffect(configuration.isPressed && !reduceMotion ? 0.95 : 1)
         .brightness(configuration.isPressed ? -0.06 : 0)
-        .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
         .contentShape(Circle())
     }
 }
@@ -812,6 +856,7 @@ private struct KyroRadioVolumeSlider: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MPVolumeView {
         let view = MPVolumeView(frame: .zero)
+        view.showsRouteButton = false
         style(view)
         return view
     }
@@ -820,7 +865,7 @@ private struct KyroRadioVolumeSlider: UIViewRepresentable {
 
     private func style(_ view: MPVolumeView) {
         for case let slider as UISlider in view.subviews {
-            slider.minimumTrackTintColor = UIColor(palette.theme == .crimsonNoir ? palette.edgeGlow : palette.metalMid)
+            slider.minimumTrackTintColor = UIColor(palette.usesWood ? palette.metalMid : palette.edgeGlow)
             slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.22)
             slider.setThumbImage(KyroRadioTextures.knob(palette), for: .normal)
             slider.setThumbImage(KyroRadioTextures.knob(palette), for: .highlighted)
@@ -829,8 +874,9 @@ private struct KyroRadioVolumeSlider: UIViewRepresentable {
 }
 
 /// The system output picker: AirPlay, Bluetooth and this iPhone.
-private struct KyroRadioOutputPicker: UIViewRepresentable {
+struct KyroAudioOutputPicker: UIViewRepresentable {
     let tint: Color
+    let activeTint: Color
     func makeUIView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView()
         view.prioritizesVideoDevices = false
@@ -839,7 +885,7 @@ private struct KyroRadioOutputPicker: UIViewRepresentable {
 
     func updateUIView(_ view: AVRoutePickerView, context: Context) {
         view.tintColor = UIColor(tint)
-        view.activeTintColor = UIColor(tint)
+        view.activeTintColor = UIColor(activeTint)
     }
 }
 
@@ -856,12 +902,11 @@ enum KyroRadioAudioRoute {
 
 // MARK: - Expanded player
 
-/// Now Playing as a turntable (Build 132). Live radio only: Play/Pause, Stop,
+/// Now Playing as a turntable. Live radio only: Play/Pause, Stop,
 /// Save, output and volume. No skip, shuffle or repeat, no progress, and no
 /// waveform, because the stream provides none of them.
 struct KyroRadioNowPlayingView: View {
     private let player = KyroRadioPlayer.shared
-    private let library = KyroRadioLibrary.shared
     private let appearance = KyroRadioPlayerAppearance.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -875,19 +920,20 @@ struct KyroRadioNowPlayingView: View {
         let palette = KyroRadioPlayerPalette.of(appearance.theme)
         let motion = KyroTurntableMotion.motion(for: player.state, reduceMotion: reduceMotion)
         GeometryReader { proxy in
-            let deckWidth = min(proxy.size.width - 32, proxy.size.height * 0.47 / KyroTurntableGeometry.heightRatio)
+            let deckWidth = max(1, min(460, proxy.size.width - 36, proxy.size.height * 0.47 / KyroTurntableGeometry.heightRatio))
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 16) {
+                VStack(spacing: 18) {
                     header(palette)
                     KyroTurntableDeck(palette: palette, width: deckWidth, station: player.station, motion: motion,
                                       isLive: isVisible && scenePhase == .active, wood: wood)
-                    infoPanel(palette)
+                    KyroRadioStationPanel(palette: palette, player: player)
                     controls(palette)
                     volume(palette)
                 }
-                .padding(.horizontal, 16)
+                .frame(maxWidth: 520)
+                .padding(.horizontal, 18)
                 .padding(.bottom, 24)
-                .frame(minHeight: proxy.size.height)
+                .frame(maxWidth: .infinity, minHeight: proxy.size.height)
             }
             .scrollBounceBehavior(.basedOnSize)
         }
@@ -898,7 +944,6 @@ struct KyroRadioNowPlayingView: View {
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification).receive(on: RunLoop.main)) { _ in
             routeName = KyroRadioAudioRoute.currentName()
         }
-        .animation(.easeInOut(duration: 0.35), value: appearance.theme)
         .accessibilityIdentifier("kyroRadioNowPlaying")
     }
 
@@ -922,7 +967,8 @@ struct KyroRadioNowPlayingView: View {
         } else {
             ZStack {
                 LinearGradient(colors: [palette.backgroundTop, palette.backgroundBottom], startPoint: .top, endPoint: .bottom)
-                RadialGradient(colors: [Color(hex: 0xC4142E).opacity(0.35), .clear], center: UnitPoint(x: 0.2, y: 0.05),
+                RadialGradient(colors: [palette.edgeGlow.opacity(palette.isModern ? 0.11 : 0.28), .clear],
+                               center: UnitPoint(x: 0.2, y: 0.05),
                                startRadius: 0, endRadius: 420)
                 RadialGradient(colors: [.clear, .black.opacity(0.45)], center: .center, startRadius: 200, endRadius: 650)
             }
@@ -936,7 +982,7 @@ struct KyroRadioNowPlayingView: View {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.down").font(.body.weight(.semibold))
             }
-            .buttonStyle(KyroHardwareButtonStyle(palette: palette, diameter: 40))
+            .buttonStyle(KyroHardwareButtonStyle(palette: palette, diameter: 44))
             .accessibilityLabel("Close")
             Spacer()
             VStack(spacing: 4) {
@@ -947,120 +993,38 @@ struct KyroRadioNowPlayingView: View {
                     .foregroundStyle(palette.headerText.opacity(0.85))
             }
             Spacer()
-            KyroRadioOutputPicker(tint: palette.controlIcon)
-                .frame(width: 40, height: 40)
-                .background(Circle().fill(LinearGradient(colors: [palette.plinthTop, palette.plinthBottom], startPoint: .top, endPoint: .bottom)))
-                .overlay(Circle().strokeBorder(palette.metalMid.opacity(0.7), lineWidth: 1))
-                .accessibilityLabel("Audio output, AirPlay and Bluetooth")
+            KyroAudioThemeMenu(selection: appearance.theme, palette: palette, select: appearance.select)
         }
         .padding(.top, 12)
     }
 
-    // MARK: Information panel
-
-    private func infoPanel(_ palette: KyroRadioPlayerPalette) -> some View {
-        let station = player.station
-        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 14) {
-                KyroRadioArtwork(station: station, size: 72)
-                    .overlay(RoundedRectangle(cornerRadius: 72 * 0.2, style: .continuous).strokeBorder(palette.panelStroke, lineWidth: 1))
-                VStack(alignment: .leading, spacing: 4) {
-                    statusLine(palette)
-                    Text(station?.name ?? "")
-                        .font(.system(.title3, design: .serif).weight(.semibold))
-                        .foregroundStyle(palette.panelPrimary)
-                        .lineLimit(2)
-                    if let track = player.track, player.state == .playing {
-                        Text(track.title)
-                            .font(.system(.headline, design: .serif))
-                            .foregroundStyle(palette.panelPrimary)
-                            .lineLimit(2)
-                        if let artist = track.artist {
-                            Text(artist).font(.subheadline).foregroundStyle(palette.panelSecondary).lineLimit(1)
-                        }
-                    } else if let location = station?.location, !location.isEmpty {
-                        Text(location).font(.subheadline).foregroundStyle(palette.panelSecondary).lineLimit(1)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityElement(children: .combine)
-                if let station {
-                    Button { library.toggleFavorite(station) } label: {
-                        Image(systemName: library.isFavorite(station.id) ? "heart.fill" : "heart")
-                            .font(.title3)
-                            .foregroundStyle(palette.usesWood ? Color(hex: 0x9E1B22) : palette.lamp)
-                    }
-                    .buttonStyle(KyroHardwareButtonStyle(palette: palette, diameter: 46))
-                    .accessibilityLabel(library.isFavorite(station.id) ? "Remove from Library" : "Save to Library")
-                }
-            }
-            if case .failed(let error) = player.state {
-                Text(error.message).font(.footnote).foregroundStyle(Color(hex: 0xFF453A)).fixedSize(horizontal: false, vertical: true)
-            }
-            if let format = station?.formatLine {
-                Text(format).font(.caption.monospacedDigit()).foregroundStyle(palette.panelSecondary)
-            }
-        }
-        .padding(14)
-        .background(shape.fill(LinearGradient(colors: [palette.panelTop, palette.panelBottom], startPoint: .top, endPoint: .bottom)))
-        .overlay(shape.strokeBorder(palette.panelStroke, lineWidth: 1))
-        .shadow(color: .black.opacity(0.35), radius: 8, y: 4)
-    }
-
-    @ViewBuilder
-    private func statusLine(_ palette: KyroRadioPlayerPalette) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "dot.radiowaves.left.and.right").font(.caption2)
-            Text(statusTitle).font(.caption2.weight(.semibold)).kerning(2)
-            if player.state == .playing {
-                Text("LIVE")
-                    .font(.caption2.bold())
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(Color(hex: 0xD0142C)))
-                    .foregroundStyle(.white)
-            }
-        }
-        .foregroundStyle(palette.panelSecondary)
-    }
-
-    private var statusTitle: String {
-        switch player.state {
-        case .playing: "LIVE RADIO"
-        case .connecting: "CONNECTING"
-        case .reconnecting(let attempt): "RECONNECTING \(attempt)/\(KyroRadioPlaybackMachine.maxReconnectAttempts)"
-        case .paused: "PAUSED"
-        case .failed: "UNAVAILABLE"
-        case .idle: "STOPPED"
-        }
-    }
-
-    // MARK: Controls
-
     private func controls(_ palette: KyroRadioPlayerPalette) -> some View {
-        HStack(spacing: 40) {
+        HStack(spacing: 26) {
             Button { player.stop(); dismiss() } label: {
-                Image(systemName: "stop.fill").font(.title3)
+                Image(systemName: "stop.fill").font(.body.weight(.semibold))
             }
-            .buttonStyle(KyroHardwareButtonStyle(palette: palette, diameter: 58))
+            .buttonStyle(KyroHardwareButtonStyle(palette: palette, diameter: 52))
             .accessibilityLabel("Stop")
 
             Button(action: transport) {
                 Group {
                     switch player.state {
-                    case .connecting, .reconnecting: ProgressView().tint(palette.metalDark).controlSize(.large)
+                    case .connecting, .reconnecting: ProgressView().tint(palette.transportInk).controlSize(.large)
                     case .failed: Image(systemName: "arrow.clockwise")
                     case .playing: Image(systemName: "pause.fill")
                     case .idle, .paused: Image(systemName: "play.fill")
                     }
                 }
-                .font(.system(size: 34, weight: .bold))
+                .font(.system(size: 28, weight: .semibold))
             }
-            .buttonStyle(KyroHardwareButtonStyle(palette: palette, diameter: 92, isPrimary: true))
+            .buttonStyle(KyroHardwareButtonStyle(palette: palette, diameter: 76, isPrimary: true))
             .accessibilityLabel(transportLabel)
 
-            Color.clear.frame(width: 58, height: 58)
-                .accessibilityHidden(true)
+            KyroAudioOutputPicker(tint: palette.controlIcon, activeTint: palette.miniAccent)
+                .frame(width: 52, height: 52)
+                .background(Circle().fill(palette.plinthTop))
+                .overlay(Circle().strokeBorder(palette.metalMid.opacity(0.7), lineWidth: 1))
+                .accessibilityLabel("Audio output, AirPlay and Bluetooth")
         }
     }
 
@@ -1082,66 +1046,217 @@ struct KyroRadioNowPlayingView: View {
     }
 
     private func volume(_ palette: KyroRadioPlayerPalette) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 5) {
             HStack(spacing: 12) {
-                Image(systemName: "speaker.fill").foregroundStyle(palette.controlIcon.opacity(0.8))
+                Image(systemName: "speaker.fill").accessibilityHidden(true)
                 KyroRadioVolumeSlider(palette: palette).frame(height: 34)
-                Image(systemName: "speaker.wave.3.fill").foregroundStyle(palette.controlIcon.opacity(0.8))
+                Image(systemName: "speaker.wave.3.fill").accessibilityHidden(true)
             }
             .accessibilityElement(children: .contain)
-            HStack(spacing: 6) {
-                Image(systemName: "hifispeaker").font(.caption)
-                Text("Playing on \(routeName)").font(.caption)
+            Label("Output: \(routeName)", systemImage: "hifispeaker")
+                .font(.caption)
+        }
+        .padding(.horizontal, 12)
+        .foregroundStyle(palette.controlIcon.opacity(0.85))
+    }
+}
+
+/// Track metadata updates this panel, not the deck or its artwork task.
+private struct KyroRadioStationPanel: View {
+    let palette: KyroRadioPlayerPalette
+    let player: KyroRadioPlayer
+    private let library = KyroRadioLibrary.shared
+
+    var body: some View {
+        let station = player.station
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                KyroRadioArtwork(station: station, size: 56, decodeSize: 72)
+                    .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(palette.panelStroke, lineWidth: 1))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 5) {
+                    statusLine
+                    Text(station?.name ?? "")
+                        .font(.system(.title3, design: palette.titleDesign, weight: .semibold))
+                        .foregroundStyle(palette.panelPrimary)
+                        .lineLimit(3)
+                        .accessibilityAddTraits(.isHeader)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+                if let station {
+                    Button { library.toggleFavorite(station) } label: {
+                        Image(systemName: library.isFavorite(station.id) ? "heart.fill" : "heart")
+                            .font(.title3)
+                            .foregroundStyle(palette.usesWood ? Color(hex: 0x9E1B22) : palette.lamp)
+                    }
+                    .buttonStyle(KyroHardwareButtonStyle(palette: palette, diameter: 44))
+                    .accessibilityLabel(library.isFavorite(station.id) ? "Remove from Library" : "Save to Library")
+                }
             }
-            .foregroundStyle(palette.controlIcon.opacity(0.75))
+            if let track = player.track, player.state == .playing {
+                Rectangle().fill(palette.panelStroke).frame(height: 1).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(track.title).font(.headline).foregroundStyle(palette.panelPrimary).lineLimit(2)
+                    if let artist = track.artist {
+                        Text(artist).font(.subheadline).foregroundStyle(palette.panelSecondary).lineLimit(2)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            } else if case .failed(let error) = player.state {
+                Label(error.message, systemImage: "exclamationmark.circle")
+                    .font(.footnote.weight(.medium)).foregroundStyle(palette.panelPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let location = station?.location, !location.isEmpty {
+                Text(location).font(.subheadline).foregroundStyle(palette.panelSecondary).lineLimit(2)
+            }
+            if let format = station?.formatLine {
+                Text(format).font(.caption.monospacedDigit()).foregroundStyle(palette.panelSecondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background { palette.panel() }
+    }
+
+    private var statusLine: some View {
+        HStack(spacing: 6) {
+            if player.state == .playing {
+                Text("LIVE")
+                    .font(.caption2.bold())
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(palette.isModern ? palette.edgeGlow : Color(hex: 0xA5122A)))
+                    .foregroundStyle(palette.isModern ? palette.transportInk : .white)
+            } else {
+                Image(systemName: "dot.radiowaves.left.and.right").font(.caption2).accessibilityHidden(true)
+                Text(statusTitle).font(.caption2.weight(.semibold)).tracking(0.7)
+            }
+        }
+        .foregroundStyle(palette.panelSecondary)
+    }
+
+    private var statusTitle: String {
+        switch player.state {
+        case .playing: "LIVE RADIO"
+        case .connecting: "CONNECTING"
+        case .reconnecting(let attempt): "RECONNECTING \(attempt)/\(KyroRadioPlaybackMachine.maxReconnectAttempts)"
+        case .paused: "PAUSED"
+        case .failed: "UNAVAILABLE"
+        case .idle: "STOPPED"
         }
     }
+
 }
 
 // MARK: - Settings: Player Appearance
 
-/// A small live preview of a theme for Radio Settings.
-struct KyroRadioThemePreviewTile: View {
+/// Available directly on the expanded player so the current session stays open.
+struct KyroAudioThemeMenu: View {
+    let selection: KyroRadioPlayerTheme
+    let palette: KyroRadioPlayerPalette
+    let select: (KyroRadioPlayerTheme) -> Void
+
+    var body: some View {
+        Menu {
+            Picker("Player Appearance", selection: Binding(get: { selection }, set: select)) {
+                ForEach(KyroRadioPlayerTheme.allCases) { Text($0.title).tag($0) }
+            }
+        } label: {
+            Image(systemName: "paintpalette")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(palette.controlIcon)
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(palette.plinthTop))
+                .overlay(Circle().strokeBorder(palette.metalMid.opacity(0.7), lineWidth: 1))
+        }
+        .accessibilityLabel("Player Appearance")
+        .accessibilityValue(selection.title)
+    }
+}
+
+enum KyroAudioThemePreviewKind { case vinyl, cassette }
+
+private struct KyroAudioThemePreview: View {
     let theme: KyroRadioPlayerTheme
-    let isSelected: Bool
+    let kind: KyroAudioThemePreviewKind
 
     var body: some View {
         let palette = KyroRadioPlayerPalette.of(theme)
-        VStack(spacing: 8) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(LinearGradient(colors: [palette.usesWood ? Color(hex: 0x6B4022) : palette.backgroundTop,
-                                                  palette.backgroundBottom], startPoint: .top, endPoint: .bottom))
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(LinearGradient(colors: [palette.plinthTop, palette.plinthBottom], startPoint: .top, endPoint: .bottom))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(palette.plinthEdge, lineWidth: 1))
-                    .padding(10)
-                ZStack {
-                    Circle().fill(palette.metal).frame(width: 66, height: 66)
-                    Circle().fill(Color(white: 0.05)).frame(width: 62, height: 62)
-                    ForEach([0.55, 0.7, 0.85], id: \.self) { fraction in
-                        Circle().stroke(Color.white.opacity(0.10), lineWidth: 0.7).frame(width: 62 * fraction, height: 62 * fraction)
+        ZStack {
+            let shape = RoundedRectangle(cornerRadius: 10)
+            shape.fill(LinearGradient(colors: [palette.backgroundTop, palette.plinthBottom],
+                                      startPoint: .topLeading, endPoint: .bottomTrailing))
+                .overlay(shape.strokeBorder(palette.plinthEdge, lineWidth: 1))
+            switch kind {
+            case .vinyl:
+                Circle().fill(palette.metal).frame(width: 38, height: 38).offset(x: -5)
+                Circle().fill(Color(white: 0.055)).frame(width: 35, height: 35)
+                    .overlay(Circle().strokeBorder(.white.opacity(0.15)).padding(4))
+                    .overlay {
+                        Circle().fill(Color(uiColor: palette.label))
+                            .overlay(Circle().strokeBorder(Color(uiColor: palette.labelRing)))
+                            .frame(width: 13, height: 13)
                     }
-                    Circle().fill(Color(uiColor: palette.label)).frame(width: 22, height: 22)
-                    Circle().fill(palette.metalLinear).frame(width: 4, height: 4)
+                    .offset(x: -5)
+                Capsule().fill(palette.metalLinear).frame(width: 3, height: 28)
+                    .rotationEffect(.degrees(20), anchor: .top).offset(x: 18, y: -2)
+            case .cassette:
+                VStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 1).fill(Color(uiColor: palette.labelRing)).frame(height: 4)
+                    HStack(spacing: 11) {
+                        ForEach(0..<2) { _ in
+                            Circle().strokeBorder(palette.metalLight, lineWidth: 2).frame(width: 10, height: 10)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.black, in: .capsule)
                 }
-                .offset(x: -8)
-                Capsule().fill(palette.metalLinear).frame(width: 3, height: 44)
-                    .rotationEffect(.degrees(20), anchor: .top)
-                    .offset(x: 30, y: -4)
-            }
-            .frame(height: 104)
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(isSelected ? KyroTheme.accentInk : Color.white.opacity(0.12), lineWidth: isSelected ? 2.5 : 1))
-            HStack(spacing: 4) {
-                if isSelected { Image(systemName: "checkmark.circle.fill").foregroundStyle(KyroTheme.accentInk) }
-                Text(theme.title).font(.subheadline.weight(.semibold)).foregroundStyle(KyroTheme.textPrimary)
+                .padding(5)
+                .frame(width: 52)
+                .background(palette.plinthTop, in: .rect(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(palette.metalMid))
             }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(theme.title)
-        .accessibilityValue(isSelected ? "Selected" : "")
-        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .frame(width: 72, height: 54)
+        .accessibilityHidden(true)
+    }
+}
+
+struct KyroAudioThemeSection: View {
+    let selection: KyroRadioPlayerTheme
+    let kind: KyroAudioThemePreviewKind
+    let identifierPrefix: String
+    let select: (KyroRadioPlayerTheme) -> Void
+
+    var body: some View {
+        Section {
+            ForEach(KyroRadioPlayerTheme.allCases) { theme in
+                Button { select(theme) } label: {
+                    HStack(spacing: 12) {
+                        KyroAudioThemePreview(theme: theme, kind: kind)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(theme.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                            Text(theme.subtitle).font(.caption).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: theme == selection ? "checkmark.circle.fill" : "circle")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(theme == selection ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                            .accessibilityHidden(true)
+                    }
+                    .contentShape(Rectangle())
+                    .accessibilityElement(children: .combine)
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(theme == selection ? .isSelected : [])
+                .accessibilityIdentifier("\(identifierPrefix)-\(theme.rawValue)")
+            }
+        } header: {
+            Text("Player Appearance")
+        } footer: {
+            Text("Changes apply immediately without interrupting playback.")
+        }
     }
 }
 
@@ -1150,22 +1265,8 @@ struct KyroRadioPlayerAppearanceSection: View {
     private let appearance = KyroRadioPlayerAppearance.shared
 
     var body: some View {
-        Section {
-            HStack(spacing: 12) {
-                ForEach(KyroRadioPlayerTheme.allCases) { theme in
-                    Button { appearance.select(theme) } label: {
-                        KyroRadioThemePreviewTile(theme: theme, isSelected: appearance.theme == theme)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("kyroRadioTheme-\(theme.rawValue)")
-                }
-            }
-            .padding(.vertical, 4)
-        } header: {
-            Text("Player Appearance")
-        } footer: {
-            Text("\(appearance.theme.subtitle). Changes apply right away, without interrupting playback.")
-        }
+        KyroAudioThemeSection(selection: appearance.theme, kind: .vinyl,
+                              identifierPrefix: "kyroRadioTheme", select: appearance.select)
     }
 }
 #endif

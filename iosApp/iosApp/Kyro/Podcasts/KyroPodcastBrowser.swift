@@ -630,10 +630,9 @@ struct KyroPodcastSettings: View {
     private let library = KyroPodcastLibrary.shared
     var body: some View {
         Form {
+            KyroAudioThemeSection(selection: library.preferences.theme, kind: .cassette,
+                                  identifierPrefix: "kyroPodcastTheme", select: library.selectTheme)
             Section("Cassette Player") {
-                Picker("Theme", selection: preference(\.theme)) {
-                    ForEach(KyroRadioPlayerTheme.allCases) { Text($0.title).tag($0) }
-                }
                 Picker("Playback Speed", selection: preference(\.speed)) {
                     ForEach(PodcastPreferences.speeds, id: \.self) { Text($0.formatted() + "×").tag($0) }
                 }

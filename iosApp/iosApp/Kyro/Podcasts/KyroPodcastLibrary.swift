@@ -218,6 +218,12 @@ final class KyroPodcastLibrary {
         preferences = prefs.flatMap { $0.isValid ? $0 : nil } ?? PodcastPreferences()
     }
 
+    func selectTheme(_ theme: KyroRadioPlayerTheme) {
+        var updated = preferences
+        updated.theme = theme
+        updatePreferences(updated)
+    }
+
     func updatePreferences(_ preferences: PodcastPreferences) {
         guard preferences.isValid, preferences != self.preferences else { return }
         self.preferences = preferences

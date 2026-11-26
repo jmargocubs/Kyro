@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build 132 host checks: player theme persistence and backup, turntable motion
 # rules, source contracts, and that the protected Radio files are unchanged
-# since Build 131.
+# since accepted Build 133.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUTPUT="$(mktemp -d /private/tmp/kyro-build132-checks.XXXXXX)"
@@ -21,8 +21,8 @@ xcrun swiftc -D KYRO_STANDALONE_TESTS -parse-as-library -o "$OUTPUT/build132" \
   iosApp/iosApp/Kyro/Settings/Backup/SettingsBackupCore.swift \
   iosApp/iosApp/Kyro/Settings/Backup/SettingsBackupRestore.swift
 "$OUTPUT/build132"
-# The stream engine, discovery, library, mini-player slot, Home and Sports stay as Build 131 left them.
-BASE=2b06e11112b6eff34b08c32c6a448bfe3cc294a7
+# The stream engine, discovery, library, mini-player slot, Home and Sports stay as accepted in Build 133.
+BASE=aa16b77868a1546dc0aaadad50e6d098e4fa58cd
 PROTECTED=(
   iosApp/iosApp/Kyro/Radio/KyroRadioPlayer.swift
   iosApp/iosApp/Kyro/Radio/KyroRadioPlaybackMachine.swift
@@ -37,9 +37,9 @@ PROTECTED=(
   iosApp/iosApp/Screens/Home
 )
 if git diff --quiet "$BASE" -- "${PROTECTED[@]}"; then
-  echo "Protected Radio engine, mini-player slot, Home, Sports, Live TV and shell files: unchanged since Build 131."
+  echo "Protected Radio engine, mini-player slot, Home, Sports, Live TV and shell files: unchanged since Build 133."
 else
-  echo "Protected files changed since Build 131:" >&2
+  echo "Protected files changed since Build 133:" >&2
   git diff --stat "$BASE" -- "${PROTECTED[@]}" >&2
   exit 1
 fi

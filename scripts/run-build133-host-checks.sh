@@ -11,12 +11,14 @@ xcrun swiftc -D KYRO_STANDALONE_TESTS -D KYRO_PODCAST_HOST_TESTS -parse-as-libra
   "$ROOT"/Home/KyroHome{Preferences,Arrangement}.swift \
   "$ROOT"/Sports/Models/KyroSportsModels.swift \
   "$ROOT"/Sports/Providers/KyroSportsProvider.swift \
-  "$ROOT"/Settings/Backup/SettingsBackupCore.swift
+  "$ROOT"/Settings/Backup/SettingsBackupCore.swift \
+  "$ROOT"/Settings/Backup/SettingsBackupRestore.swift
 "$OUTPUT/build133" "$@"
-git diff --exit-code b71999dd9bc8691580556856ec588233984dfabc -- \
-  "$ROOT"/Radio/KyroRadioTurntable.swift \
+git diff --exit-code aa16b77868a1546dc0aaadad50e6d098e4fa58cd -- \
   "$ROOT"/Radio/KyroRadioPlayer.swift \
   "$ROOT"/Radio/KyroRadioDiscoverModel.swift \
+  "$ROOT"/Podcasts/KyroPodcast{Player,Feed,Network,Backup,Downloads}.swift \
+  "$ROOT"/Podcasts/KyroHomePodcastRail.swift \
   "$ROOT"/Shell \
   iosApp/iosApp/LiveTV \
   iosApp/iosApp/Screens/Home

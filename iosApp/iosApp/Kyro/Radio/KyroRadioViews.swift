@@ -749,6 +749,7 @@ struct KyroRadioMiniPlayerView: View {
 private struct KyroRadioTransportButton: View {
     let player: KyroRadioPlayer
     var size: CGFloat
+    private let appearance = KyroRadioPlayerAppearance.shared
 
     var body: some View {
         Button {
@@ -772,6 +773,7 @@ private struct KyroRadioTransportButton: View {
             }
             .font(size > 50 ? .largeTitle : .body.weight(.semibold))
             .frame(width: size, height: size)
+            .modifier(KyroAudioMiniTransportFinish(theme: appearance.theme))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
