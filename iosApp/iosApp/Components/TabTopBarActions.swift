@@ -371,6 +371,13 @@ struct ProfileAvatarMenu: View {
                 pushesScreen: true
             ) { KyroLiveTVEntry.open(router: router) })
         }
+        if KyroRadioEntry.profileMenuOffersRadio {
+            liveTV.append(.init(
+                title: "Radio",
+                systemImage: "radio",
+                pushesScreen: true
+            ) { KyroRadioEntry.open(router: router) })
+        }
         var features: [ProfileMenuPanel.Row] = []
         if let onOpenForYou {
             features.append(.init(

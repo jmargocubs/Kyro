@@ -168,8 +168,8 @@ enum KyroBuild124HostChecks {
                 competitionKey: competition)
         }
         let games = [schedule(.soccer, name: "Wrexham Cup", competition: "eng.league_cup"),
-            schedule(.soccer, name: "Spanish club", competition: "esp.1"), schedule(.soccer, name: "Unscoped"),
-            schedule(.soccer, name: "Badly tagged Alabama", competition: "esp.1", teamLeague: .collegeFootball),
+            schedule(.soccer, name: "MLS club", competition: "usa.1"), schedule(.soccer, name: "Unscoped"),
+            schedule(.soccer, name: "Badly tagged Alabama", competition: "usa.1", teamLeague: .collegeFootball),
             schedule(.atp, name: "ATP player"), schedule(.wta, name: "WTA player"),
             schedule(.nhl, name: "Schedule-only club")]
         func search(_ route: KyroSportsDirectoryRoute, _ query: String = "") -> [KyroSportsDirectoryEntry] {
@@ -184,7 +184,7 @@ enum KyroBuild124HostChecks {
         check(search(premier, "Arsenal").map(\.affiliation) == ["English Premier League"], "single league shows only its affiliation")
         let arsenal = cached.results(in: .init(sport: .soccer), matching: "Arsenal", schedules: games)
         check(arsenal.count == 1 && arsenal[0].affiliation.contains(cup.title), "same club across leagues is one favorite")
-        check(search(route("esp.1")).map(\.name) == ["Spanish club"], "fallback uses competition and participant league")
+        check(search(route("usa.1")).map(\.name) == ["MLS club"], "fallback uses competition and participant league")
         check(search(tennis, "match alias").map(\.name) == ["ATP player"], "tennis schedule alias and tour filtering")
         check(cached.results(in: .init(sport: .basketball), matching: "", schedules: games).count == 3,
               "sport selection excludes other sports")

@@ -8,7 +8,7 @@ enum KyroNavigationSettingsEntry {
     static let systemImage = "square.grid.3x1.below.line.grid.1x2"
 
     /// Words that find this row in the Settings search field.
-    static let searchTerms = ["navigation", "tab", "tab bar", "sports", "for you", "favorites"]
+    static let searchTerms = ["navigation", "tab", "tab bar", "sports", "for you", "favorites", "radio"]
 
     static func matches(_ query: String) -> Bool {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -23,6 +23,7 @@ extension KyroFourthTab {
         case .sports: "Scores, schedules and your teams."
         case .forYou: "Personal recommendations. Also in the profile menu."
         case .favorites: "Everything you marked as a favorite."
+        case .radio: "Live internet radio stations, favorites and history."
         }
     }
 }

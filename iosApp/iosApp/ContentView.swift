@@ -2458,6 +2458,8 @@ struct MainTabDestination: Identifiable, Equatable {
             .kyroRoot(.sports, choice: .sports)
         case .favorites:
             .kyroRoot(.favorites, choice: .favorites)
+        case .radio:
+            .kyroRoot(.radio, choice: .radio)
         case .liveTV:
             .init(id: .liveTV, title: "Live TV", icon: "dot.radiowaves.left.and.right",
                   selectedIcon: "dot.radiowaves.left.and.right")
@@ -2497,6 +2499,7 @@ func kyroGlobalDestination(for id: MainTabDestinationID) -> KyroGlobalDestinatio
     case .app(.recommendations): .forYou
     case .kyroRoot(.sports): .sports
     case .kyroRoot(.favorites): .favorites
+    case .kyroRoot(.radio): .radio
     case .liveTV: .liveTV
     default: nil
     }
@@ -3256,10 +3259,12 @@ struct MainTabView: View {
                 router.navigate(to: .secondaryDestination(.sports))
             })
         }
-        // Build 128: Radio lives in More, so the five tabs and the floating pills are unchanged.
-        items.append(KyroMoreMenuItem(id: "kyro-radio", title: "Radio", systemImage: "radio") {
-            router.navigate(to: .secondaryDestination(.radio))
-        })
+        // Build 128/129: Radio lives in More unless chosen as the fourth tab.
+        if !kyroNavigation.tabDestinations.contains(.radio) {
+            items.append(KyroMoreMenuItem(id: "kyro-radio", title: "Radio", systemImage: "radio") {
+                router.navigate(to: .secondaryDestination(.radio))
+            })
+        }
         return KyroMoreMenuContext(items: items)
     }
 #endif
@@ -3318,9 +3323,7 @@ struct MainTabView: View {
                 routeContent(for: route)
             }
             #if os(iOS)
-            .environment(\.kyroMoreMenu, moreMenuContext)
-            // The one Kyro header, over the tab bar's content and under every pushed screen. It
-            // sits inside the More menu's environment so its menu button finds its items.
+            // The one Kyro header, over the tab bar's content and under every pushed screen.
             .overlay(alignment: .top) {
                 if shellHeaderContext != nil {
                     KyroAppHeader(router: router, scrollStates: kyroShellScrollStates, store: kyroNavigation)
@@ -3340,6 +3343,9 @@ struct MainTabView: View {
                     statusColumnBar(statusColumn)
                 }
             }
+            // Outside both overlays (KyroAppHeader and statusColumnBar) and SiloTabBar so
+            // KyroMoreMenuButton in all of them receives the More items.
+            .environment(\.kyroMoreMenu, moreMenuContext)
             #endif
             // Live TV's Categories and channel browser are typed routes on this path. They are
             // registered here, beside `Route`, because the Live TV tab sits inside the TabView and
@@ -3613,6 +3619,24 @@ struct MainTabView: View {
                 }
                 .tag(destination.id)
             }
+            #if os(iOS)
+            Button {
+                router.popToRoot()
+                KyroRadioEntry.open(router: router)
+                if dismissAfterSelection {
+                    dismissSidebar()
+                }
+            } label: {
+                let isRadioSelected = router.visiblePushedRoutes.last == .secondaryDestination(.radio)
+                Label {
+                    Text("Radio")
+                } icon: {
+                    Image(systemName: isRadioSelected ? "radio.fill" : "radio")
+                        .foregroundStyle(isRadioSelected ? .primary : .secondary)
+                }
+            }
+            .accessibilityIdentifier("kyroSidebarRadio")
+            #endif
         }
         // The sidebar's few rows rarely overflow; without this the list
         // still rubber-bands on drag, visually dragging the whole bar.
@@ -3704,7 +3728,7 @@ struct MainTabView: View {
             KyroSportsHubView(isSecondaryDestination: true)
                 .environment(\.kyroShellHeader, nil)
         } else if id == .kyroRoot(.radio) {
-            KyroRadioView()
+            KyroRadioView(isSecondaryDestination: true)
                 .environment(\.kyroShellHeader, nil)
         } else {
             resolvedSecondaryDestinationContent(for: id)

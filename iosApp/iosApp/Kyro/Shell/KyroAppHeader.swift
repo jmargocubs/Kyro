@@ -57,7 +57,7 @@ enum KyroShellHeader {
     static func headerDrawsGlass(for destination: KyroGlobalDestination) -> Bool {
         switch destination {
         case .movies, .series: false
-        case .home, .sports, .forYou, .favorites, .liveTV: true
+        case .home, .sports, .forYou, .favorites, .radio, .liveTV: true
         }
     }
 

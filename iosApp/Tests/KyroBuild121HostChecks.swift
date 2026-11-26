@@ -422,8 +422,8 @@ enum KyroBuild121HostChecks {
         check(capacity.contains("productionMaximumChannels = 100_000"), "100K production capacity retained")
         let project = try source("iosApp/project.yml")
         check(project.contains("revision: f470d8dc610537929c83ef31877287e9d2ad9d28"), "accepted Aether revision retained")
-        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 124").count == 4, "app and two extensions target Build 124")
-        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.124\"").count == 4, "version 1.0.124")
+        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 129").count == 4, "app and two extensions target Build 129")
+        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.129\"").count == 4, "version 1.0.129")
         let libraries = try source("iosApp/iosApp/Screens/Browse/LibrariesTabView.swift")
         check(libraries.contains("LibraryDockModel()") && libraries.contains(".floatingPageDock(dock, isShown: !dockIsInSlot)"),
               "accepted navigation pills untouched")

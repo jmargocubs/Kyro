@@ -4,8 +4,24 @@ import Nuke
 import NukeUI
 import SwiftUI
 
-// Build 128: Radio, opened from More. Discover, Library and History share one
+// Build 128/129: Radio, opened from More, the fourth tab, Home Radio shelves,
+// Settings, or iPad/legacy navigation. Discover, Library and History share one
 // page; the mini player and Now Playing follow the listener everywhere.
+
+@MainActor
+enum KyroRadioEntry {
+    static func open(router: AppRouter) {
+        if KyroUnifiedNavigation.isActive,
+           KyroGlobalNavigationStore.shared.selectIfTab(.radio) {
+            return
+        }
+        router.navigate(to: .secondaryDestination(.radio))
+    }
+
+    static var profileMenuOffersRadio: Bool {
+        KyroRadioNavigationPolicy.profileMenuOffersRadio(unifiedShell: KyroUnifiedNavigation.isActive)
+    }
+}
 
 /// The Radio page.
 struct KyroRadioView: View {
@@ -15,6 +31,9 @@ struct KyroRadioView: View {
         var title: String { rawValue.capitalized }
     }
 
+    var isSecondaryDestination = false
+    @Environment(\.kyroShellHeader) private var shellHeader
+    @State private var fallbackScrollState = PageChromeScrollState()
     @State private var section: Section = .discover
     @State private var discover = KyroRadioDiscoverModel()
     @State private var discoverText = ""
@@ -23,8 +42,44 @@ struct KyroRadioView: View {
     @State private var isShowingSettings = false
     private let library = KyroRadioLibrary.shared
 
+    private var hostedRunway: CGFloat? {
+        isSecondaryDestination ? nil : shellHeader?.runway
+    }
+
+    private var isHostedTab: Bool { hostedRunway != nil }
+
+    private var scrollState: PageChromeScrollState {
+        shellHeader?.scrollState(for: .radio) ?? fallbackScrollState
+    }
+
+    private var activeSearchText: Binding<String> {
+        section == .discover ? $discoverText : $libraryText
+    }
+
+    private var activeSearchPrompt: String {
+        section == .discover ? searchField.prompt : "Search saved stations"
+    }
+
     var body: some View {
         List {
+            if isHostedTab {
+                HStack(alignment: .center) {
+                    Text("Radio")
+                        .font(.largeTitle.bold())
+                        .foregroundStyle(KyroTheme.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    settingsButton
+                        .font(.title3)
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+
+                inlineSearchRow
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
+
             Picker("Radio section", selection: $section) {
                 ForEach(Section.allCases) { Text($0.title).tag($0) }
             }
@@ -45,17 +100,23 @@ struct KyroRadioView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Color.siloPageCanvas.ignoresSafeArea())
-        .searchable(text: section == .discover ? $discoverText : $libraryText,
-                    prompt: section == .discover ? searchField.prompt : "Search saved stations")
-        .navigationTitle("Radio")
-        .navigationBarTitleDisplayMode(.large)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let hostedRunway {
+                Color.clear.frame(height: hostedRunway)
+            }
+        }
+        .reportsPageChromeScroll(to: scrollState)
+        .modifier(KyroRadioSearchBarModifier(isEnabled: !isHostedTab,
+                                             text: activeSearchText,
+                                             prompt: activeSearchPrompt))
+        .navigationTitle(isHostedTab ? "" : "Radio")
+        .navigationBarTitleDisplayMode(isHostedTab ? .inline : .large)
+        .toolbar(isHostedTab ? .hidden : .visible, for: .navigationBar)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { isShowingSettings = true } label: {
-                    Image(systemName: "slider.horizontal.3")
+            if !isHostedTab {
+                ToolbarItem(placement: .topBarTrailing) {
+                    settingsButton
                 }
-                .accessibilityLabel("Radio Settings")
-                .accessibilityIdentifier("kyroRadioSettings")
             }
         }
         .sheet(isPresented: $isShowingSettings) { KyroRadioSettingsView() }
@@ -76,6 +137,39 @@ struct KyroRadioView: View {
         .task { await refreshSavedDetails() }
     }
 
+    private var settingsButton: some View {
+        Button { isShowingSettings = true } label: {
+            Image(systemName: "slider.horizontal.3")
+                .foregroundStyle(KyroTheme.accentInk)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Radio Settings")
+        .accessibilityIdentifier("kyroRadioSettings")
+    }
+
+    private var inlineSearchRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(KyroTheme.textSecondary)
+            TextField(activeSearchPrompt, text: activeSearchText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            if !activeSearchText.wrappedValue.isEmpty {
+                Button {
+                    activeSearchText.wrappedValue = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(KyroTheme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.siloSurfaceElevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
     /// Favorites restored from a backup have only an ID and a name. One
     /// bounded request per 100 stations fills in their streams and logos.
     private func refreshSavedDetails() async {
@@ -85,6 +179,21 @@ struct KyroRadioView: View {
             let batch = Array(missing[start..<min(start + 100, missing.count)])
             guard let fresh = try? await KyroRadioBrowserClient.shared.stations(uuids: batch) else { return }
             library.refreshDetails(fresh)
+        }
+    }
+}
+
+private struct KyroRadioSearchBarModifier: ViewModifier {
+    let isEnabled: Bool
+    @Binding var text: String
+    let prompt: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.searchable(text: $text, prompt: prompt)
+        } else {
+            content
         }
     }
 }
@@ -756,44 +865,85 @@ private struct KyroRadioRoutePicker: UIViewRepresentable {
 
 // MARK: - Settings
 
+enum KyroRadioSettingsEntry {
+    static let title = "Radio"
+    static let subtitle = "Region, language and listening history"
+    static let systemImage = "radio"
+    static let searchTerms = ["radio", "radio settings", "radio browser", "internet radio", "stations", "region", "country", "state", "language", "history"]
+
+    static func summary(preferences: KyroRadioPreferences, favoriteCount: Int) -> String {
+        if let state = preferences.state, !state.isEmpty { return state }
+        if let country = preferences.countryName, !country.isEmpty { return country }
+        if let code = preferences.countryCode, !code.isEmpty { return code }
+        return favoriteCount > 0 ? "\(favoriteCount) saved" : "Worldwide"
+    }
+}
+
+struct KyroRadioSettingsRow: View {
+    private let library = KyroRadioLibrary.shared
+
+    var body: some View {
+        NavigationLink {
+            KyroRadioSettingsForm()
+        } label: {
+            SettingsOverviewRow(
+                title: KyroRadioSettingsEntry.title,
+                subtitle: KyroRadioSettingsEntry.subtitle,
+                systemImage: KyroRadioSettingsEntry.systemImage,
+                value: KyroRadioSettingsEntry.summary(preferences: library.preferences,
+                                                    favoriteCount: library.favorites.count)
+            )
+        }
+        .accessibilityIdentifier("kyroSettingsRadio")
+    }
+}
+
 struct KyroRadioSettingsView: View {
     @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            KyroRadioSettingsForm()
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                }
+        }
+        .tint(KyroTheme.accentInk)
+    }
+}
+
+struct KyroRadioSettingsForm: View {
     @State private var isConfirmingClear = false
     private let library = KyroRadioLibrary.shared
 
     var body: some View {
-        NavigationStack {
-            Form {
-                KyroRadioRegionPickers(
-                    countryCode: binding(\.countryCode), countryName: binding(\.countryName),
-                    state: binding(\.state), language: binding(\.language))
-                Section("History") {
-                    LabeledContent("Saved", value: "\(library.history.count) of \(KyroRadioLibrary.maxHistory) stations")
-                    Button("Clear History", role: .destructive) { isConfirmingClear = true }
-                        .disabled(library.history.isEmpty)
-                }
-                Section {
-                    NavigationLink("Customize Home") { KyroHomeCustomizationView(host: .shared) }
-                } header: {
-                    Text("Home")
-                } footer: {
-                    Text("Turn on Favorite Radio Stations and Recently Played Radio in Customize Home. They’re off until you turn them on.")
-                }
-                Section {
-                    Text("Stations come from Radio Browser, a free community directory. Kyro tells it when you start a station, as it asks apps to. Listening history stays on this iPhone and isn’t included in settings backups.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                } header: {
-                    Text("About")
-                }
+        Form {
+            KyroRadioRegionPickers(
+                countryCode: binding(\.countryCode), countryName: binding(\.countryName),
+                state: binding(\.state), language: binding(\.language))
+            Section("History") {
+                LabeledContent("Saved", value: "\(library.history.count) of \(KyroRadioLibrary.maxHistory) stations")
+                Button("Clear History", role: .destructive) { isConfirmingClear = true }
+                    .disabled(library.history.isEmpty)
             }
-            .navigationTitle("Radio Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            Section {
+                NavigationLink("Customize Home") { KyroHomeCustomizationView(host: .shared) }
+            } header: {
+                Text("Home")
+            } footer: {
+                Text("Turn on Favorite Radio Stations and Recently Played Radio in Customize Home. They’re off until you turn them on.")
             }
-            .confirmationDialog("Clear radio listening history?", isPresented: $isConfirmingClear, titleVisibility: .visible) {
-                Button("Clear History", role: .destructive) { library.clearHistory() }
+            Section {
+                Text("Stations come from Radio Browser, a free community directory. Kyro tells it when you start a station, as it asks apps to. Listening history stays on this iPhone and isn’t included in settings backups.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } header: {
+                Text("About")
             }
+        }
+        .navigationTitle("Radio Settings")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("Clear radio listening history?", isPresented: $isConfirmingClear, titleVisibility: .visible) {
+            Button("Clear History", role: .destructive) { library.clearHistory() }
         }
         .tint(KyroTheme.accentInk)
     }
@@ -810,6 +960,7 @@ struct KyroRadioSettingsView: View {
 /// when the shelf has no stations.
 struct KyroHomeRadioRail: View {
     let shelf: KyroHomeShelf
+    @Environment(AppRouter.self) private var router
     private let library = KyroRadioLibrary.shared
     private let player = KyroRadioPlayer.shared
 
@@ -824,8 +975,25 @@ struct KyroHomeRadioRail: View {
         let stations = stations
         if !stations.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                Text(shelf.title).font(.title3.bold()).accessibilityAddTraits(.isHeader)
-                    .padding(.horizontal, SiloTheme.padding)
+                Button {
+                    KyroRadioEntry.open(router: router)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(shelf.title)
+                            .font(.title3.bold())
+                            .foregroundStyle(KyroTheme.textPrimary)
+                        Image(systemName: "chevron.right")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(KyroTheme.textSecondary)
+                            .accessibilityHidden(true)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityHint("Opens Radio")
+                .accessibilityIdentifier("kyroHomeRadioHeader-\(shelf.rawValue)")
+                .padding(.horizontal, SiloTheme.padding)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 12) {
                         ForEach(stations) { station in card(station) }

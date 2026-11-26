@@ -207,10 +207,10 @@ private struct KyroDebugUnifiedShell: View {
                 }
             }
             .modifier(KyroDebugMiniPlayerStandIn())
-            .environment(\.kyroMoreMenu, moreMenu)
             .overlay(alignment: .top) {
                 KyroAppHeader(router: router, scrollStates: scrollStates, store: store)
             }
+            .environment(\.kyroMoreMenu, moreMenu)
             .liveTVShellRoutes(service: service, path: $path)
         }
         .environment(router)

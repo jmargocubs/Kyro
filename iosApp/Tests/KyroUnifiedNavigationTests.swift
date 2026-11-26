@@ -363,6 +363,73 @@ final class KyroUnifiedNavigationTests: XCTestCase {
         XCTAssertEqual(presentation.channel(for: .list), news)
         XCTAssertNil(presentation.channel(for: .shell))
     }
+
+    func testFourthTabSupportsRadioWhileKeepingSportsAsDefault() throws {
+        let suite = "KyroFourthTabRadio.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        XCTAssertEqual(KyroFourthTab.default, .sports)
+        XCTAssertEqual(KyroGlobalDestination.tabDestinations(fourthTab: .radio),
+                       [.home, .movies, .series, .radio, .liveTV])
+
+        let store = KyroGlobalNavigationStore(defaults: defaults)
+        XCTAssertEqual(store.preferences.fourthTab, .sports)
+        XCTAssertFalse(store.selectIfTab(.radio))
+        store.preferences.fourthTab = .radio
+        XCTAssertTrue(store.selectIfTab(.radio))
+        XCTAssertEqual(store.selectedDestination, .radio)
+
+        let reloaded = KyroGlobalNavigationStore(defaults: defaults)
+        XCTAssertEqual(reloaded.preferences.fourthTab, .radio)
+        XCTAssertEqual(reloaded.tabDestinations, [.home, .movies, .series, .radio, .liveTV])
+    }
+
+    func testRadioEntryPolicyAcrossUnifiedMoreTabAndLegacyLayouts() {
+        let defaultTabs = KyroGlobalDestination.tabDestinations(fourthTab: .sports)
+        let radioTabs = KyroGlobalDestination.tabDestinations(fourthTab: .radio)
+
+        XCTAssertTrue(KyroRadioNavigationPolicy.moreMenuIncludesRadio(unifiedShell: true, tabDestinations: defaultTabs))
+        XCTAssertFalse(KyroRadioNavigationPolicy.moreMenuIncludesRadio(unifiedShell: true, tabDestinations: radioTabs))
+        XCTAssertFalse(KyroRadioNavigationPolicy.moreMenuIncludesRadio(unifiedShell: false, tabDestinations: defaultTabs))
+
+        XCTAssertFalse(KyroRadioNavigationPolicy.profileMenuOffersRadio(unifiedShell: true))
+        XCTAssertTrue(KyroRadioNavigationPolicy.profileMenuOffersRadio(unifiedShell: false))
+
+        XCTAssertEqual(KyroRadioNavigationPolicy.openTarget(unifiedShell: true, tabDestinations: radioTabs), .tab)
+        XCTAssertEqual(KyroRadioNavigationPolicy.openTarget(unifiedShell: true, tabDestinations: defaultTabs), .secondaryRoute)
+        XCTAssertEqual(KyroRadioNavigationPolicy.openTarget(unifiedShell: false, tabDestinations: radioTabs), .secondaryRoute)
+    }
+
+    func testResumingLiveTVFromPictureInPictureYieldsRadio() {
+        let exclusivity = KyroPlaybackExclusivity.shared
+        let radioOwner = NSObject()
+        var radioYields = 0
+        exclusivity.register(radioOwner, source: .radio) { radioYields += 1 }
+        defer { exclusivity.unregister(radioOwner) }
+
+        var isInPiP = true
+        let controller = LiveTVPlaybackController(scheduler: IdleScheduler())
+        controller.isTransportInPictureInPicture = { isInPiP }
+        let url = URL(string: "https://tv.example/live.m3u8")!
+
+        controller.play(channelID: "ch1", url: url)
+        XCTAssertEqual(radioYields, 1, "starting Live TV yields radio")
+        controller.phaseChanged(.playing, generation: controller.generation)
+        controller.togglePlayback()
+        XCTAssertEqual(controller.state, .paused)
+
+        exclusivity.begin(radioOwner, source: .radio)
+        controller.phaseChanged(.playing, generation: controller.generation)
+        XCTAssertEqual(controller.state, .playing)
+        XCTAssertEqual(radioYields, 2, "resuming Live TV from PiP yields radio")
+
+        controller.togglePlayback()
+        isInPiP = false
+        controller.phaseChanged(.playing, generation: controller.generation)
+        XCTAssertEqual(controller.state, .paused)
+        XCTAssertEqual(radioYields, 2, "rejected automatic engine resume must not yield radio")
+    }
 }
 
 /// Timers that never fire: these tests finish every restore themselves.

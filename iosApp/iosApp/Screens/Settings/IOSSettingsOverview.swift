@@ -10,7 +10,7 @@ enum IOSSettingsOverviewGroup: String, CaseIterable {
 /// Presentation and search metadata only. Existing stores and destinations
 /// continue to own every setting and action.
 enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
-    case playback, liveTV, appearanceNavigation, downloadsStorage
+    case playback, liveTV, radio, appearanceNavigation, downloadsStorage
     case accountConnections
     case privacy, advancedDiagnostics, aboutKyro
 
@@ -18,7 +18,7 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
 
     var group: IOSSettingsOverviewGroup {
         switch self {
-        case .playback, .liveTV, .appearanceNavigation, .downloadsStorage: .preferences
+        case .playback, .liveTV, .radio, .appearanceNavigation, .downloadsStorage: .preferences
         case .accountConnections: .account
         case .privacy, .advancedDiagnostics, .aboutKyro: .support
         }
@@ -28,6 +28,7 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
         switch self {
         case .playback: "Playback"
         case .liveTV: "Live TV"
+        case .radio: KyroRadioSettingsEntry.title
         case .appearanceNavigation: "Appearance & Navigation"
         case .downloadsStorage: "Downloads & Storage"
         case .accountConnections: "Account & Connections"
@@ -43,6 +44,8 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
             ["playback", "subtitles", "captions", "quality", "streaming quality", "audio", "audio & video", "video", "episodes", "episode behavior", "skipping", "spoilers", "spoiler protection", "player controls", "skip intervals", "advanced playback", "seek cache", "buffer", "buffer ahead", "deinterlacing", "lossless", "atmos", "hdr", "dolby vision", "bitrate", "cellular", "background playback", "connection speed"]
         case .liveTV:
             KyroLiveTVSettingsEntry.searchTerms
+        case .radio:
+            KyroRadioSettingsEntry.searchTerms
         case .appearanceNavigation:
             ["appearance & navigation", "appearance", "interface", "navigation", "menu", "cards", "posters", "theme music", "theme song", "features", "extra features", "experimental", "audiobooks", "watch party", "home", "shelves", "teams", "leagues"]
         case .downloadsStorage:
@@ -244,6 +247,7 @@ struct IOSSettingsOverview: View {
                     }
                 }
                 if includes(.liveTV) { KyroLiveTVSettingsRow() }
+                if includes(.radio) { KyroRadioSettingsRow() }
                 if includes(.appearanceNavigation) {
                     NavigationLink { IOSAppearanceNavigationSettingsView(uiCustomization: uiCustomization) } label: {
                         SettingsOverviewRow(title: "Appearance & Navigation", subtitle: "Interface, navigation, and optional features", systemImage: "rectangle.3.group.fill")

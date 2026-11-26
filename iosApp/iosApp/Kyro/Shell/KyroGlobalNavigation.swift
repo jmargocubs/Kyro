@@ -12,6 +12,7 @@ enum KyroGlobalDestination: String, Codable, CaseIterable, Identifiable, Sendabl
     case sports
     case forYou
     case favorites
+    case radio
     case liveTV
 
     var id: String { rawValue }
@@ -29,6 +30,7 @@ enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
     case sports
     case forYou
     case favorites
+    case radio
 
     static let `default`: Self = .sports
 
@@ -39,6 +41,7 @@ enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
         case .sports: .sports
         case .forYou: .forYou
         case .favorites: .favorites
+        case .radio: .radio
         }
     }
 
@@ -47,6 +50,7 @@ enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
         case .sports: "Sports"
         case .forYou: "For You"
         case .favorites: "Favorites"
+        case .radio: "Radio"
         }
     }
 
@@ -55,6 +59,7 @@ enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
         case .sports: "trophy"
         case .forYou: "sparkles"
         case .favorites: "heart"
+        case .radio: "radio"
         }
     }
 
@@ -63,6 +68,7 @@ enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
         case .sports: "trophy.fill"
         case .forYou: "sparkles"
         case .favorites: "heart.fill"
+        case .radio: "radio.fill"
         }
     }
 }
@@ -240,5 +246,29 @@ final class KyroGlobalNavigationStore {
     private func savePreferences() {
         guard let data = try? JSONEncoder().encode(preferences) else { return }
         defaults.set(data, forKey: Self.defaultsKey)
+    }
+}
+
+/// Pure routing policy for Radio entry points so both the app and host tests
+/// verify the exact same rules.
+enum KyroRadioNavigationPolicy {
+    enum Target: Equatable, Sendable {
+        case tab
+        case secondaryRoute
+    }
+
+    static func openTarget(unifiedShell: Bool, tabDestinations: [KyroGlobalDestination]) -> Target {
+        if unifiedShell && tabDestinations.contains(.radio) {
+            return .tab
+        }
+        return .secondaryRoute
+    }
+
+    static func profileMenuOffersRadio(unifiedShell: Bool) -> Bool {
+        !unifiedShell
+    }
+
+    static func moreMenuIncludesRadio(unifiedShell: Bool, tabDestinations: [KyroGlobalDestination]) -> Bool {
+        unifiedShell && !tabDestinations.contains(.radio)
     }
 }

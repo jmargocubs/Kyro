@@ -742,7 +742,7 @@ final class LiveTVPlaybackController {
 
     init(scheduler: any LiveTVScheduling) {
         self.scheduler = scheduler
-        #if os(iOS)
+        #if os(iOS) || KYRO_STANDALONE_TESTS
         // Build 128: radio pauses when Live TV or Sports plays, and Live TV pauses when radio starts.
         KyroPlaybackExclusivity.shared.register(self, source: .liveTV) { [weak self] in
             self?.yieldToRadio()
@@ -750,7 +750,7 @@ final class LiveTVPlaybackController {
         #endif
     }
 
-    #if os(iOS)
+    #if os(iOS) || KYRO_STANDALONE_TESTS
     /// Radio started: pause a playing stream, abandon one still connecting.
     private func yieldToRadio() {
         switch state {
@@ -762,7 +762,7 @@ final class LiveTVPlaybackController {
     #endif
 
     private func announcePlaybackStart() {
-        #if os(iOS)
+        #if os(iOS) || KYRO_STANDALONE_TESTS
         KyroPlaybackExclusivity.shared.begin(self, source: .liveTV)
         #endif
     }
@@ -870,6 +870,7 @@ final class LiveTVPlaybackController {
                 systemPauseAwaitingResume = false
                 interruptionMayResumeAutomatically = false
                 sourceLostWhilePaused = false
+                announcePlaybackStart()
             }
             hasStartedPlayback = true
             isRetuneInFlight = false
