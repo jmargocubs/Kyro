@@ -24,6 +24,7 @@ struct KyroSportsSettingsView: View {
                     Toggle("Upcoming games", isOn: binding(\.showUpcoming))
                     Toggle("Completed games", isOn: binding(\.showCompleted))
                     NavigationLink("Enabled leagues & order") { leagueOrder }
+                    NavigationLink("Soccer competitions") { soccerCompetitions }
                     Picker("Live TV watch guide", selection: $guideStyle) {
                         ForEach(LiveTVEmbeddedGuideStyle.allCases) { Text($0.title).tag($0.rawValue) }
                     }
@@ -78,6 +79,23 @@ struct KyroSportsSettingsView: View {
         }
         .navigationTitle("Dashboard Leagues")
         .toolbar { EditButton() }
+    }
+    private var soccerCompetitions: some View {
+        List {
+            ForEach(KyroSoccerCompetition.Group.allCases, id: \.self) { group in
+                Section(group.title) {
+                    ForEach(KyroSoccerCompetitionRegistry.verified.filter { $0.group == group }) { competition in
+                        Toggle(competition.name, isOn: Binding(
+                            get: { !settings.value.disabledSoccerCompetitions.contains(competition.key) },
+                            set: { enabled in
+                                if enabled { settings.value.disabledSoccerCompetitions.remove(competition.key) }
+                                else { settings.value.disabledSoccerCompetitions.insert(competition.key) }
+                            }))
+                    }
+                }
+            }
+        }
+        .navigationTitle("Soccer Competitions")
     }
 }
 #endif

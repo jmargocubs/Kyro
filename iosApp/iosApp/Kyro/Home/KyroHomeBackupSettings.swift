@@ -54,10 +54,13 @@ enum KyroHomeBackupSettings {
         .record(["order": .array(prefs.order.map { .string($0.rawValue) }),
                  "hidden": .array(prefs.order.filter(prefs.hidden.contains).map { .string($0.rawValue) }),
                  "live": .bool(prefs.showLive), "upcoming": .bool(prefs.showUpcoming),
-                 "completed": .bool(prefs.showCompleted), "default": .string(prefs.defaultLeague)])
+                 "completed": .bool(prefs.showCompleted), "default": .string(prefs.defaultLeague),
+                 "disabledSoccerCompetitions": .array(prefs.disabledSoccerCompetitions.sorted().map(BackupValue.string))])
     }
     static func dashboard(_ value: BackupValue) -> KyroSportsDashboardPreferences? {
-        guard case .record(let f) = value, Set(f.keys) == ["order", "hidden", "live", "upcoming", "completed", "default"],
+        guard case .record(let f) = value,
+              Set(f.keys) == ["order", "hidden", "live", "upcoming", "completed", "default"] ||
+              Set(f.keys) == ["order", "hidden", "live", "upcoming", "completed", "default", "disabledSoccerCompetitions"],
               case .array(let order) = f["order"], case .array(let hidden) = f["hidden"],
               case .bool(let live) = f["live"], case .bool(let upcoming) = f["upcoming"],
               case .bool(let completed) = f["completed"], case .string(let start) = f["default"],
@@ -68,9 +71,16 @@ enum KyroHomeBackupSettings {
             }
             return parsed.count == values.count && Set(parsed).count == parsed.count ? parsed : nil
         }
+        let disabled: Set<String>
+        if let field = f["disabledSoccerCompetitions"] {
+            guard case .array(let values) = field, values.count <= 100,
+                  values.allSatisfy({ if case .string(let key) = $0 { return key.count <= 64 && !key.isEmpty }; return false }) else { return nil }
+            disabled = Set(values.compactMap { if case .string(let key) = $0 { return key }; return nil })
+            guard disabled.count == values.count else { return nil }
+        } else { disabled = [] }
         guard let ordered = leagues(order), Set(ordered) == Set(KyroSportLeague.allCases), let hidden = leagues(hidden) else { return nil }
         return .init(order: ordered, hidden: Set(hidden), showLive: live, showUpcoming: upcoming,
-                     showCompleted: completed, defaultLeague: start)
+                     showCompleted: completed, defaultLeague: start, disabledSoccerCompetitions: disabled)
     }
 
     static func encode(_ arrangement: KyroHomeArrangement, scope: String? = nil) -> BackupValue {

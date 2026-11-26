@@ -120,7 +120,9 @@ extension ESPNSportsProvider: KyroSportsLeagueProviding {
             case failure(KyroSportsDataError)
         }
         var results: [String: Result] = [:]
-        var iterator = KyroSoccerCompetitionRegistry.verified.makeIterator()
+        let disabled = KyroSportsDashboardPreferences.load(.standard).disabledSoccerCompetitions
+        let selected = KyroSoccerCompetitionRegistry.verified.filter { !disabled.contains($0.key) }
+        var iterator = selected.makeIterator()
         try await withThrowingTaskGroup(of: (String, Result).self) { group in
             func addNext() -> Bool {
                 guard let competition = iterator.next() else { return false }
@@ -162,7 +164,7 @@ extension ESPNSportsProvider: KyroSportsLeagueProviding {
         var firstFailure: KyroSportsDataError?
         var refreshError: KyroSportsDataError?
         var season: Int?
-        for competition in KyroSoccerCompetitionRegistry.verified {
+        for competition in selected {
             switch results[competition.key] {
             case let .success(mapped, year, stale):
                 games.append(contentsOf: mapped)

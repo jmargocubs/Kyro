@@ -123,6 +123,34 @@ enum KyroBuild126HostChecks {
         _ = directory.groupedResults(in: allBasketball, matching: "Bulls", schedules: [])
         check(favorites == before, "searching never edits favorites")
 
+        // Build 127 registry, dashboard selection and legacy preference decoding.
+        let competitions = KyroSoccerCompetitionRegistry.verified
+        let keys = competitions.map(\.key)
+        check(keys.count == Set(keys).count && Set(["uefa.champions", "uefa.europa", "uefa.europa.conf"]).isSubset(of: Set(keys)),
+              "unique soccer routes retain all three UEFA competitions")
+        check(keys.allSatisfy { key in ["eng.", "usa.", "mex.", "uefa."].contains { key.hasPrefix($0) } },
+              "worldwide soccer routes removed")
+        check(Set(KyroSportsDirectoryRoute.all.filter { $0.league == .soccer }.map(\.slug)) == Set(keys),
+              "team directory and scoreboard share the soccer registry")
+        var soccerPrefs = KyroSportsDashboardPreferences()
+        soccerPrefs.disabledSoccerCompetitions.insert("eng.2")
+        defaults.set(try JSONEncoder().encode(soccerPrefs), forKey: KyroSportsDashboardPreferences.key)
+        check(KyroSportsDashboardPreferences.load(defaults).disabledSoccerCompetitions == ["eng.2"],
+              "soccer selection persists")
+        check(KyroHomeBackupSettings.dashboard(KyroHomeBackupSettings.dashboardValue(soccerPrefs)) == soccerPrefs,
+              "soccer selection survives Settings Backup round-trip")
+        var oldBackup: [String: BackupValue] = [:]
+        if case .record(let fields) = KyroHomeBackupSettings.dashboardValue(soccerPrefs) { oldBackup = fields }
+        oldBackup.removeValue(forKey: "disabledSoccerCompetitions")
+        check(KyroHomeBackupSettings.dashboard(.record(oldBackup))?.disabledSoccerCompetitions.isEmpty == true,
+              "Build 126 Settings Backup keeps all soccer competitions enabled")
+        let legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(soccerPrefs)) as! [String: Any]
+        var legacyFields = legacy; legacyFields.removeValue(forKey: "disabledSoccerCompetitions")
+        let oldData = try JSONSerialization.data(withJSONObject: legacyFields)
+        defaults.set(oldData, forKey: KyroSportsDashboardPreferences.key)
+        check(KyroSportsDashboardPreferences.load(defaults).disabledSoccerCompetitions.isEmpty,
+              "Build 126 dashboard preferences retain all competitions")
+
         print("Build 126: \(count) production-path fixture checks passed.")
     }
 }

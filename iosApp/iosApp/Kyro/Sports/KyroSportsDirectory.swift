@@ -52,8 +52,7 @@ struct KyroSportsDirectoryRoute: Identifiable, Hashable, Sendable {
             (.collegeBasketballMen, "basketball/mens-college-basketball"),
             (.collegeBasketballWomen, "basketball/womens-college-basketball")]
         return core.map { Self(league: $0.0, path: $0.1, title: $0.0.displayName) }
-            // Directory-only: do not expand the Hub's soccer scoreboard fan-out.
-            + [Self(league: .soccer, path: "soccer/eng.2", title: "EFL Championship")]
+            // The same verified registry powers directory discovery and the Hub.
             + KyroSoccerCompetitionRegistry.verified.map { Self(league: .soccer, path: "soccer/" + $0.key, title: $0.name) }
             + [Self(league: .atp, path: "tennis/atp", title: "ATP"),
                Self(league: .wta, path: "tennis/wta", title: "WTA")]

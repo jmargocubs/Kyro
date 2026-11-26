@@ -11,6 +11,26 @@ struct KyroSportsDashboardPreferences: Codable, Equatable {
     var showUpcoming = true
     var showCompleted = true
     var defaultLeague: String = "lastUsed"
+    /// Disabled competition slugs; unknown saved slugs are retained for future versions.
+    var disabledSoccerCompetitions: Set<String> = []
+    enum CodingKeys: String, CodingKey { case order, hidden, showLive, showUpcoming, showCompleted, defaultLeague, disabledSoccerCompetitions }
+    init(order: [KyroSportLeague] = [.nfl, .collegeFootball, .collegeBasketballMen, .collegeBasketballWomen, .nba, .nhl, .mlb, .soccer, .atp, .wta],
+         hidden: Set<KyroSportLeague> = [], showLive: Bool = true, showUpcoming: Bool = true,
+         showCompleted: Bool = true, defaultLeague: String = "lastUsed", disabledSoccerCompetitions: Set<String> = []) {
+        self.order = order; self.hidden = hidden; self.showLive = showLive; self.showUpcoming = showUpcoming
+        self.showCompleted = showCompleted; self.defaultLeague = defaultLeague
+        self.disabledSoccerCompetitions = disabledSoccerCompetitions
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(order: try values.decode([KyroSportLeague].self, forKey: .order),
+                  hidden: try values.decode(Set<KyroSportLeague>.self, forKey: .hidden),
+                  showLive: try values.decode(Bool.self, forKey: .showLive),
+                  showUpcoming: try values.decode(Bool.self, forKey: .showUpcoming),
+                  showCompleted: try values.decode(Bool.self, forKey: .showCompleted),
+                  defaultLeague: try values.decode(String.self, forKey: .defaultLeague),
+                  disabledSoccerCompetitions: try values.decodeIfPresent(Set<String>.self, forKey: .disabledSoccerCompetitions) ?? [])
+    }
     static func load(_ defaults: UserDefaults) -> Self {
         guard let data = defaults.data(forKey: key), let value = try? JSONDecoder().decode(Self.self, from: data),
               Set(value.order) == Set(KyroSportLeague.allCases), value.order.count == KyroSportLeague.allCases.count,
@@ -18,7 +38,8 @@ struct KyroSportsDashboardPreferences: Codable, Equatable {
         return value
     }
     func includes(_ game: KyroSportsGame) -> Bool {
-        !hidden.contains(game.league) && (game.status.isLive ? showLive : game.status.isFinal ? showCompleted : showUpcoming)
+        !hidden.contains(game.league) && (game.competitionKey.map { !disabledSoccerCompetitions.contains($0) } ?? true)
+            && (game.status.isLive ? showLive : game.status.isFinal ? showCompleted : showUpcoming)
     }
 }
 

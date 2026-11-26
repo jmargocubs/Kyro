@@ -225,9 +225,12 @@ struct KyroSportsHubView: View {
             startRefreshLoopIfNeeded()
         }
         .onChange(of: liveNowTrigger) { _, _ in updateLiveNow() }
-        .onChange(of: dashboardSettings.value) { _, prefs in
+        .onChange(of: dashboardSettings.value) { old, prefs in
             if let league = store.selectedCategory.league, prefs.hidden.contains(league) { store.selectCategory(.all) }
             updateLiveNow()
+            if old.disabledSoccerCompetitions != prefs.disabledSoccerCompetitions && store.selectedCategory == .soccer {
+                Task { await store.refresh() }
+            }
         }
         .onChange(of: liveNow.status, initial: true) { _, status in
             guard status != .checking, let opened = liveNowOpenedAt else { return }
