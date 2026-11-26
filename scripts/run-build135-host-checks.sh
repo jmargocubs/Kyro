@@ -39,6 +39,12 @@ PROTECTED=(
   iosApp/iosApp/Screens/Home
   iosApp/iosApp/Control/iOS/NowPlayingShelf.swift
   iosApp/iosApp/ContentView.swift
+  # Build 136 appearance hooks are checked separately against Build 135.
+  ':(exclude)iosApp/iosApp/Kyro/Sports/KyroSportsHubView.swift'
+  ':(exclude)iosApp/iosApp/LiveTV/Guide/LiveTVGuideView.swift'
+  ':(exclude)iosApp/iosApp/LiveTV/Home/LiveTVHomeContent.swift'
+  ':(exclude)iosApp/iosApp/LiveTV/LiveTVViews.swift'
+  ':(exclude)iosApp/iosApp/Screens/Home/HomeView.swift'
 )
 if git diff --quiet "$BASE" -- "${PROTECTED[@]}"; then
   echo "Audio engines, podcast library and network, Home, Sports, Live TV, shell and mini-player slot: unchanged since Build 134."

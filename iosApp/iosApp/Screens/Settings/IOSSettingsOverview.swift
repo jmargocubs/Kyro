@@ -228,7 +228,7 @@ struct IOSSettingsOverview: View {
         .scrollDismissesKeyboard(.interactively)
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
-        .background(Color.siloBackground.ignoresSafeArea())
+        .background(SettingsBackdrop())
         .navigationTitle(Text(.settingsTitle))
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
@@ -257,6 +257,7 @@ struct IOSSettingsOverview: View {
                     }
                 }
                 if includes(.appearanceNavigation) {
+                    KyroAppAppearancePicker()
                     NavigationLink { IOSAppearanceNavigationSettingsView(uiCustomization: uiCustomization) } label: {
                         SettingsOverviewRow(title: "Appearance & Navigation", subtitle: "Interface, navigation, and optional features", systemImage: "rectangle.3.group.fill")
                     }

@@ -75,7 +75,7 @@ final class SettingsBackupLiveRegistryTests: XCTestCase {
     func testEverySettingIsOnTheExplicitLocalAllowlist() {
         let ids = Set(makeRig().registry.settings.map(\.id))
         XCTAssertEqual(ids, [
-            "general.launchBehavior",
+            "general.launchBehavior", "general.appAppearance",
             "features.watchParty",
             "calendar.filter",
             "navigation.fourthTab", "navigation.showAudiobooks",

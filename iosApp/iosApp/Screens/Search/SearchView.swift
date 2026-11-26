@@ -107,7 +107,7 @@ struct SearchView: View {
         // Hiding the bar keeps the page as it first opened.
         .toolbar(.hidden, for: .navigationBar)
         #else
-        .siloPageBackground()
+        .siloPageBackground(feature: true)
         #endif
         .navigationTitle(Text(.searchTitle))
         .siloNavigationTitleDisplayMode(.inline)

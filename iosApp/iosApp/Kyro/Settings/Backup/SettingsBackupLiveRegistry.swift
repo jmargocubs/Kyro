@@ -98,6 +98,9 @@ enum SettingsBackupLiveRegistry {
     @MainActor
     static func make(_ d: Dependencies) -> SettingsBackupRegistry {
         var settings: [BackupSetting] = []
+        let appearance = d.defaults === UserDefaults.standard
+            ? KyroAppAppearanceStore.shared : KyroAppAppearanceStore(defaults: d.defaults)
+        settings.append(appearance.backupSetting())
         // Home's arrangement belongs to the signed-in server, account and profile.
         settings.append(contentsOf: KyroHomeBackupSettings.make(defaults: d.defaults,
                                                                 scope: { KyroHomeShelfHost.currentScope() }))

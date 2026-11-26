@@ -87,6 +87,20 @@ enum LiveTVSurface {
     #endif
 }
 
+/// Opaque Guide bars cover the scrolling grid, not the video surface.
+struct LiveTVGuideChrome: View {
+    #if os(iOS)
+    private let appearance = KyroAppAppearanceStore.shared
+    #endif
+    var body: some View {
+        #if os(iOS)
+        appearance.selection == .signature ? KyroSignature.navigation : LiveTVSurface.canvas
+        #else
+        LiveTVSurface.canvas
+        #endif
+    }
+}
+
 extension View {
     /// The page behind a Live TV screen: the Media Server's page backdrop on
     /// iPhone, black elsewhere.

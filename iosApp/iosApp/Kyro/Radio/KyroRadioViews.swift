@@ -42,7 +42,9 @@ struct KyroRadioView: View {
     @State private var libraryText = ""
     @State private var searchField: KyroRadioQuery.Field = .name
     @State private var isShowingSettings = false
+    @State private var directoryLink: KyroRadioShelfLink?
     private let library = KyroRadioLibrary.shared
+    private let appearance = KyroAppAppearanceStore.shared
 
     private var hostedRunway: CGFloat? {
         isSecondaryDestination ? nil : shellHeader?.runway
@@ -65,21 +67,18 @@ struct KyroRadioView: View {
     var body: some View {
         List {
             if isHostedTab {
-                HStack(alignment: .center) {
-                    Text(KyroAudioDestination.title)
-                        .font(.largeTitle.bold())
-                        .foregroundStyle(KyroTheme.textPrimary)
-                        .accessibilityAddTraits(.isHeader)
-                    Spacer()
-                    settingsButton
-                        .font(.title3)
-                }
+                KyroAudioHeader { settingsButton.font(.title3) }
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
             }
 
             KyroAudioSelector(selection: $audioDestination)
+            if section == .discover {
+                KyroAudioPageHeading(title: "Internet Radio", subtitle: "Find and stream live stations on Kyro X.")
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
             if isHostedTab {
                 inlineSearchRow
                     .listRowBackground(Color.clear)
@@ -95,7 +94,8 @@ struct KyroRadioView: View {
 
             switch section {
             case .discover:
-                KyroRadioDiscoverContent(model: discover, searchText: discoverText, searchField: $searchField)
+                KyroRadioDiscoverContent(model: discover, searchText: discoverText, searchField: $searchField,
+                                         open: openShelf)
             case .library:
                 KyroRadioLibraryContent(searchText: libraryText)
             case .history:
@@ -104,7 +104,13 @@ struct KyroRadioView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Color.siloPageCanvas.ignoresSafeArea())
+        .background {
+            if appearance.selection == .signature {
+                KyroSignatureBackdrop(finish: section == .discover ? .discovery : .dense)
+            } else {
+                Color.siloPageCanvas.ignoresSafeArea()
+            }
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let hostedRunway {
                 Color.clear.frame(height: hostedRunway)
@@ -135,8 +141,14 @@ struct KyroRadioView: View {
             }
         }
         .sheet(isPresented: $isShowingSettings) { KyroRadioSettingsView() }
+        .navigationDestination(item: $directoryLink) { link in
+            if case let .directory(title, query) = link { KyroRadioDirectoryPage(title: title, query: query) }
+        }
         .tint(KyroTheme.accentInk)
         .onAppear { discover.loadIfNeeded(library.preferences.discoveryQuery) }
+        .onChange(of: library.preferences.discoveryQuery) { old, new in
+            if discover.query == old { discover.update(new) }
+        }
         .onChange(of: discoverText) { _, text in
             var query = discover.query
             query.text = text
@@ -152,6 +164,14 @@ struct KyroRadioView: View {
         .task { await refreshSavedDetails() }
     }
 
+    private func openShelf(_ link: KyroRadioShelfLink) {
+        switch link {
+        case .directory: directoryLink = link
+        case .favorites: libraryText = ""; section = .library
+        case .history: libraryText = ""; section = .history
+        }
+    }
+
     private var settingsButton: some View {
         Button { isShowingSettings = true } label: {
             Image(systemName: "slider.horizontal.3")
@@ -165,7 +185,8 @@ struct KyroRadioView: View {
     private var inlineSearchRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(KyroTheme.textSecondary)
+                .foregroundStyle(KyroSignature.secondary)
+                .accessibilityHidden(true)
             TextField(activeSearchPrompt, text: activeSearchText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -177,12 +198,13 @@ struct KyroRadioView: View {
                         .foregroundStyle(KyroTheme.textSecondary)
                 }
                 .buttonStyle(.plain)
+                .frame(minWidth: 44, minHeight: 44)
                 .accessibilityLabel("Clear search")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(Color.siloSurfaceElevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal, 14)
+        .frame(minHeight: 48)
+        .background { KyroControlSurface() }
     }
 
     /// Favorites restored from a backup have only an ID and a name. One
@@ -254,10 +276,17 @@ private struct KyroRadioDiscoverContent: View {
     let model: KyroRadioDiscoverModel
     let searchText: String
     @Binding var searchField: KyroRadioQuery.Field
+    let open: (KyroRadioShelfLink) -> Void
     @State private var isShowingFilters = false
     private let library = KyroRadioLibrary.shared
 
     private var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var showsShelves: Bool {
+        let preferred = library.preferences.discoveryQuery
+        let query = model.query
+        return !isSearching && query.tag == nil && query.countryCode == preferred.countryCode &&
+            query.state == preferred.state && query.language == preferred.language
+    }
 
     var body: some View {
         Group {
@@ -279,7 +308,11 @@ private struct KyroRadioDiscoverContent: View {
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets())
             }
-            results
+            if showsShelves {
+                KyroRadioDiscoverShelves(local: model, preferences: library.preferences, open: open)
+            } else {
+                results
+            }
         }
         .sheet(isPresented: $isShowingFilters) {
             KyroRadioFiltersView(query: model.query) { model.update($0) }
@@ -319,7 +352,8 @@ private struct KyroRadioDiscoverContent: View {
     private var genreChips: some View {
         if !model.genres.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Genres").font(.headline).padding(.horizontal, SiloTheme.padding)
+                Text("Browse by Genre").font(.headline).padding(.horizontal, SiloTheme.padding)
+                    .accessibilityAddTraits(.isHeader)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         if model.query.tag != nil {
@@ -338,49 +372,14 @@ private struct KyroRadioDiscoverContent: View {
         }
     }
 
-    @ViewBuilder
     private var results: some View {
-        Text(resultsTitle)
-            .font(.title3.bold())
-            .foregroundStyle(KyroTheme.textPrimary)
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .accessibilityAddTraits(.isHeader)
-        switch model.phase {
-        case .idle, .loading:
-            ProgressView("Finding stations…")
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 24)
+        Group {
+            Text(resultsTitle)
+                .font(.title3.bold())
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
-        case .failed(let message):
-            ContentUnavailableView {
-                Label("Stations Unavailable", systemImage: "wifi.exclamationmark")
-            } description: {
-                Text(message)
-            } actions: {
-                Button("Try Again") { model.retry() }.buttonStyle(.borderedProminent)
-            }
-            .listRowBackground(Color.clear)
-        case .loaded:
-            if model.stations.isEmpty && !model.canLoadMore {
-                ContentUnavailableView("No Stations Found", systemImage: "radio",
-                    description: Text("Try a different name, genre or place, or search worldwide."))
-                    .listRowBackground(Color.clear)
-            }
-            ForEach(model.stations) { station in
-                KyroRadioStationRow(station: station)
-                    .onAppear { if station.id == model.stations.last?.id { model.loadMore() } }
-            }
-            if model.isLoadingMore {
-                ProgressView().frame(maxWidth: .infinity).listRowBackground(Color.clear)
-            } else if model.loadMoreFailed {
-                Button("Couldn’t load more. Try Again") { model.loadMore() }
-                    .frame(maxWidth: .infinity).listRowBackground(Color.clear)
-            } else if model.canLoadMore && model.stations.isEmpty {
-                Button("Load More Stations") { model.loadMore() }
-                    .frame(maxWidth: .infinity).listRowBackground(Color.clear)
-            }
+                .accessibilityAddTraits(.isHeader)
+            KyroRadioDirectoryRows(model: model)
         }
     }
 
@@ -413,8 +412,7 @@ private struct KyroRadioDiscoverContent: View {
             .foregroundStyle(isOn ? KyroTheme.textPrimary : KyroTheme.textSecondary)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .background(isOn ? KyroTheme.selectedFill : Color.siloChromeRestingFill, in: Capsule())
-            .overlay(Capsule().strokeBorder(isOn ? KyroTheme.selectedBorder : Color.siloChromeRestingBorder, lineWidth: 1))
+            .background { KyroControlSurface(selected: isOn, cornerRadius: 20) }
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isOn ? .isSelected : [])
@@ -533,6 +531,7 @@ struct KyroRadioRegionPickers: View {
 private struct KyroRadioLibraryContent: View {
     let searchText: String
     @State private var sort: KyroRadioLibrary.Sort = .recentlyAdded
+    @AppStorage("kyrox.radio.libraryGrid.v1") private var grid = true
     private let library = KyroRadioLibrary.shared
 
     var body: some View {
@@ -542,18 +541,45 @@ private struct KyroRadioLibraryContent: View {
                 description: Text("Tap the heart on a station in Discover to save it here."))
                 .listRowBackground(Color.clear)
         } else {
-            Picker("Sort", selection: $sort) {
-                ForEach(KyroRadioLibrary.Sort.allCases) { Text($0.title).tag($0) }
+            HStack(spacing: 12) {
+                Text("Favorite Stations").font(.title3.bold()).accessibilityAddTraits(.isHeader)
+                Spacer()
+                Menu {
+                    Picker("Sort", selection: $sort) {
+                        ForEach(KyroRadioLibrary.Sort.allCases) { Text($0.title).tag($0) }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down").frame(width: 44, height: 44)
+                        .background { KyroControlSurface() }
+                }
+                .accessibilityLabel("Sort")
+                .accessibilityValue(sort.title)
+                Button { grid.toggle() } label: {
+                    Image(systemName: grid ? "list.bullet" : "square.grid.2x2").frame(width: 44, height: 44)
+                        .background { KyroControlSurface() }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(grid ? "Show as List" : "Show as Grid")
             }
             .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
             if saved.isEmpty {
                 ContentUnavailableView.search(text: searchText).listRowBackground(Color.clear)
-            }
-            ForEach(saved) { entry in
-                KyroRadioStationRow(station: entry.station)
-                    .swipeActions {
-                        Button("Remove", role: .destructive) { library.setFavorite(entry.station, false) }
+            } else if grid {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), alignment: .top)], spacing: 16) {
+                    ForEach(saved) { entry in
+                        KyroRadioStationTile(station: entry.station, size: 96)
                     }
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            } else {
+                ForEach(saved) { entry in
+                    KyroRadioStationRow(station: entry.station)
+                        .swipeActions {
+                            Button("Remove", role: .destructive) { library.setFavorite(entry.station, false) }
+                        }
+                }
             }
         }
     }

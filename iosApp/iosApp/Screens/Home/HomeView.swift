@@ -155,7 +155,7 @@ struct HomeView: View {
         }
         #else
         ZStack(alignment: .top) {
-            SiloPageBackdrop()
+            SiloPageBackdrop(feature: true)
                 .ignoresSafeArea()
 
             Group {

@@ -96,7 +96,7 @@ struct RecommendationsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #else
         shortcutOrDockLayout
-            .siloPageBackground()
+            .siloPageBackground(feature: true)
         #if os(iOS)
         .rootPageNavigationBar()
         #endif

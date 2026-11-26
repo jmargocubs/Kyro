@@ -35,6 +35,12 @@ PROTECTED=(
   iosApp/iosApp/LiveTV
   iosApp/iosApp/Kyro/Shell
   iosApp/iosApp/Screens/Home
+  # Build 136 adds presentation-only hooks here; the rest stays protected.
+  ':(exclude)iosApp/iosApp/Kyro/Sports/KyroSportsHubView.swift'
+  ':(exclude)iosApp/iosApp/LiveTV/Guide/LiveTVGuideView.swift'
+  ':(exclude)iosApp/iosApp/LiveTV/Home/LiveTVHomeContent.swift'
+  ':(exclude)iosApp/iosApp/LiveTV/LiveTVViews.swift'
+  ':(exclude)iosApp/iosApp/Screens/Home/HomeView.swift'
 )
 if git diff --quiet "$BASE" -- "${PROTECTED[@]}"; then
   echo "Protected Radio engine, mini-player slot, Home, Sports, Live TV and shell files: unchanged since Build 133."

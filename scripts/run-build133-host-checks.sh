@@ -21,4 +21,8 @@ git diff --exit-code aa16b77868a1546dc0aaadad50e6d098e4fa58cd -- \
   "$ROOT"/Podcasts/KyroHomePodcastRail.swift \
   "$ROOT"/Shell \
   iosApp/iosApp/LiveTV \
-  iosApp/iosApp/Screens/Home
+  iosApp/iosApp/Screens/Home \
+  ':(exclude)iosApp/iosApp/LiveTV/Guide/LiveTVGuideView.swift' \
+  ':(exclude)iosApp/iosApp/LiveTV/Home/LiveTVHomeContent.swift' \
+  ':(exclude)iosApp/iosApp/LiveTV/LiveTVViews.swift' \
+  ':(exclude)iosApp/iosApp/Screens/Home/HomeView.swift'

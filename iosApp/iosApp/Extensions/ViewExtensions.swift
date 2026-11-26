@@ -6,12 +6,34 @@ import SwiftUI
 /// charcoal wash with static tonal depth; it never samples page artwork.
 /// Other platforms retain their existing pure-black canvas.
 struct SiloPageBackdrop: View {
+    var feature = false
     #if os(iOS)
     @Environment(\.displayScale) private var displayScale
+    private let appearance = KyroAppAppearanceStore.shared
     #endif
 
     var body: some View {
         #if os(iOS)
+        if appearance.selection == .signature {
+            KyroSignatureBackdrop(finish: feature ? .feature : .dense)
+        } else {
+            classicBackdrop
+        }
+        #elseif os(macOS)
+        Color.siloPageCanvas
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        #else
+        Color.siloBackground
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        #endif
+    }
+
+    #if os(iOS)
+    private var classicBackdrop: some View {
         GeometryReader { geo in
             ZStack {
                 Color.siloPageCanvas
@@ -28,18 +50,8 @@ struct SiloPageBackdrop: View {
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-        #elseif os(macOS)
-        Color.siloPageCanvas
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        #else
-        Color.siloBackground
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        #endif
     }
+    #endif
 }
 
 #if os(iOS)
@@ -159,9 +171,9 @@ extension View {
 
     /// Apply the fixed charcoal page canvas without changing semantic black
     /// ink used by controls, artwork masks, Settings, or media surfaces.
-    func siloPageBackground() -> some View {
+    func siloPageBackground(feature: Bool = false) -> some View {
         self.background {
-            SiloPageBackdrop()
+            SiloPageBackdrop(feature: feature)
         }
     }
 

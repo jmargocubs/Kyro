@@ -34,7 +34,7 @@ struct SettingsSearchField: View {
         }
         .padding(.horizontal, 14)
         .frame(minHeight: 44)
-        .background(Color.siloGroupedCell, in: Capsule())
+        .background { KyroControlSurface(cornerRadius: 22) }
     }
 }
 #endif

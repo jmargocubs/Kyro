@@ -1220,7 +1220,7 @@ private struct LiveTVHomeStatusCard<Content: View>: View {
 struct LiveTVHomeBackground: View {
     var body: some View {
         #if os(iOS)
-        SiloPageBackdrop()
+        SiloPageBackdrop(feature: true)
         #else
         ZStack(alignment: .top) {
             Color.black

@@ -10,6 +10,32 @@ enum KyroAudioDestination: String, CaseIterable {
     static let title = "Radio & Podcasts"
 }
 
+struct KyroAudioHeader<Actions: View>: View {
+    @ViewBuilder let actions: () -> Actions
+
+    var body: some View {
+        HStack {
+            Text(KyroAudioDestination.title)
+                .font(.title2.bold()).foregroundStyle(KyroSignature.primary)
+                .accessibilityAddTraits(.isHeader)
+            Spacer()
+            actions()
+        }
+    }
+}
+
+struct KyroAudioPageHeading: View {
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.largeTitle.weight(.heavy)).accessibilityAddTraits(.isHeader)
+            Text(subtitle).font(.subheadline).foregroundStyle(KyroSignature.secondary)
+        }
+    }
+}
+
 struct KyroAudioSelector: View {
     @Binding var selection: KyroAudioDestination
     var body: some View {
@@ -89,17 +115,14 @@ private struct KyroPodcastBrowser: View {
     private var runway: CGFloat? { isSecondaryDestination ? nil : shellHeader?.runway }
     private var hosted: Bool { runway != nil }
     private let library = KyroPodcastLibrary.shared
+    private let appearance = KyroAppAppearanceStore.shared
 
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 12) {
                     if hosted {
-                        HStack {
-                            Text(KyroAudioDestination.title).font(.title2.bold()).accessibilityAddTraits(.isHeader)
-                            Spacer()
-                            actions
-                        }
+                        KyroAudioHeader { actions }
                     }
                     KyroAudioSelector(selection: $selection)
                     Picker("Podcast section", selection: $section) {
@@ -124,7 +147,13 @@ private struct KyroPodcastBrowser: View {
         .scrollDismissesKeyboard(.interactively)
         .foregroundStyle(.white)
         .tint(KyroModernStyle.crimson)
-        .background(KyroModernStyle.background.ignoresSafeArea())
+        .background {
+            if appearance.selection == .signature {
+                KyroSignatureBackdrop(finish: section == .discover ? .discovery : .dense)
+            } else {
+                SiloPageBackdrop()
+            }
+        }
         .environment(\.colorScheme, .dark)
         .safeAreaInset(edge: .top, spacing: 0) {
             if let runway { Color.clear.frame(height: runway) }
@@ -360,7 +389,7 @@ struct KyroPodcastShowView: View {
         }
         .foregroundStyle(.white)
         .tint(KyroModernStyle.crimson)
-        .background(KyroModernStyle.background.ignoresSafeArea())
+        .siloPageBackground()
         .environment(\.colorScheme, .dark)
         .navigationTitle(show.title).navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom, spacing: 0) {

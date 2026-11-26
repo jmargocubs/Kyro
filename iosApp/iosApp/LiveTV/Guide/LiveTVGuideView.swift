@@ -265,7 +265,7 @@ struct LiveTVGuideView: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 44)
-        .background(LiveTVSurface.canvas)
+        .background { LiveTVGuideChrome() }
         .overlay(alignment: .bottom) { Divider() }
     }
 
@@ -292,7 +292,7 @@ struct LiveTVGuideView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 2)
         .frame(minHeight: 44)
-        .background(LiveTVSurface.canvas)
+        .background { LiveTVGuideChrome() }
         .overlay(alignment: .bottom) { Divider() }
         .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: isSearchPresented)
     }
@@ -1305,11 +1305,11 @@ private struct LiveTVGuideTimeHeader: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(LiveTVAccent.primaryText)
                 .frame(width: metrics.channelColumnWidth, height: metrics.headerHeight)
-                .background(LiveTVSurface.canvas)
+                .background { LiveTVGuideChrome() }
                 .pinnedToScrollLeading()
                 .zIndex(1)
         }
-        .background(LiveTVSurface.canvas)
+        .background { LiveTVGuideChrome() }
         .overlay(alignment: .bottom) { Divider() }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Timeline")

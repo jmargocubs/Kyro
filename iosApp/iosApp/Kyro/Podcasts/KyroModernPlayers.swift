@@ -16,11 +16,11 @@ import SwiftUI
 // MARK: - Visual system
 
 enum KyroModernStyle {
-    static let crimson = Color(red: 0.90, green: 0.14, blue: 0.23)        // #E5243B accent
-    static let crimsonDeep = Color(red: 0.56, green: 0.055, blue: 0.12)   // #8F0E1F
-    static let burgundy = Color(red: 0.23, green: 0.03, blue: 0.06)       // #3A0710
-    static let night = Color(red: 0.04, green: 0.016, blue: 0.024)        // #0A0406
-    static let surface = Color(red: 0.17, green: 0.035, blue: 0.06)       // #2B0910
+    static let crimson = KyroSignature.crimson
+    static let crimsonDeep = KyroSignature.crimsonDeep
+    static let burgundy = KyroSignature.burgundy
+    static let night = KyroSignature.night
+    static let surface = KyroSignature.card
     static let surfaceStroke = Color.white.opacity(0.08)
     static let secondary = Color.white.opacity(0.68)
     static let tertiary = Color.white.opacity(0.45)

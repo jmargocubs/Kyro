@@ -48,7 +48,7 @@ private struct KyroTabRootContainer<Content: View>: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             Color.clear.frame(height: shellHeader?.runway ?? 0)
         }
-        .siloPageBackground()
+        .siloPageBackground(feature: true)
         .toolbar(.hidden, for: .navigationBar)
     }
 }

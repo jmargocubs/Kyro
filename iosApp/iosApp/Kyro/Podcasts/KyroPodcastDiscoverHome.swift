@@ -80,7 +80,7 @@ enum KyroPodcastPalette {
     static let chipStroke = Color.white.opacity(0.14)
 }
 
-struct KyroPodcastShelfHeader: View {
+struct KyroAudioShelfHeader: View {
     let title: String
     var caption: String?
     var seeAll: (() -> Void)?
@@ -89,14 +89,14 @@ struct KyroPodcastShelfHeader: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.title3.weight(.bold)).accessibilityAddTraits(.isHeader)
-                if let caption { Text(caption).font(.caption).foregroundStyle(KyroModernStyle.tertiary) }
+                if let caption { Text(caption).font(.caption).foregroundStyle(KyroSignature.secondary) }
             }
             Spacer()
             if let seeAll {
                 Button(action: seeAll) {
                     HStack(spacing: 3) { Text("See All"); Image(systemName: "chevron.right") }
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(KyroModernStyle.secondary)
+                        .foregroundStyle(KyroSignature.secondary)
                         .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
@@ -104,6 +104,27 @@ struct KyroPodcastShelfHeader: View {
             }
         }
         .padding(.horizontal, 20)
+    }
+}
+
+private typealias KyroPodcastShelfHeader = KyroAudioShelfHeader
+
+struct KyroAudioArtworkTile<Artwork: View>: View {
+    let title: String
+    let subtitle: String
+    let size: CGFloat
+    @ViewBuilder let artwork: () -> Artwork
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            artwork()
+            Text(title).font(.subheadline.weight(.semibold)).lineLimit(2, reservesSpace: true)
+            if !subtitle.isEmpty {
+                Text(subtitle).font(.caption).foregroundStyle(KyroSignature.secondary).lineLimit(1)
+            }
+        }
+        .frame(width: size, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 
@@ -117,7 +138,7 @@ struct KyroPodcastShowTile: View {
     var busy: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        KyroAudioArtworkTile(title: title, subtitle: subtitle, size: size) {
             KyroPodcastArtwork(url: artwork, size: size, decodeSize: 280)
                 .overlay(alignment: .topTrailing) {
                     if badge {
@@ -131,13 +152,7 @@ struct KyroPodcastShowTile: View {
                 }
                 .overlay { if busy { ProgressView().tint(.white).padding(10).background(.black.opacity(0.5), in: Circle()) } }
                 .shadow(color: .black.opacity(0.4), radius: 8, y: 5)
-            Text(title).font(.subheadline.weight(.semibold)).lineLimit(2, reservesSpace: true)
-            if !subtitle.isEmpty {
-                Text(subtitle).font(.caption).foregroundStyle(KyroModernStyle.secondary).lineLimit(1)
-            }
         }
-        .frame(width: size, alignment: .leading)
-        .contentShape(Rectangle())
     }
 }
 
@@ -300,14 +315,10 @@ struct KyroPodcastDiscoverHome: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Podcasts").font(.largeTitle.weight(.heavy)).accessibilityAddTraits(.isHeader)
-                Text("Discover, follow and stream podcasts on Kyro X.")
-                    .font(.subheadline).foregroundStyle(KyroModernStyle.secondary)
-            }
+            KyroAudioPageHeading(title: "Podcasts", subtitle: "Discover, follow and stream podcasts on Kyro X.")
             HStack(spacing: 10) {
                 HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(KyroModernStyle.secondary)
+                    Image(systemName: "magnifyingglass").foregroundStyle(KyroSignature.secondary).accessibilityHidden(true)
                     TextField("Search podcasts or creators", text: $discovery.query)
                         .submitLabel(.search)
                         .focused($searchFocused)
@@ -315,14 +326,14 @@ struct KyroPodcastDiscoverHome: View {
                         .autocorrectionDisabled()
                     if !discovery.query.isEmpty {
                         Button { discovery.clearSearch() } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(KyroModernStyle.secondary)
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(KyroSignature.secondary)
+                                .frame(width: 44, height: 44)
                         }
                         .buttonStyle(.plain).accessibilityLabel("Clear search")
                     }
                 }
                 .padding(.horizontal, 14).frame(minHeight: 48)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(KyroPodcastPalette.chip))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(KyroPodcastPalette.chipStroke))
+                .background { KyroControlSurface() }
                 Menu {
                     Button("Add RSS Feed", systemImage: "link.badge.plus", action: openFeedEntry)
                     Button("Podcast Settings", systemImage: "slider.horizontal.3", action: openSettings)
@@ -330,8 +341,7 @@ struct KyroPodcastDiscoverHome: View {
                     Image(systemName: "slider.horizontal.3")
                         .font(.body.weight(.semibold))
                         .frame(width: 48, height: 48)
-                        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(KyroPodcastPalette.chip))
-                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(KyroPodcastPalette.chipStroke))
+                        .background { KyroControlSurface() }
                 }
                 .accessibilityLabel("Podcast settings and RSS")
             }
@@ -807,20 +817,20 @@ struct KyroPodcastLibraryHome: View {
                     TextField("Search your shows", text: $query).autocorrectionDisabled()
                 }
                 .padding(.horizontal, 12).frame(minHeight: 44)
-                .background(RoundedRectangle(cornerRadius: 12).fill(KyroPodcastPalette.chip))
+                .background { KyroControlSurface(cornerRadius: 12) }
                 Menu {
                     Picker("Sort", selection: $sort) {
                         ForEach(PodcastLibrarySort.allCases) { Text($0.rawValue).tag($0) }
                     }
                 } label: {
                     Image(systemName: "arrow.up.arrow.down").frame(width: 44, height: 44)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(KyroPodcastPalette.chip))
+                        .background { KyroControlSurface(cornerRadius: 12) }
                 }
                 .accessibilityLabel("Sort")
                 .accessibilityValue(sort.rawValue)
                 Button { grid.toggle() } label: {
                     Image(systemName: grid ? "list.bullet" : "square.grid.2x2").frame(width: 44, height: 44)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(KyroPodcastPalette.chip))
+                        .background { KyroControlSurface(cornerRadius: 12) }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(grid ? "Show as List" : "Show as Grid")

@@ -214,6 +214,10 @@ struct KyroRadioFacet: Codable, Hashable, Identifiable, Sendable {
 /// One Discover request. Filters combine; the API matches `name`, `state` and
 /// `tag` as substrings and `countrycode`/`language` exactly.
 struct KyroRadioQuery: Hashable, Sendable {
+    enum Ranking: String, Hashable, Sendable {
+        case popularity = "clickcount"
+        case communityVotes = "votes"
+    }
     enum Field: String, CaseIterable, Hashable, Sendable {
         /// Station names; call signs are part of the name ("WGN 720").
         case name
@@ -236,6 +240,7 @@ struct KyroRadioQuery: Hashable, Sendable {
     var state: String?
     var language: String?
     var tag: String?
+    var ranking: Ranking = .popularity
 
     static let pageSize = 40
     static let maxTextLength = 100
@@ -265,7 +270,7 @@ struct KyroRadioQuery: Hashable, Sendable {
         if let language, !language.isEmpty { items.append(.init(name: "language", value: language)) }
         items += [
             .init(name: "hidebroken", value: "true"),
-            .init(name: "order", value: "clickcount"),
+            .init(name: "order", value: ranking.rawValue),
             .init(name: "reverse", value: "true"),
             .init(name: "offset", value: String(max(0, offset))),
             .init(name: "limit", value: String(max(1, min(limit, 100)))),
