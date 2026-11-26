@@ -2404,6 +2404,10 @@ enum MainTabDestinationID: Hashable {
 enum KyroRootPage: Hashable {
     case sports
     case favorites
+    #if os(iOS)
+    /// Build 128: reached from More; never a tab.
+    case radio
+    #endif
 }
 
 extension MainTabDestinationID {
@@ -2414,6 +2418,7 @@ extension MainTabDestinationID {
         case .library(let id): self = .library(id)
         #if os(iOS)
         case .sports: self = .kyroRoot(.sports)
+        case .radio: self = .kyroRoot(.radio)
         #endif
         }
     }
@@ -3061,6 +3066,7 @@ struct MainTabView: View {
         }
         #if os(iOS)
         .modifier(AudioPlayerPresentationModifier(router: router))
+        .modifier(KyroRadioNowPlayingPresentation())
         .modifier(PlayerPresentationModifier(router: router))
         .modifier(ItemDetailPresentationModifier(router: router, zoomNamespace: detailZoomNamespace))
         .onGeometryChange(for: Bool.self) { proxy in
@@ -3250,6 +3256,10 @@ struct MainTabView: View {
                 router.navigate(to: .secondaryDestination(.sports))
             })
         }
+        // Build 128: Radio lives in More, so the five tabs and the floating pills are unchanged.
+        items.append(KyroMoreMenuItem(id: "kyro-radio", title: "Radio", systemImage: "radio") {
+            router.navigate(to: .secondaryDestination(.radio))
+        })
         return KyroMoreMenuContext(items: items)
     }
 #endif
@@ -3693,6 +3703,9 @@ struct MainTabView: View {
         if id == .kyroRoot(.sports) {
             KyroSportsHubView(isSecondaryDestination: true)
                 .environment(\.kyroShellHeader, nil)
+        } else if id == .kyroRoot(.radio) {
+            KyroRadioView()
+                .environment(\.kyroShellHeader, nil)
         } else {
             resolvedSecondaryDestinationContent(for: id)
         }
@@ -3729,7 +3742,7 @@ struct MainTabView: View {
         #if os(iOS)
         case .kyroRoot(.sports):
             return MainTabDestination.global(.sports)
-        case .kyroRoot(.favorites):
+        case .kyroRoot(.favorites), .kyroRoot(.radio):
             return nil
         #else
         case .kyroRoot:

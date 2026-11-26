@@ -1,0 +1,870 @@
+#if os(iOS)
+import AVKit
+import Nuke
+import NukeUI
+import SwiftUI
+
+// Build 128: Radio, opened from More. Discover, Library and History share one
+// page; the mini player and Now Playing follow the listener everywhere.
+
+/// The Radio page.
+struct KyroRadioView: View {
+    enum Section: String, CaseIterable, Identifiable {
+        case discover, library, history
+        var id: String { rawValue }
+        var title: String { rawValue.capitalized }
+    }
+
+    @State private var section: Section = .discover
+    @State private var discover = KyroRadioDiscoverModel()
+    @State private var discoverText = ""
+    @State private var libraryText = ""
+    @State private var searchField: KyroRadioQuery.Field = .name
+    @State private var isShowingSettings = false
+    private let library = KyroRadioLibrary.shared
+
+    var body: some View {
+        List {
+            Picker("Radio section", selection: $section) {
+                ForEach(Section.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .accessibilityIdentifier("kyroRadioSection")
+
+            switch section {
+            case .discover:
+                KyroRadioDiscoverContent(model: discover, searchText: discoverText, searchField: $searchField)
+            case .library:
+                KyroRadioLibraryContent(searchText: libraryText)
+            case .history:
+                KyroRadioHistoryContent(searchText: libraryText)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.siloPageCanvas.ignoresSafeArea())
+        .searchable(text: section == .discover ? $discoverText : $libraryText,
+                    prompt: section == .discover ? searchField.prompt : "Search saved stations")
+        .navigationTitle("Radio")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { isShowingSettings = true } label: {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .accessibilityLabel("Radio Settings")
+                .accessibilityIdentifier("kyroRadioSettings")
+            }
+        }
+        .sheet(isPresented: $isShowingSettings) { KyroRadioSettingsView() }
+        .tint(KyroTheme.accentInk)
+        .onAppear { discover.loadIfNeeded(library.preferences.discoveryQuery) }
+        .onChange(of: discoverText) { _, text in
+            var query = discover.query
+            query.text = text
+            query.field = searchField
+            discover.update(query, debounce: true)
+        }
+        .onChange(of: searchField) { _, field in
+            var query = discover.query
+            query.field = field
+            guard !query.trimmedText.isEmpty else { return }
+            discover.update(query)
+        }
+        .task { await refreshSavedDetails() }
+    }
+
+    /// Favorites restored from a backup have only an ID and a name. One
+    /// bounded request per 100 stations fills in their streams and logos.
+    private func refreshSavedDetails() async {
+        let missing = library.stationsNeedingDetails
+        guard !missing.isEmpty else { return }
+        for start in stride(from: 0, to: min(missing.count, 300), by: 100) {
+            let batch = Array(missing[start..<min(start + 100, missing.count)])
+            guard let fresh = try? await KyroRadioBrowserClient.shared.stations(uuids: batch) else { return }
+            library.refreshDetails(fresh)
+        }
+    }
+}
+
+private extension KyroRadioQuery.Field {
+    var prompt: String {
+        switch self {
+        case .name: "Station name or call sign"
+        case .genre: "Genre, like jazz or news"
+        case .location: "City or state"
+        }
+    }
+}
+
+// MARK: - Discover
+
+private struct KyroRadioDiscoverContent: View {
+    let model: KyroRadioDiscoverModel
+    let searchText: String
+    @Binding var searchField: KyroRadioQuery.Field
+    @State private var isShowingFilters = false
+    private let library = KyroRadioLibrary.shared
+
+    private var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    var body: some View {
+        Group {
+            if isSearching {
+                Picker("Search by", selection: $searchField) {
+                    ForEach(KyroRadioQuery.Field.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+            regionChips
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets())
+            if !isSearching {
+                genreChips
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets())
+            }
+            results
+        }
+        .sheet(isPresented: $isShowingFilters) {
+            KyroRadioFiltersView(query: model.query) { model.update($0) }
+        }
+        .onAppear { model.loadGenresIfNeeded() }
+    }
+
+    private var regionChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                chip("United States", isOn: model.query.countryCode == "US" && model.query.state == nil) {
+                    set { $0.countryCode = "US"; $0.state = nil }
+                }
+                chip("Illinois", isOn: model.query.countryCode == "US" && model.query.state == "Illinois") {
+                    set { $0.countryCode = "US"; $0.state = "Illinois" }
+                }
+                chip("Worldwide", isOn: model.query.countryCode == nil && model.query.state == nil) {
+                    set { $0.countryCode = nil; $0.state = nil }
+                }
+                let preferred = library.preferences
+                if preferred.countryCode != nil, preferred.countryCode != "US" || (preferred.state != nil && preferred.state != "Illinois") {
+                    chip(preferred.regionTitle, isOn: model.query.countryCode == preferred.countryCode && model.query.state == preferred.state) {
+                        set { $0.countryCode = preferred.countryCode; $0.state = preferred.state }
+                    }
+                }
+                chip(model.query.language.map { "Language: \($0.capitalized)" } ?? "Filters", systemImage: "line.3.horizontal.decrease",
+                     isOn: model.query.language != nil) {
+                    isShowingFilters = true
+                }
+            }
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private var genreChips: some View {
+        if !model.genres.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Genres").font(.headline).padding(.horizontal, SiloTheme.padding)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        if model.query.tag != nil {
+                            chip("All Genres", isOn: false) { set { $0.tag = nil } }
+                        }
+                        ForEach(model.genres.prefix(30)) { genre in
+                            chip(genre.title, isOn: model.query.tag == genre.value) {
+                                set { $0.tag = $0.tag == genre.value ? nil : genre.value }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, SiloTheme.padding)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private var results: some View {
+        Text(resultsTitle)
+            .font(.title3.bold())
+            .foregroundStyle(KyroTheme.textPrimary)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .accessibilityAddTraits(.isHeader)
+        switch model.phase {
+        case .idle, .loading:
+            ProgressView("Finding stations…")
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        case .failed(let message):
+            ContentUnavailableView {
+                Label("Stations Unavailable", systemImage: "wifi.exclamationmark")
+            } description: {
+                Text(message)
+            } actions: {
+                Button("Try Again") { model.retry() }.buttonStyle(.borderedProminent)
+            }
+            .listRowBackground(Color.clear)
+        case .loaded:
+            if model.stations.isEmpty && !model.canLoadMore {
+                ContentUnavailableView("No Stations Found", systemImage: "radio",
+                    description: Text("Try a different name, genre or place, or search worldwide."))
+                    .listRowBackground(Color.clear)
+            }
+            ForEach(model.stations) { station in
+                KyroRadioStationRow(station: station)
+                    .onAppear { if station.id == model.stations.last?.id { model.loadMore() } }
+            }
+            if model.isLoadingMore {
+                ProgressView().frame(maxWidth: .infinity).listRowBackground(Color.clear)
+            } else if model.loadMoreFailed {
+                Button("Couldn’t load more. Try Again") { model.loadMore() }
+                    .frame(maxWidth: .infinity).listRowBackground(Color.clear)
+            } else if model.canLoadMore && model.stations.isEmpty {
+                Button("Load More Stations") { model.loadMore() }
+                    .frame(maxWidth: .infinity).listRowBackground(Color.clear)
+            }
+        }
+    }
+
+    private var resultsTitle: String {
+        let place: String
+        switch (model.query.countryCode, model.query.state) {
+        case (nil, _): place = "Worldwide"
+        case ("US", "Illinois"): place = "Illinois"
+        case ("US", nil): place = "United States"
+        case (let code?, let state): place = [state, code].compactMap { $0 }.joined(separator: ", ")
+        }
+        if isSearching { return "Results · \(place)" }
+        if let tag = model.query.tag { return "\(tag.capitalized) · \(place)" }
+        return "Popular · \(place)"
+    }
+
+    private func set(_ change: (inout KyroRadioQuery) -> Void) {
+        var query = model.query
+        change(&query)
+        model.update(query)
+    }
+
+    private func chip(_ title: String, systemImage: String? = nil, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if let systemImage { Image(systemName: systemImage) }
+                Text(title).lineLimit(1)
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(isOn ? KyroTheme.textPrimary : KyroTheme.textSecondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(isOn ? KyroTheme.selectedFill : Color.siloChromeRestingFill, in: Capsule())
+            .overlay(Capsule().strokeBorder(isOn ? KyroTheme.selectedBorder : Color.siloChromeRestingBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
+/// Country, state and language for Discover.
+private struct KyroRadioFiltersView: View {
+    let query: KyroRadioQuery
+    let apply: (KyroRadioQuery) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: KyroRadioQuery
+
+    init(query: KyroRadioQuery, apply: @escaping (KyroRadioQuery) -> Void) {
+        self.query = query
+        self.apply = apply
+        _draft = State(initialValue: query)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                KyroRadioRegionPickers(countryCode: $draft.countryCode, countryName: .constant(nil),
+                                       state: $draft.state, language: $draft.language)
+                Section {
+                    Button("Clear Filters", role: .destructive) {
+                        draft.countryCode = nil; draft.state = nil; draft.language = nil; draft.tag = nil
+                    }
+                }
+            }
+            .navigationTitle("Filters")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Apply") { apply(draft); dismiss() }
+                }
+            }
+        }
+        .tint(KyroTheme.accentInk)
+    }
+}
+
+/// Country, state/region and language pickers, from Radio Browser's own lists.
+struct KyroRadioRegionPickers: View {
+    @Binding var countryCode: String?
+    @Binding var countryName: String?
+    @Binding var state: String?
+    @Binding var language: String?
+    @State private var countries: [KyroRadioFacet] = []
+    @State private var states: [KyroRadioFacet] = []
+    @State private var languages: [KyroRadioFacet] = []
+    @State private var failed = false
+
+    var body: some View {
+        Section {
+            Picker("Country", selection: Binding(get: { countryCode }, set: { code in
+                countryCode = code
+                countryName = countries.first { $0.value == code }?.title
+                state = nil
+            })) {
+                Text("Worldwide").tag(nil as String?)
+                if let countryCode, !countries.contains(where: { $0.value == countryCode }) {
+                    Text(countryName ?? countryCode).tag(Optional(countryCode))
+                }
+                ForEach(countries) { Text($0.title).tag(Optional($0.value)) }
+            }
+            if countryCode != nil {
+                Picker("State or Region", selection: $state) {
+                    Text("Any").tag(nil as String?)
+                    if let state, !states.contains(where: { $0.value == state }) { Text(state).tag(Optional(state)) }
+                    ForEach(states) { Text($0.title).tag(Optional($0.value)) }
+                }
+            }
+            Picker("Language", selection: $language) {
+                Text("Any Language").tag(nil as String?)
+                if let language, !languages.contains(where: { $0.value == language }) {
+                    Text(language.capitalized).tag(Optional(language))
+                }
+                ForEach(languages) { Text($0.title).tag(Optional($0.value)) }
+            }
+        } footer: {
+            if failed {
+                Text("Couldn’t load every list from Radio Browser. Saved choices still work.")
+            } else {
+                Text("No location access is used. Lists come from Radio Browser.")
+            }
+        }
+        .task { await loadLists() }
+        .task(id: countryCode) { await loadStates() }
+    }
+
+    private func loadLists() async {
+        let client = KyroRadioBrowserClient.shared
+        async let countryList = try? client.facets(.country, limit: 250)
+        async let languageList = try? client.facets(.language, limit: 120)
+        let (c, l) = await (countryList, languageList)
+        countries = (c ?? []).sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        languages = l ?? []
+        failed = c == nil || l == nil
+    }
+
+    private func loadStates() async {
+        states = []
+        guard let countryCode else { return }
+        // The states list filters by country name, which the countries list provides.
+        let name = countries.first { $0.value == countryCode }?.title ?? countryName
+        guard let name else { return }
+        let list = (try? await KyroRadioBrowserClient.shared.facets(.state, country: name, limit: 120)) ?? []
+        states = list.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+}
+
+// MARK: - Library and History
+
+private struct KyroRadioLibraryContent: View {
+    let searchText: String
+    @State private var sort: KyroRadioLibrary.Sort = .recentlyAdded
+    private let library = KyroRadioLibrary.shared
+
+    var body: some View {
+        let saved = library.favorites(matching: searchText, sort: sort)
+        if library.favorites.isEmpty {
+            ContentUnavailableView("No Favorite Stations", systemImage: "heart",
+                description: Text("Tap the heart on a station in Discover to save it here."))
+                .listRowBackground(Color.clear)
+        } else {
+            Picker("Sort", selection: $sort) {
+                ForEach(KyroRadioLibrary.Sort.allCases) { Text($0.title).tag($0) }
+            }
+            .listRowBackground(Color.clear)
+            if saved.isEmpty {
+                ContentUnavailableView.search(text: searchText).listRowBackground(Color.clear)
+            }
+            ForEach(saved) { entry in
+                KyroRadioStationRow(station: entry.station)
+                    .swipeActions {
+                        Button("Remove", role: .destructive) { library.setFavorite(entry.station, false) }
+                    }
+            }
+        }
+    }
+}
+
+private struct KyroRadioHistoryContent: View {
+    let searchText: String
+    @State private var isConfirmingClear = false
+    private let library = KyroRadioLibrary.shared
+
+    var body: some View {
+        let entries = library.history.filter { $0.station.matches(searchText) }
+        if library.history.isEmpty {
+            ContentUnavailableView("No Listening History", systemImage: "clock",
+                description: Text("Stations you play appear here. History stays on this iPhone."))
+                .listRowBackground(Color.clear)
+        } else {
+            Button("Clear History", role: .destructive) { isConfirmingClear = true }
+                .listRowBackground(Color.clear)
+                .confirmationDialog("Clear radio listening history?", isPresented: $isConfirmingClear, titleVisibility: .visible) {
+                    Button("Clear History", role: .destructive) { library.clearHistory() }
+                }
+            if entries.isEmpty {
+                ContentUnavailableView.search(text: searchText).listRowBackground(Color.clear)
+            }
+            ForEach(entries) { entry in
+                KyroRadioStationRow(station: entry.station, playedAt: entry.date)
+                    .swipeActions {
+                        Button("Remove", role: .destructive) { library.removeFromHistory(entry.id) }
+                    }
+            }
+        }
+    }
+}
+
+// MARK: - Station row
+
+struct KyroRadioStationRow: View {
+    let station: KyroRadioStation
+    var playedAt: Date?
+    private let player = KyroRadioPlayer.shared
+    private let library = KyroRadioLibrary.shared
+
+    private var isCurrent: Bool { player.station?.id == station.id }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button { player.play(station) } label: {
+                HStack(spacing: 12) {
+                    KyroRadioArtwork(station: station, size: 52)
+                        .overlay(alignment: .bottomTrailing) {
+                            if isCurrent && player.isPlaying {
+                                Image(systemName: "waveform")
+                                    .font(.caption2.bold())
+                                    .padding(4)
+                                    .background(KyroTheme.accent, in: Circle())
+                                    .foregroundStyle(.white)
+                                    .offset(x: 4, y: 4)
+                            }
+                        }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(station.name)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(isCurrent ? KyroTheme.accentInk : KyroTheme.textPrimary)
+                            .lineLimit(2)
+                        if !station.location.isEmpty {
+                            Text(station.location).font(.subheadline).foregroundStyle(KyroTheme.textSecondary).lineLimit(1)
+                        }
+                        Text(detailLine).font(.caption).foregroundStyle(KyroTheme.textSecondary).lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Play \(station.name)")
+            .accessibilityHint(station.location)
+
+            Button { library.toggleFavorite(station) } label: {
+                Image(systemName: library.isFavorite(station.id) ? "heart.fill" : "heart")
+                    .font(.title3)
+                    .foregroundStyle(KyroTheme.accentInk)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(library.isFavorite(station.id) ? "Remove \(station.name) from Library" : "Save \(station.name) to Library")
+        }
+        .listRowBackground(Color.clear)
+        .accessibilityIdentifier("kyroRadioStation-\(station.id)")
+    }
+
+    private var detailLine: String {
+        var parts: [String] = []
+        if let playedAt { parts.append(playedAt.formatted(.relative(presentation: .named))) }
+        if let format = station.formatLine { parts.append(format) }
+        parts += station.tags.prefix(2).map(\.capitalized)
+        return parts.isEmpty ? "Live radio" : parts.joined(separator: " · ")
+    }
+}
+
+/// A station's logo through the shared artwork pipeline, or a radio glyph.
+struct KyroRadioArtwork: View {
+    let station: KyroRadioStation?
+    var size: CGFloat
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.2, style: .continuous)
+            .fill(Color.white.opacity(0.08))
+            .overlay {
+                if let url = station?.favicon,
+                   let request = PosterImageCache.displayRequest(url: url, pointSize: CGSize(width: size, height: size),
+                                                                 scale: displayScale, priority: .normal) {
+                    LazyImage(request: request) { state in
+                        if let image = state.image {
+                            image.resizable().scaledToFit()
+                        } else {
+                            glyph
+                        }
+                    }
+                    .onDisappear(.cancel)
+                    .padding(size * 0.08)
+                } else {
+                    glyph
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: size * 0.2, style: .continuous))
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+
+    private var glyph: some View {
+        Image(systemName: "radio")
+            .font(.system(size: size * 0.4, weight: .semibold))
+            .foregroundStyle(KyroTheme.accentInk)
+    }
+}
+
+// MARK: - Mini player and Now Playing
+
+/// The radio bar above the tab bar, in the same slot as the audiobook bar.
+struct KyroRadioMiniPlayerView: View {
+    var style: NowPlayingBarStyle = .card
+    @Environment(\.nowPlayingAccessoryIsInline) private var isInline
+    private let player = KyroRadioPlayer.shared
+
+    var body: some View {
+        if let station = player.station {
+            HStack(spacing: 12) {
+                Button { player.isShowingNowPlaying = true } label: {
+                    HStack(spacing: 12) {
+                        KyroRadioArtwork(station: station, size: isInline ? 34 : 46)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(station.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                            if !isInline {
+                                Text(KyroRadioStatusText.line(player: player))
+                                    .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Now playing \(station.name)")
+                .accessibilityHint("Opens Now Playing")
+
+                KyroRadioTransportButton(player: player, size: 44)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, isInline ? 4 : 8)
+            .modifier(NowPlayingBarChrome(style: style))
+            .accessibilityIdentifier("kyroRadioMiniPlayer")
+        }
+    }
+}
+
+/// Play/Pause, or Retry after a failure. Never a seek control.
+private struct KyroRadioTransportButton: View {
+    let player: KyroRadioPlayer
+    var size: CGFloat
+
+    var body: some View {
+        Button {
+            if case .failed = player.state, let station = player.station {
+                player.play(station)
+            } else {
+                player.togglePlayPause()
+            }
+        } label: {
+            Group {
+                switch player.state {
+                case .connecting, .reconnecting:
+                    ProgressView()
+                case .failed:
+                    Image(systemName: "arrow.clockwise")
+                case .playing:
+                    Image(systemName: "pause.fill")
+                case .idle, .paused:
+                    Image(systemName: "play.fill")
+                }
+            }
+            .font(size > 50 ? .largeTitle : .body.weight(.semibold))
+            .frame(width: size, height: size)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private var label: String {
+        switch player.state {
+        case .playing: "Pause"
+        case .failed: "Try Again"
+        case .connecting, .reconnecting: "Connecting"
+        case .idle, .paused: "Play"
+        }
+    }
+}
+
+enum KyroRadioStatusText {
+    @MainActor
+    static func line(player: KyroRadioPlayer) -> String {
+        switch player.state {
+        case .connecting: return "Connecting…"
+        case .reconnecting(let attempt): return "Reconnecting (\(attempt) of \(KyroRadioPlaybackMachine.maxReconnectAttempts))…"
+        case .failed(let error): return error.message
+        case .paused: return "Paused"
+        case .idle: return ""
+        case .playing:
+            if let track = player.track { return [track.title, track.artist].compactMap { $0 }.joined(separator: " — ") }
+            return "Live"
+        }
+    }
+}
+
+/// Presents Now Playing from the app root (attach once).
+struct KyroRadioNowPlayingPresentation: ViewModifier {
+    private let player = KyroRadioPlayer.shared
+
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: Binding(get: { player.isShowingNowPlaying && player.hasSession },
+                                           set: { player.isShowingNowPlaying = $0 })) {
+            KyroRadioNowPlayingView()
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+struct KyroRadioNowPlayingView: View {
+    private let player = KyroRadioPlayer.shared
+    private let library = KyroRadioLibrary.shared
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 22) {
+            Spacer(minLength: 12)
+            KyroRadioArtwork(station: player.station, size: 240)
+                .shadow(color: KyroTheme.accent.opacity(0.35), radius: 24, y: 10)
+            VStack(spacing: 8) {
+                liveBadge
+                Text(player.station?.name ?? "")
+                    .font(.title2.bold())
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                if let track = player.track, player.state == .playing {
+                    VStack(spacing: 2) {
+                        Text(track.title).font(.headline).foregroundStyle(KyroTheme.textPrimary)
+                        if let artist = track.artist { Text(artist).font(.subheadline).foregroundStyle(KyroTheme.textSecondary) }
+                    }
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .accessibilityElement(children: .combine)
+                } else if let location = player.station?.location, !location.isEmpty {
+                    Text(location).font(.subheadline).foregroundStyle(KyroTheme.textSecondary)
+                }
+                if case .failed(let error) = player.state {
+                    Text(error.message).font(.footnote).foregroundStyle(Color.siloErrorInk).multilineTextAlignment(.center)
+                }
+            }
+            .padding(.horizontal, 24)
+
+            HStack(spacing: 36) {
+                if let station = player.station {
+                    Button { library.toggleFavorite(station) } label: {
+                        Image(systemName: library.isFavorite(station.id) ? "heart.fill" : "heart").font(.title2)
+                    }
+                    .accessibilityLabel(library.isFavorite(station.id) ? "Remove from Library" : "Save to Library")
+                }
+                KyroRadioTransportButton(player: player, size: 72)
+                Button { player.stop(); dismiss() } label: {
+                    Image(systemName: "stop.fill").font(.title2)
+                }
+                .accessibilityLabel("Stop")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(KyroTheme.accentInk)
+
+            KyroRadioRoutePicker()
+                .frame(width: 44, height: 44)
+                .accessibilityLabel("Audio output, AirPlay and Bluetooth")
+            if let station = player.station, let format = station.formatLine {
+                Text(format).font(.caption).foregroundStyle(KyroTheme.textSecondary)
+            }
+            Spacer(minLength: 12)
+        }
+        .frame(maxWidth: .infinity)
+        .background(LinearGradient(colors: [KyroTheme.depth, Color.siloPageCanvas], startPoint: .top, endPoint: .bottom).ignoresSafeArea())
+        .accessibilityIdentifier("kyroRadioNowPlaying")
+    }
+
+    @ViewBuilder
+    private var liveBadge: some View {
+        switch player.state {
+        case .playing:
+            Text("LIVE").font(.caption.bold()).padding(.horizontal, 8).padding(.vertical, 3)
+                .background(KyroTheme.live, in: Capsule()).foregroundStyle(.white)
+        default:
+            Text(KyroRadioStatusText.line(player: player).isEmpty ? " " : stateTitle)
+                .font(.caption.bold()).foregroundStyle(KyroTheme.textSecondary)
+        }
+    }
+
+    private var stateTitle: String {
+        switch player.state {
+        case .connecting: "CONNECTING"
+        case .reconnecting: "RECONNECTING"
+        case .paused: "PAUSED"
+        case .failed: "UNAVAILABLE"
+        case .idle, .playing: ""
+        }
+    }
+}
+
+/// The system output picker: AirPlay, Bluetooth and this iPhone.
+private struct KyroRadioRoutePicker: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.activeTintColor = UIColor(KyroTheme.accentInk)
+        view.tintColor = UIColor(KyroTheme.textSecondary)
+        view.prioritizesVideoDevices = false
+        return view
+    }
+
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
+
+// MARK: - Settings
+
+struct KyroRadioSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var isConfirmingClear = false
+    private let library = KyroRadioLibrary.shared
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                KyroRadioRegionPickers(
+                    countryCode: binding(\.countryCode), countryName: binding(\.countryName),
+                    state: binding(\.state), language: binding(\.language))
+                Section("History") {
+                    LabeledContent("Saved", value: "\(library.history.count) of \(KyroRadioLibrary.maxHistory) stations")
+                    Button("Clear History", role: .destructive) { isConfirmingClear = true }
+                        .disabled(library.history.isEmpty)
+                }
+                Section {
+                    NavigationLink("Customize Home") { KyroHomeCustomizationView(host: .shared) }
+                } header: {
+                    Text("Home")
+                } footer: {
+                    Text("Turn on Favorite Radio Stations and Recently Played Radio in Customize Home. They’re off until you turn them on.")
+                }
+                Section {
+                    Text("Stations come from Radio Browser, a free community directory. Kyro tells it when you start a station, as it asks apps to. Listening history stays on this iPhone and isn’t included in settings backups.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } header: {
+                    Text("About")
+                }
+            }
+            .navigationTitle("Radio Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+            .confirmationDialog("Clear radio listening history?", isPresented: $isConfirmingClear, titleVisibility: .visible) {
+                Button("Clear History", role: .destructive) { library.clearHistory() }
+            }
+        }
+        .tint(KyroTheme.accentInk)
+    }
+
+    private func binding(_ keyPath: WritableKeyPath<KyroRadioPreferences, String?>) -> Binding<String?> {
+        Binding(get: { library.preferences[keyPath: keyPath] },
+                set: { value in library.updatePreferences { $0[keyPath: keyPath] = value } })
+    }
+}
+
+// MARK: - Home
+
+/// Favorite Radio Stations and Recently Played Radio on Home. Draws nothing
+/// when the shelf has no stations.
+struct KyroHomeRadioRail: View {
+    let shelf: KyroHomeShelf
+    private let library = KyroRadioLibrary.shared
+    private let player = KyroRadioPlayer.shared
+
+    static let maximumStations = 20
+
+    var stations: [KyroRadioStation] {
+        let saved = shelf == .favoriteRadio ? library.favorites : library.history
+        return saved.prefix(Self.maximumStations).map(\.station)
+    }
+
+    var body: some View {
+        let stations = stations
+        if !stations.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(shelf.title).font(.title3.bold()).accessibilityAddTraits(.isHeader)
+                    .padding(.horizontal, SiloTheme.padding)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 12) {
+                        ForEach(stations) { station in card(station) }
+                    }
+                    .padding(.horizontal, SiloTheme.padding)
+                }
+            }
+        }
+    }
+
+    private func card(_ station: KyroRadioStation) -> some View {
+        Button { player.play(station) } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                KyroRadioArtwork(station: station, size: 112)
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: player.station?.id == station.id && player.isPlaying ? "waveform" : "play.fill")
+                            .font(.caption.bold())
+                            .foregroundStyle(.white)
+                            .frame(width: 30, height: 30)
+                            .background(KyroTheme.accent, in: Circle())
+                            .padding(6)
+                    }
+                Text(station.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(KyroTheme.textPrimary)
+                    .lineLimit(2, reservesSpace: true)
+                    .multilineTextAlignment(.leading)
+            }
+            .frame(width: 112, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Play \(station.name)")
+        .contextMenu {
+            Button(library.isFavorite(station.id) ? "Remove from Library" : "Save to Library",
+                   systemImage: library.isFavorite(station.id) ? "heart.slash" : "heart") {
+                library.toggleFavorite(station)
+            }
+        }
+    }
+}
+#endif

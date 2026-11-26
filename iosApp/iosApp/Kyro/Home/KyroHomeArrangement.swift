@@ -47,31 +47,49 @@ struct KyroHomeSiloSection: Equatable, Sendable {
 /// to its chosen position without matching another row by title.
 struct KyroHomeArrangement: Codable, Equatable, Sendable {
     /// Kyro's default shelf order, after Continue Watching and Next Up.
+    /// Build 128 appends the opt-in radio shelves, which start hidden.
     static let defaultShelfOrder: [KyroHomeShelf] = [
         .sportsToday, .recentLiveTV, .favoriteLiveTV, .myTeams, .myLeagues, .upcomingSports,
+        .favoriteRadio, .recentRadio,
     ]
 
     /// Customized placement; nil keeps the default, which adapts to the feed.
     var tokens: [String]?
+    /// Hidden shelves among those shown by default. Opt-in shelves never live here.
     var hidden: Set<KyroHomeShelf> = []
     var hiddenSilo: Set<String> = []
+    /// Opt-in shelves (radio) the user turned on. Kept apart from `hidden` so
+    /// arrangements and backups saved before Build 128 keep them off.
+    var shownOptIn: Set<KyroHomeShelf> = []
 
-    init(tokens: [String]? = nil, hidden: Set<KyroHomeShelf> = [], hiddenSilo: Set<String> = []) {
+    init(tokens: [String]? = nil, hidden: Set<KyroHomeShelf> = [], hiddenSilo: Set<String> = [],
+         shownOptIn: Set<KyroHomeShelf> = []) {
         self.tokens = tokens
-        self.hidden = hidden
+        self.hidden = hidden.filter { !$0.isOptIn }
         self.hiddenSilo = hiddenSilo
+        self.shownOptIn = shownOptIn.filter(\.isOptIn)
     }
 
-    private enum CodingKeys: String, CodingKey { case tokens, hidden, hiddenSilo }
+    private enum CodingKeys: String, CodingKey { case tokens, hidden, hiddenSilo, shownOptIn }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         tokens = try values.decodeIfPresent([String].self, forKey: .tokens)
-        hidden = try values.decodeIfPresent(Set<KyroHomeShelf>.self, forKey: .hidden) ?? []
+        // Unknown shelf names (a newer build's) are skipped, not fatal.
+        hidden = Set((try? values.decodeIfPresent([String].self, forKey: .hidden))??
+            .compactMap(KyroHomeShelf.init(rawValue:)).filter { !$0.isOptIn } ?? [])
         hiddenSilo = try values.decodeIfPresent(Set<String>.self, forKey: .hiddenSilo) ?? []
+        shownOptIn = Set((try? values.decodeIfPresent([String].self, forKey: .shownOptIn))??
+            .compactMap(KyroHomeShelf.init(rawValue:)).filter(\.isOptIn) ?? [])
     }
 
-    var isDefault: Bool { tokens == nil && hidden.isEmpty && hiddenSilo.isEmpty }
+    var isDefault: Bool { tokens == nil && hidden.isEmpty && hiddenSilo.isEmpty && shownOptIn.isEmpty }
+
+    /// Whether Home leaves the shelf out: opt-in shelves unless turned on,
+    /// other shelves when hidden.
+    func isHidden(_ shelf: KyroHomeShelf) -> Bool {
+        shelf.isOptIn ? !shownOptIn.contains(shelf) : hidden.contains(shelf)
+    }
 
     /// Silo sections in Home order: server order, except that Continue
     /// Watching and Next Up lead (their own server order kept).
@@ -111,7 +129,7 @@ struct KyroHomeArrangement: Codable, Equatable, Sendable {
     func entries(for sections: [KyroHomeSiloSection]) -> [KyroHomeEntry] {
         let present = Set(sections.map(\.id))
         return allEntries(for: sections).filter {
-            if case .kyro(let shelf) = $0 { return !hidden.contains(shelf) }
+            if case .kyro(let shelf) = $0 { return !isHidden(shelf) }
             if case .silo(let id) = $0 { return present.contains(id) && !hiddenSilo.contains(id) }
             return false
         }
@@ -137,7 +155,9 @@ struct KyroHomeArrangement: Codable, Equatable, Sendable {
     }
 
     mutating func setHidden(_ shelf: KyroHomeShelf, _ isHidden: Bool) {
-        if isHidden { hidden.insert(shelf) } else { hidden.remove(shelf) }
+        if shelf.isOptIn {
+            if isHidden { shownOptIn.remove(shelf) } else { shownOptIn.insert(shelf) }
+        } else if isHidden { hidden.insert(shelf) } else { hidden.remove(shelf) }
     }
 
     mutating func setHiddenSilo(_ id: String, _ isHidden: Bool) {
@@ -179,13 +199,13 @@ enum KyroHomeArrangementStore {
     }
 
     private struct LegacyPreferences: Decodable {
-        var hidden: Set<KyroHomeShelf>?
+        var hidden: [String]?
     }
 
     static func legacyHidden(from defaults: UserDefaults) -> Set<KyroHomeShelf> {
         guard let data = defaults.data(forKey: legacyKey),
               let legacy = try? JSONDecoder().decode(LegacyPreferences.self, from: data) else { return [] }
-        return legacy.hidden ?? []
+        return Set((legacy.hidden ?? []).compactMap(KyroHomeShelf.init(rawValue:)))
     }
 }
 #endif

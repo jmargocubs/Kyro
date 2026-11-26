@@ -32,6 +32,8 @@ private struct ThemeMusicPageModifier: ViewModifier {
         var otherMedia = router.presentedPlayer != nil || audiobook.isPlaying || audiobook.isLoading
         #if os(iOS)
         otherMedia = otherMedia || PictureInPictureCoordinator.shared.isEngaged
+            // Theme music never plays over a radio station.
+            || KyroRadioPlayer.shared.machine.isActive
         #endif
         return ThemeMusicPage(
             themes: themes,

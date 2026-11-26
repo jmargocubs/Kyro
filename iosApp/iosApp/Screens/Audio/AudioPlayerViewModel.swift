@@ -132,6 +132,13 @@ final class AudioPlayerViewModel {
         sleepTimer.configure { [weak self] in
             self?.pause()
         }
+        #if os(iOS)
+        // Build 128: an audiobook and radio never play together.
+        KyroPlaybackExclusivity.shared.register(self, source: .audiobook) { [weak self] in
+            guard let self, self.isPlaying || self.isLoading else { return }
+            self.pause()
+        }
+        #endif
     }
 
     func start(
@@ -143,6 +150,9 @@ final class AudioPlayerViewModel {
     ) async {
         startGeneration += 1
         let generation = startGeneration
+        #if os(iOS)
+        KyroPlaybackExclusivity.shared.begin(self, source: .audiobook)
+        #endif
         isLoading = true
         loadingPreview = preview?.contentId == contentId ? preview : nil
         error = nil
@@ -219,6 +229,9 @@ final class AudioPlayerViewModel {
 
     func play() {
         guard context != nil else { return }
+        #if os(iOS)
+        KyroPlaybackExclusivity.shared.begin(self, source: .audiobook)
+        #endif
         // Resuming is media starting again: a running speed test stops.
         BandwidthProbeScheduler.shared.playbackStarting()
         engine.setRate(playbackRate, shouldResume: true)

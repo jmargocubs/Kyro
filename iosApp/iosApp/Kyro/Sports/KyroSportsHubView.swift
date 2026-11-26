@@ -19,6 +19,8 @@ struct KyroRootPageView: View {
             KyroTabRootContainer(title: "Favorites") {
                 FavoritesView(showsNavigationTitle: false)
             }
+        case .radio:
+            KyroRadioView()
         }
     }
 }

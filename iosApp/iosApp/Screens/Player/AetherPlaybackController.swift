@@ -328,6 +328,12 @@ final class AetherPlaybackController {
         #endif
         applyBackgroundPlaybackPreference()
         observeEngine()
+        #if os(iOS)
+        // Build 128: Silo video and radio never play together.
+        KyroPlaybackExclusivity.shared.register(self, source: .video) { [weak self] in
+            self?.pause()
+        }
+        #endif
     }
 
     /// Adopts the device's background-playback choice onto the engine.
@@ -516,6 +522,9 @@ final class AetherPlaybackController {
     func play() {
         #if os(iOS)
         KyroPiPDiagnostics.record("transport_intent", state: "play")
+        #endif
+        #if os(iOS)
+        KyroPlaybackExclusivity.shared.begin(self, source: .video)
         #endif
         shouldPlayWhenReady = true
         isAudioSessionInterrupted = false

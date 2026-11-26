@@ -101,6 +101,9 @@ enum SettingsBackupLiveRegistry {
         // Home's arrangement belongs to the signed-in server, account and profile.
         settings.append(contentsOf: KyroHomeBackupSettings.make(defaults: d.defaults,
                                                                 scope: { KyroHomeShelfHost.currentScope() }))
+        // Radio favorites, Discover preferences and radio shelf visibility; never listening history.
+        settings.append(contentsOf: KyroRadioBackupSettings.make(library: .shared, defaults: d.defaults,
+                                                                 scope: { KyroHomeShelfHost.currentScope() }))
 
         // Only the behavior is portable. The containing launch-state record also holds server IDs,
         // remembered profile IDs and PIN state; never serialize that record wholesale.

@@ -120,7 +120,7 @@ final class KyroHomeShelfHost {
         KyroHomeArrangementStore.save(arrangement, scope: scope, to: defaults)
     }
 
-    private func isEnabled(_ shelf: KyroHomeShelf) -> Bool { !arrangement.hidden.contains(shelf) }
+    private func isEnabled(_ shelf: KyroHomeShelf) -> Bool { !arrangement.isHidden(shelf) }
     var needsTodaySports: Bool { isEnabled(.sportsToday) || isEnabled(.upcomingSports) }
     var needsFollowedSports: Bool {
         (isEnabled(.myTeams) || isEnabled(.myLeagues)) && !favorites.preferences.relevantLeagues.isEmpty
@@ -192,6 +192,7 @@ final class KyroHomeShelfHost {
             return .init(shelf: shelf, status: .hiddenByPreference, sourceCount: 0, resolvedCount: 0)
         }
         if shelf.isLiveTV { return liveTVDiagnostic(for: shelf) }
+        if shelf.isRadio { return radioDiagnostic(for: shelf) }
         return sportsDiagnostic(for: shelf)
     }
 
@@ -210,6 +211,18 @@ final class KyroHomeShelfHost {
         if isRestoringLiveTV { return make(.loading("reading the provider's saved channels")) }
         if !liveTV.hasCatalog(for: provider) { return make(.unresolved("provider channels not loaded")) }
         return make(.unresolved("saved channels not found in the current playlist"))
+    }
+
+    /// Radio shelves draw from the device's saved stations; no network.
+    private func radioDiagnostic(for shelf: KyroHomeShelf) -> KyroHomeShelfDiagnostic {
+        let library = KyroRadioLibrary.shared
+        let source = shelf == .favoriteRadio ? library.favorites.count : library.history.count
+        let shown = min(source, KyroHomeRadioRail.maximumStations)
+        guard source > 0 else {
+            return .init(shelf: shelf, status: .noSource(shelf == .favoriteRadio ? "no favorite stations" : "no stations played yet"),
+                         sourceCount: 0, resolvedCount: 0)
+        }
+        return .init(shelf: shelf, status: .shown, sourceCount: source, resolvedCount: shown)
     }
 
     private func sportsDiagnostic(for shelf: KyroHomeShelf) -> KyroHomeShelfDiagnostic {
@@ -413,7 +426,9 @@ struct KyroHomeShelfRow: View {
 
     var body: some View {
         if let host {
-            if shelf.isLiveTV {
+            if shelf.isRadio {
+                KyroHomeRadioRail(shelf: shelf)
+            } else if shelf.isLiveTV {
                 channelRail(host.channels(for: shelf), host: host)
             } else {
                 gameRail(host.games(for: shelf), host: host)

@@ -9,6 +9,8 @@ enum SecondaryDestinationID: Hashable {
     #if os(iOS)
     /// Sports stays reachable when the configurable fourth tab is another destination.
     case sports
+    /// Build 128: Internet radio, opened from More.
+    case radio
     #endif
 }
 

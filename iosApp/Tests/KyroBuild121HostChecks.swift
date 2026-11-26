@@ -46,7 +46,8 @@ enum KyroBuild121HostChecks {
         let shows = silo("shows", "latest")
         let feed = [hero, cw, nextUp, movies, shows]
         let defaults = KyroHomeArrangement()
-        let kyro = KyroHomeArrangement.defaultShelfOrder.map(KyroHomeEntry.kyro)
+        // Build 128's radio shelves are opt-in, so the visible default stays the six shelves.
+        let kyro = KyroHomeArrangement.defaultShelfOrder.filter { !$0.isOptIn }.map(KyroHomeEntry.kyro)
 
         check(defaults.entries(for: feed) == [.silo("cw"), .silo("nu")] + kyro
               + [.silo("surprise"), .silo("movies"), .silo("shows")],
@@ -204,7 +205,7 @@ enum KyroBuild121HostChecks {
               "cross-server restoration excludes server-local IDs but preserves Kyro settings")
         scope = "s.a.p1"
         let legacy = BackupValue.record([
-            "order": .array(KyroHomeShelf.allCases.map { .string($0.rawValue) }),
+            "order": .array(KyroHomeShelf.legacyCases.map { .string($0.rawValue) }),
             "hidden": .array([.string("myLeagues")]),
         ])
         check(KyroHomeBackupSettings.decode(legacy) == KyroHomeArrangement(hidden: [.myLeagues]), "Build 120 backup restores visibility")

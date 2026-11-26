@@ -54,11 +54,20 @@ final class KyroSportsDashboardSettings {
     func reload() { value = .load(defaults) }
 }
 
-/// Kyro's six local Home shelves. Their placement among Silo's sections is
+/// Kyro's local Home shelves. Their placement among Silo's sections is
 /// `KyroHomeArrangement`; Silo's server feed is never stored or edited here.
+/// Build 128 adds the two radio shelves, which are opt-in (see
+/// `KyroHomeArrangement.shownOptIn`).
 enum KyroHomeShelf: String, CaseIterable, Codable, Identifiable, Sendable {
     case recentLiveTV, favoriteLiveTV, sportsToday, myTeams, myLeagues, upcomingSports
+    case favoriteRadio, recentRadio
     var id: String { rawValue }
+    /// The shelves before Build 128; Build 120 backups list exactly these.
+    static let legacyCases: [Self] = [.recentLiveTV, .favoriteLiveTV, .sportsToday, .myTeams, .myLeagues, .upcomingSports]
+    /// Off until the user turns them on in Customize Home, so an existing Home
+    /// layout does not change.
+    var isOptIn: Bool { isRadio }
+    var isRadio: Bool { self == .favoriteRadio || self == .recentRadio }
     var title: String {
         switch self {
         case .recentLiveTV: "Recently Watched Live TV"
@@ -67,6 +76,8 @@ enum KyroHomeShelf: String, CaseIterable, Codable, Identifiable, Sendable {
         case .myTeams: "My Teams"
         case .myLeagues: "My Leagues"
         case .upcomingSports: "Upcoming Sports"
+        case .favoriteRadio: "Favorite Radio Stations"
+        case .recentRadio: "Recently Played Radio"
         }
     }
 
@@ -181,7 +192,7 @@ enum KyroHomeSportsSelection {
                 guard matches else { return false }
                 return game.status.isLive || isUpcoming(game) || (game.status.isFinal && isToday(game))
             }
-        case .recentLiveTV, .favoriteLiveTV:
+        case .recentLiveTV, .favoriteLiveTV, .favoriteRadio, .recentRadio:
             selected = []
         }
         return Array(selected.sorted(by: order).prefix(maximumCards))

@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The single now-playing accessory shown above the tab bar. Only one bar shows
-/// at a time: a TV control session takes priority over an audiobook session. Renders
-/// nothing (zero space) when neither is active.
+/// at a time: a TV control session, then an audiobook session, then a radio
+/// station (Build 128). Renders nothing (zero space) when none is active.
 struct NowPlayingShelf: View {
     var style: NowPlayingBarStyle = .card
 
@@ -15,7 +15,7 @@ struct NowPlayingShelf: View {
     /// Whether a now-playing bar is showing. A TV control session takes
     /// priority over audio.
     static func hasActiveAccessory(control: SiloControlClient, audio: AudioPlaybackStore) -> Bool {
-        control.remotePlaybackEngaged || audio.player.hasActiveSession
+        control.remotePlaybackEngaged || audio.player.hasActiveSession || KyroRadioPlayer.shared.hasSession
     }
     #endif
 
@@ -30,6 +30,8 @@ struct NowPlayingShelf: View {
         } else if audioStore.player.hasActiveSession {
             AudioMiniPlayerView(style: style)
                 .animation(.snappy, value: audioStore.player.hasActiveSession)
+        } else if KyroRadioPlayer.shared.hasSession {
+            KyroRadioMiniPlayerView(style: style)
         }
         #else
         if audioStore.player.hasActiveSession {

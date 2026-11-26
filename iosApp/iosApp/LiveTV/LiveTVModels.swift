@@ -742,6 +742,29 @@ final class LiveTVPlaybackController {
 
     init(scheduler: any LiveTVScheduling) {
         self.scheduler = scheduler
+        #if os(iOS)
+        // Build 128: radio pauses when Live TV or Sports plays, and Live TV pauses when radio starts.
+        KyroPlaybackExclusivity.shared.register(self, source: .liveTV) { [weak self] in
+            self?.yieldToRadio()
+        }
+        #endif
+    }
+
+    #if os(iOS)
+    /// Radio started: pause a playing stream, abandon one still connecting.
+    private func yieldToRadio() {
+        switch state {
+        case .playing, .buffering: togglePlayback()
+        case .connecting: stop()
+        case .paused, .stopped, .failed: break
+        }
+    }
+    #endif
+
+    private func announcePlaybackStart() {
+        #if os(iOS)
+        KyroPlaybackExclusivity.shared.begin(self, source: .liveTV)
+        #endif
     }
 
     /// Replaying the channel that is already active is a no-op, so a restarted SwiftUI task
@@ -779,6 +802,7 @@ final class LiveTVPlaybackController {
         case .paused:
             if hasStartedPlayback && !sourceLostWhilePaused {
                 systemPauseAwaitingResume = false
+                announcePlaybackStart()
                 state = .playing
                 output?.resume()
             } else if let channelID = activeChannelID, let url = activeURL {
@@ -823,6 +847,7 @@ final class LiveTVPlaybackController {
         guard interruptionMayResumeAutomatically, systemPauseAwaitingResume, state == .paused else { return }
         systemPauseAwaitingResume = false
         interruptionMayResumeAutomatically = false
+        announcePlaybackStart()
         state = .playing
         output?.resume()
     }
@@ -919,6 +944,7 @@ final class LiveTVPlaybackController {
     // MARK: Private
 
     private func start(channelID: String, url: URL) {
+        announcePlaybackStart()
         invalidateCurrentStream()
         activeChannelID = channelID
         activeURL = url

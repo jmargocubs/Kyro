@@ -27,7 +27,10 @@ enum KyroHomeBackupSettings {
             validate: { decode($0) != nil },
             read: { encode(KyroHomeArrangementStore.load(scope: scope(), from: defaults), scope: scope()) },
             write: { value in
-                guard let arrangement = decode(value) else { throw InvalidValue() }
+                guard var arrangement = decode(value) else { throw InvalidValue() }
+                // Radio shelf visibility travels in its own backup entry
+                // (`radio.homeShelves`); restoring the arrangement keeps it.
+                arrangement.shownOptIn = KyroHomeArrangementStore.load(scope: scope(), from: defaults).shownOptIn
                 KyroHomeArrangementStore.save(arrangement, scope: scope(), to: defaults)
             }, normalize: { value in
                 guard let arrangement = decode(value) else { return value }
@@ -87,8 +90,13 @@ enum KyroHomeBackupSettings {
         .record([
             "version": .int(3),
             "origin": .string(origin(for: scope)),
-            "order": chunks(arrangement.tokens ?? []),
-            "hidden": .array(KyroHomeShelf.allCases.filter(arrangement.hidden.contains).map { .string($0.rawValue) }),
+            // Radio shelf tokens stay out of v3 so Build 127 and earlier can
+            // still restore this entry; radio shelves return to their default place.
+            "order": chunks((arrangement.tokens ?? []).filter {
+                if case .kyro(let shelf)? = KyroHomeEntry(token: $0) { return !shelf.isOptIn }
+                return true
+            }),
+            "hidden": .array(KyroHomeShelf.legacyCases.filter(arrangement.hidden.contains).map { .string($0.rawValue) }),
             "siloHidden": chunks(arrangement.hiddenSilo.sorted()),
         ])
     }
@@ -151,7 +159,7 @@ enum KyroHomeBackupSettings {
         case ["order", "hidden"]:
             // Build 120: device-wide order below the Silo feed. Only visibility carries over.
             guard case .array(let order) = fields["order"], let parsed = shelves(order),
-                  Set(parsed) == Set(KyroHomeShelf.allCases) else { return nil }
+                  Set(parsed) == Set(KyroHomeShelf.legacyCases) else { return nil }
             return KyroHomeArrangement(hidden: Set(hidden))
         default:
             return nil
