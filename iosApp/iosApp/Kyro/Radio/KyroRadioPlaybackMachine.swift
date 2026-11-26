@@ -235,6 +235,7 @@ final class KyroRadioPlaybackStatus {
 final class KyroPlaybackExclusivity {
     enum Source: Equatable, Sendable {
         case radio
+        case podcast
         case video
         case liveTV
         case audiobook
@@ -269,8 +270,8 @@ final class KyroPlaybackExclusivity {
         entries.removeAll { $0.owner == nil }
         let others = entries.filter { entry in
             guard entry.owner !== owner else { return false }
-            // Radio yields to everything; everything yields to radio.
-            return source == .radio || entry.source == .radio
+            // Keep the existing relationships among the other players.
+            return source == .radio || entry.source == .radio || source == .podcast || entry.source == .podcast
         }
         others.forEach { $0.yield() }
         return others.map(\.source)

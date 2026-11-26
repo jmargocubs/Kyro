@@ -8,7 +8,7 @@ enum KyroNavigationSettingsEntry {
     static let systemImage = "square.grid.3x1.below.line.grid.1x2"
 
     /// Words that find this row in the Settings search field.
-    static let searchTerms = ["navigation", "tab", "tab bar", "sports", "for you", "favorites", "radio"]
+    static let searchTerms = ["navigation", "tab", "tab bar", "sports", "for you", "favorites", "radio", "podcasts"]
 
     static func matches(_ query: String) -> Bool {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -23,7 +23,7 @@ extension KyroFourthTab {
         case .sports: "Scores, schedules and your teams."
         case .forYou: "Personal recommendations. Also in the profile menu."
         case .favorites: "Everything you marked as a favorite."
-        case .radio: "Live internet radio stations, favorites and history."
+        case .radio: "Internet radio stations and podcasts."
         }
     }
 }
@@ -41,7 +41,7 @@ struct KyroNavigationSettingsRow: View {
                 title: KyroNavigationSettingsEntry.title,
                 subtitle: KyroNavigationSettingsEntry.subtitle,
                 systemImage: KyroNavigationSettingsEntry.systemImage,
-                value: store.preferences.fourthTab.title
+                value: store.preferences.fourthTab == .radio ? KyroAudioDestination.title : store.preferences.fourthTab.title
             )
         }
         .accessibilityIdentifier("kyroSettingsNavigation")
@@ -90,7 +90,7 @@ struct KyroNavigationSettingsView: View {
                 .frame(width: 32)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(choice.title).foregroundStyle(KyroTheme.textPrimary)
+                    Text(choice == .radio ? KyroAudioDestination.title : choice.title).foregroundStyle(KyroTheme.textPrimary)
                     if choice == .default {
                         Text("Default")
                             .font(.caption2.weight(.semibold))

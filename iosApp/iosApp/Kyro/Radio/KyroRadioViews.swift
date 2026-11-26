@@ -32,6 +32,7 @@ struct KyroRadioView: View {
     }
 
     var isSecondaryDestination = false
+    @Binding var audioDestination: KyroAudioDestination
     @Environment(\.kyroShellHeader) private var shellHeader
     @Environment(\.nowPlayingShelfCoversPushedPages) private var shelfCoversPushedPages
     @State private var fallbackScrollState = PageChromeScrollState()
@@ -65,7 +66,7 @@ struct KyroRadioView: View {
         List {
             if isHostedTab {
                 HStack(alignment: .center) {
-                    Text("Radio")
+                    Text(KyroAudioDestination.title)
                         .font(.largeTitle.bold())
                         .foregroundStyle(KyroTheme.textPrimary)
                         .accessibilityAddTraits(.isHeader)
@@ -76,11 +77,14 @@ struct KyroRadioView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
+            }
+
+            KyroAudioSelector(selection: $audioDestination)
+            if isHostedTab {
                 inlineSearchRow
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
             }
-
             Picker("Radio section", selection: $section) {
                 ForEach(Section.allCases) { Text($0.title).tag($0) }
             }
@@ -120,7 +124,7 @@ struct KyroRadioView: View {
         .modifier(KyroRadioSearchBarModifier(isEnabled: !isHostedTab,
                                              text: activeSearchText,
                                              prompt: activeSearchPrompt))
-        .navigationTitle(isHostedTab ? "" : "Radio")
+        .navigationTitle(isHostedTab ? "" : KyroAudioDestination.title)
         .navigationBarTitleDisplayMode(isHostedTab ? .inline : .large)
         .toolbar(isHostedTab ? .hidden : .visible, for: .navigationBar)
         .toolbar {
@@ -199,7 +203,7 @@ struct KyroRadioView: View {
 /// remote session, then an audiobook, then radio) and taps open the same
 /// Now Playing screen; it is empty, and takes no space, with nothing playing.
 /// It steps aside while the keyboard is up so it never crowds the search field.
-private struct KyroRadioPageNowPlayingBar: View {
+struct KyroRadioPageNowPlayingBar: View {
     @State private var isKeyboardVisible = false
 
     var body: some View {

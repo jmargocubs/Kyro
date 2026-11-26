@@ -113,6 +113,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
     case sports
     /// Build 128: favorite stations, Discover region and radio Home shelves.
     case radio
+    case podcasts
     case downloads
     case playbackOptions
     case pictureInPicture
@@ -129,7 +130,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
 
     var isDeviceSpecific: Bool {
         switch self {
-        case .general, .calendar, .navigation, .liveTVCategories, .guideLayout, .sports, .radio, .downloads, .streaming,
+        case .general, .calendar, .navigation, .liveTVCategories, .guideLayout, .sports, .radio, .podcasts, .downloads, .streaming,
              .subtitles, .features, .player, .interface: false
         case .playbackOptions, .pictureInPicture, .advancedAudioVideo, .subtitleDisplay, .navigationLayout: true
         }
@@ -144,6 +145,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .guideLayout: "Guide layout"
         case .sports: "Sports dashboard"
         case .radio: "Radio"
+        case .podcasts: "Podcasts"
         case .downloads: "Downloads"
         case .playbackOptions: "Playback options"
         case .pictureInPicture: "Picture in Picture"
@@ -167,6 +169,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         case .guideLayout: "List or grid guide on the watch screen."
         case .sports: "Preferred dashboard view for each sport."
         case .radio: "Favorite stations, Discover region and radio Home shelves. Not listening history."
+        case .podcasts: "Public Apple Podcasts subscriptions, saved episodes, progress and preferences. Not private feeds, audio or history."
         case .downloads: "Wi-Fi only, quality, limits and sorting."
         case .playbackOptions: "Buffering and lossless audio."
         case .pictureInPicture: "Keep playing when you leave the app."

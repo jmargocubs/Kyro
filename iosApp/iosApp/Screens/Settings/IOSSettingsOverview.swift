@@ -10,7 +10,7 @@ enum IOSSettingsOverviewGroup: String, CaseIterable {
 /// Presentation and search metadata only. Existing stores and destinations
 /// continue to own every setting and action.
 enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
-    case playback, liveTV, radio, appearanceNavigation, downloadsStorage
+    case playback, liveTV, radio, podcasts, appearanceNavigation, downloadsStorage
     case accountConnections
     case privacy, advancedDiagnostics, aboutKyro
 
@@ -18,7 +18,7 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
 
     var group: IOSSettingsOverviewGroup {
         switch self {
-        case .playback, .liveTV, .radio, .appearanceNavigation, .downloadsStorage: .preferences
+        case .playback, .liveTV, .radio, .podcasts, .appearanceNavigation, .downloadsStorage: .preferences
         case .accountConnections: .account
         case .privacy, .advancedDiagnostics, .aboutKyro: .support
         }
@@ -29,6 +29,7 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
         case .playback: "Playback"
         case .liveTV: "Live TV"
         case .radio: KyroRadioSettingsEntry.title
+        case .podcasts: "Podcasts"
         case .appearanceNavigation: "Appearance & Navigation"
         case .downloadsStorage: "Downloads & Storage"
         case .accountConnections: "Account & Connections"
@@ -46,6 +47,8 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
             KyroLiveTVSettingsEntry.searchTerms
         case .radio:
             KyroRadioSettingsEntry.searchTerms
+        case .podcasts:
+            ["podcasts", "rss", "cassette", "sleep timer", "skip intervals", "downloads", "offline", "refresh"]
         case .appearanceNavigation:
             ["appearance & navigation", "appearance", "interface", "navigation", "menu", "cards", "posters", "theme music", "theme song", "features", "extra features", "experimental", "audiobooks", "watch party", "home", "shelves", "teams", "leagues"]
         case .downloadsStorage:
@@ -248,6 +251,11 @@ struct IOSSettingsOverview: View {
                 }
                 if includes(.liveTV) { KyroLiveTVSettingsRow() }
                 if includes(.radio) { KyroRadioSettingsRow() }
+                if includes(.podcasts) {
+                    NavigationLink { KyroPodcastSettings() } label: {
+                        SettingsOverviewRow(title: "Podcasts", subtitle: "Cassette player, feed refresh, and downloads", systemImage: "headphones")
+                    }
+                }
                 if includes(.appearanceNavigation) {
                     NavigationLink { IOSAppearanceNavigationSettingsView(uiCustomization: uiCustomization) } label: {
                         SettingsOverviewRow(title: "Appearance & Navigation", subtitle: "Interface, navigation, and optional features", systemImage: "rectangle.3.group.fill")

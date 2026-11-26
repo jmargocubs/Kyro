@@ -51,6 +51,7 @@ struct KyroHomeArrangement: Codable, Equatable, Sendable {
     static let defaultShelfOrder: [KyroHomeShelf] = [
         .sportsToday, .recentLiveTV, .favoriteLiveTV, .myTeams, .myLeagues, .upcomingSports,
         .favoriteRadio, .recentRadio,
+        .continuePodcasts, .latestPodcasts, .favoritePodcasts,
     ]
 
     /// Customized placement; nil keeps the default, which adapts to the feed.

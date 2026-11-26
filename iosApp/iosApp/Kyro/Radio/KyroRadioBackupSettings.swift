@@ -56,7 +56,7 @@ enum KyroRadioBackupSettings {
                 write: { value in
                     guard let shown = shelves(value) else { throw InvalidValue() }
                     var arrangement = KyroHomeArrangementStore.load(scope: scope(), from: defaults)
-                    arrangement.shownOptIn = shown
+                    arrangement.shownOptIn = arrangement.shownOptIn.filter { !$0.isRadio }.union(shown)
                     KyroHomeArrangementStore.save(arrangement, scope: scope(), to: defaults)
                 },
                 label: { value in

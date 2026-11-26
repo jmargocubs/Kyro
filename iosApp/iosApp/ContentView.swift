@@ -834,6 +834,7 @@ struct ContentView: View {
                     .transition(.opacity)
             } else {
                 ServerSetupView(router: router)
+                    .modifier(KyroAudioGuestAccess())
                     .transition(.opacity)
             }
             #else
@@ -847,6 +848,9 @@ struct ContentView: View {
                         destinationView(for: route)
                     }
             }
+            #if os(iOS)
+            .modifier(KyroAudioGuestAccess())
+            #endif
 
         case .serverRecovery(let reason):
             NavigationStack(path: $router.path) {
@@ -3070,6 +3074,7 @@ struct MainTabView: View {
         #if os(iOS)
         .modifier(AudioPlayerPresentationModifier(router: router))
         .modifier(KyroRadioNowPlayingPresentation())
+        .modifier(KyroPodcastPresentation())
         .modifier(PlayerPresentationModifier(router: router))
         .modifier(ItemDetailPresentationModifier(router: router, zoomNamespace: detailZoomNamespace))
         .onGeometryChange(for: Bool.self) { proxy in
@@ -3263,7 +3268,7 @@ struct MainTabView: View {
         }
         // Build 128/129: Radio lives in More unless chosen as the fourth tab.
         if !kyroNavigation.tabDestinations.contains(.radio) {
-            items.append(KyroMoreMenuItem(id: "kyro-radio", title: "Radio", systemImage: "radio") {
+            items.append(KyroMoreMenuItem(id: "kyro-radio", title: KyroAudioDestination.title, systemImage: "radio") {
                 router.navigate(to: .secondaryDestination(.radio))
             })
         }
@@ -3637,7 +3642,7 @@ struct MainTabView: View {
             } label: {
                 let isRadioSelected = router.visiblePushedRoutes.last == .secondaryDestination(.radio)
                 Label {
-                    Text("Radio")
+                    Text(KyroAudioDestination.title)
                 } icon: {
                     Image(systemName: isRadioSelected ? "radio.fill" : "radio")
                         .foregroundStyle(isRadioSelected ? .primary : .secondary)
@@ -3736,7 +3741,7 @@ struct MainTabView: View {
             KyroSportsHubView(isSecondaryDestination: true)
                 .environment(\.kyroShellHeader, nil)
         } else if id == .kyroRoot(.radio) {
-            KyroRadioView(isSecondaryDestination: true)
+            KyroAudioHub(isSecondaryDestination: true)
                 .environment(\.kyroShellHeader, nil)
         } else {
             resolvedSecondaryDestinationContent(for: id)

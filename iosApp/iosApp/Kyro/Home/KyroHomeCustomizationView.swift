@@ -103,7 +103,7 @@ struct KyroHomeCustomizationView: View {
             .accessibilityAction(named: Text("Move down")) { move(entry, by: 1) }
         case .kyro(let shelf):
             HStack(spacing: 12) {
-                Image(systemName: shelf.isRadio ? "radio" : shelf.isLiveTV ? "dot.radiowaves.left.and.right" : "sportscourt")
+                Image(systemName: shelf.isPodcast ? "headphones" : shelf.isRadio ? "radio" : shelf.isLiveTV ? "dot.radiowaves.left.and.right" : "sportscourt")
                     .foregroundStyle(KyroTheme.accentInk).frame(width: 24)
                 Toggle(shelf.title, isOn: Binding(
                     get: { !host.arrangement.isHidden(shelf) },

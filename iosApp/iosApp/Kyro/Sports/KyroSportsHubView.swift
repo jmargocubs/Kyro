@@ -20,7 +20,7 @@ struct KyroRootPageView: View {
                 FavoritesView(showsNavigationTitle: false)
             }
         case .radio:
-            KyroRadioView()
+            KyroAudioHub()
         }
     }
 }

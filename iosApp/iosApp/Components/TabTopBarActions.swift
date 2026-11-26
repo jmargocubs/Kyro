@@ -373,7 +373,7 @@ struct ProfileAvatarMenu: View {
         }
         if KyroRadioEntry.profileMenuOffersRadio {
             liveTV.append(.init(
-                title: "Radio",
+                title: "Radio & Podcasts",
                 systemImage: "radio",
                 pushesScreen: true
             ) { KyroRadioEntry.open(router: router) })

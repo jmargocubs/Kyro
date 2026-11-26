@@ -4,7 +4,7 @@ import Observation
 
 /// Build 132: the expanded Radio player's look. Both themes share one layout;
 /// only colours, materials and hardware finish differ.
-enum KyroRadioPlayerTheme: String, CaseIterable, Identifiable, Sendable {
+enum KyroRadioPlayerTheme: String, CaseIterable, Codable, Identifiable, Sendable {
     case crimsonNoir
     case classicWalnut
 

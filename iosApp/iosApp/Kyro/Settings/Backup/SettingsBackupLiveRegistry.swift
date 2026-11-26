@@ -104,6 +104,8 @@ enum SettingsBackupLiveRegistry {
         // Radio favorites, Discover preferences and radio shelf visibility; never listening history.
         settings.append(contentsOf: KyroRadioBackupSettings.make(library: .shared, defaults: d.defaults,
                                                                  scope: { KyroHomeShelfHost.currentScope() }))
+        settings.append(contentsOf: KyroPodcastBackup.make(library: .shared, defaults: d.defaults,
+                                                           scope: { KyroHomeShelfHost.currentScope() }))
 
         // Only the behavior is portable. The containing launch-state record also holds server IDs,
         // remembered profile IDs and PIN state; never serialize that record wholesale.

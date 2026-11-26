@@ -193,6 +193,11 @@ final class KyroHomeShelfHost {
         }
         if shelf.isLiveTV { return liveTVDiagnostic(for: shelf) }
         if shelf.isRadio { return radioDiagnostic(for: shelf) }
+        if shelf.isPodcast {
+            let count = KyroHomePodcastRail.itemCount(for: shelf)
+            return .init(shelf: shelf, status: count == 0 ? .noSource("no cached podcast items") : .shown,
+                         sourceCount: count, resolvedCount: count)
+        }
         return sportsDiagnostic(for: shelf)
     }
 
@@ -428,6 +433,8 @@ struct KyroHomeShelfRow: View {
         if let host {
             if shelf.isRadio {
                 KyroHomeRadioRail(shelf: shelf)
+            } else if shelf.isPodcast {
+                KyroHomePodcastRail(shelf: shelf)
             } else if shelf.isLiveTV {
                 channelRail(host.channels(for: shelf), host: host)
             } else {
@@ -588,7 +595,7 @@ private struct KyroHomeSportsCard: View {
 }
 
 /// The independent UniversalHomeRail presentation, adapted to original Silo metrics.
-private struct KyroHomeRail<Content: View, Probe: View>: View {
+struct KyroHomeRail<Content: View, Probe: View>: View {
     enum Sizing {
         /// Channel rails: equal-height tiles, so a lazy stack measures them correctly.
         case lazy

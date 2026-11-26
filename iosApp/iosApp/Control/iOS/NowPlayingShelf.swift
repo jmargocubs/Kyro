@@ -15,7 +15,7 @@ struct NowPlayingShelf: View {
     /// Whether a now-playing bar is showing. A TV control session takes
     /// priority over audio.
     static func hasActiveAccessory(control: SiloControlClient, audio: AudioPlaybackStore) -> Bool {
-        control.remotePlaybackEngaged || audio.player.hasActiveSession || KyroRadioPlayer.shared.hasSession
+        control.remotePlaybackEngaged || KyroPodcastPlayer.shared.hasSession || audio.player.hasActiveSession || KyroRadioPlayer.shared.hasSession
     }
     #endif
 
@@ -27,6 +27,8 @@ struct NowPlayingShelf: View {
             SiloControlMiniBar(controller: siloControl, style: style)
                 .animation(.snappy, value: siloControl.hasActiveSession)
                 .animation(.snappy, value: siloControl.isReconnecting)
+        } else if KyroPodcastPlayer.shared.hasSession {
+            KyroPodcastMiniPlayer(style: style)
         } else if audioStore.player.hasActiveSession {
             AudioMiniPlayerView(style: style)
                 .animation(.snappy, value: audioStore.player.hasActiveSession)

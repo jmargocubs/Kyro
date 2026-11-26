@@ -61,13 +61,15 @@ final class KyroSportsDashboardSettings {
 enum KyroHomeShelf: String, CaseIterable, Codable, Identifiable, Sendable {
     case recentLiveTV, favoriteLiveTV, sportsToday, myTeams, myLeagues, upcomingSports
     case favoriteRadio, recentRadio
+    case continuePodcasts, latestPodcasts, favoritePodcasts
     var id: String { rawValue }
     /// The shelves before Build 128; Build 120 backups list exactly these.
     static let legacyCases: [Self] = [.recentLiveTV, .favoriteLiveTV, .sportsToday, .myTeams, .myLeagues, .upcomingSports]
     /// Off until the user turns them on in Customize Home, so an existing Home
     /// layout does not change.
-    var isOptIn: Bool { isRadio }
+    var isOptIn: Bool { isRadio || isPodcast }
     var isRadio: Bool { self == .favoriteRadio || self == .recentRadio }
+    var isPodcast: Bool { self == .continuePodcasts || self == .latestPodcasts || self == .favoritePodcasts }
     var title: String {
         switch self {
         case .recentLiveTV: "Recently Watched Live TV"
@@ -78,6 +80,9 @@ enum KyroHomeShelf: String, CaseIterable, Codable, Identifiable, Sendable {
         case .upcomingSports: "Upcoming Sports"
         case .favoriteRadio: "Favorite Radio Stations"
         case .recentRadio: "Recently Played Radio"
+        case .continuePodcasts: "Continue Listening"
+        case .latestPodcasts: "Latest Podcast Episodes"
+        case .favoritePodcasts: "Favorite Podcasts"
         }
     }
 
@@ -264,7 +269,7 @@ enum KyroHomeSportsSelection {
                 guard matches else { return false }
                 return game.status.isLive || isUpcoming(game) || (game.status.isFinal && isToday(game))
             }
-        case .recentLiveTV, .favoriteLiveTV, .favoriteRadio, .recentRadio:
+        case .recentLiveTV, .favoriteLiveTV, .favoriteRadio, .recentRadio, .continuePodcasts, .latestPodcasts, .favoritePodcasts:
             selected = []
         }
         return Array(selected.sorted(by: order).prefix(maximumCards))
