@@ -425,7 +425,7 @@ struct KyroHomeShelfRow: View {
     private func gameRail(_ games: [KyroSportsGame], host: KyroHomeShelfHost) -> some View {
         let showQuickAdd = KyroHomeQuickAdd.isAvailable(for: shelf, hidden: host.arrangement.hidden)
         if KyroHomeQuickAdd.drawsRail(gameCount: games.count, shelf: shelf, hidden: host.arrangement.hidden) {
-            KyroHomeRail(title: shelf.title) {
+            KyroHomeRail(title: shelf.title, sizing: .tallestCard) {
                 ForEach(games) { game in
                     Button { host.event = KyroSportsEventSelection(game: game) } label: {
                         Group {
@@ -435,7 +435,7 @@ struct KyroHomeShelfRow: View {
                                 KyroSportsGameRow(game: game, usesCompactLayout: true)
                             }
                         }
-                        .frame(width: 310)
+                        .frame(width: KyroHomeSportsRailLayout.cardWidth)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -458,7 +458,7 @@ struct KyroHomeShelfRow: View {
     @ViewBuilder
     private func channelRail(_ channels: [LiveTVChannel], host: KyroHomeShelfHost) -> some View {
         if !channels.isEmpty {
-            KyroHomeRail(title: shelf.title) {
+            KyroHomeRail(title: shelf.title, sizing: .lazy) {
                 ForEach(channels) { channel in
                     Button { host.liveTV.choose(channel, from: .shell) } label: {
                         VStack(spacing: 8) {
@@ -522,24 +522,65 @@ private struct KyroHomeQuickAddCard: View {
                 .font(.headline)
                 .foregroundStyle(KyroTheme.textPrimary)
         }
-        .frame(width: 310, height: 148)
+        // Fills the shelf's tallest event card; never shorter than its own content.
+        .frame(width: KyroHomeSportsRailLayout.cardWidth)
+        .frame(minHeight: KyroHomeSportsRailLayout.quickAddMinimumHeight, maxHeight: .infinity)
         .kyroSportsCardChrome(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityLabel(title)
     }
 }
 
+/// Build 126: Home sports shelf metrics.
+///
+/// Before Build 126 every shelf used a `LazyHStack` inside a horizontal
+/// `ScrollView`. A lazy stack takes its height from the cards it has built
+/// when it is first laid out, which is the first card or two; the scroll view
+/// then clips everything to that height. When the first card was a short
+/// scheduled NFL card (about 106 pt), a live NBA card with its quarter header
+/// row, a tennis card with set columns and the 148 pt Add Team or Add League
+/// card were all cut off at the bottom.
+///
+/// Sports shelves now use an eager `HStack` sized to its tallest card
+/// (`fixedSize` vertically). Shelves hold at most
+/// `KyroHomeSportsSelection.maximumCards` events plus one quick-add card, so
+/// building them all is bounded.
+enum KyroHomeSportsRailLayout {
+    static let cardWidth: CGFloat = 310
+    static let quickAddMinimumHeight: CGFloat = 148
+    /// Most cards a sports shelf builds at once: every event plus the quick-add card.
+    static var maximumCards: Int { KyroHomeSportsSelection.maximumCards + 1 }
+}
+
 /// The independent UniversalHomeRail presentation, adapted to original Silo metrics.
 private struct KyroHomeRail<Content: View>: View {
+    enum Sizing {
+        /// Channel rails: equal-height tiles, so a lazy stack measures them correctly.
+        case lazy
+        /// Sports rails: cards differ in height, so every card is measured and
+        /// the rail is as tall as the tallest one.
+        case tallestCard
+    }
+
     let title: String
+    let sizing: Sizing
     @ViewBuilder let content: () -> Content
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.title3.bold()).accessibilityAddTraits(.isHeader)
                 .padding(.horizontal, SiloTheme.padding)
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: 12, content: content)
-                    .padding(.horizontal, SiloTheme.padding)
+                switch sizing {
+                case .lazy:
+                    LazyHStack(alignment: .top, spacing: 12, content: content)
+                        .padding(.horizontal, SiloTheme.padding)
+                case .tallestCard:
+                    HStack(alignment: .top, spacing: 12, content: content)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, SiloTheme.padding)
+                        // Room for card borders at the bottom edge of the scroll view's clip.
+                        .padding(.vertical, 1)
+                }
             }
         }
     }

@@ -5,6 +5,27 @@ import Observation
 enum KyroSportsDirectorySport: String, CaseIterable, Sendable {
     case football, basketball, baseball, hockey, soccer, tennis
     var title: String { rawValue.capitalized }
+    /// Football and basketball have both professional and NCAA directories.
+    var hasCompetitionLevels: Bool { self == .football || self == .basketball }
+}
+
+/// Build 126: professional vs. NCAA discovery within one sport.
+enum KyroSportsDirectoryLevel: String, CaseIterable, Sendable {
+    case professional, college, all
+    var title: String {
+        switch self {
+        case .professional: return "Professional"
+        case .college: return "College"
+        case .all: return "All"
+        }
+    }
+    func includes(_ route: KyroSportsDirectoryRoute) -> Bool {
+        switch self {
+        case .professional: return !route.isCollege
+        case .college: return route.isCollege
+        case .all: return true
+        }
+    }
 }
 
 struct KyroSportsDirectoryRoute: Identifiable, Hashable, Sendable {
@@ -17,6 +38,9 @@ struct KyroSportsDirectoryRoute: Identifiable, Hashable, Sendable {
     }
     var slug: String { String(path.split(separator: "/")[1]) }
     var hasTeamDirectory: Bool { sport != .tennis }
+    var isCollege: Bool {
+        [.collegeFootball, .collegeBasketballMen, .collegeBasketballWomen].contains(league)
+    }
 
     func contains(_ game: KyroSportsGame) -> Bool {
         league == game.league && (league != .soccer || game.competitionKey == slug)
@@ -39,11 +63,32 @@ struct KyroSportsDirectoryRoute: Identifiable, Hashable, Sendable {
 struct KyroSportsDirectoryScope: Hashable, Sendable {
     var sport: KyroSportsDirectorySport?
     var routeID: String?
-    var routes: [KyroSportsDirectoryRoute] {
+    /// nil means no level filter. A specific league ignores the level.
+    var level: KyroSportsDirectoryLevel?
+
+    /// The picker's scope for a sport: football and basketball start at Professional.
+    static func discovery(sport: KyroSportsDirectorySport?) -> Self {
+        .init(sport: sport, level: sport?.hasCompetitionLevels == true ? .professional : nil)
+    }
+
+    /// Leagues offered by the League picker for the sport and level.
+    var leagueChoices: [KyroSportsDirectoryRoute] {
         KyroSportsDirectoryRoute.all.filter {
-            (sport == nil || $0.sport == sport) && (routeID == nil || $0.id == routeID)
+            (sport == nil || $0.sport == sport) && (level?.includes($0) ?? true)
         }
     }
+
+    var routes: [KyroSportsDirectoryRoute] {
+        guard let routeID else { return leagueChoices }
+        return KyroSportsDirectoryRoute.all.filter { (sport == nil || $0.sport == sport) && $0.id == routeID }
+    }
+}
+
+/// Search results from one league, in the league's directory order.
+struct KyroSportsDirectoryGroup: Identifiable, Equatable, Sendable {
+    let route: KyroSportsDirectoryRoute
+    let entries: [KyroSportsDirectoryEntry]
+    var id: String { route.id }
 }
 
 struct KyroSportsDirectoryEntry: Codable, Identifiable, Equatable, Sendable {
@@ -58,10 +103,25 @@ struct KyroSportsDirectoryEntry: Codable, Identifiable, Equatable, Sendable {
         .init(id: id, league: league, abbreviation: abbreviation, nickname: name,
               logoURL: logo, alternateNames: aliases)
     }
-    func matches(_ query: String) -> Bool {
+    func matches(_ query: String) -> Bool { matchRank(query) != nil }
+
+    /// Lower is better: 0 exact name or abbreviation, 1 exact alias ("Bears",
+    /// "Chicago"), 2 word prefix, 3 partial, 4 league or affiliation only.
+    /// nil when nothing matches. An empty query matches everything at 0.
+    func matchRank(_ query: String) -> Int? {
         let needle = KyroSportsFavorites.normalized(query)
-        return needle.isEmpty || ([name, abbreviation, affiliation, league.displayName] + aliases)
-            .contains { KyroSportsFavorites.normalized($0).contains(needle) }
+        guard !needle.isEmpty else { return 0 }
+        let primary = [name, abbreviation].map(KyroSportsFavorites.normalized)
+        let others = aliases.map(KyroSportsFavorites.normalized).filter { !$0.isEmpty }
+        let all = primary.filter { !$0.isEmpty } + others
+        if primary.contains(needle) { return 0 }
+        if others.contains(needle) { return 1 }
+        if all.contains(where: { $0.hasPrefix(needle) || $0.contains(" " + needle) }) { return 2 }
+        if all.contains(where: { $0.contains(needle) }) { return 3 }
+        if [affiliation, league.displayName].contains(where: { KyroSportsFavorites.normalized($0).contains(needle) }) {
+            return 4
+        }
+        return nil
     }
 }
 
@@ -106,26 +166,53 @@ final class KyroSportsDirectory {
 
     func results(in scope: KyroSportsDirectoryScope, matching query: String,
                  schedules: [KyroSportsGame]) -> [KyroSportsDirectoryEntry] {
+        ranked(in: scope, matching: query, schedules: schedules).map(\.entry)
+    }
+
+    /// Results split by their league, so a broad search never mixes NFL and
+    /// NCAA teams in one alphabetical list. Groups with the best match come
+    /// first; ties keep the directory's league order (professional first).
+    func groupedResults(in scope: KyroSportsDirectoryScope, matching query: String,
+                        schedules: [KyroSportsGame]) -> [KyroSportsDirectoryGroup] {
         let routes = scope.routes
-        var candidates: [KyroSportsDirectoryEntry] = []
+        let ranked = ranked(in: scope, matching: query, schedules: schedules)
+        var buckets: [String: [Ranked]] = [:]
+        for item in ranked { buckets[item.routeID, default: []].append(item) }
+        let order = Dictionary(uniqueKeysWithValues: routes.enumerated().map { ($1.id, $0) })
+        return routes.compactMap { route -> (KyroSportsDirectoryGroup, Int)? in
+            guard let items = buckets[route.id], let best = items.map(\.rank).min() else { return nil }
+            return (KyroSportsDirectoryGroup(route: route, entries: items.map(\.entry)), best)
+        }
+        .sorted { $0.1 == $1.1 ? order[$0.0.id, default: 0] < order[$1.0.id, default: 0] : $0.1 < $1.1 }
+        .map(\.0)
+    }
+
+    private struct Ranked { let entry: KyroSportsDirectoryEntry; let routeID: String; let rank: Int }
+
+    private func ranked(in scope: KyroSportsDirectoryScope, matching query: String,
+                        schedules: [KyroSportsGame]) -> [Ranked] {
+        let routes = scope.routes
+        var candidates: [(entry: KyroSportsDirectoryEntry, routeID: String)] = []
         for route in routes {
             if let roster = entries[route.id] {
-                candidates += roster
+                candidates += roster.map { ($0, route.id) }
             } else {
                 for game in schedules where route.contains(game) {
                     for team in [game.away.team, game.home.team] where team.league == route.league {
-                        candidates.append(.init(id: team.id, league: team.league, name: team.fullName,
+                        candidates.append((.init(id: team.id, league: team.league, name: team.fullName,
                             abbreviation: team.abbreviation, aliases: team.alternateNames + [team.nickname, team.location ?? ""],
-                            logo: team.logoURL ?? team.flagURL, affiliation: route.title))
+                            logo: team.logoURL ?? team.flagURL, affiliation: route.title), route.id))
                     }
                 }
             }
         }
         // Scope first; a soccer club can belong to several competitions without
         // inheriting the other competition labels in a single-league search.
+        // A club in several competitions is grouped under the first one.
         var unique: [String: KyroSportsDirectoryEntry] = [:]
+        var primaryRoute: [String: String] = [:]
         var affiliations: [String: Set<String>] = [:]
-        for entry in candidates {
+        for (entry, routeID) in candidates {
             guard affiliations[entry.id, default: []].insert(entry.affiliation).inserted else { continue }
             if let previous = unique[entry.id] {
                 unique[entry.id] = .init(id: previous.id, league: previous.league, name: previous.name,
@@ -133,11 +220,19 @@ final class KyroSportsDirectory {
                     aliases: previous.aliases + entry.aliases + [entry.name, entry.abbreviation],
                     logo: previous.logo ?? entry.logo,
                     affiliation: previous.affiliation + " · " + entry.affiliation)
-            } else { unique[entry.id] = entry }
+            } else {
+                unique[entry.id] = entry
+                primaryRoute[entry.id] = routeID
+            }
         }
-        return unique.values.filter { $0.matches(query) }.sorted {
-            let order = $0.name.localizedCaseInsensitiveCompare($1.name)
-            return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+        return unique.values.compactMap { entry -> Ranked? in
+            guard let rank = entry.matchRank(query), let routeID = primaryRoute[entry.id] else { return nil }
+            return Ranked(entry: entry, routeID: routeID, rank: rank)
+        }
+        .sorted {
+            if $0.rank != $1.rank { return $0.rank < $1.rank }
+            let order = $0.entry.name.localizedCaseInsensitiveCompare($1.entry.name)
+            return order == .orderedSame ? $0.entry.id < $1.entry.id : order == .orderedAscending
         }
     }
 

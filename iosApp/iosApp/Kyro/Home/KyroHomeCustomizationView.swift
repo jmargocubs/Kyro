@@ -220,8 +220,8 @@ struct KyroHomeFavoritePicker: View {
     }
 
     private var scope: KyroSportsDirectoryScope { request.scope }
-    private var results: [KyroSportsDirectoryEntry] {
-        directory.results(in: scope, matching: query,
+    private var results: [KyroSportsDirectoryGroup] {
+        directory.groupedResults(in: scope, matching: query,
             schedules: host.today.games + host.followed.games + fallbackGames.values.flatMap { $0 })
     }
     private var missing: [KyroSportsDirectoryRoute] { scope.routes.filter { $0.hasTeamDirectory && directory.entries[$0.id] == nil } }
@@ -326,7 +326,7 @@ struct KyroHomeFavoritePicker: View {
     @ViewBuilder
     private var followingRows: some View {
         let entries = directory.allEntries
-        Section("Following") {
+        Section {
             if host.favorites.preferences.teams.isEmpty {
                 Text("No favorites yet").foregroundStyle(.secondary)
             }
@@ -343,14 +343,20 @@ struct KyroHomeFavoritePicker: View {
                     Button("Remove") { host.favorites.preferences.teams.remove(key) }.buttonStyle(.borderless)
                 }
             }
+        } header: {
+            Text("All Following")
+        } footer: {
+            Text("Every team and player you follow, in any sport. The filters above don’t apply here.")
         }
     }
 
+    @ViewBuilder
     private var resultRows: some View {
-        let entries = results
+        let groups = results
+        let entries = groups.flatMap(\.entries)
         let includesTennis = scope.routes.contains { !$0.hasTeamDirectory }
         let loading = isLoading || scope.routes.contains { directory.loading.contains($0.id) }
-        return Section("Teams and players") {
+        Section(resultsTitle) {
             if loading { ProgressView("Loading teams and players…") }
             if entries.isEmpty && !loading {
                 Text(missing.isEmpty && !includesTennis ? "No matching teams" : "No matches in available results")
@@ -371,10 +377,31 @@ struct KyroHomeFavoritePicker: View {
             if !loading && canRetry {
                 Button("Retry Unavailable Leagues") { start(.retry) }
             }
-            ForEach(entries) { entry in
-                teamToggle(entry.team, affiliation: entry.affiliation)
+            if groups.count == 1, let group = groups.first {
+                ForEach(group.entries) { entry in
+                    teamToggle(entry.team, affiliation: entry.affiliation)
+                }
             }
         }
+        // More than one league: one section per league, never a mixed list.
+        if groups.count > 1 {
+            ForEach(groups) { group in
+                Section(group.route.title) {
+                    ForEach(group.entries) { entry in
+                        teamToggle(entry.team, affiliation: entry.affiliation)
+                    }
+                }
+            }
+        }
+    }
+
+    private var resultsTitle: String {
+        if let routeID = scope.routeID, let route = scope.routes.first(where: { $0.id == routeID }) {
+            return route.title
+        }
+        let sport = scope.sport?.title ?? "All Sports"
+        guard let level = scope.level, scope.sport?.hasCompetitionLevels == true else { return sport }
+        return level == .all ? "\(sport) · All Levels" : "\(level.title) \(sport)"
     }
 
     private func teamToggle(_ team: KyroSportsTeam, affiliation: String) -> some View {
@@ -402,17 +429,34 @@ private struct KyroSportsDirectoryFilters: View {
     var body: some View {
         Section {
             Picker("Sport", selection: Binding(get: { scope.sport }, set: {
-                scope = .init(sport: $0)
+                scope = .discovery(sport: $0)
             })) {
                 Text("All Sports").tag(nil as KyroSportsDirectorySport?)
                 ForEach(KyroSportsDirectorySport.allCases, id: \.self) { sport in
                     Text(sport.title).tag(Optional(sport))
                 }
             }
-            if let sport = scope.sport {
+            if scope.sport?.hasCompetitionLevels == true {
+                Picker("Level", selection: Binding(get: { scope.level ?? .all }, set: { level in
+                    var updated = scope
+                    updated.level = level
+                    // A league outside the new level would hide every result.
+                    if let routeID = updated.routeID, !updated.leagueChoices.contains(where: { $0.id == routeID }) {
+                        updated.routeID = nil
+                    }
+                    scope = updated
+                })) {
+                    ForEach(KyroSportsDirectoryLevel.allCases, id: \.self) { level in
+                        Text(level.title).tag(level)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("kyroSportsDirectoryLevel")
+            }
+            if scope.sport != nil {
                 Picker("League", selection: $scope.routeID) {
                     Text("All Leagues").tag(nil as String?)
-                    ForEach(KyroSportsDirectoryScope(sport: sport).routes) { route in
+                    ForEach(scope.leagueChoices) { route in
                         Text(route.title).tag(Optional(route.id))
                     }
                 }
