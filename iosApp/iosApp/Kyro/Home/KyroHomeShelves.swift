@@ -443,15 +443,8 @@ struct KyroHomeShelfRow: View {
             KyroHomeRail(title: shelf.title, sizing: .tallestCard) {
                 ForEach(games) { game in
                     Button { host.event = KyroSportsEventSelection(game: game) } label: {
-                        Group {
-                            if game.league == .atp || game.league == .wta {
-                                KyroSportsTennisMatchRow(game: game, showsLeague: true)
-                            } else {
-                                KyroSportsGameRow(game: game, usesCompactLayout: true)
-                            }
-                        }
-                        .frame(width: KyroHomeSportsRailLayout.cardWidth)
-                        .contentShape(Rectangle())
+                        KyroHomeSportsCard(game: game)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .contextMenu { KyroSportsFavoriteActions(game: game) }
@@ -462,6 +455,14 @@ struct KyroHomeShelfRow: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("kyroHomeQuickAdd-\(shelf.rawValue)")
+                }
+            } heightProbe: {
+                // Build 131: only these cards are built eagerly, to set the rail's height.
+                ForEach(KyroHomeSportsHeightProbe.games(games)) { game in
+                    KyroHomeSportsCard(game: game, isHeightProbe: true)
+                }
+                if showQuickAdd {
+                    KyroHomeQuickAddCard(title: KyroHomeQuickAdd.title(for: shelf))
                 }
             }
             .sheet(item: $quickAdd) { selection in
@@ -567,19 +568,43 @@ enum KyroHomeSportsRailLayout {
     static var maximumCards: Int { KyroHomeSportsSelection.maximumCards + 1 }
 }
 
+/// One sports card on a Home rail, at the rail's card width.
+private struct KyroHomeSportsCard: View {
+    let game: KyroSportsGame
+    var isHeightProbe = false
+
+    var body: some View {
+        // Opt-in device diagnostics (off by default): how many cards Home builds while scrolling.
+        let _ = KyroPerformanceDiagnostics.count(isHeightProbe ? .homeSportsProbeBuild : .homeSportsCardBuild)
+        Group {
+            if KyroHomeSportsHeightProbe.isTennis(game) {
+                KyroSportsTennisMatchRow(game: game, showsLeague: true)
+            } else {
+                KyroSportsGameRow(game: game, usesCompactLayout: true)
+            }
+        }
+        .frame(width: KyroHomeSportsRailLayout.cardWidth)
+    }
+}
+
 /// The independent UniversalHomeRail presentation, adapted to original Silo metrics.
-private struct KyroHomeRail<Content: View>: View {
+private struct KyroHomeRail<Content: View, Probe: View>: View {
     enum Sizing {
         /// Channel rails: equal-height tiles, so a lazy stack measures them correctly.
         case lazy
-        /// Sports rails: cards differ in height, so every card is measured and
-        /// the rail is as tall as the tallest one.
+        /// Sports rails: cards differ in height, so the rail is as tall as the tallest one.
+        /// Build 131: the cards are lazy; `heightProbe` (a few representative cards, built
+        /// eagerly and hidden) sets the height, so later, taller cards are never clipped
+        /// (Build 125) and a rail no longer builds all of its up to 40 cards whenever it
+        /// scrolls back into the feed (Builds 126–130).
         case tallestCard
     }
 
     let title: String
     let sizing: Sizing
     @ViewBuilder let content: () -> Content
+    @ViewBuilder let heightProbe: () -> Probe
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.title3.bold()).accessibilityAddTraits(.isHeader)
@@ -590,14 +615,29 @@ private struct KyroHomeRail<Content: View>: View {
                     LazyHStack(alignment: .top, spacing: 12, content: content)
                         .padding(.horizontal, SiloTheme.padding)
                 case .tallestCard:
-                    HStack(alignment: .top, spacing: 12, content: content)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, SiloTheme.padding)
-                        // Room for card borders at the bottom edge of the scroll view's clip.
-                        .padding(.vertical, 1)
+                    ZStack(alignment: .topLeading) {
+                        // Takes no width, so it never widens the scroll content; its height is
+                        // the tallest probe card's, which the stack and the scroll view adopt.
+                        HStack(alignment: .top, spacing: 12, content: heightProbe)
+                            .fixedSize()
+                            .frame(width: 0, alignment: .topLeading)
+                            .hidden()
+                            .accessibilityHidden(true)
+                            .allowsHitTesting(false)
+                        LazyHStack(alignment: .top, spacing: 12, content: content)
+                    }
+                    .padding(.horizontal, SiloTheme.padding)
+                    // Room for card borders at the bottom edge of the scroll view's clip.
+                    .padding(.vertical, 1)
                 }
             }
         }
+    }
+}
+
+extension KyroHomeRail where Probe == EmptyView {
+    init(title: String, sizing: Sizing, @ViewBuilder content: @escaping () -> Content) {
+        self.init(title: title, sizing: sizing, content: content, heightProbe: { EmptyView() })
     }
 }
 

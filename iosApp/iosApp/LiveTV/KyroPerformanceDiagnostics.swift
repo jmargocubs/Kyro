@@ -136,6 +136,11 @@ enum KyroPerformanceCounter: String, CaseIterable {
     case guidePublication = "Guide publish"
     case sportsDetailLoad = "Sports detail load"
     case sportsPinnedRefresh = "Pinned refresh"
+    // Build 131: Home scrolling.
+    case homeSportsCardBuild = "Home sports card build"
+    case homeSportsProbeBuild = "Home sports height probe build"
+    case shellBody = "App shell body"
+    case shellHeaderBody = "Shell header body"
 }
 
 enum KyroPerformanceMetric: String, CaseIterable {
@@ -551,6 +556,7 @@ struct KyroPerformanceOverlay: View {
             "frames/s \(frames)  hitch/s \(Int((Double(stats.hitches - previous.hitches) / seconds).rounded()))  stalls \(stats.stalls)  worst \(Int(stats.worstFrameMilliseconds))ms",
             "watch \(rate(.watchBody))/s  guide \(rate(.guideBody))/s  list rows \(rate(.listRowBuild))/s  grid rows \(rate(.gridRowBuild))/s",
             "entry miss \(rate(.listEntryMiss))/s  EPG pub \(stats.counters[.guidePublication] ?? 0)  detail \(stats.counters[.sportsDetailLoad] ?? 0)",
+            "home cards \(rate(.homeSportsCardBuild))/s  probes \(rate(.homeSportsProbeBuild))/s  shell \(rate(.shellBody))/s  header \(rate(.shellHeaderBody))/s",
         ]
         lines += stats.overlaySummary(now: now)
         let durations = KyroPerformanceMetric.allCases.compactMap { metric in

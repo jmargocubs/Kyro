@@ -168,6 +168,9 @@ struct HomeView: View {
                     }
                 }
                 .modifier(KyroHomeShelfHostModifier(host: kyroShelfHost))
+                // Build 131: opt-in frame pacing (off by default) reports Home on its own.
+                .onAppear { KyroPerformanceDiagnostics.section("Home") }
+                .onDisappear { KyroPerformanceDiagnostics.section("Other") }
                 .onChange(of: kyroSections, initial: true) { _, sections in
                     kyroShelfHost.refreshScope()
                     kyroShelfHost.setSiloSections(sections, scope: KyroHomeShelfHost.currentScope())

@@ -221,8 +221,8 @@ enum KyroBuild130HostChecks {
               "sports shelves keep tallest-card sizing")
 
         let project = try source("iosApp/project.yml")
-        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 130").count == 4, "app and extensions target Build 130")
-        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.130\"").count == 4, "version 1.0.130")
+        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 131").count == 4, "app and extensions target Build 131")
+        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.131\"").count == 4, "version 1.0.131")
     }
 }
 #endif

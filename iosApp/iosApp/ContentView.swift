@@ -3305,7 +3305,11 @@ struct MainTabView: View {
 
     /// iPhone + iPad compact width: bottom tab bar, single navigation stack.
     private var tabLayout: some View {
-        NavigationStack(path: $router.path) {
+        #if os(iOS)
+        // Build 131: opt-in diagnostics (off by default): shell passes while Home scrolls.
+        let _ = KyroPerformanceDiagnostics.count(.shellBody)
+        #endif
+        return NavigationStack(path: $router.path) {
             SiloTabBar(
                 items: visibleDestinations,
                 selection: selectedDestinationBinding,

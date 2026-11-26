@@ -109,6 +109,8 @@ struct KyroAppHeader: View {
     @Environment(\.statusColumn) private var statusColumn
 
     var body: some View {
+        // Build 131: opt-in diagnostics (off by default).
+        let _ = KyroPerformanceDiagnostics.count(.shellHeaderBody)
         let destination = store.selectedDestination
         let state = scrollStates.state(for: destination)
         HStack(alignment: .center, spacing: 12) {

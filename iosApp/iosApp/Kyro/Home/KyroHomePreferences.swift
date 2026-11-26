@@ -159,6 +159,78 @@ struct KyroSportsFavorites: Equatable {
     }
 }
 
+/// Build 131: the few cards that decide a Home sports rail's height.
+///
+/// Build 126 sized sports rails by building every card (up to 40 per rail) in an eager HStack,
+/// because a lazy stack takes its height from the first cards it happens to build and clipped
+/// taller ones further along (Build 125). Building them all again each time a rail scrolls back
+/// into Home's lazy feed is what dropped frames on the device recording. Rails now build only
+/// these probe cards eagerly, hidden, to set the height, and the visible cards lazily.
+///
+/// A card's height comes from which lines it draws, not from its values: the header (status pill,
+/// NFL week, broadcast), the wrapped context or tournament line (at most two lines), the period
+/// header row, and the score rows. Cards are grouped by those lines, and each group's longest
+/// wrapped text (two per group, as a margin) is measured. Every other card in a group draws the
+/// same lines with shorter text, so none is taller than the rail.
+enum KyroHomeSportsHeightProbe {
+    /// Cards measured per height group.
+    static let cardsPerGroup = 2
+
+    private struct Group: Hashable {
+        let isTennis: Bool
+        let status: String
+        let hasWeek: Bool
+        let hasBroadcast: Bool
+        let showsStartTime: Bool
+        let hasWrappedLine: Bool
+        let hasScore: Bool
+        let hasPeriods: Bool
+    }
+
+    static func isTennis(_ game: KyroSportsGame) -> Bool { game.league == .atp || game.league == .wta }
+
+    /// The two-line text a card wraps: the context line (bowl name, situation) on team cards, the
+    /// tournament and round on tennis cards. Empty when the card has none.
+    static func wrappedLine(_ game: KyroSportsGame) -> String {
+        if isTennis(game) {
+            guard let tournament = game.tournament ?? game.note else { return "" }
+            return [tournament, game.round].compactMap { $0 }.joined(separator: " · ")
+        }
+        return [game.note, game.situation].compactMap { value -> String? in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }.joined(separator: " · ")
+    }
+
+    private static func group(_ game: KyroSportsGame) -> Group {
+        let tennis = isTennis(game)
+        return Group(
+            isTennis: tennis,
+            status: String(describing: game.status),
+            hasWeek: !tennis && game.weekLabel != nil,
+            hasBroadcast: !tennis && !(game.broadcast ?? "").isEmpty,
+            showsStartTime: tennis && game.startTime != nil && game.status.isScheduled && !game.isStartTimeTBD,
+            hasWrappedLine: !wrappedLine(game).isEmpty,
+            hasScore: game.hasScore,
+            hasPeriods: !game.periods.isEmpty
+        )
+    }
+
+    /// The probe cards, in rail order. Never more than the rail's own cards.
+    static func games(_ games: [KyroSportsGame]) -> [KyroSportsGame] {
+        var byGroup: [Group: [(index: Int, length: Int)]] = [:]
+        for (index, game) in games.enumerated() {
+            byGroup[group(game), default: []].append((index, wrappedLine(game).count))
+        }
+        var chosen = Set<Int>()
+        for members in byGroup.values {
+            let longest = members.sorted { $0.length != $1.length ? $0.length > $1.length : $0.index < $1.index }
+            for member in longest.prefix(cardsPerGroup) { chosen.insert(member.index) }
+        }
+        return chosen.sorted().map { games[$0] }
+    }
+}
+
 /// Pure selection over original Sports Hub models, not a universal catalog.
 enum KyroHomeSportsSelection {
     static let maximumCards = 40
