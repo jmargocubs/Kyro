@@ -9,8 +9,16 @@ struct KyroPodcastPresentation: ViewModifier {
         content.sheet(isPresented: Binding(get: { player.isShowingNowPlaying && player.hasSession },
                                            set: { player.isShowingNowPlaying = $0 })) {
             if let entry = player.current {
-                KyroPodcastCassettePlayer(entry: entry, player: player)
-                    .presentationDetents([.large]).presentationDragIndicator(.visible)
+                Group {
+                    // Build 135: Modern Stream is the artwork-led player; the cassette deck
+                    // stays for Crimson Noir and Classic Walnut.
+                    if KyroPodcastLibrary.shared.preferences.theme == .modernStream {
+                        KyroPodcastModernPlayer(entry: entry, player: player)
+                    } else {
+                        KyroPodcastCassettePlayer(entry: entry, player: player)
+                    }
+                }
+                .presentationDetents([.large]).presentationDragIndicator(.visible)
             }
         }
     }

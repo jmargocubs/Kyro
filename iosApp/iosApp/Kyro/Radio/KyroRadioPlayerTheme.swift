@@ -25,7 +25,7 @@ enum KyroRadioPlayerTheme: String, CaseIterable, Codable, Identifiable, Sendable
         switch self {
         case .crimsonNoir: "Burgundy, matte black and rose-gold metal"
         case .classicWalnut: "Walnut wood, brass and cream panels"
-        case .modernStream: "Charcoal, brushed steel and vivid green"
+        case .modernStream: "Crimson gradient, large artwork, modern controls"
         }
     }
 }

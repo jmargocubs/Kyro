@@ -239,8 +239,8 @@ enum KyroBuild133HostChecks {
         let home = try source("Kyro/Home/KyroHomeShelves.swift")
         require(home.contains("KyroHomeSportsHeightProbe.games(games)") && home.contains("isHeightProbe: true"), "sports tallest-card probe preserved")
         let project = try String(contentsOfFile: "iosApp/project.yml", encoding: .utf8)
-        require(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 134").count == 4 &&
-                project.components(separatedBy: "MARKETING_VERSION: \"1.0.134\"").count == 4, "iOS app and extensions target Build 134")
+        require(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 135").count == 4 &&
+                project.components(separatedBy: "MARKETING_VERSION: \"1.0.135\"").count == 4, "iOS app and extensions target Build 135")
 
         let cassette = try source("Kyro/Podcasts/KyroPodcastCassette.swift")
         let radio = try source("Kyro/Radio/KyroRadioTurntable.swift")

@@ -77,19 +77,21 @@ struct KyroRadioPlayerPalette {
                  label: UIColor(hex: 0xEADCBE), labelRing: UIColor(hex: 0x6E1E22), labelInk: UIColor(hex: 0x4A2316),
                  cartridge: Color(hex: 0x3A2A1E), usesWood: true)
         case .modernStream:
+            // Build 135: Modern Stream is an artwork-led crimson player (KyroModernPlayers.swift);
+            // these values serve its previews and the mini-player finish.
             Self(theme: theme,
-                 backgroundTop: Color(hex: 0x191F1D), backgroundBottom: Color(hex: 0x090C0B),
-                 plinthTop: Color(hex: 0x282E2D), plinthBottom: Color(hex: 0x111514),
-                 plinthEdge: Color(hex: 0x424E48), edgeGlow: Color(hex: 0x52F598),
-                 metalLight: Color(hex: 0xC5D0CB), metalMid: Color(hex: 0x707D77), metalDark: Color(hex: 0x25302C),
-                 lamp: Color(hex: 0x6BFFAA),
-                 panelTop: Color(hex: 0x232C28), panelBottom: Color(hex: 0x151B19),
-                 panelStroke: Color(hex: 0x46574E),
-                 panelPrimary: Color(hex: 0xF1F7F3), panelSecondary: Color(hex: 0xB1C2B8),
-                 headerText: Color(hex: 0xF1F7F3), controlIcon: Color(hex: 0xE6F1EA),
-                 sheen: Color(hex: 0x65CE9A).opacity(0.12),
-                 label: UIColor(hex: 0x202B25), labelRing: UIColor(hex: 0x6BFFAA), labelInk: UIColor(hex: 0xDFF7E9),
-                 cartridge: Color(hex: 0x34443D), usesWood: false)
+                 backgroundTop: Color(hex: 0x8F0E1F), backgroundBottom: Color(hex: 0x0A0406),
+                 plinthTop: Color(hex: 0x3A0710), plinthBottom: Color(hex: 0x12050A),
+                 plinthEdge: Color(hex: 0x5A1420), edgeGlow: Color(hex: 0xE5243B),
+                 metalLight: Color(hex: 0xFFFFFF), metalMid: Color(hex: 0xD9D2D3), metalDark: Color(hex: 0x2B0910),
+                 lamp: Color(hex: 0xE5243B),
+                 panelTop: Color(hex: 0x2B0910), panelBottom: Color(hex: 0x16060A),
+                 panelStroke: Color.white.opacity(0.08),
+                 panelPrimary: Color(hex: 0xFFFFFF), panelSecondary: Color(hex: 0xD9B7BC),
+                 headerText: Color(hex: 0xFFFFFF), controlIcon: Color(hex: 0xFFFFFF),
+                 sheen: Color(hex: 0xE5243B).opacity(0.12),
+                 label: UIColor(hex: 0x3A0710), labelRing: UIColor(hex: 0xE5243B), labelInk: UIColor(hex: 0xFFFFFF),
+                 cartridge: Color(hex: 0xE5243B), usesWood: false)
         }
     }
 
@@ -104,7 +106,7 @@ struct KyroRadioPlayerPalette {
 
     var isModern: Bool { theme == .modernStream }
     var titleDesign: Font.Design { isModern ? .default : .serif }
-    var transportInk: Color { isModern ? Color(hex: 0x0B2115) : metalDark }
+    var transportInk: Color { isModern ? Color(hex: 0x0A0406) : metalDark }
     var miniAccent: Color {
         switch theme {
         case .crimsonNoir: Color(hex: 0xF06C83)
@@ -917,9 +919,19 @@ struct KyroRadioNowPlayingView: View {
     @State private var routeName = KyroRadioAudioRoute.currentName()
 
     var body: some View {
+        // Build 135: Modern Stream is its own artwork-led player; the turntable
+        // stays for Crimson Noir and Classic Walnut.
+        if appearance.theme == .modernStream {
+            KyroRadioModernPlayer(player: player)
+        } else {
+            turntable
+        }
+    }
+
+    private var turntable: some View {
         let palette = KyroRadioPlayerPalette.of(appearance.theme)
         let motion = KyroTurntableMotion.motion(for: player.state, reduceMotion: reduceMotion)
-        GeometryReader { proxy in
+        return GeometryReader { proxy in
             let deckWidth = max(1, min(460, proxy.size.width - 36, proxy.size.height * 0.47 / KyroTurntableGeometry.heightRatio))
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 18) {
@@ -1187,6 +1199,22 @@ private struct KyroAudioThemePreview: View {
             shape.fill(LinearGradient(colors: [palette.backgroundTop, palette.plinthBottom],
                                       startPoint: .topLeading, endPoint: .bottomTrailing))
                 .overlay(shape.strokeBorder(palette.plinthEdge, lineWidth: 1))
+            if theme == .modernStream {
+                // Artwork, white play button and a crimson progress line.
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 4).fill(LinearGradient(colors: [Color(hex: 0x2B0910), .black],
+                                                                          startPoint: .top, endPoint: .bottom))
+                        .overlay(Image(systemName: kind == .vinyl ? "dot.radiowaves.left.and.right" : "mic.fill")
+                            .font(.system(size: 12, weight: .bold)).foregroundStyle(Color(hex: 0xE5243B)))
+                        .frame(width: 30, height: 30)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Capsule().fill(.white.opacity(0.9)).frame(width: 22, height: 3)
+                        Capsule().fill(Color(hex: 0xE5243B)).frame(width: 16, height: 2)
+                        Circle().fill(.white).frame(width: 12, height: 12)
+                            .overlay(Image(systemName: "play.fill").font(.system(size: 5)).foregroundStyle(.black))
+                    }
+                }
+            } else {
             switch kind {
             case .vinyl:
                 Circle().fill(palette.metal).frame(width: 38, height: 38).offset(x: -5)
@@ -1216,6 +1244,7 @@ private struct KyroAudioThemePreview: View {
                 .frame(width: 52)
                 .background(palette.plinthTop, in: .rect(cornerRadius: 5))
                 .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(palette.metalMid))
+            }
             }
         }
         .frame(width: 72, height: 54)

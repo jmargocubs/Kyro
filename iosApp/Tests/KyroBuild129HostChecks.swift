@@ -234,8 +234,8 @@ enum KyroBuild129HostChecks {
               "More menu checks whether Radio is already the fourth tab")
         check(content.contains("kyroSidebarRadio"),
               "iPad sidebar exposes Radio")
-        check(content.contains("KyroRadioView(isSecondaryDestination: true)"),
-              "secondary Radio route pushes KyroRadioView with isSecondaryDestination")
+        check(content.contains("KyroAudioHub(isSecondaryDestination: true)"),
+              "secondary Radio route pushes the Radio & Podcasts hub (Build 133) with isSecondaryDestination")
 
         let debugShell = try source("iosApp/iosApp/Kyro/KyroDebugLiveTVFixtureRoute.swift")
         let debugOverlay = debugShell.range(of: "KyroAppHeader(router: router, scrollStates: scrollStates, store: store)")!.lowerBound
@@ -257,8 +257,8 @@ enum KyroBuild129HostChecks {
               "Profile menu offers Radio on iPad and legacy shell")
 
         let project = try source("iosApp/project.yml")
-        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 132").count == 4, "app and extensions target Build 132")
-        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.132\"").count == 4, "version 1.0.132")
+        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 135").count == 4, "app and extensions target Build 135")
+        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.135\"").count == 4, "version 1.0.135")
     }
 }
 #endif
