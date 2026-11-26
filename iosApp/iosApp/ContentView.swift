@@ -3246,7 +3246,9 @@ struct MainTabView: View {
         )
         var items = secondary.enumerated().map { index, destination in
             KyroMoreMenuItem(
-                id: "root-\(index)-\(destination.title)",
+                // The destination's identity is part of the id, so equal
+                // menus (`KyroMoreMenuContext ==`) always open the same routes.
+                id: "root-\(index)-\(String(describing: destination.id))-\(destination.title)",
                 title: destination.title,
                 systemImage: destination.icon
             ) {
@@ -3414,6 +3416,8 @@ struct MainTabView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             NowPlayingShelf(style: .card)
         }
+        // This bar spans pushed pages; the Radio page must not add its own.
+        .environment(\.nowPlayingShelfCoversPushedPages, true)
     }
 
     #if os(iOS)

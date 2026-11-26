@@ -19,16 +19,25 @@ import UIKit
 final class KyroRadioPlayer {
     static let shared = KyroRadioPlayer()
 
-    private(set) var machine = KyroRadioPlaybackMachine()
-    /// Song and artist from the stream, when it sends them.
+    /// Not observed (Build 130): it is written on every transport event, even
+    /// no-op ones. Views read the fields below, which `status` publishes only
+    /// when they change.
+    @ObservationIgnored private(set) var machine = KyroRadioPlaybackMachine()
+    /// The observed copy of `machine`'s station and state.
+    @ObservationIgnored let status = KyroRadioPlaybackStatus()
+    /// Song and artist from the stream, when it sends them. Only the radio
+    /// bar and Now Playing read it.
     private(set) var track: KyroRadioTrack?
     var isShowingNowPlaying = false
 
-    var station: KyroRadioStation? { machine.station }
-    var state: KyroRadioPlaybackState { machine.state }
+    var station: KyroRadioStation? { status.station }
+    var state: KyroRadioPlaybackState { status.state }
     /// A station is loaded (playing, paused or failed): the mini player shows.
-    var hasSession: Bool { machine.station != nil }
-    var isPlaying: Bool { machine.state == .playing }
+    /// Changes only when a session starts or ends.
+    var hasSession: Bool { status.hasSession }
+    /// Radio is fetching or playing audio.
+    var isActive: Bool { status.isActive }
+    var isPlaying: Bool { status.state == .playing }
 
     @ObservationIgnored private let library: KyroRadioLibrary
     @ObservationIgnored private let client: KyroRadioBrowserClient
@@ -105,12 +114,18 @@ final class KyroRadioPlayer {
     // MARK: Transitions
 
     private func apply(_ transition: (inout KyroRadioPlaybackMachine) -> [KyroRadioPlaybackMachine.Effect]) {
+        let beforeMachine = machine
         let before = machine.state
         let effects = transition(&machine)
+        status.publish(machine)
         for effect in effects { perform(effect) }
         if machine.isActive, !before.isActive { KyroPlaybackExclusivity.shared.begin(self, source: .radio) }
-        if machine.state != before { logger.info("radio state \(String(describing: self.machine.state), privacy: .public)") }
-        updateSystemMedia()
+        if machine.state != before {
+            logger.info("radio state \(String(describing: self.machine.state), privacy: .public) (published \(self.status.publishCount) of \(self.status.transitionCount) transitions)")
+        }
+        // A no-op transition (radio asked to yield while idle) leaves the
+        // Lock Screen as it is.
+        if machine != beforeMachine { updateSystemMedia() }
     }
 
     private func perform(_ effect: KyroRadioPlaybackMachine.Effect) {

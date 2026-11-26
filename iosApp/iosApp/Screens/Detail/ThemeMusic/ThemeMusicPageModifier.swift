@@ -33,7 +33,7 @@ private struct ThemeMusicPageModifier: ViewModifier {
         #if os(iOS)
         otherMedia = otherMedia || PictureInPictureCoordinator.shared.isEngaged
             // Theme music never plays over a radio station.
-            || KyroRadioPlayer.shared.machine.isActive
+            || KyroRadioPlayer.shared.isActive
         #endif
         return ThemeMusicPage(
             themes: themes,

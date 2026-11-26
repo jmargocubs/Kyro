@@ -271,4 +271,13 @@ enum KyroRadioNavigationPolicy {
     static func moreMenuIncludesRadio(unifiedShell: Bool, tabDestinations: [KyroGlobalDestination]) -> Bool {
         unifiedShell && !tabDestinations.contains(.radio)
     }
+
+    /// Build 130: whether the Radio page shows its own Now Playing bar. As a
+    /// tab, the tab bar's accessory shows it. Pushed (More, Home shelf
+    /// headers, the profile menu, the sidebar), the page covers the tab bar
+    /// and its accessory, so the page shows the bar itself, unless the layout
+    /// already pins one under every pushed page (the iPad sidebar layout).
+    static func pageHostsNowPlayingBar(isSecondaryDestination: Bool, shelfCoversPushedPages: Bool) -> Bool {
+        isSecondaryDestination && !shelfCoversPushedPages
+    }
 }

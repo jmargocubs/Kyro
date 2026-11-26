@@ -9,8 +9,21 @@ struct KyroMoreMenuItem: Identifiable {
     let action: () -> Void
 }
 
-struct KyroMoreMenuContext {
+/// Equatable (Build 130) so SwiftUI can tell an unchanged menu from a new
+/// one. The shell rebuilds this value on every pass of its body; without
+/// equality each pass looked like a change to every More button under it,
+/// which since Build 129 includes the header overlay over every tab.
+/// Items compare by id, title and symbol: each id names its destination, so
+/// equal ids open the same place.
+struct KyroMoreMenuContext: Equatable {
     let items: [KyroMoreMenuItem]
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.items.count == rhs.items.count
+            && zip(lhs.items, rhs.items).allSatisfy { left, right in
+                left.id == right.id && left.title == right.title && left.systemImage == right.systemImage
+            }
+    }
 }
 
 extension EnvironmentValues {

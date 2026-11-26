@@ -42,6 +42,12 @@ struct NowPlayingShelf: View {
     }
 }
 
+extension EnvironmentValues {
+    /// True under a layout whose Now Playing bar stays on screen over pushed
+    /// pages too (the iPad sidebar layout), so a page never adds a second bar.
+    @Entry var nowPlayingShelfCoversPushedPages = false
+}
+
 #if os(iOS)
 /// Hosts `NowPlayingShelf` on a `TabView` so it rests above the tab bar.
 /// iOS 26 uses the native Liquid Glass accessory; iOS 18 uses the card-styled

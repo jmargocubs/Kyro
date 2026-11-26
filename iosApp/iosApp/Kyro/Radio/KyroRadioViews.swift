@@ -33,6 +33,7 @@ struct KyroRadioView: View {
 
     var isSecondaryDestination = false
     @Environment(\.kyroShellHeader) private var shellHeader
+    @Environment(\.nowPlayingShelfCoversPushedPages) private var shelfCoversPushedPages
     @State private var fallbackScrollState = PageChromeScrollState()
     @State private var section: Section = .discover
     @State private var discover = KyroRadioDiscoverModel()
@@ -106,6 +107,16 @@ struct KyroRadioView: View {
             }
         }
         .reportsPageChromeScroll(to: scrollState)
+        // Build 130: pushed, this page covers the tab bar and its Now Playing
+        // accessory, so it carries the one bar itself. Inside the searchable
+        // content, the inset rests above the bottom search bar and the List
+        // reserves its height as scroll space.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if KyroRadioNavigationPolicy.pageHostsNowPlayingBar(isSecondaryDestination: isSecondaryDestination,
+                                                                shelfCoversPushedPages: shelfCoversPushedPages) {
+                KyroRadioPageNowPlayingBar()
+            }
+        }
         .modifier(KyroRadioSearchBarModifier(isEnabled: !isHostedTab,
                                              text: activeSearchText,
                                              prompt: activeSearchPrompt))
@@ -179,6 +190,31 @@ struct KyroRadioView: View {
             let batch = Array(missing[start..<min(start + 100, missing.count)])
             guard let fresh = try? await KyroRadioBrowserClient.shared.stations(uuids: batch) else { return }
             library.refreshDetails(fresh)
+        }
+    }
+}
+
+/// The Now Playing bar a pushed Radio page shows above its bottom search
+/// bar. It is the app's `NowPlayingShelf`, so the same single bar shows (a TV
+/// remote session, then an audiobook, then radio) and taps open the same
+/// Now Playing screen; it is empty, and takes no space, with nothing playing.
+/// It steps aside while the keyboard is up so it never crowds the search field.
+private struct KyroRadioPageNowPlayingBar: View {
+    @State private var isKeyboardVisible = false
+
+    var body: some View {
+        // A VStack stays in the hierarchy when empty, so the keyboard
+        // observers below keep running while the bar is hidden.
+        VStack(spacing: 0) {
+            if !isKeyboardVisible {
+                NowPlayingShelf(style: .card)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            isKeyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            isKeyboardVisible = false
         }
     }
 }
@@ -619,6 +655,10 @@ struct KyroRadioStationRow: View {
 struct KyroRadioArtwork: View {
     let station: KyroRadioStation?
     var size: CGFloat
+    /// The size the logo is decoded at, when it differs from `size`. The
+    /// radio bar resizes as the tab bar minimizes on scroll; decoding at one
+    /// fixed size keeps that from starting a new image request each time.
+    var decodeSize: CGFloat? = nil
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
@@ -626,7 +666,8 @@ struct KyroRadioArtwork: View {
             .fill(Color.white.opacity(0.08))
             .overlay {
                 if let url = station?.favicon,
-                   let request = PosterImageCache.displayRequest(url: url, pointSize: CGSize(width: size, height: size),
+                   let request = PosterImageCache.displayRequest(url: url, pointSize: CGSize(width: decodeSize ?? size,
+                                                                                            height: decodeSize ?? size),
                                                                  scale: displayScale, priority: .normal) {
                     LazyImage(request: request) { state in
                         if let image = state.image {
@@ -661,12 +702,16 @@ struct KyroRadioMiniPlayerView: View {
     @Environment(\.nowPlayingAccessoryIsInline) private var isInline
     private let player = KyroRadioPlayer.shared
 
+    /// One decode for the expanded (46 pt) and inline (34 pt) bar.
+    static let artworkDecodeSize: CGFloat = 46
+
     var body: some View {
         if let station = player.station {
             HStack(spacing: 12) {
                 Button { player.isShowingNowPlaying = true } label: {
                     HStack(spacing: 12) {
-                        KyroRadioArtwork(station: station, size: isInline ? 34 : 46)
+                        KyroRadioArtwork(station: station, size: isInline ? 34 : 46,
+                                         decodeSize: KyroRadioMiniPlayerView.artworkDecodeSize)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(station.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                             if !isInline {
@@ -687,6 +732,10 @@ struct KyroRadioMiniPlayerView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, isInline ? 4 : 8)
             .modifier(NowPlayingBarChrome(style: style))
+            // Same card margins as the audiobook bar (iPad, status column,
+            // and the Radio page's own bar).
+            .padding(.horizontal, style == .card ? 16 : 0)
+            .padding(.bottom, style == .card ? 8 : 0)
             .accessibilityIdentifier("kyroRadioMiniPlayer")
         }
     }
@@ -956,6 +1005,22 @@ struct KyroRadioSettingsForm: View {
 
 // MARK: - Home
 
+/// The play or waveform badge on a Home radio card. Its own view (Build 130)
+/// so a playback change redraws the badge, not the whole shelf.
+private struct KyroHomeRadioPlayBadge: View {
+    let stationID: String
+    private let player = KyroRadioPlayer.shared
+
+    var body: some View {
+        Image(systemName: player.station?.id == stationID && player.isPlaying ? "waveform" : "play.fill")
+            .font(.caption.bold())
+            .foregroundStyle(.white)
+            .frame(width: 30, height: 30)
+            .background(KyroTheme.accent, in: Circle())
+            .padding(6)
+    }
+}
+
 /// Favorite Radio Stations and Recently Played Radio on Home. Draws nothing
 /// when the shelf has no stations.
 struct KyroHomeRadioRail: View {
@@ -1009,12 +1074,7 @@ struct KyroHomeRadioRail: View {
             VStack(alignment: .leading, spacing: 8) {
                 KyroRadioArtwork(station: station, size: 112)
                     .overlay(alignment: .bottomTrailing) {
-                        Image(systemName: player.station?.id == station.id && player.isPlaying ? "waveform" : "play.fill")
-                            .font(.caption.bold())
-                            .foregroundStyle(.white)
-                            .frame(width: 30, height: 30)
-                            .background(KyroTheme.accent, in: Circle())
-                            .padding(6)
+                        KyroHomeRadioPlayBadge(stationID: station.id)
                     }
                 Text(station.name)
                     .font(.subheadline.weight(.semibold))

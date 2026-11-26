@@ -1,5 +1,6 @@
 #if os(iOS) || KYRO_STANDALONE_TESTS
 import Foundation
+import Observation
 
 enum KyroRadioPlaybackError: Equatable, Sendable {
     case unsupportedFormat
@@ -185,6 +186,44 @@ struct KyroRadioPlaybackMachine: Equatable, Sendable {
         generation += 1
         state = .connecting
         return [.load(candidate: candidate, generation: generation)]
+    }
+}
+
+/// Build 130: the radio state views observe, published apart from the
+/// transport machine. `KyroRadioPlayer` writes its machine on every event,
+/// including no-op ones (radio yielding while already idle whenever video,
+/// Live TV or an audiobook starts, a repeated "player started"). Views that
+/// only need to know whether a radio bar exists (the app-wide Now Playing
+/// slot) read `hasSession`, which changes only when a session starts or ends.
+@MainActor @Observable
+final class KyroRadioPlaybackStatus {
+    private(set) var station: KyroRadioStation?
+    private(set) var state: KyroRadioPlaybackState = .idle
+    /// A station is loaded (playing, paused or failed): a radio bar shows.
+    private(set) var hasSession = false
+    /// Radio is fetching or playing audio.
+    private(set) var isActive = false
+
+    /// Lightweight instrumentation: machine transitions seen, and how many
+    /// changed something a view observes.
+    @ObservationIgnored private(set) var transitionCount = 0
+    @ObservationIgnored private(set) var publishCount = 0
+
+    init() {}
+
+    /// Copies `machine` into the observed fields, writing only those that
+    /// changed so unrelated observers stay valid. Returns whether any changed.
+    @discardableResult
+    func publish(_ machine: KyroRadioPlaybackMachine) -> Bool {
+        transitionCount += 1
+        var changed = false
+        if station != machine.station { station = machine.station; changed = true }
+        if state != machine.state { state = machine.state; changed = true }
+        let session = machine.station != nil
+        if hasSession != session { hasSession = session; changed = true }
+        if isActive != machine.isActive { isActive = machine.isActive; changed = true }
+        if changed { publishCount += 1 }
+        return changed
     }
 }
 
