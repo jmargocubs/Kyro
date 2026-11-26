@@ -1,6 +1,6 @@
 # Kyro Release & Artifact History
 
-**Last Updated:** 2026-11-18  
+**Last Updated:** 2026-11-25  
 **Tracking System Version:** 1.2.0
 
 ---
@@ -38,6 +38,8 @@ release_record:
 ---
 
 ## 2. Release Candidates (Ready for Packaging)
+
+| **Kyro X iOS Build 127**<br>`Kyro-iOS-v1.0.127-Build127-Unsigned.ipa` | iOS | Silo | 127 | `kyro/ios-recovered`<br>`e2364732e67514843c60687d793f5c040002b3a1` | Sports Settings, directory search/filtering, Home integration and soccer coverage | **Physically accepted on iPhone 16 Plus; all 16 checks passed. Stable baseline.** Published release and catalog entry: `Kyro X — Build 127`. SHA-256 `eb94f05b7f74b03b9102b10d60c392fe7923e6841393a8c45485e639e5419a83`; 44,413,077 bytes; unsigned arm64; minimum iOS 18.0. See [BUILD127-ACCEPTANCE.md](BUILD127-ACCEPTANCE.md). |
 
 | Release Candidate | Platform | Target | Build No. | Source Branch & Commit | Included Features | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |

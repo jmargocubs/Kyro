@@ -4,6 +4,13 @@
 **Repository:** `<repo>`  
 **Tracking System Version:** 1.2.0
 
+## Current stable iOS baseline
+
+**Kyro X iOS Build 127** (`1.0.127`, `e2364732e67514843c60687d793f5c040002b3a1`,
+`kyro/ios-recovered`) is physically accepted on iPhone 16 Plus. All 16 checks
+passed. The unsigned IPA and catalog listing are published as **Kyro X — Build
+127**. See [BUILD127-ACCEPTANCE.md](BUILD127-ACCEPTANCE.md).
+
 ---
 
 ## 1. Executive Summary
