@@ -158,9 +158,11 @@ enum KyroBuild139HostChecks {
 
     static func audioRoute() {
         let ts = URL(string: "http://provider.example/live/u/p/1234.ts")!
+        // Build 140 reversed the order: the original address first (AetherEngine
+        // reads TS), HLS only as a fallback the account advertises.
         check(KyroIPTVAudioRoute.candidates(for: ts, isXtream: true, allowedFormats: ["m3u8", "ts"]).map(\.absoluteString)
-              == ["http://provider.example/live/u/p/1234.m3u8", ts.absoluteString], "Xtream TS: HLS first, original second")
-        check(KyroIPTVAudioRoute.candidates(for: ts, isXtream: true, allowedFormats: []).count == 2, "Xtream without advertised formats: HLS tried")
+              == [ts.absoluteString, "http://provider.example/live/u/p/1234.m3u8"], "Xtream TS: original first, HLS second")
+        check(KyroIPTVAudioRoute.candidates(for: ts, isXtream: true, allowedFormats: []) == [ts], "Xtream without advertised formats: original only")
         check(KyroIPTVAudioRoute.candidates(for: ts, isXtream: true, allowedFormats: ["ts"]) == [ts], "TS-only account: original only (Live TV fallback)")
         let hls = URL(string: "https://cdn.example/sxm/hits1.m3u8")!
         check(KyroIPTVAudioRoute.candidates(for: hls, isXtream: false, allowedFormats: []) == [hls], "M3U playlist HLS as is")
@@ -177,7 +179,7 @@ enum KyroBuild139HostChecks {
                                        resolvedURL: URL(string: "http://provider.example/live/u/p/42.m3u8"))
         station.iptv = KyroIPTVStationSource(providerID: provider, providerName: "Provider", channelID: station.id,
                                              collection: .siriusXM, category: "SiriusXM", guideID: nil)
-        check(station.playbackCandidates.map(\.pathExtension) == ["m3u8", "ts"], "IPTV keeps the route's order (HLS, then original)")
+        check(station.playbackCandidates.map(\.pathExtension) == ["ts", "m3u8"], "IPTV keeps the route's order (original, then HLS; Build 140)")
         check(station.location == "SiriusXM · Provider", "IPTV stations show their source")
         let old = #"{"id":"0b1a0a5e-2b3c-4d5e-8f90-123456789abc","name":"Jazz","tags":[],"country":"","countryCode":"","state":"","language":"","codec":"","bitrate":0,"isHLS":false,"lastCheckOK":true}"#
         let decoded = try JSONDecoder().decode(KyroRadioStation.self, from: Data(old.utf8))

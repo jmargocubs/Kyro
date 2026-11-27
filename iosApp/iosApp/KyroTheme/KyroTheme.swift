@@ -188,29 +188,59 @@ extension View {
     }
 }
 
-/// Reuses the existing material or native accessory; does not add a blur.
+/// The surface behind the Radio and Podcast mini-players.
+///
+/// Build 140: in the Kyro Signature appearance the floating card (`.card`, on
+/// pushed Radio and Podcast pages and the iOS 18 tab bar) is a near-opaque
+/// crimson-black surface with one hairline edge and a soft shadow. Build 139
+/// stacked a 78% burgundy fill on top of the backdrop-sampling Silo glass and
+/// drew two borders, so scrolling rows showed through the titles and the
+/// glass re-blurred every frame. The iOS 26 tab accessory (`.accessory`)
+/// keeps the system's Liquid Glass with a light crimson cast. The Classic
+/// appearance keeps Silo's own chrome unchanged.
 struct KyroAudioMiniChrome: ViewModifier {
     let style: NowPlayingBarStyle
     private let appearance = KyroAppAppearanceStore.shared
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    static let cornerRadius: CGFloat = 16
 
     func body(content: Content) -> some View {
-        content
-            .background {
-                if appearance.selection == .signature {
-                    // Build 139: a little more opaque, with a fine crimson edge, so titles read
-                    // clearly over scrolling artwork. Solid fills only; no added blur.
-                    let shape = RoundedRectangle(cornerRadius: 14)
-                    shape
-                        .fill(reduceTransparency && style == .card ? KyroSignature.card :
-                                KyroSignature.burgundy.opacity(style == .card ? 0.78 : 0.42))
-                        .overlay(shape.strokeBorder(KyroSignature.crimson.opacity(style == .card ? 0.38 : 0.22), lineWidth: 0.75))
-                        .allowsHitTesting(false)
+        if appearance.selection == .signature {
+            switch style {
+            case .card:
+                let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                content
+                    .background {
+                        shape.fill(LinearGradient(colors: [KyroSignature.burgundy, KyroSignature.card],
+                                                  startPoint: .top, endPoint: .bottom))
+                            .opacity(0.97)
+                            .overlay(shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75))
+                            .shadow(color: .black.opacity(0.45), radius: 12, y: 5)
+                            .allowsHitTesting(false)
+                    }
+            case .accessory:
+                content.background {
+                    Capsule().fill(KyroSignature.burgundy.opacity(0.36)).allowsHitTesting(false)
                 }
             }
-            .modifier(NowPlayingBarChrome(style: style))
-            // Card bars float over content: a soft drop shadow separates them from rows and pills.
-            .shadow(color: .black.opacity(style == .card && appearance.selection == .signature ? 0.35 : 0), radius: 10, y: 4)
+        } else {
+            content.modifier(NowPlayingBarChrome(style: style))
+        }
     }
+}
+
+/// Build 140: one layout for the Radio and Podcast mini-players, so artwork,
+/// text and the control line up the same way on every page.
+enum KyroAudioMiniLayout {
+    static func artworkSize(inline: Bool) -> CGFloat { inline ? 32 : 44 }
+    static let artworkDecodeSize: CGFloat = 46
+    static let spacing: CGFloat = 12
+    /// The visible control circle; the tap target stays 44 pt.
+    static let controlSize: CGFloat = 40
+    static func verticalPadding(inline: Bool) -> CGFloat { inline ? 4 : 8 }
+    static let horizontalPadding: CGFloat = 12
+    /// Card margins: inside the page gutters, and a gap above the search bar or pills.
+    static let cardSideMargin: CGFloat = 12
+    static let cardBottomMargin: CGFloat = 6
 }
 #endif

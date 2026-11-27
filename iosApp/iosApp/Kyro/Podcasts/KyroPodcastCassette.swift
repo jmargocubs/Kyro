@@ -31,12 +31,13 @@ struct KyroPodcastMiniPlayer: View {
 
     var body: some View {
         if let entry = player.current {
-            HStack(spacing: 12) {
+            HStack(spacing: KyroAudioMiniLayout.spacing) {
                 Button { player.isShowingNowPlaying = true } label: {
-                    HStack(spacing: 10) {
-                        KyroPodcastArtwork(url: entry.artwork, size: isInline ? 34 : 46, decodeSize: 46)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.episode.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    HStack(spacing: KyroAudioMiniLayout.spacing) {
+                        KyroPodcastArtwork(url: entry.artwork, size: KyroAudioMiniLayout.artworkSize(inline: isInline),
+                                           decodeSize: 46) // KyroAudioMiniLayout.artworkDecodeSize
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(entry.episode.title).font(.subheadline.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
                             if !isInline {
                                 Text(player.state == .failed ? "Playback failed · tap Play to retry" : entry.showTitle)
                                     .font(.footnote).foregroundStyle(KyroSignature.secondary).lineLimit(1)
@@ -47,11 +48,11 @@ struct KyroPodcastMiniPlayer: View {
                 }.buttonStyle(.plain).accessibilityHint("Opens podcast player")
                 KyroPodcastMiniTransport(player: player)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, isInline ? 4 : 8)
+            .padding(.horizontal, KyroAudioMiniLayout.horizontalPadding)
+            .padding(.vertical, KyroAudioMiniLayout.verticalPadding(inline: isInline))
             .modifier(KyroAudioMiniChrome(style: style))
-            .padding(.horizontal, style == .card ? 16 : 0)
-            .padding(.bottom, style == .card ? 8 : 0)
+            .padding(.horizontal, style == .card ? KyroAudioMiniLayout.cardSideMargin : 0)
+            .padding(.bottom, style == .card ? KyroAudioMiniLayout.cardBottomMargin : 0)
             .accessibilityIdentifier("kyroPodcastMiniPlayer")
         }
     }
@@ -66,8 +67,9 @@ private struct KyroPodcastMiniTransport: View {
         Button(action: player.toggle) {
             Image(systemName: canPause ? "pause.fill" : "play.fill")
                 .font(.body.weight(.semibold))
-                .frame(width: 44, height: 44)
+                .frame(width: KyroAudioMiniLayout.controlSize, height: KyroAudioMiniLayout.controlSize)
                 .modifier(KyroAudioMiniTransportFinish(theme: library.preferences.theme))
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

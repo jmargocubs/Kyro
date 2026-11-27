@@ -351,18 +351,21 @@ struct KyroIPTVMusicPreferences: Codable, Equatable, Sendable {
 
 // MARK: - Playback route
 
-/// How Radio plays an IPTV channel with its audio player (AVFoundation).
-/// AVFoundation plays HLS and plain HTTP audio, and an HLS video stream as
-/// audio when no video layer is attached. It can't read Xtream's raw MPEG-TS,
-/// so an Xtream `.ts` address is tried as HLS (`.m3u8`) first when the account
-/// offers HLS. Anything else falls back to the Live TV player.
+/// Which addresses Radio tries for an IPTV channel, in order.
+///
+/// Build 140: the channel's own address comes first, exactly as Live TV plays
+/// it, read by AetherEngine (`KyroIPTVAudioLoadPlan`). Build 139 put the
+/// Xtream `.m3u8` variant first, even for accounts that never advertised HLS,
+/// because AVPlayer can't read raw MPEG-TS; that swapped in the provider's
+/// on-demand HLS segmenter for the stream other apps play. The HLS variant is
+/// now only a startup fallback, and only when the account lists `m3u8`.
 enum KyroIPTVAudioRoute {
     static func candidates(for streamURL: URL, isXtream: Bool, allowedFormats: [String]) -> [URL] {
         guard let scheme = streamURL.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return [] }
         let ext = streamURL.pathExtension.lowercased()
-        if isXtream, ext == "ts", allowedFormats.isEmpty || allowedFormats.contains("m3u8"),
+        if isXtream, ext == "ts", allowedFormats.contains("m3u8"),
            let hls = replacingExtension(of: streamURL, with: "m3u8") {
-            return [hls, streamURL]
+            return [streamURL, hls]
         }
         return [streamURL]
     }
@@ -378,6 +381,40 @@ enum KyroIPTVAudioRoute {
         guard let dot = path.range(of: ".", options: .backwards) else { return nil }
         components.percentEncodedPath = String(path[..<dot.lowerBound]) + "." + ext
         return components.url
+    }
+}
+
+/// Build 140: channel counts as Radio shows them. The index counts a
+/// category's channels up to a bound, so large counts read "1,000+".
+enum KyroIPTVMusicCounts {
+    static func label(_ count: Int) -> String {
+        switch count {
+        case ..<1: "No channels"
+        case 1: "1 channel"
+        case 1_000...: "1,000+ channels"
+        default: "\(count) channels"
+        }
+    }
+}
+
+/// Build 140: how `KyroIPTVAudioEngine` loads one IPTV address. Kept free of
+/// AetherEngine types so the host checks can verify it.
+struct KyroIPTVAudioLoadPlan: Equatable, Sendable {
+    enum Route: String, Sendable { case transportStream = "ts", hls }
+
+    let route: Route
+    /// Always live: no seeking, and a dropped connection is reconnected
+    /// rather than treated as the end of the stream.
+    let isLive = true
+    /// Audio only: the video in a music channel is never decoded.
+    let audioOnly = true
+    /// FFmpeg's audio host for every route. It reads raw MPEG-TS (AVPlayer
+    /// can't), decodes AAC, MP2, AC-3 and E-AC-3 at the source's own rate, and
+    /// has no Now Playing session that would compete with Radio's.
+    let softwareDecode = true
+
+    init(url: URL) {
+        route = url.pathExtension.lowercased() == "m3u8" ? .hls : .transportStream
     }
 }
 
