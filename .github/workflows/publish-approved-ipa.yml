@@ -24,12 +24,15 @@ concurrency:
 
 jobs:
   publish:
-    # Only the two trusted Kyro branches can publish. Pull requests, forks, and
-    # every other branch are deliberately excluded.
+    # Cloud builds run on the default branch and pick their source with `ref`, so
+    # the real gate is the source_ref allowlist in "Inspect IPA" below. Pull
+    # requests, forks, and every other branch are deliberately excluded.
     if: >-
       ${{ github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        (github.event.workflow_run.head_branch == 'kyro/m1-rebrand' ||
+        github.event.workflow_run.head_branch == 'kyro/ios-recovered' ||
+        github.event.workflow_run.head_branch == 'kyro/tvos-recovered' ||
         github.event.workflow_run.head_branch == 'kyro/tvos' ||
         github.event.workflow_run.head_branch == 'kyro/phase2-stable-integration')) }}
     runs-on: ubuntu-latest
@@ -103,7 +106,9 @@ jobs:
           platform = "tvos" if "AppleTVOS" in supported else "ios"
           phase2_source = metadata.get("source_ref") == "kyro/phase2-stable-integration"
           if platform == "tvos":
-              production_source = metadata.get("source_ref") == "kyro/tvos"
+              # kyro/tvos-recovered is the current Kyro X tvOS line (built on the
+              # device-accepted Build 104; audit 2026-11-27). kyro/tvos stays for history.
+              production_source = metadata.get("source_ref") in ("kyro/tvos", "kyro/tvos-recovered")
               build104_recovery = (
                   metadata.get("source_ref") == "kyro/tvos-build104-recovery"
                   and metadata.get("source_commit") == "f66d9e929cce41c90b67bbeaffaf057f342438d1"
@@ -116,7 +121,7 @@ jobs:
                   raise SystemExit("tvOS bundle/source identity mismatch")
               if f"{app_root}/PlugIns/SiloTVTopShelf.appex/Info.plist" not in names:
                   raise SystemExit("tvOS IPA is missing the Top Shelf extension")
-              catalog, name = "source.json", "Kyro Apple TV"
+              catalog, name = "source.json", "Kyro X tvOS"
           else:
               # kyro/ios-recovered is the current iOS line (Build 127 stable tag,
               # Build 136 published); kyro/m1-rebrand stays allowed for history.
@@ -125,7 +130,7 @@ jobs:
                   raise SystemExit("iOS bundle/source identity mismatch")
               if "iPhoneOS" not in supported:
                   raise SystemExit("iOS IPA does not declare iPhoneOS")
-              catalog, name = "source.json", "Kyro"
+              catalog, name = "source.json", "Kyro X iOS"
           if "arm64" not in __import__("subprocess").check_output(["file", str(temp_dir / "app-bin")], text=True):
               raise SystemExit("IPA is not arm64")
           sha = hashlib.sha256(ipa.read_bytes()).hexdigest()
@@ -283,6 +288,10 @@ jobs:
                   tvos_path.write_text(json.dumps(tvos_data, indent=2) + "\n")
           PY
           cd "$RUNNER_TEMP/catalog"
+          # Catalog policy guard (feather-apps): only the four active listings may be
+          # present; retired Kyro Labs / independent Kyro X listings are refused.
+          python3 scripts/validate_source.py "$CATALOG"
+          if [ -f tvos-source.json ]; then python3 scripts/validate_source.py tvos-source.json; fi
           git config user.name kyro-release-bot
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add "$CATALOG"
