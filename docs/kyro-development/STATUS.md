@@ -1,15 +1,15 @@
 # Kyro Development & Platform Status
 
-**Last Updated:** 2026-11-18  
+**Last Updated:** 2026-11-27  
 **Repository:** `<repo>`  
 **Tracking System Version:** 1.2.0
 
 ## Current stable iOS baseline
 
-**Kyro X iOS Build 127** (`1.0.127`, `e2364732e67514843c60687d793f5c040002b3a1`,
-`kyro/ios-recovered`) is physically accepted on iPhone 16 Plus. All 16 checks
+**Kyro X iOS Build 141** (`1.0.141`, `2ad764bb65c7773721846961d13642d553fbc299`,
+`kyro/ios-recovered`) is physically accepted on iPhone 16 Plus. All 15 checks
 passed. The unsigned IPA and catalog listing are published as **Kyro X — Build
-127**. See [BUILD127-ACCEPTANCE.md](BUILD127-ACCEPTANCE.md).
+141**. Tag: `kyro-ios-v1.0.141-build141-stable`. See [BUILD141-ACCEPTANCE.md](BUILD141-ACCEPTANCE.md) / [kyro-build141-acceptance.md](../kyro-build141-acceptance.md).
 
 ---
 

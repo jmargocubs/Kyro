@@ -1,6 +1,6 @@
 # Kyro Release & Artifact History
 
-**Last Updated:** 2026-11-25  
+**Last Updated:** 2026-11-27  
 **Tracking System Version:** 1.2.0
 
 ---
@@ -39,7 +39,9 @@ release_record:
 
 ## 2. Release Candidates (Ready for Packaging)
 
-| **Kyro X iOS Build 127**<br>`Kyro-iOS-v1.0.127-Build127-Unsigned.ipa` | iOS | Silo | 127 | `kyro/ios-recovered`<br>`e2364732e67514843c60687d793f5c040002b3a1` | Sports Settings, directory search/filtering, Home integration and soccer coverage | **Physically accepted on iPhone 16 Plus; all 16 checks passed. Stable baseline.** Published release and catalog entry: `Kyro X — Build 127`. SHA-256 `eb94f05b7f74b03b9102b10d60c392fe7923e6841393a8c45485e639e5419a83`; 44,413,077 bytes; unsigned arm64; minimum iOS 18.0. See [BUILD127-ACCEPTANCE.md](BUILD127-ACCEPTANCE.md). |
+| **Kyro X iOS Build 141**<br>`Kyro-iOS-v1.0.141-Build141-Unsigned.ipa` | iOS | Silo | 141 | `kyro/ios-recovered`<br>`2ad764bb65c7773721846961d13642d553fbc299` | Music Source Identity, System Playback Controls (Lock Screen pause/play/reconnect), Primary Navigation customization (reorder/pin up to 4 tabs, simultaneous Radio + Podcasts), AetherEngine audio-only IPTV music | **Physically accepted on iPhone 16 Plus; all 15 checks passed. Current stable baseline.** Published release and catalog entry: `Kyro X — Build 141`. SHA-256 `2602473b8ae5654021d610cf02c7027bdbb4fb40ca074962e901e504ec873212`; 45,676,615 bytes; unsigned arm64; minimum iOS 18.0. Tag: `kyro-ios-v1.0.141-build141-stable`. See [BUILD141-ACCEPTANCE.md](BUILD141-ACCEPTANCE.md) / [kyro-build141-acceptance.md](../kyro-build141-acceptance.md). |
+
+| **Kyro X iOS Build 127**<br>`Kyro-iOS-v1.0.127-Build127-Unsigned.ipa` | iOS | Silo | 127 | `kyro/ios-recovered`<br>`e2364732e67514843c60687d793f5c040002b3a1` | Sports Settings, directory search/filtering, Home integration and soccer coverage | **Physically accepted on iPhone 16 Plus; all 16 checks passed. Prior stable baseline.** Published release and catalog entry: `Kyro X — Build 127`. SHA-256 `eb94f05b7f74b03b9102b10d60c392fe7923e6841393a8c45485e639e5419a83`; 44,413,077 bytes; unsigned arm64; minimum iOS 18.0. See [BUILD127-ACCEPTANCE.md](BUILD127-ACCEPTANCE.md). |
 
 | Release Candidate | Platform | Target | Build No. | Source Branch & Commit | Included Features | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
