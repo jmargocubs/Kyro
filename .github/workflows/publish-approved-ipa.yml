@@ -7,9 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: "Existing successful Cloud unsigned IPA run ID to recover"
+        description: "Existing successful Cloud unsigned IPA run ID to publish/recover"
         required: true
         type: string
+      publish_approved:
+        description: "That build is approved for distribution (required)"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,9 +32,13 @@ jobs:
     # Cloud builds run on the default branch and pick their source with `ref`, so
     # the real gate is the source_ref allowlist in "Inspect IPA" below. Pull
     # requests, forks, and every other branch are deliberately excluded.
+    # Approval gate: a cloud build publishes only if it was started with
+    # publish_approved (recorded in its run name and BUILD-INFO); a manual
+    # recovery run needs its own publish_approved input.
     if: >-
-      ${{ github.event_name == 'workflow_dispatch' ||
+      ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_approved) ||
       (github.event.workflow_run.conclusion == 'success' &&
+       contains(github.event.workflow_run.display_title, '[publish-approved]') &&
        (github.event.workflow_run.head_branch == 'kyro/m1-rebrand' ||
         github.event.workflow_run.head_branch == 'kyro/ios-recovered' ||
         github.event.workflow_run.head_branch == 'kyro/tvos-recovered' ||
@@ -145,206 +154,38 @@ jobs:
                   handle.write(f"{key}={value}\n")
           PY
 
-      - name: Create or verify Kyro pre-release
+      - name: Confirm the build was approved for distribution
+        shell: bash
+        env:
+          PLATFORM: ${{ steps.metadata.outputs.platform }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            grep -qx 'publish_approved: true' "$RUNNER_TEMP/build/BUILD-INFO-$PLATFORM.txt" || {
+              echo "::error::build was not started with publish_approved; nothing published"; exit 1; }
+          fi
+
+      # Same publisher as local Mac publishing (feather-apps scripts/publish_ipa.py):
+      # identical tag, release title/notes, asset name, download URL and catalog entry.
+      - name: Publish release and update the Kyro X catalog entry
         shell: bash
         env:
           IPA: ${{ steps.metadata.outputs.ipa }}
-          SHA: ${{ steps.metadata.outputs.sha }}
-          IPA_SIZE: ${{ steps.metadata.outputs.ipa_size }}
           PLATFORM: ${{ steps.metadata.outputs.platform }}
           VERSION: ${{ steps.metadata.outputs.version }}
           BUILD: ${{ steps.metadata.outputs.build }}
           SOURCE_SHA: ${{ steps.metadata.outputs.source_sha }}
         run: |
           set -euo pipefail
-          tag="kyro-${PLATFORM}-v${VERSION}-build${BUILD}-rc1"
-          title="Kyro ${PLATFORM} ${VERSION} Build ${BUILD}"
-          # Cloud unsigned IPA names include platform ("…-ios-unsigned-arm64.ipa").
-          # Feather / NullSign catalog URLs for iOS expect Kyro-vX-BuildN-Unsigned.ipa.
-          if [ "$PLATFORM" = ios ]; then
-            published="$RUNNER_TEMP/Kyro-v${VERSION}-Build${BUILD}-Unsigned.ipa"
-            cp "$IPA" "$published"
-            IPA="$published"
-          fi
-          checksum="$RUNNER_TEMP/$(basename "$IPA").sha256"
-          printf '%s  %s\n' "$SHA" "$(basename "$IPA")" > "$checksum"
-          if gh release view "$tag" --repo "$KYRO_REPO" >/dev/null 2>&1; then
-            test "$(gh release view "$tag" --repo "$KYRO_REPO" --json isPrerelease --jq .isPrerelease)" = true
-          else
-            gh release create "$tag" "$IPA" "$checksum" --repo "$KYRO_REPO" --target "$SOURCE_SHA" --prerelease --title "$title" --notes "UNSIGNED PRE-RELEASE — NOT YET DEVICE VERIFIED. Users must sign and sideload this ${PLATFORM} application themselves. SHA-256: $SHA"
-          fi
-
-      - name: Update feather-apps catalog
-        id: catalog
-        shell: bash
-        env:
-          IPA: ${{ steps.metadata.outputs.ipa }}
-          PLATFORM: ${{ steps.metadata.outputs.platform }}
-          CATALOG: ${{ steps.metadata.outputs.catalog }}
-          APP_NAME: ${{ steps.metadata.outputs.name }}
-          BUNDLE_ID: ${{ steps.metadata.outputs.bundle_id }}
-          VERSION: ${{ steps.metadata.outputs.version }}
-          BUILD: ${{ steps.metadata.outputs.build }}
-          MIN_OS: ${{ steps.metadata.outputs.min_os }}
-          SHA: ${{ steps.metadata.outputs.sha }}
-          IPA_SIZE: ${{ steps.metadata.outputs.ipa_size }}
-        run: |
-          set -euo pipefail
-          # PARTIAL PUBLICATION FAILURE on catalog 403: Kyro prerelease already
-          # exists above and must not be deleted. Fail this job clearly and leave
-          # recovery to workflow_dispatch once secrets/permissions are fixed.
+          app=kyro; [ "$PLATFORM" = tvos ] && app=kyro-tvos
           clone_err="$RUNNER_TEMP/catalog-clone.err"
-          if ! git clone "https://x-access-token:$GH_TOKEN@github.com/$CATALOG_REPO.git" "$RUNNER_TEMP/catalog" 2>"$clone_err"; then
-            if grep -Eq '403|Authentication failed|Permission denied' "$clone_err"; then
-              {
-                echo "### PARTIAL PUBLICATION FAILURE"
-                echo "GitHub release creation/verification succeeded, but catalog publication failed (feather-apps clone 403)."
-                echo "The Kyro prerelease was preserved."
-                echo "Recovery: fix \`secrets.KYRO\` contents:write access to \`$CATALOG_REPO\`, then re-run this workflow with source_run_id=\`$RUN_ID\`."
-              } | tee -a "$GITHUB_STEP_SUMMARY"
-              echo "::error::PARTIAL PUBLICATION FAILURE — release preserved; catalog not updated (clone 403). Retry via workflow_dispatch source_run_id=$RUN_ID"
-              echo "deferred=true" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            cat "$clone_err" >&2
+          if ! git clone --depth 50 "https://x-access-token:$GH_TOKEN@github.com/$CATALOG_REPO.git" "$RUNNER_TEMP/catalog" 2>"$clone_err"; then
+            sed -E 's#x-access-token:[^@]*@#x-access-token:***@#g' "$clone_err" >&2
+            echo "::error::cannot clone $CATALOG_REPO with secrets.KYRO; nothing published. Fix the secret, then re-run with source_run_id=$RUN_ID"
             exit 1
           fi
-          python3 - "$RUNNER_TEMP/catalog/$CATALOG" "$APP_NAME" "$BUNDLE_ID" "$PLATFORM" "$VERSION" "$BUILD" "$MIN_OS" "$SHA" "$IPA_SIZE" <<'PY'
-          import json, pathlib, sys
-          path, name, bundle_id, platform, version, build, min_os, sha, ipa_size = sys.argv[1:]
-          build_i = int(build)
-          listing_sep = " — Build "
-          listing_name = f"{name}{listing_sep}{build}"
-          data = json.loads(pathlib.Path(path).read_text())
-
-          def find_app(apps):
-              for candidate in apps:
-                  if candidate.get("bundleIdentifier") == bundle_id:
-                      return candidate
-              for candidate in apps:
-                  current = candidate.get("name") or ""
-                  if current == name or current.startswith(name + listing_sep):
-                      return candidate
-              raise SystemExit(f"catalog app not found for bundle {bundle_id} / name {name}")
-
-          app = find_app(data["apps"])
-          if app.get("bundleIdentifier") not in (None, bundle_id):
-              raise SystemExit(f"bundle mismatch for {name}: {app.get('bundleIdentifier')} != {bundle_id}")
-          app["bundleIdentifier"] = bundle_id
-          url = f"https://github.com/jmargocubs/Kyro/releases/download/kyro-{platform}-v{version}-build{build}-rc1/" + (f"Kyro-{version}-{build}-tvos-unsigned-arm64.ipa" if platform == "tvos" else f"Kyro-v{version}-Build{build}-Unsigned.ipa")
-          expected = {"version": version, "buildVersion": build, "downloadURL": url, "size": int(ipa_size), "minOSVersion": min_os}
-          for old in app.get("versions", []):
-              if old.get("version") == version and old.get("buildVersion") == build:
-                  if old.get("downloadURL") != url or old.get("size") != expected["size"]:
-                      raise SystemExit("existing version/build differs; refusing overwrite")
-                  # Keep listing title aligned with the head build even on resume.
-                  app["name"] = listing_name
-                  pathlib.Path(path).write_text(json.dumps(data, indent=2) + "\n")
-                  print("catalog entry already present")
-                  raise SystemExit(0)
-          # Build numbers are compared globally so a new 1.0.104 row cannot land
-          # after legacy 1.0.0/105 or aligned 1.0.105/105. Exact version+build
-          # resume is handled above; never rewrite older rows.
-          existing_builds = []
-          for row in app.get("versions", []):
-              try:
-                  existing_builds.append(int(row.get("buildVersion", 0)))
-              except (TypeError, ValueError):
-                  continue
-          if any(b > build_i for b in existing_builds):
-              raise SystemExit("refusing platform catalog downgrade")
-          if any(b == build_i for b in existing_builds):
-              raise SystemExit("refusing duplicate buildVersion under a different version string")
-          app["versions"].insert(0, expected)
-          app["size"] = expected["size"]
-          app["name"] = listing_name
-          pathlib.Path(path).write_text(json.dumps(data, indent=2) + "\n")
-
-          if platform == "tvos":
-              tvos_path = pathlib.Path(path).parent / "tvos-source.json"
-              if tvos_path.exists():
-                  tvos_data = json.loads(tvos_path.read_text())
-                  tvos_app = find_app(tvos_data.get("apps", []))
-                  already_in_tvos = False
-                  for old in tvos_app.get("versions", []):
-                      if old.get("version") == version and old.get("buildVersion") == build:
-                          already_in_tvos = True
-                          break
-                  if not already_in_tvos:
-                      tvos_builds = []
-                      for row in tvos_app.get("versions", []):
-                          try:
-                              tvos_builds.append(int(row.get("buildVersion", 0)))
-                          except (TypeError, ValueError):
-                              continue
-                      if any(b > build_i for b in tvos_builds):
-                          raise SystemExit("refusing tvos-source catalog downgrade")
-                      if any(b == build_i for b in tvos_builds):
-                          raise SystemExit("refusing duplicate tvos buildVersion under a different version string")
-                      tvos_app["versions"].insert(0, expected)
-                      tvos_app["size"] = expected["size"]
-                  tvos_app["name"] = listing_name
-                  tvos_app["bundleIdentifier"] = bundle_id
-                  tvos_path.write_text(json.dumps(tvos_data, indent=2) + "\n")
-          PY
           cd "$RUNNER_TEMP/catalog"
-          # Catalog policy guard (feather-apps): only the four active listings may be
-          # present; retired Kyro Labs / independent Kyro X listings are refused.
-          python3 scripts/validate_source.py "$CATALOG"
-          if [ -f tvos-source.json ]; then python3 scripts/validate_source.py tvos-source.json; fi
           git config user.name kyro-release-bot
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add "$CATALOG"
-          if [ "$PLATFORM" = tvos ] && [ -f tvos-source.json ]; then
-            git add tvos-source.json
-          fi
-          if git diff --cached --quiet; then
-            echo "No catalog content changes to commit"
-            echo "deferred=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git commit -m "Update Kyro $PLATFORM to Build $BUILD"
-
-          # Rebase/retry push softens races with other catalog writers until the
-          # feather-apps cross-repo catalog-write lock is adopted.
-          attempts=0
-          push_err="$RUNNER_TEMP/catalog-push.err"
-          until [ "$attempts" -ge 5 ]; do
-            attempts=$((attempts + 1))
-            if git push origin HEAD:main 2>"$push_err"; then
-              echo "deferred=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if grep -Eq '403|Authentication failed|Permission denied' "$push_err"; then
-              {
-                echo "### PARTIAL PUBLICATION FAILURE"
-                echo "GitHub release creation/verification succeeded, but catalog publication failed (feather-apps push 403)."
-                echo "The Kyro prerelease was preserved."
-                echo "Recovery: fix \`secrets.KYRO\` access to \`$CATALOG_REPO\`, then re-run this workflow with source_run_id=\`$RUN_ID\`."
-              } | tee -a "$GITHUB_STEP_SUMMARY"
-              echo "::error::PARTIAL PUBLICATION FAILURE — release preserved; catalog not updated (push 403). Retry via workflow_dispatch source_run_id=$RUN_ID"
-              echo "deferred=true" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            echo "Push attempt $attempts failed; rebasing onto origin/main"
-            cat "$push_err" >&2 || true
-            git fetch origin main
-            git rebase origin/main
-            # Re-apply catalog mutation after rebase if needed is complex; refuse
-            # silently losing guards by stopping when rebase conflicts.
-            if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
-              echo "::error::catalog rebase conflict; refusing automatic overwrite"
-              git rebase --abort || true
-              exit 1
-            fi
-            # After rebase, ensure our commit is still present / recreate if fast-forward emptied it.
-            if ! git diff --quiet origin/main..HEAD; then
-              continue
-            fi
-            # Remote already has our commit equivalent or we need to rebuild — stop safely.
-            echo "::error::catalog push race could not be resolved safely; retry via workflow_dispatch"
-            exit 1
-          done
-          echo "::error::catalog push failed after retries"
-          cat "$push_err" >&2 || true
-          exit 1
+          python3 scripts/publish_ipa.py "$IPA" --app "$app" --version "$VERSION" --build "$BUILD" \
+            --source-commit "$SOURCE_SHA" --approved
