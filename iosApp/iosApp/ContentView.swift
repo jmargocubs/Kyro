@@ -2498,6 +2498,20 @@ struct MainTabDestination: Identifiable, Equatable {
 /// These identifiers deliberately reuse the existing Home, category and For
 /// You IDs so SwiftUI retains those roots when the test shell is enabled.
 #if os(iOS)
+func kyroUnpinnedRoute(for destination: KyroGlobalDestination) -> Route? {
+    switch destination {
+    case .home: nil
+    case .movies: .secondaryDestination(.libraryCategory(.movies))
+    case .series: .secondaryDestination(.libraryCategory(.series))
+    case .liveTV: .liveTV
+    case .sports: .secondaryDestination(.sports)
+    case .radio: .secondaryDestination(.radio)
+    case .podcasts: .secondaryDestination(.podcasts)
+    case .forYou: .secondaryDestination(.app(.recommendations))
+    case .favorites: .favorites
+    }
+}
+
 func kyroGlobalDestination(for id: MainTabDestinationID) -> KyroGlobalDestination? {
     switch id {
     case .app(.home): .home
@@ -2922,9 +2936,9 @@ struct MainTabView: View {
         if let global = kyroGlobalDestination(for: requested),
            kyroNavigation.selectIfTab(global) {
             // Selected the tab.
-        } else if kyroGlobalDestination(for: requested) == .forYou {
-            // For You is not the fourth tab: open it as a pushed page.
-            router.navigate(to: .secondaryDestination(.app(.recommendations)))
+        } else if let global = kyroGlobalDestination(for: requested),
+                  let route = kyroUnpinnedRoute(for: global) {
+            router.navigate(to: route)
         } else if let routeID = kyroSecondaryRouteID(
             for: tab,
             visibleDestinations: projectedDestinations
@@ -3192,7 +3206,6 @@ struct MainTabView: View {
         #elseif os(iOS)
         usesGlobalClassicNavigation
             ? kyroNavigation.tabDestinations
-                .filter { $0 != .liveTV }
                 .map(MainTabDestination.global)
             : projectedDestinations
         #else
@@ -3249,7 +3262,7 @@ struct MainTabView: View {
 #endif
 
     /// Secondary roots continue to use Silo's existing projection and
-    /// capability gates. Only the five fixed Kyro destinations are excluded.
+    /// capability gates. Add the supported roots not pinned to the bar.
 #if os(iOS)
     private var moreMenuContext: KyroMoreMenuContext? {
         guard usesGlobalClassicNavigation else { return nil }
@@ -3270,14 +3283,11 @@ struct MainTabView: View {
                 router.navigate(to: .secondaryDestination(routeID))
             }
         }
-        if !kyroNavigation.tabDestinations.contains(.sports) {
-            items.append(KyroMoreMenuItem(id: "kyro-sports", title: "Sports", systemImage: "trophy") {
-                router.navigate(to: .secondaryDestination(.sports))
-            })
-        }
-        for audio in KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: kyroNavigation.tabDestinations) {
-            items.append(KyroMoreMenuItem(id: "kyro-\(audio.id)", title: audio.title, systemImage: audio.choice.systemImage) {
-                audio.open(router: router)
+        for destination in KyroGlobalDestination.moreDestinations(primary: kyroNavigation.tabDestinations) {
+            let item = MainTabDestination.global(destination)
+            guard let route = kyroUnpinnedRoute(for: destination) else { continue }
+            items.append(KyroMoreMenuItem(id: "kyro-\(destination.rawValue)", title: item.title, systemImage: item.icon) {
+                router.navigate(to: route)
             })
         }
         return KyroMoreMenuContext(items: items)
@@ -3861,8 +3871,13 @@ struct MainTabView: View {
             secondaryDestinationContent(for: MainTabDestinationID(id))
         case .liveTV:
             // Pushed Live TV (the earlier shell): its routes go on the same shell path.
+            #if os(iOS)
+            LiveTVView(service: .shared, isPushedFromShell: true)
+                .environment(\.liveTVRootPath, $router.path)
+            #else
             LiveTVView(service: .shared)
                 .environment(\.liveTVRootPath, $router.path)
+            #endif
         case .libraryCollection(let libraryId, let collectionId, let title, let kind, let mediaScope):
             LibraryCollectionDetailView(
                 libraryId: libraryId,

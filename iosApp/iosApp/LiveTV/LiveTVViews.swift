@@ -247,6 +247,9 @@ enum LiveTVNavigationPolicy {
 
 struct LiveTVView: View {
     @Bindable var service: LiveTVService
+    #if os(iOS)
+    var isPushedFromShell = false
+    #endif
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     /// The shell stack's path. Categories and the channel browser are typed routes on it, resolved
@@ -268,7 +271,7 @@ struct LiveTVView: View {
     /// Kyro's unified navigation hosts Live TV as a tab, with nothing behind it to go back to.
     private var isTabRoot: Bool {
         #if os(iOS)
-        KyroUnifiedNavigation.isActive
+        KyroUnifiedNavigation.isActive && !isPushedFromShell
         #else
         false
         #endif

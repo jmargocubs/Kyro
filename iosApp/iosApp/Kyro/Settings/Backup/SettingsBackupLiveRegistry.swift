@@ -131,11 +131,7 @@ enum SettingsBackupLiveRegistry {
             "features.watchParty", .features, "Watch Party",
             read: { d.readWatchPartyEnabled() }, write: { d.writeWatchPartyEnabled($0) }))
 
-        settings.append(enumSetting(
-            "navigation.fourthTab", .navigation, "Fourth tab",
-            label: { (tab: KyroFourthTab) in tab.title },
-            read: { d.navigation.preferences.fourthTab },
-            write: { d.navigation.preferences.fourthTab = $0 }))
+        settings.append(KyroPrimaryTabsBackup.setting(store: d.navigation))
         settings.append(boolSetting(
             "navigation.showAudiobooks", .navigation, "Show audiobooks",
             read: { d.appNavigation.showAudiobooks },

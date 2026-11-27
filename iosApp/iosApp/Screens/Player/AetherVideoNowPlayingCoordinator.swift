@@ -91,6 +91,15 @@ final class SharedNowPlayingArbiter {
     /// `MPNowPlayingInfoCenter.default().nowPlayingInfo` instead. A restore
     /// must re-enable every command its owner drives.
     func releaseSharedCenters(_ owner: AnyObject) {
+        #if os(iOS)
+        prune()
+        if !isCurrentClaimant(owner) {
+            // A suspended owner may stop while another source is playing.
+            // Remove only its claim, leaving the current targets and info alone.
+            claims.removeAll { $0.owner === owner }
+            return
+        }
+        #endif
         Self.disableTransportCommands(on: MPRemoteCommandCenter.shared())
         prune()
         claims.removeAll { $0.owner === owner }

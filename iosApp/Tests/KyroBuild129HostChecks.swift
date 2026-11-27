@@ -251,7 +251,7 @@ enum KyroBuild129HostChecks {
         let moreEnvRange = content.range(of: ".environment(\\.kyroMoreMenu, moreMenuContext)")!.lowerBound
         check(moreEnvRange > headerOverlayRange && moreEnvRange > statusOverlayRange,
               "ContentView places .environment(\\.kyroMoreMenu, moreMenuContext) outside KyroAppHeader and statusColumnBar overlays")
-        check(content.contains("KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: kyroNavigation.tabDestinations)"),
+        check(content.contains("KyroGlobalDestination.moreDestinations(primary: kyroNavigation.tabDestinations)"),
               "More menu checks whether Radio is already the fourth tab")
         check(content.contains("kyroSidebarRadio"),
               "iPad sidebar exposes Radio")

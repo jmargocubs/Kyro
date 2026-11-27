@@ -495,12 +495,12 @@ struct KyroRadioSourcesShelf: View {
                 KyroAudioShelfHeader(title: "Music Sources", caption: "Internet Radio and your IPTV providers")
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: 12) {
-                        tile(title: "Internet Radio", subtitle: "Radio Browser", symbol: "radio", action: openInternetRadio)
+                        tile(title: "Internet Radio", subtitle: "Radio Browser", collection: nil, action: openInternetRadio)
                         ForEach(collections) { collection in
                             let count = library.count(collection)
                             tile(title: collection.title,
                                  subtitle: "\(KyroIPTVMusicCounts.label(count)) · \(library.providerNames(collection).joined(separator: ", "))",
-                                 symbol: collection.symbol) { openCollection(collection) }
+                                 collection: collection) { openCollection(collection) }
                         }
                     }
                     .padding(.horizontal, 20)
@@ -513,16 +513,10 @@ struct KyroRadioSourcesShelf: View {
         }
     }
 
-    private func tile(title: String, subtitle: String, symbol: String, action: @escaping () -> Void) -> some View {
+    private func tile(title: String, subtitle: String, collection: KyroMusicCollection?, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             KyroAudioArtworkTile(title: title, subtitle: subtitle, size: 132) {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(LinearGradient(colors: [KyroSignature.crimsonDeep, KyroSignature.night], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .overlay {
-                        Image(systemName: symbol).font(.system(size: 44, weight: .semibold)).foregroundStyle(.white)
-                    }
-                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(KyroSignature.border))
-                    .frame(width: 132, height: 132)
+                KyroMusicSourceCover(style: .style(for: collection))
             }
         }
         .buttonStyle(.plain)

@@ -65,6 +65,11 @@ struct KyroRadioPlaybackMachine: Equatable, Sendable {
 
     var isActive: Bool { state.isActive }
 
+    /// Pausing drops the live connection, not the system-audio session.
+    /// A parked station can reconnect at the live edge without losing its
+    /// Lock Screen entry. Yield and Stop release the binding separately.
+    var retainsAudioForSystemTransport: Bool { isActive || state == .paused }
+
     /// A listener chose a station.
     mutating func play(_ station: KyroRadioStation) -> [Effect] {
         self.station = station

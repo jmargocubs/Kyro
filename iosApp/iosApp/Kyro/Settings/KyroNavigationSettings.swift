@@ -1,14 +1,13 @@
 import SwiftUI
 
-/// Settings → Navigation: the tab between Series and Live TV. Saved on this device only, with the
-/// rest of Kyro's global navigation preferences.
+/// Settings → Navigation: primary destination selection and order.
 enum KyroNavigationSettingsEntry {
     static let title = "Navigation"
-    static let subtitle = "Choose the fourth tab"
+    static let subtitle = "Choose and reorder primary destinations"
     static let systemImage = "square.grid.3x1.below.line.grid.1x2"
 
     /// Words that find this row in the Settings search field.
-    static let searchTerms = ["navigation", "tab", "tab bar", "sports", "for you", "favorites", "radio", "podcasts"]
+    static let searchTerms = ["navigation", "tab", "tab bar", "primary destinations", "movies", "series", "live tv", "sports", "for you", "favorites", "radio", "podcasts"]
 
     static func matches(_ query: String) -> Bool {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -42,7 +41,7 @@ struct KyroNavigationSettingsRow: View {
                 title: KyroNavigationSettingsEntry.title,
                 subtitle: KyroNavigationSettingsEntry.subtitle,
                 systemImage: KyroNavigationSettingsEntry.systemImage,
-                value: store.preferences.fourthTab.title
+                value: "\(store.tabDestinations.count) tabs"
             )
         }
         .accessibilityIdentifier("kyroSettingsNavigation")
@@ -57,24 +56,54 @@ struct KyroNavigationSettingsSection: View {
 
 struct KyroNavigationSettingsView: View {
     @Bindable var store: KyroGlobalNavigationStore
+    private var items: [KyroGlobalDestination] { store.preferences.primaryTabs.destinations }
 
     var body: some View {
         Form {
-            Section {
-                ForEach(KyroFourthTab.allCases) { choice in
-                    Button {
-                        store.preferences.fourthTab = choice
-                    } label: {
-                        row(for: choice)
+            Section("Preview") {
+                HStack(alignment: .top, spacing: 4) {
+                    ForEach(store.tabDestinations) { destination in
+                        VStack(spacing: 5) {
+                            Image(systemName: destination.presentation.icon).font(.title3)
+                            Text(destination.presentation.title).font(.caption2).lineLimit(2)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .accessibilityElement(children: .combine)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(store.preferences.fourthTab == choice ? .isSelected : [])
-                    .accessibilityIdentifier("kyroFourthTab-\(choice.rawValue)")
                 }
-            } header: {
-                Text("Fourth Tab")
-            } footer: {
-                Text("Home, Movies, Series and Live TV are always in the tab bar. For You stays in the profile menu whichever tab you choose. Saved on this device.")
+            }
+            Section("Primary Destinations") {
+                HStack {
+                    destinationLabel(.home)
+                    Spacer()
+                    Image(systemName: "lock").foregroundStyle(.secondary).accessibilityLabel("Fixed first tab")
+                }
+                ForEach(Array(items.enumerated()), id: \.element) { index, destination in
+                    selectedRow(destination, at: index)
+                }
+            }
+            Section {
+                ForEach(KyroGlobalDestination.moreDestinations(primary: store.tabDestinations)) { destination in
+                    Button {
+                        store.preferences.primaryTabs.add(destination)
+                    } label: {
+                        HStack {
+                            destinationLabel(destination)
+                            Spacer()
+                            Image(systemName: "plus.circle").accessibilityHidden(true)
+                        }
+                    }
+                    .accessibilityLabel("Add \(destination.presentation.title)")
+                    .disabled(items.count >= KyroPrimaryTabs.limit)
+                }
+            } header: { Text("In More") } footer: {
+                Text(items.count == KyroPrimaryTabs.limit
+                     ? "Remove a primary destination before adding another. Removed destinations stay available in More."
+                     : "Add up to four destinations. Home always stays first.")
+            }
+            Section {
+                Button("Reset to Default") { store.preferences.primaryTabs = .standard }
+                    .disabled(store.preferences.primaryTabs == .standard)
             }
         }
         .scrollContentBackground(.hidden)
@@ -83,34 +112,27 @@ struct KyroNavigationSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func row(for choice: KyroFourthTab) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: choice.systemImage)
-                .font(.title3)
-                .foregroundStyle(KyroTheme.accentInk)
-                .frame(width: 32)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(choice.title).foregroundStyle(KyroTheme.textPrimary)
-                    if choice == .default {
-                        Text("Default")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(KyroTheme.accentInk)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(KyroTheme.selectedFill, in: Capsule())
-                    }
-                }
-                Text(choice.settingsSummary).font(.footnote).foregroundStyle(KyroTheme.textSecondary)
-            }
+    private func selectedRow(_ destination: KyroGlobalDestination, at index: Int) -> some View {
+        HStack(spacing: 4) {
+            destinationLabel(destination)
             Spacer(minLength: 8)
-            if store.preferences.fourthTab == choice {
-                Image(systemName: "checkmark")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(KyroTheme.accentInk)
+            Button("Move \(destination.presentation.title) up", systemImage: "chevron.up") {
+                store.preferences.primaryTabs.move(destination, by: -1)
+            }.disabled(index == 0)
+            Button("Move \(destination.presentation.title) down", systemImage: "chevron.down") {
+                store.preferences.primaryTabs.move(destination, by: 1)
+            }.disabled(index == items.count - 1)
+            Button("Move \(destination.presentation.title) to More", systemImage: "minus.circle") {
+                store.preferences.primaryTabs.remove(destination)
             }
         }
-        .contentShape(Rectangle())
+        .buttonStyle(.borderless)
+        .labelStyle(.iconOnly)
+    }
+
+    private func destinationLabel(_ destination: KyroGlobalDestination) -> some View {
+        Label(destination.presentation.title, systemImage: destination.presentation.icon)
+            .labelStyle(.titleAndIcon)
     }
 }
 #endif

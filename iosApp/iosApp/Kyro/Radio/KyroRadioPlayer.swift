@@ -61,7 +61,9 @@ final class KyroRadioPlayer {
     @ObservationIgnored private var stallWatchdog: Task<Void, Never>?
     @ObservationIgnored private var artwork: MPMediaItemArtwork?
     @ObservationIgnored private var commandTargets: [(MPRemoteCommand, Any)] = []
+    @ObservationIgnored private var commandBinding = UUID()
     @ObservationIgnored private var isBoundToSystemMedia = false
+    @ObservationIgnored private var waitingForIPTVAudio = false
     /// Tells Silo's other engines whether radio holds the shared audio session.
     @ObservationIgnored private var audioClaim: AetherAudioSessionOwnership.Claim?
     @ObservationIgnored private let logger = Logger(
@@ -78,10 +80,11 @@ final class KyroRadioPlayer {
         self.client = client
         metadataDelegate.onTitle = { [weak self] value in self?.receiveStreamTitle(value) }
         audioClaim = AetherAudioSessionOwnership.Claim(isHoldingAudio: { [weak self] in
-            self?.machine.isActive ?? false
+            guard let self else { return false }
+            return self.machine.isActive || (self.isBoundToSystemMedia && self.machine.retainsAudioForSystemTransport)
         })
         KyroPlaybackExclusivity.shared.register(self, source: .radio) { [weak self] in
-            self?.apply { $0.yieldToOtherPlayback() }
+            self?.yieldToOtherPlayback()
         }
         observeAudioSession()
     }
@@ -116,9 +119,19 @@ final class KyroRadioPlayer {
 
     func stop() {
         detailsTask?.cancel()
+        artworkTask?.cancel()
         apply { $0.stop() }
         track = nil
+        artwork = nil
         isShowingNowPlaying = false
+    }
+
+    private func yieldToOtherPlayback() {
+        detailsTask?.cancel()
+        guard isBoundToSystemMedia else { return }
+        apply { $0.yieldToOtherPlayback() }
+        unbindSystemMedia()
+        releaseAudioSessionIfIdle()
     }
 
     // MARK: Transitions
@@ -153,7 +166,6 @@ final class KyroRadioPlayer {
             load(candidate: candidate, generation: generation)
         case .pausePlayer:
             tearDownPlayer()
-            releaseAudioSessionIfIdle()
         case .stopPlayer:
             tearDownPlayer()
             releaseAudioSessionIfIdle()
@@ -214,11 +226,18 @@ final class KyroRadioPlayer {
         guard generation == machine.generation, machine.isActive else { return }
         switch event {
         case .playing:
+            let wasWaiting = waitingForIPTVAudio
+            waitingForIPTVAudio = false
             startupTimeout?.cancel()
             stallWatchdog?.cancel()
             stallWatchdog = nil
             apply { machine in machine.playerStarted(generation: generation); return [] }
+            if wasWaiting { publishNowPlayingInfo() }
         case .waiting:
+            if machine.state == .playing, !waitingForIPTVAudio {
+                waitingForIPTVAudio = true
+                publishNowPlayingInfo()
+            }
             // Startup waits are covered by the startup timeout.
             guard machine.state == .playing, stallWatchdog == nil else { return }
             stallWatchdog = Task { [weak self] in
@@ -287,6 +306,7 @@ final class KyroRadioPlayer {
     }
 
     private func tearDownPlayer() {
+        waitingForIPTVAudio = false
         loadTask?.cancel()
         loadTask = nil
         startupTimeout?.cancel()
@@ -326,7 +346,8 @@ final class KyroRadioPlayer {
     }
 
     private func releaseAudioSessionIfIdle() {
-        guard !machine.isActive, let audioClaim,
+        guard !machine.retainsAudioForSystemTransport || !isBoundToSystemMedia,
+              !machine.isActive, let audioClaim,
               AetherAudioSessionOwnership.canReleaseSharedSession(excluding: audioClaim) else { return }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
@@ -392,21 +413,27 @@ final class KyroRadioPlayer {
     private func registerCommandTargets() {
         guard SharedNowPlayingArbiter.shared.isCurrentClaimant(self) else { return }
         let center = MPRemoteCommandCenter.shared()
+        let binding = commandBinding
         func add(_ command: MPRemoteCommand, _ action: @escaping @MainActor (KyroRadioPlayer) -> Void) {
             command.isEnabled = true
             let target = command.addTarget { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self, self.station != nil else { return .noActionableNowPlayingItem }
+                Task { @MainActor in
+                    guard let self, self.commandBinding == binding, self.station != nil,
+                          SharedNowPlayingArbiter.shared.isCurrentClaimant(self) else { return }
                     action(self)
-                    return .success
                 }
+                return .success
             }
             commandTargets.append((command, target))
         }
         add(center.playCommand) { $0.resume() }
         add(center.pauseCommand) { $0.pause() }
         add(center.togglePlayPauseCommand) { $0.togglePlayPause() }
-        add(center.stopCommand) { $0.stop() }
+        // Exposing Stop alongside Pause lets system live controls present
+        // a destructive Stop affordance. Keep Stop explicit in the player.
+        center.stopCommand.isEnabled = false
+        center.nextTrackCommand.isEnabled = false
+        center.previousTrackCommand.isEnabled = false
         // No seeking, skipping or scrubbing on a live stream.
         center.changePlaybackPositionCommand.isEnabled = false
         center.skipForwardCommand.isEnabled = false
@@ -414,21 +441,26 @@ final class KyroRadioPlayer {
     }
 
     private func removeCommandTargets() {
+        commandBinding = UUID()
         for (command, target) in commandTargets { command.removeTarget(target) }
         commandTargets = []
     }
 
     private func publishNowPlayingInfo() {
         guard isBoundToSystemMedia, SharedNowPlayingArbiter.shared.isCurrentClaimant(self), let station else { return }
+        let isPlayingAudio = machine.state == .playing && !waitingForIPTVAudio
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: track?.title ?? station.name,
             MPMediaItemPropertyArtist: track?.artist ?? (track == nil ? station.location : station.name),
             MPMediaItemPropertyAlbumTitle: station.name,
             MPNowPlayingInfoPropertyIsLiveStream: true,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
-            MPNowPlayingInfoPropertyPlaybackRate: machine.state == .playing ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlayingAudio ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
         ]
         if let artwork { info[MPMediaItemPropertyArtwork] = artwork }
+        // On iOS the system derives playback state from its audio session
+        // and the metadata's playback rate, not the macOS playbackState API.
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 

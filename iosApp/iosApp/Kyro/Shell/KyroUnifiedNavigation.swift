@@ -55,11 +55,9 @@ enum KyroUnifiedNavigation {
         let presentation = presentation ?? LiveTVService.shared.presentation
         if canSelectLiveTVTab(pathIsEmpty: router.path.isEmpty,
                               isPresentingOverShell: router.presentedItemDetail != nil
-                                  || router.presentedPlayer != nil) {
-            store.selectedDestination = .liveTV
-        } else {
-            presentation.presentOverCurrentScreen()
-        }
+                                  || router.presentedPlayer != nil),
+           store.selectIfTab(.liveTV) { return }
+        presentation.presentOverCurrentScreen()
     }
 }
 
@@ -138,8 +136,9 @@ private struct KyroUnifiedNavigationShell: ViewModifier {
     @Bindable var service: LiveTVService
 
     func body(content: Content) -> some View {
+        // The ordered production TabView hosts Live TV directly if pinned.
+        // Playback presentation still outlives the selected tab.
         content
-            .environment(\.kyroShellTab, .liveTV(store: .shared, service: service))
             .fullScreenCover(isPresented: Binding(
                 get: { service.presentation.channel(for: .shell) != nil },
                 set: { if !$0 { service.presentation.coverDismissed(from: .shell) } }

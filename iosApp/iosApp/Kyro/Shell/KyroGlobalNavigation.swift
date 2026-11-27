@@ -18,9 +18,63 @@ enum KyroGlobalDestination: String, Codable, CaseIterable, Identifiable, Sendabl
 
     var id: String { rawValue }
 
+    static var primaryChoices: [Self] { [.movies, .series, .liveTV, .sports, .radio, .podcasts, .forYou, .favorites] }
+
+    static func moreDestinations(primary: [Self]) -> [Self] {
+        primaryChoices.filter { !primary.contains($0) }
+    }
+
+    var presentation: (title: String, icon: String) {
+        switch self {
+        case .home: ("Home", "house")
+        case .movies: ("Movies", "film")
+        case .series: ("Series", "tv")
+        case .liveTV: ("Live TV", "dot.radiowaves.left.and.right")
+        case .sports: (KyroFourthTab.sports.title, KyroFourthTab.sports.systemImage)
+        case .radio: (KyroFourthTab.radio.title, KyroFourthTab.radio.systemImage)
+        case .podcasts: (KyroFourthTab.podcasts.title, KyroFourthTab.podcasts.systemImage)
+        case .forYou: (KyroFourthTab.forYou.title, KyroFourthTab.forYou.systemImage)
+        case .favorites: (KyroFourthTab.favorites.title, KyroFourthTab.favorites.systemImage)
+        }
+    }
+
     /// The five tabs, in order, for a fourth-tab choice.
     static func tabDestinations(fourthTab: KyroFourthTab) -> [Self] {
         [.home, .movies, .series, fourthTab.destination, .liveTV]
+    }
+}
+
+/// Home is implicit; up to four other destinations can be stored, in order.
+struct KyroPrimaryTabs: Equatable, Sendable {
+    static let limit = 4
+    static let standard = Self(legacy: .sports)
+    private(set) var destinations: [KyroGlobalDestination]
+
+    init(legacy: KyroFourthTab) {
+        destinations = Array(KyroGlobalDestination.tabDestinations(fourthTab: legacy).dropFirst())
+    }
+
+    init?(_ destinations: [KyroGlobalDestination]) {
+        guard destinations.count <= Self.limit, Set(destinations).count == destinations.count,
+              destinations.allSatisfy(KyroGlobalDestination.primaryChoices.contains) else { return nil }
+        self.destinations = destinations
+    }
+
+    var all: [KyroGlobalDestination] { [.home] + destinations }
+
+    mutating func add(_ destination: KyroGlobalDestination) {
+        guard let result = Self(destinations + [destination]) else { return }
+        self = result
+    }
+
+    mutating func remove(_ destination: KyroGlobalDestination) {
+        destinations.removeAll { $0 == destination }
+    }
+
+    mutating func move(_ destination: KyroGlobalDestination, by step: Int) {
+        guard let position = destinations.firstIndex(of: destination),
+              step == -1 || step == 1, destinations.indices.contains(position + step) else { return }
+        destinations.swapAt(position, position + step)
     }
 }
 
@@ -106,7 +160,16 @@ struct KyroGlobalNavigationPreferences: Codable, Equatable, Sendable {
     var thumbScrubbing = true
     var allowsDragging = true
     var startingEdge: KyroNavigationEdge = .right
-    var fourthTab: KyroFourthTab = .default
+    var primaryTabs: KyroPrimaryTabs = .standard
+    /// Compatibility with existing debug fixtures and downgrades.
+    var fourthTab: KyroFourthTab {
+        get {
+            if primaryTabs.destinations.indices.contains(2),
+               let value = KyroFourthTab(rawValue: primaryTabs.destinations[2].rawValue) { return value }
+            return .default
+        }
+        set { primaryTabs = .init(legacy: newValue) }
+    }
     private var dockAnchor: KyroNavigationAnchor?
     private var fanAnchor: KyroNavigationAnchor?
 
@@ -156,7 +219,7 @@ struct KyroGlobalNavigationPreferences: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, style, autoCollapse, idleBehavior, hapticsEnabled,
-             thumbScrubbing, allowsDragging, startingEdge, fourthTab, dockAnchor, fanAnchor
+             thumbScrubbing, allowsDragging, startingEdge, fourthTab, primaryTabs, dockAnchor, fanAnchor
     }
 
     init(from decoder: Decoder) throws {
@@ -177,6 +240,10 @@ struct KyroGlobalNavigationPreferences: Codable, Equatable, Sendable {
         allowsDragging = value(.allowsDragging) ?? defaults.allowsDragging
         startingEdge = value(.startingEdge) ?? defaults.startingEdge
         fourthTab = value(.fourthTab) ?? defaults.fourthTab
+        if let destinations: [KyroGlobalDestination] = value(.primaryTabs),
+           let arrangement = KyroPrimaryTabs(destinations) {
+            primaryTabs = arrangement
+        }
         dockAnchor = value(.dockAnchor)
         fanAnchor = value(.fanAnchor)
     }
@@ -192,6 +259,7 @@ struct KyroGlobalNavigationPreferences: Codable, Equatable, Sendable {
         try values.encode(allowsDragging, forKey: .allowsDragging)
         try values.encode(startingEdge, forKey: .startingEdge)
         try values.encode(fourthTab, forKey: .fourthTab)
+        try values.encode(primaryTabs.destinations, forKey: .primaryTabs)
         try values.encodeIfPresent(dockAnchor, forKey: .dockAnchor)
         try values.encodeIfPresent(fanAnchor, forKey: .fanAnchor)
     }
@@ -212,16 +280,18 @@ final class KyroGlobalNavigationStore {
         didSet {
             guard preferences != oldValue else { return }
             savePreferences()
-            // The old fourth tab left the bar: keep the user on that slot.
+            // Keep the current destination if reordered; otherwise use the
+            // nearest remaining slot (or Home when it is the only tab).
             if !tabDestinations.contains(selectedDestination) {
-                selectedDestination = preferences.fourthTab.destination
+                let index = oldValue.primaryTabs.all.firstIndex(of: selectedDestination) ?? 0
+                selectedDestination = tabDestinations[min(index, tabDestinations.count - 1)]
             }
         }
     }
 
     /// The five tabs the bar shows now.
     var tabDestinations: [KyroGlobalDestination] {
-        KyroGlobalDestination.tabDestinations(fourthTab: preferences.fourthTab)
+        preferences.primaryTabs.all
     }
 
     /// Selects a destination only if it is one of the visible tabs.

@@ -164,7 +164,7 @@ enum SettingsBackupGroup: String, CaseIterable, Codable, Sendable, Identifiable 
         switch self {
         case .general: "How Kyro selects a profile when it opens."
         case .calendar: "Which events the Calendar shows."
-        case .navigation: "The fourth tab."
+        case .navigation: "Primary destinations and their order."
         case .liveTVCategories: "How categories look and group."
         case .guideLayout: "List or grid guide on the watch screen."
         case .sports: "Preferred dashboard view for each sport."
