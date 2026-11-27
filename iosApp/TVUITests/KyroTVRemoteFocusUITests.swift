@@ -18,7 +18,9 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     private let moviesControls = ["Search movies", "All Titles", "Continue Watching", "Favorites", "Refresh Catalog"]
 
     override func setUp() {
-        continueAfterFailure = true
+        // Each test launches a fresh page. Stop at its first failed transition so later remote
+        // presses cannot turn one navigation defect into a misleading chain of assertions.
+        continueAfterFailure = false
     }
 
     /// Every failure carries the screen and the app's accessibility tree at that moment.
@@ -87,6 +89,121 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         assertNeverMenu(path + back + afterCategories)
     }
 
+    /// Release gate for the original device failure: every toolbar destination is reached by a
+    /// real remote press, acts on Select, and remains reachable after leaving its content.
+    /// Category cards are not opened here; that handoff has a separate intermittent bug.
+    func testLiveTVToolbarTraversalSelectionAndReturn() {
+        let app = launch(.livetv, dropdowns: true)
+        let fixture = app.staticTexts["harness-fixture-status"]
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH 'ready:' OR label BEGINSWITH 'failed:'"),
+            object: fixture
+        )
+        guard XCTWaiter.wait(for: [ready], timeout: 50) == .completed,
+              fixture.label == "ready: 84 channels, 14 categories" else {
+            XCTFail("Offline Live TV fixture unavailable: \(fixture.exists ? fixture.label : "status missing")")
+            return
+        }
+        guard waitForFocus(app, in: liveTVControls) else {
+            XCTFail("Live TV toolbar did not take focus")
+            return
+        }
+        XCTAssertEqual(focusedLabel(app), "All Channels")
+
+        for expected in liveTVControls.dropFirst() {
+            XCTAssertEqual(press(.right, app, "toolbar right to \(expected)"), expected)
+        }
+        for expected in liveTVControls.dropLast().reversed() {
+            XCTAssertEqual(press(.left, app, "toolbar left to \(expected)"), expected)
+        }
+
+        // Selecting All Channels must enter actual channel content and return to its chip.
+        remote.press(.select)
+        settle()
+        XCTAssertTrue(press(.down, app, "all channels content").hasPrefix("Watch Harness"))
+        XCTAssertEqual(press(.up, app, "all channels up"), "All Channels")
+
+        XCTAssertEqual(press(.right, app, "to categories"), "Categories")
+        remote.press(.select)
+        settle()
+        XCTAssertTrue(app.buttons["harness-category-__all__"].waitForExistence(timeout: 10),
+                      "Selecting Categories reveals genuine category cards")
+        XCTAssertEqual(focusedLabel(app), "Categories", "Select does not remove the toolbar focus")
+        XCTAssertEqual(focusedIdentifierAfterPress(.down, app, "categories content"),
+                       "harness-category-__all__", "Down enters the category grid")
+        XCTAssertEqual(press(.up, app, "categories up"), "Categories")
+
+        XCTAssertEqual(press(.right, app, "to favorites"), "Favorites")
+        remote.press(.select)
+        settle()
+        let favoritesContent = press(.down, app, "favorites content")
+        XCTAssertFalse(favoritesContent == "<none>" || favoritesContent.hasPrefix("Menu ")
+                       || liveTVControls.contains(favoritesContent),
+                       "Selecting Favorites opens focusable content, got \(favoritesContent)")
+        XCTAssertEqual(press(.up, app, "favorites up"), "Favorites")
+
+        XCTAssertEqual(press(.right, app, "to tv guide"), "TV Guide")
+        remote.press(.select)
+        settle(2)
+        XCTAssertFalse(liveTVControls.contains(focusedLabel(app)) || focusedLabel(app) == "<none>",
+                       "Selecting TV Guide opens its screen")
+        remote.press(.menu)
+        settle(1.5)
+        XCTAssertEqual(focusedLabel(app), "TV Guide", "Back returns from Guide to its toolbar chip")
+
+        XCTAssertEqual(press(.right, app, "to providers"), "Providers")
+        remote.press(.select)
+        settle(2)
+        XCTAssertFalse(liveTVControls.contains(focusedLabel(app)) || focusedLabel(app) == "<none>",
+                       "Selecting Providers opens its screen")
+        remote.press(.menu)
+        settle(1.5)
+        XCTAssertEqual(focusedLabel(app), "Providers", "Back returns from Providers to its toolbar chip")
+
+        for expected in liveTVControls.dropLast().reversed() {
+            XCTAssertEqual(pressToolbar(.left, app, "toolbar after sections left to \(expected)"), expected)
+        }
+        for expected in liveTVControls.dropFirst() {
+            XCTAssertEqual(pressToolbar(.right, app, "toolbar after sections right to \(expected)"), expected)
+        }
+        XCTAssertEqual(press(.up, app, "toolbar to menu"), "Menu Live TV")
+        XCTAssertTrue(liveTVControls.contains(press(.down, app, "menu back to toolbar")),
+                      "Down from the menu returns to a reachable toolbar destination")
+    }
+
+    private func focusedIdentifierAfterPress(_ button: XCUIRemote.Button, _ app: XCUIApplication,
+                                              _ note: String) -> String {
+        _ = press(button, app, note)
+        return focusedIdentifier(app)
+    }
+
+    /// Use the app's actual SwiftUI focus binding only when tvOS has visibly moved focus but
+    /// XCUITest's accessibility snapshot reports no focused element. A *new* binding event must
+    /// follow this remote press; an old/stale journal entry cannot make the assertion pass.
+    private func pressToolbar(_ button: XCUIRemote.Button, _ app: XCUIApplication, _ note: String) -> String {
+        let previous = latestLiveTVFocusBinding(app)
+        let accessibility = press(button, app, note)
+        guard accessibility == "<none>", let current = latestLiveTVFocusBinding(app),
+              current != previous, let control = toolbarControl(in: current) else { return accessibility }
+        print("KYRO-FOCUS \(note): accessibility <none>; new LiveTV focus binding -> \(control)")
+        return control
+    }
+
+    private func latestLiveTVFocusBinding(_ app: XCUIApplication) -> String? {
+        let journal = app.descendants(matching: .any)["harness-journal"]
+        guard journal.exists else { return nil }
+        return journal.label.split(separator: "\n").last(where: { $0.contains("binding LiveTV observed") }).map(String.init)
+    }
+
+    private func toolbarControl(in binding: String) -> String? {
+        if binding.contains("TVLiveTVSection.channels") { return "All Channels" }
+        if binding.contains("TVLiveTVSection.categories") { return "Categories" }
+        if binding.contains("TVLiveTVSection.favorites") { return "Favorites" }
+        if binding.contains("TVLiveTVBrowseFocus.guide") { return "TV Guide" }
+        if binding.contains("TVLiveTVBrowseFocus.providers") { return "Providers" }
+        return nil
+    }
+
     /// The pre-refactor shell kept closed dropdowns in the focus graph. Recorded, not asserted,
     /// so a run shows whether the simulator's engine reproduces the device's stuck Right.
     func testLiveTVControlRowUnderUngatedDropdownsForComparison() {
@@ -126,6 +243,12 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         pressInDropdown(.down, "provider row")
         remote.press(.select)
         XCTAssertTrue(selection(app, "Provider Harness VOD"), "The IPTV provider is selectable")
+
+        // Switch back from IPTV VOD to the Silo library through the same native entry route.
+        XCTAssertTrue(focusMoviesTab(app), "back to Menu Movies after provider selection")
+        XCTAssertTrue(enterDropdown(app, "movies library down"), "Down re-enters the dropdown")
+        remote.press(.select)
+        XCTAssertTrue(selection(app, "Library Harness Movies"), "The Silo library is selectable")
 
         // Repeated entry and exit: Up past the first row returns to the tab every time.
         XCTAssertTrue(focusMoviesTab(app), "back to Menu Movies")
@@ -460,14 +583,43 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
     /// The intermittent failure this guards against opened onto a toolbar chip instead.
     func testCategoriesOpenRepeatedlyLandsOnTheFirstChannelEveryTime() {
         let app = launch(.livetv)
-        XCTAssertTrue(waitForFocus(app, in: liveTVControls))
+        let fixture = app.staticTexts["harness-fixture-status"]
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH 'ready:' OR label BEGINSWITH 'failed:'"),
+            object: fixture
+        )
+        let readiness = XCTWaiter.wait(for: [ready], timeout: 50)
+        guard readiness == .completed, fixture.label == "ready: 84 channels, 14 categories" else {
+            XCTFail("Offline Live TV fixture unavailable: \(fixture.exists ? fixture.label : "status missing")")
+            return
+        }
+        XCTAssertFalse(app.buttons["Enter server address"].exists, "The real server setup must not be mounted under the harness")
+        guard waitForFocus(app, in: liveTVControls) else {
+            XCTFail("Live TV control row did not take focus")
+            return
+        }
         XCTAssertEqual(press(.right, app, "to categories"), "Categories")
         remote.press(.select)
         settle()
-        _ = press(.down, app, "into categories")
+        guard app.buttons["harness-category-__all__"].waitForExistence(timeout: 10),
+              app.buttons["harness-category-Business"].exists,
+              app.buttons["harness-category-Comedy"].exists else {
+            XCTFail("Selecting Categories did not reveal the expected offline category cards")
+            return
+        }
+        let firstCard = press(.down, app, "into categories")
+        guard focusedIdentifier(app) == "harness-category-__all__" else {
+            XCTFail("Down from Categories must reach All Channels category card, got \(firstCard) [\(focusedIdentifier(app))]")
+            return
+        }
+        let expectedCards = ["Business", "Comedy", "Documentary", "Comedy", "Business", "__all__"]
         var landed = 0
         for round in 1...6 {
             let card = press(round <= 3 ? .right : .left, app, "category card \(round)")
+            guard focusedIdentifier(app) == "harness-category-\(expectedCards[round - 1])" else {
+                XCTFail("round \(round): expected genuine \(expectedCards[round - 1]) category card, got \(card) [\(focusedIdentifier(app))]")
+                return
+            }
             remote.press(.select)
             settle(2.5)
             let channel = focusedLabel(app)
@@ -553,6 +705,40 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertEqual(modesBack, Array(sportsModes.reversed()), "Left retraces the mode row")
         log("sports rows", categories + back + modes + modesBack)
         assertNeverMenu(path + categories + back + modes + modesBack)
+    }
+
+    /// Selecting Sports modes changes the visible section, not merely the chip's focus ring.
+    /// No live game is required; the day strip is a deterministic focus target in both modes.
+    func testSportsModeSelectionOpensDayStripAndReturnsToLive() {
+        let app = launch(.sports)
+        XCTAssertTrue(app.buttons["All"].waitForExistence(timeout: 20), "Sports page is showing")
+        XCTAssertTrue(waitFor(app, timeout: 20) { $0 != "<none>" }, "Sports takes focus")
+        var path = [focusedLabel(app)]
+        var label = focusedLabel(app)
+        for _ in 0..<6 where !sportsModes.contains(label) {
+            label = press(sportsCategories.contains(label) || label == "Refresh" ? .down : .up,
+                          app, "sports to mode row")
+            path.append(label)
+        }
+        for _ in 0..<3 where label != "Live" { label = press(.left, app, "sports to live mode"); path.append(label) }
+        XCTAssertEqual(label, "Live", "Reached Live mode by remote: \(path)")
+        XCTAssertEqual(press(.right, app, "sports upcoming"), "Upcoming")
+        remote.press(.select)
+        settle()
+        XCTAssertTrue(app.buttons["Upcoming"].isSelected, "Select activates Upcoming")
+        let day = press(.down, app, "sports upcoming day")
+        XCTAssertFalse(day == "<none>" || sportsModes.contains(day) || day.hasPrefix("Menu "),
+                       "Down from Upcoming reaches a day, got \(day)")
+        XCTAssertEqual(press(.up, app, "sports day up"), "Upcoming")
+        XCTAssertEqual(press(.right, app, "sports recent"), "Recent")
+        remote.press(.select)
+        settle()
+        XCTAssertTrue(app.buttons["Recent"].isSelected, "Select activates Recent")
+        XCTAssertEqual(press(.left, app, "sports back to upcoming"), "Upcoming")
+        XCTAssertEqual(press(.left, app, "sports back to live"), "Live")
+        remote.press(.select)
+        settle()
+        XCTAssertTrue(app.buttons["Live"].isSelected, "Select restores Live")
     }
 
     private func focusedElement(_ app: XCUIApplication) -> XCUIElement {
@@ -911,6 +1097,50 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         XCTAssertFalse(isBarElement(down), "Down from Live TV enters the page, got \(down)")
     }
 
+    /// The real shell, not the stand-in Movies menu: both library tabs must remain reachable,
+    /// accept Down into their own panel, and return to their tab on Back.
+    func testShellMoviesAndSeriesDropdownsRemainReachable() {
+        let app = launchShell()
+        XCTAssertTrue(isBarElement(focusBar(app)), "Up reaches the real top bar")
+        for title in ["Movies", "Series"] {
+            XCTAssertTrue(moveToTab(title, app), "Reach \(title) by remote traversal")
+            settle(1.2)
+            let from = focusedLabel(app)
+            XCTAssertEqual(tabTitle(from), title)
+            let entered = press(.down, app, "\(title) dropdown down")
+            XCTAssertFalse(isBarElement(entered) || entered == from,
+                           "Down from \(title) enters its dropdown, got \(entered)")
+            XCTAssertFalse(app.buttons[from].isEnabled,
+                           "The real bar becomes inert only after \(title)'s dropdown takes focus")
+            remote.press(.menu)
+            settle(1.5)
+            XCTAssertEqual(tabTitle(focusedLabel(app)), title,
+                           "Back from \(title) dropdown returns to its tab")
+        }
+    }
+
+    /// The avatar is another main-navigation destination. Its native rows must be traversable
+    /// with Down and Back must return to the avatar before another top-bar move.
+    func testShellProfileDropdownTraversesAndReturnsToBar() {
+        let app = launchShell()
+        XCTAssertTrue(isBarElement(focusBar(app)), "Up reaches the real top bar")
+        var label = focusedLabel(app)
+        for _ in 0..<12 where label != "Profile" {
+            label = press(.right, app, "toward profile")
+            XCTAssertTrue(isBarElement(label), "Right stays in the top bar, got \(label)")
+        }
+        XCTAssertEqual(label, "Profile", "Avatar is reachable with Right")
+        XCTAssertEqual(press(.down, app, "profile menu first row"), "Switch Profile")
+        XCTAssertEqual(press(.down, app, "profile menu watchlist"), "Watchlist")
+        XCTAssertEqual(press(.down, app, "profile menu favorites"), "Favorites")
+        XCTAssertEqual(press(.down, app, "profile menu history"), "History")
+        remote.press(.menu)
+        settle(1.5)
+        XCTAssertEqual(focusedLabel(app), "Profile", "Back closes the menu onto its avatar")
+        XCTAssertEqual(press(.left, app, "profile to settings"), "Settings",
+                       "The neighboring Settings control remains reachable")
+    }
+
     /// The real Search screen pushed from the real bar: the keyboard types, Down reaches the
     /// filters, Up returns, and Back returns to the bar. Three round trips, because the failure this
     /// guards against was a race (Home's placeholder claiming focus before the bar did), and then
@@ -1027,6 +1257,11 @@ final class KyroTVRemoteFocusUITests: XCTestCase {
         let element = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
         guard element.exists else { return "<none>" }
         return element.label.isEmpty ? element.identifier : element.label
+    }
+
+    private func focusedIdentifier(_ app: XCUIApplication) -> String {
+        let element = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        return element.exists ? element.identifier : "<none>"
     }
 
     private func press(_ button: XCUIRemote.Button, _ app: XCUIApplication, _ note: String) -> String {

@@ -487,6 +487,9 @@ struct TVLiveTVRootView: View {
         }
         .buttonStyle(TVKyroCardFocusStyle(cornerRadius: 20))
         .focused($focusedControl, equals: .category(category ?? TVLiveTVBrowseFocusPlanner.allChannelsCardID))
+        #if DEBUG
+        .accessibilityIdentifier("harness-category-\(category ?? TVLiveTVBrowseFocusPlanner.allChannelsCardID)")
+        #endif
         .id(category ?? TVLiveTVBrowseFocusPlanner.allChannelsCardID)
         // A native tvOS context menu owns the long Select press; a short press still opens the
         // category, and dismissing the menu returns to this card.

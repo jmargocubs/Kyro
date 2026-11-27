@@ -151,7 +151,6 @@ struct ContentView: View {
         #endif
         #if os(tvOS) && DEBUG
         .modifier(TVFocusDebugActivationModifier())
-        .modifier(TVFocusHarnessModifier())
         #endif
         #if os(iOS)
         .companionPairingCard(
@@ -505,6 +504,18 @@ struct ContentView: View {
     }
 
     var body: some View {
+        #if os(tvOS) && DEBUG
+        if TVFocusHarnessPage.requested != nil {
+            TVFocusHarnessRootView()
+        } else {
+            normalContent
+        }
+        #else
+        normalContent
+        #endif
+    }
+
+    private var normalContent: some View {
         sessionTaskContent
         // The speed scheduler starts out in the background and follows the
         // scene from its first phase, so a launch into the background reads

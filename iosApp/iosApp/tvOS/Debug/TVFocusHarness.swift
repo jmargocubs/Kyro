@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 import Observation
 
-/// Debug builds only: `-kyroTVFocusHarness livetv|movies|sports` opens a real tvOS root page over
+/// Debug builds only: `-kyroTVFocusHarness livetv|movies|sports` opens a real tvOS root page with
 /// offline fixtures, under a stand-in top menu, so hosted UI tests can drive the focus engine with
 /// `XCUIRemote` presses. Nothing here exists in Release builds and nothing leaves the device:
 /// Live TV loads a fictional playlist and guide through an in-process URL protocol, and Movies
@@ -23,35 +23,66 @@ import Observation
 /// over the page's top control row the way the shell's persistent panels are, and both driven by
 /// `TVTopMenuPanelFocusPolicy`. `-kyroTVFocusHarnessUngatedPanels` keeps closed dropdowns in the
 /// focus graph (the pre-refactor shell) so a run can compare the two.
-struct TVFocusHarnessModifier: ViewModifier {
+struct TVFocusHarnessRootView: View {
     static let argument = "-kyroTVFocusHarness"
 
-    @State private var page: TVFocusHarnessPage?
+    @State private var service: LiveTVService?
+    @State private var readyPage: TVFocusHarnessPage?
+    @State private var failure: String?
 
-    func body(content: Content) -> some View {
-        content
-            .fullScreenCover(item: $page) { page in
-                TVFocusHarnessShell(page: page)
+    var body: some View {
+        Group {
+            if let readyPage, let service {
+                TVFocusHarnessShell(page: readyPage, service: service)
+            } else {
+                Text(failure ?? "Preparing offline focus fixture…")
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.siloBackground)
             }
-            .task {
-                guard let raw = Self.value(after: Self.argument),
-                      let requested = TVFocusHarnessPage(rawValue: raw) else { return }
-                TVFocusHarnessProbe.shared.start()
-                TVScreenLayout.debugDisablesEdgeToEdge =
-                    CommandLine.arguments.contains("-kyroTVFocusHarnessNoEdgeToEdge")
-                // Stage Movies before the page is presented, so it mounts once with its catalog
-                // already stored, the way a real provider page opens. No placeholder takes focus first.
-                if requested == .movies {
-                    await TVFocusHarnessFixture.stage(.movie, for: TVFocusHarnessFixture.vodProvider)
-                } else if requested == .series {
-                    await TVFocusHarnessFixture.stage(.series, for: TVFocusHarnessFixture.vodProvider)
-                } else if requested == .shell {
-                    await TVFocusHarnessFixture.prepareShell()
-                }
-                // Let the startup splash lift first; the cover must own focus, not the splash.
-                try? await Task.sleep(for: .seconds(1.5))
-                page = requested
+        }
+        .overlay(alignment: .bottomLeading) {
+            Text(fixtureStatus)
+                .accessibilityIdentifier("harness-fixture-status")
+                .allowsHitTesting(false)
+        }
+        .task { await prepare() }
+    }
+
+    private var fixtureStatus: String {
+        if let failure { return "failed: \(failure)" }
+        if readyPage == .livetv, let service {
+            return "ready: \(service.channels.count) channels, \(service.categories.count) categories"
+        }
+        return readyPage == nil ? "loading" : "ready"
+    }
+
+    private func prepare() async {
+        guard readyPage == nil, failure == nil, let requested = TVFocusHarnessPage.requested else { return }
+        TVFocusHarnessProbe.shared.start()
+        TVScreenLayout.debugDisablesEdgeToEdge = CommandLine.arguments.contains("-kyroTVFocusHarnessNoEdgeToEdge")
+        let fixture = TVFocusHarnessFixture.makeLiveTVService()
+        service = fixture
+        if requested == .livetv {
+            let timeout = Task { @MainActor in
+                do { try await Task.sleep(for: .seconds(45)) } catch { return }
+                if readyPage == nil, failure == nil { failure = "Live TV fixture timed out" }
             }
+            await fixture.prepareSelectedProvider()
+            timeout.cancel()
+            guard failure == nil else { return }
+            guard fixture.channels.count == 84, fixture.categories.count == TVFocusHarnessFixture.categories.count else {
+                failure = "Live TV fixture loaded \(fixture.channels.count) channels and \(fixture.categories.count) categories: \(fixture.errorMessage ?? "no service error")"
+                return
+            }
+        } else if requested == .movies {
+            await TVFocusHarnessFixture.stage(.movie, for: TVFocusHarnessFixture.vodProvider)
+        } else if requested == .series {
+            await TVFocusHarnessFixture.stage(.series, for: TVFocusHarnessFixture.vodProvider)
+        } else if requested == .shell {
+            await TVFocusHarnessFixture.prepareShell()
+        }
+        readyPage = requested
     }
 
     static func value(after argument: String) -> String? {
@@ -64,14 +95,17 @@ struct TVFocusHarnessModifier: ViewModifier {
 enum TVFocusHarnessPage: String, Identifiable {
     case livetv, movies, series, sports, settings, search, shell
     var id: String { rawValue }
+    static var requested: Self? {
+        TVFocusHarnessRootView.value(after: TVFocusHarnessRootView.argument).flatMap(Self.init(rawValue:))
+    }
 }
 
 private struct TVFocusHarnessShell: View {
     let page: TVFocusHarnessPage
+    let service: LiveTVService
 
     @State private var searchSeed: AppRouter.SearchRequest? =
-        TVFocusHarnessModifier.value(after: "-kyroTVFocusHarnessSearchSeed").map { AppRouter.SearchRequest(query: $0) }
-    @State private var service = TVFocusHarnessFixture.makeLiveTVService()
+        TVFocusHarnessRootView.value(after: "-kyroTVFocusHarnessSearchSeed").map { AppRouter.SearchRequest(query: $0) }
     @State private var vodProvider = TVFocusHarnessFixture.vodProvider
     /// Only Settings reads it: the real screen, offline, with no signed-in session behind it.
     @State private var router = AppRouter()

@@ -199,6 +199,12 @@ it. `TVLiveTVBrowseFocusPlanner` holds the rules; the view applies them.
   own results land, unless the user has already moved. Showing the grid by
   selecting the Categories chip never pulls focus out of the row.
 
+The intermittent category-card → first-channel handoff is tracked separately
+from the Live TV toolbar reachability regression. The focused toolbar recovery
+gate does not run the six-round category-opening stress test; it verifies that
+Categories opens its grid without entering a category. A passing toolbar gate
+does not establish that every category opening lands on its first channel.
+
 ## Top Menu Ownership
 
 The bar is one native focus section that stays enabled while page content

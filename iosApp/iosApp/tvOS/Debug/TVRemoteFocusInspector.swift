@@ -25,7 +25,10 @@ enum TVFocusDiagnostics {
         guard Thread.isMainThread else { return }
         MainActor.assumeIsolated {
             #if DEBUG
-            TVFocusHarnessProbe.shared.append("\(kind) \(component) \(site) \(String(describing: value).prefix(60))")
+            // Keep the full Live TV focus case (for example `.section(.categories)`) in the
+            // Debug harness journal. tvOS can draw its focus ring while XCUITest reports no
+            // `hasFocus` element, so the binding is the independent diagnostic in that case.
+            TVFocusHarnessProbe.shared.append("\(kind) \(component) \(site) \(String(describing: value).prefix(140))")
             #endif
             let inspector = TVRemoteFocusInspector.shared
             guard inspector.enabled else { return }
