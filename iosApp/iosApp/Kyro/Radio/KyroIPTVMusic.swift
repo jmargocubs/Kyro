@@ -150,11 +150,14 @@ final class KyroIPTVMusicLibrary: KyroRadioExternalStations {
         let options = service.musicStreamOptions(providerID: providerID)
         let candidates = KyroIPTVAudioRoute.candidates(for: channel.streamURL, isXtream: options.isXtream,
                                                        allowedFormats: options.formats)
-        guard let original = candidates.last else { return nil }
+        // Build 140: `streamURL` is the channel's own address (played first,
+        // and the one Watch in Live TV uses); `resolvedURL` is the optional
+        // HLS fallback.
+        guard let original = candidates.first else { return nil }
         var station = KyroRadioStation(id: channel.id, name: channel.name, streamURL: original,
-                                       resolvedURL: candidates.count > 1 ? candidates.first : nil,
+                                       resolvedURL: candidates.count > 1 ? candidates.last : nil,
                                        favicon: channel.logoURL, tags: channel.category.isEmpty ? [] : [channel.category],
-                                       isHLS: candidates.first?.pathExtension.lowercased() == "m3u8")
+                                       isHLS: original.pathExtension.lowercased() == "m3u8")
         station.iptv = KyroIPTVStationSource(providerID: providerID, providerName: providerName(providerID),
                                              channelID: channel.id, collection: collection,
                                              category: channel.category, guideID: channel.guideID)
@@ -297,6 +300,12 @@ final class KyroIPTVCollectionBrowser {
     private(set) var stations: [KyroRadioStation] = []
     private(set) var isLoading = false
     private(set) var canLoadMore = true
+    /// Build 140: false until the first page for the current query returns, so
+    /// the page shows a loading state instead of a brief "No Channels".
+    private(set) var hasLoaded = false
+    /// No enabled provider has this collection (catalog still loading,
+    /// integration off, or every provider excluded).
+    private(set) var isUnavailable = false
     var query = ""
 
     private struct Source {
@@ -316,15 +325,20 @@ final class KyroIPTVCollectionBrowser {
 
     func reload() async {
         generation &+= 1
+        let current = generation
+        hasLoaded = false
         await library.refresh()
+        guard current == generation else { return }
         stations = []
         seen = []
         canLoadMore = true
-        sources = library.activeIndexes.flatMap { index in
+        sources = library.activeIndexes.filter { $0.count(collection) > 0 }.flatMap { index in
             index.categories(in: collection).map { Source(providerID: index.providerID, category: $0.name, channelIDs: []) }
                 + [Source(providerID: index.providerID, category: nil, channelIDs: index.channels(in: collection).map(\.id))]
         }
+        isUnavailable = sources.isEmpty
         await loadMore()
+        if current == generation { hasLoaded = true }
     }
 
     func loadMore() async {
@@ -466,7 +480,17 @@ struct KyroRadioSourcesShelf: View {
 
     var body: some View {
         let collections = library.availableCollections
-        if !collections.isEmpty {
+        if collections.isEmpty, library.isBuilding {
+            // Build 140: the first classification of a large catalog takes a moment.
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("Finding music channels in your IPTV providers…").font(.footnote).foregroundStyle(KyroSignature.secondary)
+            }
+            .padding(.horizontal, 20)
+            .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+        } else if !collections.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 KyroAudioShelfHeader(title: "Music Sources", caption: "Internet Radio and your IPTV providers")
                 ScrollView(.horizontal) {
@@ -475,7 +499,7 @@ struct KyroRadioSourcesShelf: View {
                         ForEach(collections) { collection in
                             let count = library.count(collection)
                             tile(title: collection.title,
-                                 subtitle: "\(count >= 1000 ? "1,000+" : String(count)) channels · \(library.providerNames(collection).joined(separator: ", "))",
+                                 subtitle: "\(KyroIPTVMusicCounts.label(count)) · \(library.providerNames(collection).joined(separator: ", "))",
                                  symbol: collection.symbol) { openCollection(collection) }
                         }
                     }
@@ -521,6 +545,13 @@ struct KyroIPTVMusicCollectionPage: View {
         _browser = State(initialValue: KyroIPTVCollectionBrowser(collection: collection))
     }
 
+    /// "312 channels · Provider A, Provider B", from the classification index.
+    private var summary: String? {
+        let count = library.count(collection)
+        guard count > 0 else { return nil }
+        return KyroIPTVMusicCounts.label(count) + " · " + library.providerNames(collection).joined(separator: ", ")
+    }
+
     var body: some View {
         List {
             KyroAudioSearchField(hasText: !browser.query.isEmpty, clear: { browser.query = "" }) {
@@ -529,14 +560,25 @@ struct KyroIPTVMusicCollectionPage: View {
             }
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
-            Text(collection.subtitle).font(.footnote).foregroundStyle(KyroSignature.secondary)
-                .listRowBackground(Color.clear).listRowSeparator(.hidden)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(collection.subtitle)
+                if summary != nil { Text(summary ?? "").foregroundStyle(KyroSignature.secondary.opacity(0.8)) }
+            }
+            .font(.footnote).foregroundStyle(KyroSignature.secondary)
+            .listRowBackground(Color.clear).listRowSeparator(.hidden)
             ForEach(browser.stations) { station in
                 KyroRadioStationRow(station: station)
                     .contextMenu { KyroIPTVChannelActions(station: station) }
             }
-            if browser.isLoading {
-                ProgressView().frame(maxWidth: .infinity).listRowBackground(Color.clear)
+            if browser.isLoading || !browser.hasLoaded {
+                Group {
+                    if browser.stations.isEmpty { ProgressView("Loading channels…") } else { ProgressView() }
+                }
+                    .frame(maxWidth: .infinity).listRowBackground(Color.clear).listRowSeparator(.hidden)
+            } else if browser.isUnavailable {
+                ContentUnavailableView("Source Unavailable", systemImage: "antenna.radiowaves.left.and.right.slash",
+                    description: Text("Your IPTV catalog isn’t loaded, or this provider is turned off in Manage Music Sources."))
+                    .listRowBackground(Color.clear)
             } else if browser.stations.isEmpty {
                 ContentUnavailableView(browser.query.isEmpty ? "No Channels" : "No Matches", systemImage: collection.symbol,
                     description: Text(browser.query.isEmpty ? "None of this collection's channels are available right now."
@@ -557,6 +599,7 @@ struct KyroIPTVMusicCollectionPage: View {
         }
         .navigationTitle(collection.title)
         .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("kyroIPTVCollectionPage")
         .toolbar(.visible, for: .navigationBar)
         .task(id: "\(browser.query)|\(library.revision)") {
             // Debounced: a pause in typing, then one indexed query per source page.

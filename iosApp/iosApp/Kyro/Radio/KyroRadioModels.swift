@@ -87,11 +87,12 @@ struct KyroRadioStation: Codable, Hashable, Identifiable, Sendable {
 
     /// Streams to try, best first: Radio Browser's resolved URL is preferred
     /// (its integration guidance), and an https address before http. IPTV
-    /// channels keep the route's own order (HLS variant, then the original).
+    /// channels (Build 140) play their own address first, then the optional
+    /// HLS fallback.
     var playbackCandidates: [URL] {
         var seen = Set<String>()
         if iptv != nil {
-            return [resolvedURL, streamURL].compactMap { $0 }.filter { seen.insert($0.absoluteString).inserted }
+            return [streamURL, resolvedURL].compactMap { $0 }.filter { seen.insert($0.absoluteString).inserted }
         }
         let ordered = [resolvedURL, streamURL].compactMap { $0 }
         return (ordered.filter { $0.scheme == "https" } + ordered.filter { $0.scheme == "http" })

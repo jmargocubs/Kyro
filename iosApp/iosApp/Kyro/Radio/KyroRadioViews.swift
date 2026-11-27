@@ -729,40 +729,52 @@ struct KyroRadioMiniPlayerView: View {
     @Environment(\.nowPlayingAccessoryIsInline) private var isInline
     private let player = KyroRadioPlayer.shared
 
-    /// One decode for the expanded (46 pt) and inline (34 pt) bar.
-    static let artworkDecodeSize: CGFloat = 46
+    /// One decode for the expanded and inline bar.
+    static let artworkDecodeSize: CGFloat = KyroAudioMiniLayout.artworkDecodeSize
+
+    /// Song and artist when the stream sends them; otherwise the state, and
+    /// for a playing IPTV channel its collection and provider instead of a
+    /// bare "Live".
+    static func subtitle(player: KyroRadioPlayer, station: KyroRadioStation) -> String {
+        let line = KyroRadioStatusText.line(player: player)
+        if player.state == .playing, player.track == nil, station.iptv != nil, !station.location.isEmpty {
+            return "Live · " + station.location
+        }
+        return line
+    }
 
     var body: some View {
         if let station = player.station {
-            HStack(spacing: 12) {
+            HStack(spacing: KyroAudioMiniLayout.spacing) {
                 Button { player.isShowingNowPlaying = true } label: {
-                    HStack(spacing: 12) {
-                        KyroRadioArtwork(station: station, size: isInline ? 34 : 46,
+                    HStack(spacing: KyroAudioMiniLayout.spacing) {
+                        KyroRadioArtwork(station: station, size: KyroAudioMiniLayout.artworkSize(inline: isInline),
                                          decodeSize: KyroRadioMiniPlayerView.artworkDecodeSize)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(station.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(station.name).font(.subheadline.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
                             if !isInline {
-                                Text(KyroRadioStatusText.line(player: player))
+                                Text(KyroRadioMiniPlayerView.subtitle(player: player, station: station))
                                     .font(.footnote).foregroundStyle(KyroSignature.secondary).lineLimit(1)
                             }
                         }
+                        Spacer(minLength: 0)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Now playing \(station.name)")
                 .accessibilityHint("Opens Now Playing")
 
-                KyroRadioTransportButton(player: player, size: 44)
+                KyroRadioTransportButton(player: player, size: KyroAudioMiniLayout.controlSize)
+                    .frame(width: 44, height: 44)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, isInline ? 4 : 8)
+            .padding(.horizontal, KyroAudioMiniLayout.horizontalPadding)
+            .padding(.vertical, KyroAudioMiniLayout.verticalPadding(inline: isInline))
             .modifier(KyroAudioMiniChrome(style: style))
-            // Same card margins as the audiobook bar (iPad, status column,
+            // Same card margins as the podcast bar (iPad, status column,
             // and the Radio page's own bar).
-            .padding(.horizontal, style == .card ? 16 : 0)
-            .padding(.bottom, style == .card ? 8 : 0)
+            .padding(.horizontal, style == .card ? KyroAudioMiniLayout.cardSideMargin : 0)
+            .padding(.bottom, style == .card ? KyroAudioMiniLayout.cardBottomMargin : 0)
             .accessibilityIdentifier("kyroRadioMiniPlayer")
         }
     }

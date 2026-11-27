@@ -52,6 +52,13 @@ final class KyroRadioPlayer {
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var startupTimeout: Task<Void, Never>?
     @ObservationIgnored private var artworkTask: Task<Void, Never>?
+    /// Build 140: IPTV music channels play through AetherEngine (see
+    /// `KyroIPTVAudioEngine`); Radio Browser stations keep AVPlayer. Built on
+    /// the first IPTV station only.
+    @ObservationIgnored private var iptvEngine: KyroIPTVAudioEngine?
+    /// Armed when a playing IPTV stream starts waiting; fires a reconnect if
+    /// the engine hasn't recovered on its own.
+    @ObservationIgnored private var stallWatchdog: Task<Void, Never>?
     @ObservationIgnored private var artwork: MPMediaItemArtwork?
     @ObservationIgnored private var commandTargets: [(MPRemoteCommand, Any)] = []
     @ObservationIgnored private var isBoundToSystemMedia = false
@@ -62,6 +69,9 @@ final class KyroRadioPlayer {
 
     /// A stream that hasn't started after this long counts as failed.
     static let startupTimeoutSeconds: UInt64 = 20
+    /// A playing IPTV stream that has waited this long (the engine's own
+    /// reconnects included) is reconnected by Radio.
+    static let iptvStallSeconds: UInt64 = 20
 
     init(library: KyroRadioLibrary? = nil, client: KyroRadioBrowserClient = .shared) {
         self.library = library ?? .shared
@@ -164,6 +174,10 @@ final class KyroRadioPlayer {
             return
         }
         let url = station.playbackCandidates[candidate]
+        if station.iptv != nil {
+            startIPTV(url, generation: generation)
+            return
+        }
         loadTask = Task { [weak self] in
             guard let self else { return }
             var streamURL = url
@@ -177,6 +191,44 @@ final class KyroRadioPlayer {
             }
             guard !Task.isCancelled, generation == self.machine.generation else { return }
             self.startPlayer(streamURL, generation: generation)
+        }
+    }
+
+    // MARK: IPTV (Build 140)
+
+    private func startIPTV(_ url: URL, generation: Int) {
+        activateAudioSession()
+        let engine = iptvEngine ?? makeIPTVEngine()
+        armStartupTimeout(generation: generation)
+        engine.load(url, generation: generation)
+    }
+
+    private func makeIPTVEngine() -> KyroIPTVAudioEngine {
+        let engine = KyroIPTVAudioEngine()
+        engine.onEvent = { [weak self] event, generation in self?.receiveIPTV(event, generation: generation) }
+        iptvEngine = engine
+        return engine
+    }
+
+    private func receiveIPTV(_ event: KyroIPTVAudioEngine.Event, generation: Int) {
+        guard generation == machine.generation, machine.isActive else { return }
+        switch event {
+        case .playing:
+            startupTimeout?.cancel()
+            stallWatchdog?.cancel()
+            stallWatchdog = nil
+            apply { machine in machine.playerStarted(generation: generation); return [] }
+        case .waiting:
+            // Startup waits are covered by the startup timeout.
+            guard machine.state == .playing, stallWatchdog == nil else { return }
+            stallWatchdog = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: Self.iptvStallSeconds * 1_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                self.stallWatchdog = nil
+                self.apply { $0.playerFailed(generation: generation) }
+            }
+        case .failed:
+            apply { $0.playerFailed(generation: generation) }
         }
     }
 
@@ -220,13 +272,18 @@ final class KyroRadioPlayer {
                 MainActor.assumeIsolated { self?.apply { $0.playerFailed(generation: generation) } }
             },
         ]
+        armStartupTimeout(generation: generation)
+        player.play()
+    }
+
+    private func armStartupTimeout(generation: Int) {
+        startupTimeout?.cancel()
         startupTimeout = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.startupTimeoutSeconds * 1_000_000_000)
             guard !Task.isCancelled, let self, generation == self.machine.generation,
                   self.machine.state != .playing else { return }
             self.apply { $0.playerFailed(generation: generation) }
         }
-        player.play()
     }
 
     private func tearDownPlayer() {
@@ -234,6 +291,9 @@ final class KyroRadioPlayer {
         loadTask = nil
         startupTimeout?.cancel()
         startupTimeout = nil
+        stallWatchdog?.cancel()
+        stallWatchdog = nil
+        iptvEngine?.stop(releaseAudioSession: false)
         if !(machine.state.isReconnecting) { reconnectTask?.cancel() }
         observations.forEach { $0.invalidate() }
         observations = []
