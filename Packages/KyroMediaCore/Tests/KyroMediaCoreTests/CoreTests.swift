@@ -56,6 +56,24 @@ final class CoreTests: XCTestCase {
         let startsClosed=await breaker.allow(now:now);XCTAssertTrue(startsClosed);await breaker.recordFailure(now:now);let remainsOpenAfterOne=await breaker.allow(now:now);XCTAssertTrue(remainsOpenAfterOne);await breaker.recordFailure(now:now);let blocked=await breaker.allow(now:now);XCTAssertFalse(blocked)
         let limiter=HTTPRateLimiter(requestsPerSecond:4);XCTAssertEqual(limiter.minimumInterval,.milliseconds(250))
     }
+    func testSQLitePersistenceTransactionsFTSAndMigration() async throws {
+        let url=FileManager.default.temporaryDirectory.appendingPathComponent("kyro-core-\(UUID().uuidString).sqlite")
+        let location=StorageLocation(url:url);let writer=try SQLiteWriter(location:location);try await writer.migrate(to:KyroSchema.latestVersion,statements:KyroSchema.migrations)
+        let initialVersion=try await writer.schemaVersion();XCTAssertEqual(initialVersion,KyroSchema.latestVersion)
+        let household=HouseholdID(),profile=KyroProfile(householdID:household,name:"Persisted",kind:.kids)
+        let identity=SQLiteIdentityStore(writer:writer);try await identity.save(profile);let account=ProviderAccount(provider:"jellyfin",subject:"subject",scope:"library");try await identity.addAccount(account);try await identity.grant(SourceGrant(profileID:profile.id,accountID:account.id,canWrite:true))
+        let persistedProfile=try await identity.profile(profile.id);XCTAssertEqual(persistedProfile?.name,"Persisted")
+        let ledgerStore=SQLiteLedgerStore(writer:writer);let operation=LedgerOperation(profileID:profile.id,itemKey:"movie-key",value:.favorite(true),clock:HybridLogicalClock(physicalMilliseconds:1,logical:0,node:"device"));try await ledgerStore.append(operation,deviceID:DeviceID());let persistedOperations=try await ledgerStore.operations(profileID:profile.id);XCTAssertEqual(persistedOperations.count,1)
+        let readers=try SQLiteReaderPool(location:location,capacity:3);let catalog=SQLiteCatalogStore(writer:writer,readers:readers);let film=CanonicalMedia(kind:.movie,title:"Persistent Arrival",year:2016,externalIDs:[account.id.description:"jelly-item"]);try await catalog.promote([film],generation:1)
+        print("FTS rows", try await writer.query("SELECT rowid,generation,canonical_key,title FROM canonical_titles_fts"));print("FTS hits",try await readers.query("SELECT rowid,canonical_key,title FROM canonical_titles_fts WHERE canonical_titles_fts MATCH 'Persistent'"));let searchResults=try await catalog.search("Persistent");XCTAssertEqual(searchResults.first?.id,film.id)
+        do { try await writer.transaction([("INSERT INTO profiles(id,household_id,name,kind) VALUES('rolled','h','Rollback','standard')",[]),("INSERT INTO missing_table VALUES(1)",[])]);XCTFail("transaction should fail") } catch {}
+        let rollbackRows=try await writer.query("SELECT id FROM profiles WHERE id='rolled'");XCTAssertTrue(rollbackRows.isEmpty)
+        let counts=try await withThrowingTaskGroup(of:Int64.self,returning:[Int64].self) { group in for _ in 0..<12 { group.addTask { try await readers.scalarInt("SELECT COUNT(*) FROM canonical_titles") } };var values=[Int64]();for try await value in group { values.append(value) };return values }
+        XCTAssertEqual(counts,Array(repeating:1,count:12));let poolCount=await readers.readerCount;XCTAssertEqual(poolCount,3)
+        try await readers.close();await writer.close()
+        let reopened=try SQLiteWriter(location:location);try await reopened.migrate(to:KyroSchema.latestVersion,statements:KyroSchema.migrations);let restored=try await SQLiteIdentityStore(writer:reopened).profile(profile.id);XCTAssertEqual(restored?.name,"Persisted");let finalVersion=try await reopened.schemaVersion();XCTAssertEqual(finalVersion,KyroSchema.latestVersion);await reopened.close()
+        for suffix in ["","-wal","-shm"] {try? FileManager.default.removeItem(atPath:url.path+suffix)}
+    }
 }
 
 private struct SeededGenerator: RandomNumberGenerator { var state:UInt64;init(seed:UInt64){state=seed};mutating func next()->UInt64 {state = state &* 6364136223846793005 &+ 1442695040888963407;return state} }
