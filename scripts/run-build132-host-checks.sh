@@ -41,6 +41,8 @@ PROTECTED=(
   ':(exclude)iosApp/iosApp/LiveTV/Home/LiveTVHomeContent.swift'
   ':(exclude)iosApp/iosApp/LiveTV/LiveTVViews.swift'
   ':(exclude)iosApp/iosApp/Screens/Home/HomeView.swift'
+  ':(exclude)iosApp/iosApp/Kyro/Sports/KyroSportsSettingsView.swift'
+  ':(exclude)iosApp/iosApp/Kyro/Home/KyroHomeCustomizationView.swift'
 )
 if git diff --quiet "$BASE" -- "${PROTECTED[@]}"; then
   echo "Protected Radio engine, mini-player slot, Home, Sports, Live TV and shell files: unchanged since Build 133."

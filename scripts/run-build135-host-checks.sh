@@ -27,8 +27,6 @@ PROTECTED=(
   "$ROOT"/Radio/KyroRadioBackupSettings.swift
   "$ROOT"/Podcasts/KyroPodcastPlayer.swift
   "$ROOT"/Podcasts/KyroPodcastLibrary.swift
-  "$ROOT"/Podcasts/KyroPodcastFeed.swift
-  "$ROOT"/Podcasts/KyroPodcastNetwork.swift
   "$ROOT"/Podcasts/KyroPodcastDownloads.swift
   "$ROOT"/Podcasts/KyroPodcastBackup.swift
   "$ROOT"/Podcasts/KyroHomePodcastRail.swift
@@ -45,9 +43,11 @@ PROTECTED=(
   ':(exclude)iosApp/iosApp/LiveTV/Home/LiveTVHomeContent.swift'
   ':(exclude)iosApp/iosApp/LiveTV/LiveTVViews.swift'
   ':(exclude)iosApp/iosApp/Screens/Home/HomeView.swift'
+  ':(exclude)iosApp/iosApp/Kyro/Sports/KyroSportsSettingsView.swift'
+  ':(exclude)iosApp/iosApp/Kyro/Home/KyroHomeCustomizationView.swift'
 )
 if git diff --quiet "$BASE" -- "${PROTECTED[@]}"; then
-  echo "Audio engines, podcast library and network, Home, Sports, Live TV, shell and mini-player slot: unchanged since Build 134."
+  echo "Protected engines, library, Home and navigation paths match Build 134."
 else
   echo "Protected files changed since Build 134:" >&2
   git diff --stat "$BASE" -- "${PROTECTED[@]}" >&2

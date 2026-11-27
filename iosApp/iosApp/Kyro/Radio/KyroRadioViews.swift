@@ -43,6 +43,7 @@ struct KyroRadioView: View {
     @State private var searchField: KyroRadioQuery.Field = .name
     @State private var isShowingSettings = false
     @State private var directoryLink: KyroRadioShelfLink?
+    @FocusState private var searchFocused: Bool
     private let library = KyroRadioLibrary.shared
     private let appearance = KyroAppAppearanceStore.shared
 
@@ -61,7 +62,11 @@ struct KyroRadioView: View {
     }
 
     private var activeSearchPrompt: String {
-        section == .discover ? searchField.prompt : "Search saved stations"
+        switch section {
+        case .discover: searchField.prompt
+        case .library: "Search saved stations"
+        case .history: "Search listening history"
+        }
     }
 
     var body: some View {
@@ -74,28 +79,17 @@ struct KyroRadioView: View {
             }
 
             KyroAudioSelector(selection: $audioDestination)
-            if section == .discover {
-                KyroAudioPageHeading(title: "Internet Radio", subtitle: "Find and stream live stations on Kyro X.")
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-            }
-            if isHostedTab {
-                inlineSearchRow
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-            }
-            Picker("Radio section", selection: $section) {
-                ForEach(Section.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
+            KyroAudioSectionPicker(title: "Radio section", selection: $section, options: Section.allCases, name: \.title)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .accessibilityIdentifier("kyroRadioSection")
+            inlineSearchRow
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
 
             switch section {
             case .discover:
-                KyroRadioDiscoverContent(model: discover, searchText: discoverText, searchField: $searchField,
-                                         open: openShelf)
+                KyroRadioDiscoverContent(model: discover, searchText: discoverText, open: openShelf)
             case .library:
                 KyroRadioLibraryContent(searchText: libraryText)
             case .history:
@@ -103,6 +97,7 @@ struct KyroRadioView: View {
             }
         }
         .listStyle(.plain)
+        .scrollDismissesKeyboard(.interactively)
         .scrollContentBackground(.hidden)
         .background {
             if appearance.selection == .signature {
@@ -118,20 +113,16 @@ struct KyroRadioView: View {
         }
         .reportsPageChromeScroll(to: scrollState)
         // Build 130: pushed, this page covers the tab bar and its Now Playing
-        // accessory, so it carries the one bar itself. Inside the searchable
-        // content, the inset rests above the bottom search bar and the List
-        // reserves its height as scroll space.
+        // accessory, so it carries the one bar itself. The List reserves
+        // scroll space; the bar steps aside while the inline field is editing.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if KyroRadioNavigationPolicy.pageHostsNowPlayingBar(isSecondaryDestination: isSecondaryDestination,
                                                                 shelfCoversPushedPages: shelfCoversPushedPages) {
                 KyroRadioPageNowPlayingBar()
             }
         }
-        .modifier(KyroRadioSearchBarModifier(isEnabled: !isHostedTab,
-                                             text: activeSearchText,
-                                             prompt: activeSearchPrompt))
         .navigationTitle(isHostedTab ? "" : KyroAudioDestination.title)
-        .navigationBarTitleDisplayMode(isHostedTab ? .inline : .large)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar(isHostedTab ? .hidden : .visible, for: .navigationBar)
         .toolbar {
             if !isHostedTab {
@@ -146,6 +137,7 @@ struct KyroRadioView: View {
         }
         .tint(KyroTheme.accentInk)
         .onAppear { discover.loadIfNeeded(library.preferences.discoveryQuery) }
+        .onChange(of: section) { _, _ in searchFocused = false }
         .onChange(of: library.preferences.discoveryQuery) { old, new in
             if discover.query == old { discover.update(new) }
         }
@@ -183,28 +175,31 @@ struct KyroRadioView: View {
     }
 
     private var inlineSearchRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(KyroSignature.secondary)
-                .accessibilityHidden(true)
-            TextField(activeSearchPrompt, text: activeSearchText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            if !activeSearchText.wrappedValue.isEmpty {
-                Button {
-                    activeSearchText.wrappedValue = ""
+        HStack(spacing: 10) {
+            KyroAudioSearchField(hasText: !activeSearchText.wrappedValue.isEmpty, clear: { activeSearchText.wrappedValue = "" }) {
+                TextField(activeSearchPrompt, text: activeSearchText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($searchFocused)
+                    .submitLabel(.search)
+                    .onSubmit {
+                        searchFocused = false
+                    }
+            }
+            if section == .discover {
+                Menu {
+                    Picker("Search by", selection: $searchField) {
+                        ForEach(KyroRadioQuery.Field.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(KyroTheme.textSecondary)
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .frame(width: 48, height: 48)
+                        .background { KyroControlSurface() }
                 }
-                .buttonStyle(.plain)
-                .frame(minWidth: 44, minHeight: 44)
-                .accessibilityLabel("Clear search")
+                .accessibilityLabel("Search by")
+                .accessibilityValue(searchField.title)
             }
         }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 48)
-        .background { KyroControlSurface() }
     }
 
     /// Favorites restored from a backup have only an ID and a name. One
@@ -245,21 +240,6 @@ struct KyroRadioPageNowPlayingBar: View {
     }
 }
 
-private struct KyroRadioSearchBarModifier: ViewModifier {
-    let isEnabled: Bool
-    @Binding var text: String
-    let prompt: String
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isEnabled {
-            content.searchable(text: $text, prompt: prompt)
-        } else {
-            content
-        }
-    }
-}
-
 private extension KyroRadioQuery.Field {
     var prompt: String {
         switch self {
@@ -275,7 +255,6 @@ private extension KyroRadioQuery.Field {
 private struct KyroRadioDiscoverContent: View {
     let model: KyroRadioDiscoverModel
     let searchText: String
-    @Binding var searchField: KyroRadioQuery.Field
     let open: (KyroRadioShelfLink) -> Void
     @State private var isShowingFilters = false
     private let library = KyroRadioLibrary.shared
@@ -290,14 +269,6 @@ private struct KyroRadioDiscoverContent: View {
 
     var body: some View {
         Group {
-            if isSearching {
-                Picker("Search by", selection: $searchField) {
-                    ForEach(KyroRadioQuery.Field.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-            }
             regionChips
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
@@ -742,11 +713,11 @@ struct KyroRadioMiniPlayerView: View {
                     HStack(spacing: 12) {
                         KyroRadioArtwork(station: station, size: isInline ? 34 : 46,
                                          decodeSize: KyroRadioMiniPlayerView.artworkDecodeSize)
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: 2) {
                             Text(station.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                             if !isInline {
                                 Text(KyroRadioStatusText.line(player: player))
-                                    .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                                    .font(.footnote).foregroundStyle(KyroSignature.secondary).lineLimit(1)
                             }
                         }
                     }
@@ -761,7 +732,7 @@ struct KyroRadioMiniPlayerView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, isInline ? 4 : 8)
-            .modifier(NowPlayingBarChrome(style: style))
+            .modifier(KyroAudioMiniChrome(style: style))
             // Same card margins as the audiobook bar (iPad, status column,
             // and the Radio page's own bar).
             .padding(.horizontal, style == .card ? 16 : 0)
@@ -913,6 +884,7 @@ struct KyroRadioSettingsForm: View {
                 Button("Clear History", role: .destructive) { isConfirmingClear = true }
                     .disabled(library.history.isEmpty)
             }
+            .kyroSettingsRowSurface()
             Section {
                 NavigationLink("Customize Home") { KyroHomeCustomizationView(host: .shared) }
             } header: {
@@ -927,6 +899,8 @@ struct KyroRadioSettingsForm: View {
                 Text("About")
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(SettingsBackdrop())
         .navigationTitle("Radio Settings")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog("Clear radio listening history?", isPresented: $isConfirmingClear, titleVisibility: .visible) {

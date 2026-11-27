@@ -171,20 +171,25 @@ final class KyroSettingsIntegrationTests: XCTestCase {
         XCTAssertEqual(
             IOSSettingsOverviewCategory.allCases.map(\.title),
             [
+                "Appearance & Navigation",
                 "Playback",
                 "Live TV",
-                "Appearance & Navigation",
-                "Downloads & Storage",
+                "Sports Dashboard",
+                "Radio",
+                "Podcasts",
                 "Account & Connections",
+                "Backup & Restore",
+                "Downloads & Storage",
                 "Privacy",
                 "Advanced & Diagnostics",
                 "About Kyro",
             ]
         )
-        XCTAssertEqual(IOSSettingsOverviewGroup.allCases.map(\.rawValue), ["Preferences", "Account", "Support"])
+        XCTAssertEqual(IOSSettingsOverviewGroup.allCases.map(\.rawValue),
+                       ["Appearance", "Media & Playback", "Live TV", "Sports", "Radio & Podcasts", "Account & Server", "Backup & Data", "Advanced"])
         XCTAssertEqual(
             IOSSettingsOverviewCategory.allCases.map(\.group),
-            [.preferences, .preferences, .preferences, .preferences, .account, .support, .support, .support]
+            [.appearance, .media, .liveTV, .sports, .audio, .audio, .account, .data, .data, .advanced, .advanced, .advanced]
         )
         XCTAssertEqual(IOSSettingsOverviewCategory.visible(downloadsEnabled: true), IOSSettingsOverviewCategory.allCases)
     }

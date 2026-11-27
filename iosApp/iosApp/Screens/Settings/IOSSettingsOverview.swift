@@ -2,25 +2,36 @@
 import SwiftUI
 
 enum IOSSettingsOverviewGroup: String, CaseIterable {
-    case preferences = "Preferences"
-    case account = "Account"
-    case support = "Support"
+    case appearance = "Appearance"
+    case media = "Media & Playback"
+    case liveTV = "Live TV"
+    case sports = "Sports"
+    case audio = "Radio & Podcasts"
+    case account = "Account & Server"
+    case data = "Backup & Data"
+    case advanced = "Advanced"
 }
 
 /// Presentation and search metadata only. Existing stores and destinations
 /// continue to own every setting and action.
 enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
-    case playback, liveTV, radio, podcasts, appearanceNavigation, downloadsStorage
+    case appearanceNavigation, playback, liveTV, sports, radio, podcasts
     case accountConnections
+    case backup, downloadsStorage
     case privacy, advancedDiagnostics, aboutKyro
 
     var id: String { rawValue }
 
     var group: IOSSettingsOverviewGroup {
         switch self {
-        case .playback, .liveTV, .radio, .podcasts, .appearanceNavigation, .downloadsStorage: .preferences
+        case .appearanceNavigation: .appearance
+        case .playback: .media
+        case .liveTV: .liveTV
+        case .sports: .sports
+        case .radio, .podcasts: .audio
         case .accountConnections: .account
-        case .privacy, .advancedDiagnostics, .aboutKyro: .support
+        case .backup, .downloadsStorage: .data
+        case .privacy, .advancedDiagnostics, .aboutKyro: .advanced
         }
     }
 
@@ -28,10 +39,12 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
         switch self {
         case .playback: "Playback"
         case .liveTV: "Live TV"
+        case .sports: "Sports Dashboard"
         case .radio: KyroRadioSettingsEntry.title
         case .podcasts: "Podcasts"
         case .appearanceNavigation: "Appearance & Navigation"
         case .downloadsStorage: "Downloads & Storage"
+        case .backup: "Backup & Restore"
         case .accountConnections: "Account & Connections"
         case .privacy: "Privacy"
         case .advancedDiagnostics: "Advanced & Diagnostics"
@@ -45,6 +58,8 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
             ["playback", "subtitles", "captions", "quality", "streaming quality", "audio", "audio & video", "video", "episodes", "episode behavior", "skipping", "spoilers", "spoiler protection", "player controls", "skip intervals", "advanced playback", "seek cache", "buffer", "buffer ahead", "deinterlacing", "lossless", "atmos", "hdr", "dolby vision", "bitrate", "cellular", "background playback", "connection speed"]
         case .liveTV:
             KyroLiveTVSettingsEntry.searchTerms
+        case .sports:
+            ["sports", "sports dashboard", "sports order", "sports categories"]
         case .radio:
             KyroRadioSettingsEntry.searchTerms
         case .podcasts:
@@ -53,8 +68,10 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
             ["appearance & navigation", "appearance", "interface", "navigation", "menu", "cards", "posters", "theme music", "theme song", "features", "extra features", "experimental", "audiobooks", "watch party", "home", "shelves", "teams", "leagues"]
         case .downloadsStorage:
             ["downloads & storage", "downloads", "offline", "quality", "cleanup", "storage"]
+        case .backup:
+            ["backup", "restore", "export settings", "import settings", "backup & data"]
         case .accountConnections:
-            ["account & connections", "account", "connections", "general", "profile", "startup", "server", "sign in", "tv", "sign out", "backup", "restore", "export settings", "import settings"]
+            ["account & connections", "account", "connections", "general", "profile", "startup", "server", "sign in", "tv", "sign out"]
         case .privacy:
             ["privacy", "privacy & support", "privacy policy", "crash reports", "crash reporting", "consent", "diagnostics sharing"]
         case .advancedDiagnostics:
@@ -218,9 +235,16 @@ struct IOSSettingsOverview: View {
                     .padding(.vertical, 36)
                     .listRowBackground(Color.clear)
             } else {
-                preferencesSection
-                accountSection
-                supportSection
+                ForEach(IOSSettingsOverviewGroup.allCases, id: \.self) { group in
+                    let categories = matchingCategories.filter { $0.group == group }
+                    if !categories.isEmpty {
+                        Section(group.rawValue) {
+                            ForEach(categories) { category in
+                                settingsRow(for: category).kyroSettingsRowSurface()
+                            }
+                        }
+                    }
+                }
             }
         }
         .siloGroupedListStyle()
@@ -241,70 +265,54 @@ struct IOSSettingsOverview: View {
         }
     }
 
-    @ViewBuilder private var preferencesSection: some View {
-        if hasMatches(in: .preferences) {
-            Section(IOSSettingsOverviewGroup.preferences.rawValue) {
-                if includes(.playback) {
-                    NavigationLink { IOSPlaybackSettingsGroupView(viewModel: viewModel) } label: {
-                        SettingsOverviewRow(title: "Playback", subtitle: "Quality, subtitles, audio, and episode behavior", systemImage: "play.fill", value: viewModel.preferredQualityLabel)
-                    }
-                }
-                if includes(.liveTV) { KyroLiveTVSettingsRow() }
-                if includes(.radio) { KyroRadioSettingsRow() }
-                if includes(.podcasts) {
-                    NavigationLink { KyroPodcastSettings() } label: {
-                        SettingsOverviewRow(title: "Podcasts", subtitle: "Cassette player, feed refresh, and downloads", systemImage: "headphones")
-                    }
-                }
-                if includes(.appearanceNavigation) {
-                    KyroAppAppearancePicker()
-                    NavigationLink { IOSAppearanceNavigationSettingsView(uiCustomization: uiCustomization) } label: {
-                        SettingsOverviewRow(title: "Appearance & Navigation", subtitle: "Interface, navigation, and optional features", systemImage: "rectangle.3.group.fill")
-                    }
-                }
-                if includes(.downloadsStorage) {
-                    NavigationLink { DownloadsSettingsView() } label: {
-                        SettingsOverviewRow(title: "Downloads & Storage", subtitle: "Offline quality, cleanup, and storage", systemImage: "arrow.down.circle.fill")
-                    }
-                }
+    @ViewBuilder private func settingsRow(for category: IOSSettingsOverviewCategory) -> some View {
+        switch category {
+        case .appearanceNavigation:
+            KyroAppAppearancePicker()
+            NavigationLink { IOSAppearanceNavigationSettingsView(uiCustomization: uiCustomization) } label: {
+                SettingsOverviewRow(title: category.title, subtitle: "Home, interface, navigation, and optional features", systemImage: "rectangle.3.group.fill")
+            }
+        case .playback:
+            NavigationLink { IOSPlaybackSettingsGroupView(viewModel: viewModel) } label: {
+                SettingsOverviewRow(title: category.title, subtitle: "Quality, subtitles, audio, and episodes", systemImage: "play.fill", value: viewModel.preferredQualityLabel)
+            }
+        case .liveTV: KyroLiveTVSettingsRow()
+        case .sports:
+            NavigationLink { KyroSportsSettingsView(presentedAsSheet: false) } label: {
+                SettingsOverviewRow(title: category.title, subtitle: "Sport order and visibility", systemImage: "sportscourt")
+            }
+        case .radio: KyroRadioSettingsRow()
+        case .podcasts:
+            NavigationLink { KyroPodcastSettings() } label: {
+                SettingsOverviewRow(title: category.title, subtitle: "Player appearance, feed refresh, and downloads", systemImage: "headphones")
+            }
+        case .accountConnections:
+            NavigationLink { IOSAccountConnectionsSettingsView(viewModel: viewModel, showSignOutConfirm: $showSignOutConfirm) } label: {
+                SettingsOverviewRow(title: category.title, subtitle: "Profile, sign-in, server, and connected devices", systemImage: "person.crop.circle.badge.checkmark", value: viewModel.serverDisplayName)
+            }
+        case .backup:
+            NavigationLink { SettingsBackupView() } label: {
+                SettingsOverviewRow(title: category.title, subtitle: "Export or import this device’s preferences", systemImage: "externaldrive.badge.checkmark")
+            }
+            .accessibilityIdentifier("settings.backupRestore")
+        case .downloadsStorage:
+            NavigationLink { DownloadsSettingsView() } label: {
+                SettingsOverviewRow(title: category.title, subtitle: "Offline quality, cleanup, and storage", systemImage: "arrow.down.circle.fill")
+            }
+        case .privacy:
+            NavigationLink { IOSPrivacySettingsView(model: diagnosticsModel, profile: viewModel.activeProfile) } label: {
+                SettingsOverviewRow(title: category.title, subtitle: "Privacy policy and diagnostics-sharing consent", systemImage: "hand.raised.fill")
+            }
+        case .advancedDiagnostics:
+            NavigationLink { IOSAdvancedDiagnosticsSettingsView(model: diagnosticsModel, profile: viewModel.activeProfile) } label: {
+                SettingsOverviewRow(title: category.title, subtitle: "Playback health, reports, and technical logging", systemImage: "stethoscope")
+            }
+        case .aboutKyro:
+            NavigationLink { IOSAboutKyroSettingsView() } label: {
+                SettingsOverviewRow(title: category.title, subtitle: "Version, acknowledgements, and source code", systemImage: "info.circle.fill", value: SettingsViewModel.versionString)
             }
         }
     }
-
-    @ViewBuilder private var accountSection: some View {
-        if includes(.accountConnections) {
-            Section(IOSSettingsOverviewGroup.account.rawValue) {
-                NavigationLink { IOSAccountConnectionsSettingsView(viewModel: viewModel, showSignOutConfirm: $showSignOutConfirm) } label: {
-                    SettingsOverviewRow(title: "Account & Connections", subtitle: "Profile, sign-in, server, and connected devices", systemImage: "person.crop.circle.badge.checkmark", value: viewModel.serverDisplayName)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder private var supportSection: some View {
-        if hasMatches(in: .support) {
-            Section(IOSSettingsOverviewGroup.support.rawValue) {
-                if includes(.privacy) {
-                    NavigationLink { IOSPrivacySettingsView(model: diagnosticsModel, profile: viewModel.activeProfile) } label: {
-                        SettingsOverviewRow(title: "Privacy", subtitle: "Privacy policy and diagnostics-sharing consent", systemImage: "hand.raised.fill")
-                    }
-                }
-                if includes(.advancedDiagnostics) {
-                    NavigationLink { IOSAdvancedDiagnosticsSettingsView(model: diagnosticsModel, profile: viewModel.activeProfile) } label: {
-                        SettingsOverviewRow(title: "Advanced & Diagnostics", subtitle: "Playback health, reports, and technical logging", systemImage: "stethoscope")
-                    }
-                }
-                if includes(.aboutKyro) {
-                    NavigationLink { IOSAboutKyroSettingsView() } label: {
-                        SettingsOverviewRow(title: "About Kyro", subtitle: "Version, acknowledgements, and source code", systemImage: "info.circle.fill", value: SettingsViewModel.versionString)
-                    }
-                }
-            }
-        }
-    }
-
-    private func includes(_ category: IOSSettingsOverviewCategory) -> Bool { matchingCategories.contains(category) }
-    private func hasMatches(in group: IOSSettingsOverviewGroup) -> Bool { matchingCategories.contains { $0.group == group } }
 }
 
 private struct IOSPlaybackSettingsGroupView: View {
@@ -386,10 +394,6 @@ private struct IOSAccountConnectionsSettingsView: View {
                 NavigationLink { GeneralSettingsView() } label: {
                     SettingsOverviewRow(title: "General", subtitle: "Profile selection and app startup", systemImage: "person.crop.circle.badge.checkmark", value: AppLanguage.string(launchPreferences.behavior.title))
                 }
-                NavigationLink { SettingsBackupView() } label: {
-                    SettingsOverviewRow(title: "Backup & Restore", subtitle: "Export or import this device's preferences", systemImage: "externaldrive.badge.checkmark")
-                }
-                .accessibilityIdentifier("settings.backupRestore")
                 if accountSignIn.showsEntry {
                     NavigationLink { AccountSignInView(model: accountSignIn) } label: {
                         SettingsOverviewRow(title: "Sign-in", subtitle: "Connect or disconnect your sign-in provider", systemImage: "person.badge.key.fill", value: accountSignIn.identities.first?.providerName)

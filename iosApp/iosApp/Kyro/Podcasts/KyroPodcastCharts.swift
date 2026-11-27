@@ -189,15 +189,15 @@ enum PodcastChartFeed {
     }
 
     private struct Lookup: Decodable {
-        struct Item: Decodable { let feedUrl: String?; let collectionId: Int? }
+        struct Item: Decodable { let feedUrl: String?; let collectionId, trackId: Int64? }
         let results: [Item]
     }
 
     /// The public RSS address of an Apple Podcasts show, when it has one.
     static func decodeFeed(_ data: Data, appleID: String) throws -> URL? {
         let results = try JSONDecoder().decode(Lookup.self, from: data).results
-        let match = results.first { $0.collectionId.map(String.init) == appleID } ?? results.first
-        return PodcastAddress.url(match?.feedUrl)
+        return results.lazy.filter { $0.collectionId.map(String.init) == appleID || $0.trackId.map(String.init) == appleID }
+            .compactMap { PodcastAddress.url($0.feedUrl) }.first
     }
 }
 

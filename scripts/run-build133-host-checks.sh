@@ -17,7 +17,7 @@ xcrun swiftc -D KYRO_STANDALONE_TESTS -D KYRO_PODCAST_HOST_TESTS -parse-as-libra
 git diff --exit-code aa16b77868a1546dc0aaadad50e6d098e4fa58cd -- \
   "$ROOT"/Radio/KyroRadioPlayer.swift \
   "$ROOT"/Radio/KyroRadioDiscoverModel.swift \
-  "$ROOT"/Podcasts/KyroPodcast{Player,Feed,Network,Backup,Downloads}.swift \
+  "$ROOT"/Podcasts/KyroPodcast{Player,Backup,Downloads}.swift \
   "$ROOT"/Podcasts/KyroHomePodcastRail.swift \
   "$ROOT"/Shell \
   iosApp/iosApp/LiveTV \

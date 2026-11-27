@@ -43,6 +43,7 @@ struct PodcastHTTP: Sendable {
         guard let http = response as? HTTPURLResponse,
               PodcastAddress.url(http.url?.absoluteString) != nil else { throw PodcastError.unavailable }
         if http.statusCode == 304 { return (Data(), http) }
+        if http.statusCode == 401 || http.statusCode == 403 { throw PodcastError.restrictedFeed }
         guard http.statusCode == 200 else { throw PodcastError.unavailable }
         guard response.expectedContentLength <= Int64(limit) else { throw PodcastError.tooLarge }
         var data = Data()
@@ -58,17 +59,22 @@ struct PodcastHTTP: Sendable {
 
 struct PodcastDiscovery {
     struct Result: Identifiable, Sendable {
-        var id: URL { feed }
-        let feed: URL
+        var id: String { appleID ?? feed?.absoluteString ?? title }
+        let appleID: String?
+        let feed: URL?
         let title: String
         let publisher: String
         let artwork: URL?
         let appleLink: URL?
+        var opening: PodcastShowOpeningRequest {
+            .init(title: title, artwork: artwork, feed: feed, appleID: appleID, fromDirectory: true)
+        }
     }
 
     private struct Response: Decodable {
         struct Item: Decodable {
             let feedUrl, collectionName, artistName, artworkUrl100, collectionViewUrl: String?
+            let collectionId, trackId: Int64?
         }
         let results: [Item]
     }
@@ -87,16 +93,62 @@ struct PodcastDiscovery {
     }
 
     static func decode(_ data: Data) throws -> [Result] {
-        var seen = Set<URL>()
+        var seenFeeds = Set<URL>()
+        var seenIDs = Set<String>()
         return try JSONDecoder().decode(Response.self, from: data).results.prefix(25).compactMap { item in
-            guard let feed = PodcastAddress.url(item.feedUrl), seen.insert(feed).inserted,
-                  let title = item.collectionName, !title.isEmpty else { return nil }
+            let feed = PodcastAddress.url(item.feedUrl)
+            let appleID = (item.collectionId ?? item.trackId).flatMap { $0 > 0 ? String($0) : nil }
+            guard (feed != nil || appleID != nil), let title = item.collectionName, !title.isEmpty,
+                  appleID.map({ !seenIDs.contains($0) }) ?? true,
+                  feed.map({ !seenFeeds.contains($0) }) ?? true else { return nil }
+            if let appleID { seenIDs.insert(appleID) }
+            if let feed { seenFeeds.insert(feed) }
             let appleLink = PodcastAddress.url(item.collectionViewUrl).flatMap {
                 $0.scheme == "https" && $0.host == "podcasts.apple.com" ? $0 : nil
             }
-            return .init(feed: feed, title: title, publisher: item.artistName ?? "",
+            return .init(appleID: appleID, feed: feed, title: title, publisher: item.artistName ?? "",
                          artwork: appleLink == nil ? nil : PodcastAddress.url(item.artworkUrl100), appleLink: appleLink)
         }
+    }
+}
+
+/// An immutable destination. Resolving RSS never changes the selected route.
+struct PodcastShowOpeningRequest: Hashable, Identifiable, Sendable {
+    let title: String
+    let artwork: URL?
+    let feed: URL?
+    let appleID: String?
+    let fromDirectory: Bool
+    var id: Self { self }
+
+    func resolve(lookup: (String) async throws -> URL?,
+                 load: (URL, Bool) async throws -> PodcastShow) async throws -> PodcastShow {
+        try Task.checkCancellation()
+        if let feed {
+            do {
+                let show = try await load(feed, fromDirectory)
+                try Task.checkCancellation()
+                return show
+            } catch {
+                try Task.checkCancellation()
+                // A stale search URL may differ from Apple's current lookup.
+                guard let appleID, let replacement = try? await lookup(appleID), replacement != feed else {
+                    try Task.checkCancellation()
+                    throw error
+                }
+                try Task.checkCancellation()
+                let show = try await load(replacement, fromDirectory)
+                try Task.checkCancellation()
+                return show
+            }
+        }
+        guard let appleID else { throw PodcastError.noPublicFeed }
+        let address = try await lookup(appleID)
+        try Task.checkCancellation()
+        guard let address else { throw PodcastError.noPublicFeed }
+        let show = try await load(address, fromDirectory)
+        try Task.checkCancellation()
+        return show
     }
 }
 

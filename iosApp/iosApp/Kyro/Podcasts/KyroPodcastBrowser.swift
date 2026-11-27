@@ -24,15 +24,57 @@ struct KyroAudioHeader<Actions: View>: View {
     }
 }
 
-struct KyroAudioPageHeading: View {
-    let title: String
-    let subtitle: String
+struct KyroAudioSearchField<Field: View>: View {
+    let hasText: Bool
+    let clear: () -> Void
+    @ViewBuilder let field: () -> Field
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.largeTitle.weight(.heavy)).accessibilityAddTraits(.isHeader)
-            Text(subtitle).font(.subheadline).foregroundStyle(KyroSignature.secondary)
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass").foregroundStyle(KyroSignature.secondary).accessibilityHidden(true)
+            field()
+            if hasText {
+                Button(action: clear) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(KyroSignature.secondary)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
         }
+        .padding(.horizontal, 14).frame(minHeight: 48)
+        .background { KyroControlSurface() }
+    }
+}
+
+struct KyroAudioProblem: View {
+    let title: String
+    let message: String
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: "exclamationmark.circle").font(.headline)
+            Text(message).font(.subheadline).foregroundStyle(KyroSignature.secondary)
+            Button("Retry", action: retry).buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background { KyroControlSurface() }
+    }
+}
+
+struct KyroAudioSectionPicker<Selection: Hashable>: View {
+    let title: String
+    @Binding var selection: Selection
+    let options: [Selection]
+    let name: (Selection) -> String
+
+    var body: some View {
+        Picker(title, selection: $selection) {
+            ForEach(options, id: \.self) { Text(name($0)).tag($0) }
+        }
+        .pickerStyle(.segmented)
     }
 }
 
@@ -119,16 +161,13 @@ private struct KyroPodcastBrowser: View {
 
     var body: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
                     if hosted {
                         KyroAudioHeader { actions }
                     }
                     KyroAudioSelector(selection: $selection)
-                    Picker("Podcast section", selection: $section) {
-                        ForEach(Section.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
+                    KyroAudioSectionPicker(title: "Podcast section", selection: $section, options: Section.allCases, name: \.rawValue)
                     .accessibilityIdentifier("kyroPodcastSection")
                 }
                 .padding(.horizontal, 20)
@@ -171,14 +210,15 @@ private struct KyroPodcastBrowser: View {
         .toolbar { if !hosted { ToolbarItemGroup(placement: .topBarTrailing) { actions } } }
         .sheet(isPresented: $showSettings) { NavigationStack { KyroPodcastSettings() } }
         .sheet(isPresented: $showQueue) { NavigationStack { KyroPodcastQueueView() } }
-        .sheet(isPresented: $showFeedEntry) { NavigationStack { KyroPodcastFeedEntrySheet(discovery: discovery) } }
-        .navigationDestination(item: $discovery.preview) { show in
-            KyroPodcastShowView(initialShow: show, needsPageShelf: isSecondaryDestination)
+        .sheet(isPresented: $showFeedEntry, onDismiss: discovery.openPendingFeed) {
+            NavigationStack { KyroPodcastFeedEntrySheet(discovery: discovery) }
+        }
+        .navigationDestination(item: $discovery.destination) { request in
+            KyroPodcastOpeningPage(request: request)
         }
         .task(id: discovery.submitted) {
             if section == .discover { await discovery.search() }
         }
-        .task(id: discovery.lookup) { await discovery.openLookup() }
         .onChange(of: section) { _, section in if section != .discover { discovery.cancel() } }
         .onAppear { isDisplayed = true }
         .onDisappear { isDisplayed = false }
@@ -231,23 +271,18 @@ final class KyroPodcastDiscoveryState {
         let term: String
         let id = UUID()
     }
-    struct Lookup: Equatable {
-        let address: URL
-        let fromDirectory: Bool
-        let id = UUID()
-    }
     var query = ""
     var address = ""
     var submitted: Search?
-    var lookup: Lookup?
+    private var completedSearch: Search?
+    var destination: PodcastShowOpeningRequest?
+    private var pendingFeed: PodcastShowOpeningRequest?
     var results: [PodcastDiscovery.Result] = []
-    var preview: PodcastShow?
     var problem: String?
     var searching = false
-    var opening = false
 
     func cancel() {
-        submitted = nil; lookup = nil; searching = false; opening = false
+        submitted = nil; searching = false
     }
 
     /// Search results replace Discover's shelves while a search is active.
@@ -257,10 +292,9 @@ final class KyroPodcastDiscoveryState {
         query = ""; submitted = nil; results = []; searching = false; problem = nil
     }
 
-    /// Opens a directory or chart show through the existing preview flow.
-    func open(_ feed: URL) {
+    func open(_ request: PodcastShowOpeningRequest) {
         problem = nil
-        lookup = .init(address: feed, fromDirectory: true)
+        destination = request
     }
 
     func submit() {
@@ -271,29 +305,81 @@ final class KyroPodcastDiscoveryState {
     func openFeed() {
         guard let url = PodcastAddress.url(address) else { problem = PodcastError.invalidURL.localizedDescription; return }
         problem = nil
-        lookup = Lookup(address: url, fromDirectory: false)
+        pendingFeed = .init(title: "Public RSS Feed", artwork: nil, feed: url, appleID: nil, fromDirectory: false)
+    }
+
+    func openPendingFeed() {
+        guard let pendingFeed else { return }
+        self.pendingFeed = nil
+        open(pendingFeed)
     }
 
     func search() async {
-        guard let submitted else { return }
+        guard let submitted, submitted != completedSearch else { return }
         searching = true; problem = nil; results = []
         defer { if self.submitted == submitted { searching = false } }
         do {
             let matches = try await PodcastDirectory.shared.search(submitted.term, country: Locale.current.region?.identifier ?? "US")
-            if !Task.isCancelled { results = matches }
+            if !Task.isCancelled, self.submitted == submitted {
+                results = matches
+                completedSearch = submitted
+            }
         } catch {
-            if !Task.isCancelled { problem = "Couldn’t search Apple Podcasts. You can still open a public RSS feed directly." }
+            if !Task.isCancelled, self.submitted == submitted { problem = "Couldn’t search Apple Podcasts. You can still open a public RSS feed directly." }
         }
     }
 
-    func openLookup() async {
-        guard let lookup else { return }
-        opening = true
-        defer { if self.lookup == lookup { opening = false } }
-        do {
-            let item = try await KyroPodcastLibrary.shared.preview(lookup.address, fromDirectory: lookup.fromDirectory)
-            if !Task.isCancelled { preview = item }
-        } catch { if !Task.isCancelled { problem = error.localizedDescription } }
+}
+
+struct KyroPodcastOpeningPage: View {
+    let request: PodcastShowOpeningRequest
+    @Environment(\.nowPlayingShelfCoversPushedPages) private var shelfCoversPushedPages
+    @State private var show: PodcastShow?
+    @State private var problem: String?
+    @State private var attempt = 0
+
+    var body: some View {
+        Group {
+            if let show {
+                KyroPodcastShowView(initialShow: show, needsPageShelf: true)
+            } else {
+                VStack(spacing: 16) {
+                    KyroPodcastArtwork(url: request.artwork, size: 92)
+                    Text(request.title).font(.title2.bold()).multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.isHeader)
+                    if let problem {
+                        KyroAudioProblem(title: "Couldn’t Open Podcast", message: problem) {
+                            self.problem = nil
+                            attempt += 1
+                        }
+                    } else {
+                        ProgressView("Opening public RSS feed…")
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .siloPageBackground()
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if !shelfCoversPushedPages { KyroRadioPageNowPlayingBar() }
+                }
+                .navigationTitle("Podcast")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .toolbar(.visible, for: .navigationBar)
+        .task(id: attempt) {
+            guard show == nil, problem == nil else { return }
+            do {
+                let resolved = try await request.resolve(lookup: {
+                    try await PodcastCharts.shared.feed(appleID: $0, country: Locale.current.region?.identifier ?? "US")
+                }, load: { address, fromDirectory in
+                    try await KyroPodcastLibrary.shared.preview(address, fromDirectory: fromDirectory)
+                })
+                if !Task.isCancelled { show = resolved }
+            } catch {
+                if !Task.isCancelled { problem = error.localizedDescription }
+            }
+        }
     }
 }
 
@@ -376,11 +462,15 @@ struct KyroPodcastShowView: View {
                     }
                 }
                 if refreshing { ProgressView("Refreshing feed…").tint(.white) }
-                if let error { Text(error).font(.footnote).foregroundStyle(KyroModernStyle.secondary) }
+                if let error {
+                    KyroAudioProblem(title: "Podcast Feed Unavailable", message: error) {
+                        Task { await refresh() }
+                    }
+                }
                 let entries = library.entries(for: show)
                 Text("Episodes").font(.title3.weight(.bold)).accessibilityAddTraits(.isHeader)
-                if entries.isEmpty {
-                    Text("No playable episodes are cached.").foregroundStyle(KyroModernStyle.secondary)
+                if entries.isEmpty && !refreshing && error == nil {
+                    Text("This feed has no playable episodes.").foregroundStyle(KyroModernStyle.secondary)
                 }
                 ForEach(entries) { KyroPodcastEpisodeCard(entry: $0) }
             }
@@ -392,10 +482,14 @@ struct KyroPodcastShowView: View {
         .siloPageBackground()
         .environment(\.colorScheme, .dark)
         .navigationTitle(show.title).navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if needsPageShelf && !shelfCoversPushedPages { KyroRadioPageNowPlayingBar() }
         }
-        .task { await library.restore(show) }
+        .task {
+            await library.restore(show)
+            if library.entries(for: show).isEmpty, !Task.isCancelled { await refresh() }
+        }
         .refreshable { await refresh() }
     }
 
@@ -409,7 +503,7 @@ struct KyroPodcastShowView: View {
         refreshing = true
         defer { refreshing = false }
         do { try await library.refresh(show); error = nil }
-        catch { self.error = error.localizedDescription }
+        catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 }
 
@@ -545,13 +639,16 @@ struct KyroPodcastSettings: View {
                     ForEach(PodcastPreferences.sleepOptions, id: \.self) { Text(Self.sleepLabel($0)).tag($0) }
                 }
             }
+            .kyroSettingsRowSurface()
             Section {
                 Picker("Refresh Feeds", selection: preference(\.refreshHours)) {
                     ForEach(PodcastPreferences.refreshIntervals, id: \.self) {
                         Text($0 == 0 ? "Manually" : "Every \($0) hours").tag($0)
                     }
                 }
-            } footer: { Text("Automatic refresh runs in the foreground when you open Podcasts, in small batches.") }
+            } header: { Text("Subscriptions") }
+              footer: { Text("Automatic refresh runs in the foreground when you open Podcasts, in small batches.") }
+            .kyroSettingsRowSurface()
             Section("Downloads") {
                 Toggle("Wi-Fi Only", isOn: preference(\.wifiOnly))
                 Toggle("Remove Downloads After Playing", isOn: preference(\.removeCompleted))
@@ -559,7 +656,16 @@ struct KyroPodcastSettings: View {
                     List { KyroPodcastDownloadRows() }.navigationTitle("Podcast Storage")
                 }
             }
+            .kyroSettingsRowSurface()
+            Section("Listening History") {
+                Text("View or clear listening history in Podcasts → Library → History.")
+                    .foregroundStyle(.secondary)
+            }
+            .kyroSettingsRowSurface()
         }
+        .scrollContentBackground(.hidden)
+        .background(SettingsBackdrop())
+        .tint(KyroTheme.accentInk)
         .navigationTitle("Podcast Settings").navigationBarTitleDisplayMode(.inline)
     }
 

@@ -239,8 +239,8 @@ enum KyroBuild133HostChecks {
         let home = try source("Kyro/Home/KyroHomeShelves.swift")
         require(home.contains("KyroHomeSportsHeightProbe.games(games)") && home.contains("isHeightProbe: true"), "sports tallest-card probe preserved")
         let project = try String(contentsOfFile: "iosApp/project.yml", encoding: .utf8)
-        require(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 136").count == 4 &&
-                project.components(separatedBy: "MARKETING_VERSION: \"1.0.136\"").count == 4, "iOS app and extensions target Build 136")
+        require(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 137").count == 4 &&
+                project.components(separatedBy: "MARKETING_VERSION: \"1.0.137\"").count == 4, "iOS app and extensions target Build 137")
 
         let cassette = try source("Kyro/Podcasts/KyroPodcastCassette.swift")
         let radio = try source("Kyro/Radio/KyroRadioTurntable.swift")
@@ -343,8 +343,8 @@ enum KyroBuild133HostChecks {
 
     private static func live() async throws {
         let matches = try await PodcastDirectory.shared.search("Roman Mars", country: "US")
-        guard let match = matches.first(where: { $0.title == "99% Invisible" }) else { throw PodcastError.unavailable }
-        let show = PodcastShow(id: PodcastAddress.fingerprint(match.feed.absoluteString), feed: match.feed, title: match.title)
+        guard let match = matches.first(where: { $0.title == "99% Invisible" }), let feed = match.feed else { throw PodcastError.unavailable }
+        let show = PodcastShow(id: PodcastAddress.fingerprint(feed.absoluteString), feed: feed, title: match.title)
         let result = try await PodcastFeedService.shared.load(show, cached: nil, maxAge: 0)
         require(!result.episodes.isEmpty && result.episodes.allSatisfy { PodcastAddress.url($0.media.absoluteString) != nil }, "real public feed playable enclosures")
         print("Live: creator search returned \(matches.count) public results; \(result.show.title) parsed \(result.episodes.count) distinct episodes.")

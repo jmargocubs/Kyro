@@ -19,7 +19,7 @@ struct KyroHomeCustomizationView: View {
         List {
             Section {
                 ForEach(entries, id: \.self) { entry in
-                    row(entry)
+                    row(entry).kyroSettingsRowSurface()
                 }
                 .onMove { offsets, destination in
                     var updated = entries
@@ -61,6 +61,8 @@ struct KyroHomeCustomizationView: View {
                 Text("Shelf status")
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(SettingsBackdrop())
         .tint(KyroTheme.accentInk)
         .navigationTitle("Customize Home")
         .navigationBarTitleDisplayMode(.inline)

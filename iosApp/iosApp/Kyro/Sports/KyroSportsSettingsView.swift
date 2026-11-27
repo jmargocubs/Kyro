@@ -2,13 +2,30 @@
 import SwiftUI
 
 struct KyroSportsSettingsView: View {
+    var presentedAsSheet = true
     @Environment(\.dismiss) private var dismiss
     private let settings = KyroSportsDashboardSettings.shared
     private let host = KyroHomeShelfHost.shared
     @AppStorage(LiveTVEmbeddedGuideStyle.defaultsKey) private var guideStyle = LiveTVEmbeddedGuideStyle.list.rawValue
     @State private var categoryPreferences = LiveTVCategoryPreferences.load(providerID: nil)
     var body: some View {
-        NavigationStack {
+        Group {
+            if presentedAsSheet {
+                NavigationStack {
+                    settingsForm
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                }
+            } else {
+                settingsForm
+            }
+        }
+        .tint(KyroTheme.accentInk)
+        .preferredColorScheme(.dark)
+        .onAppear { host.refreshScope(); settings.reload() }
+        .onChange(of: categoryPreferences) { _, prefs in prefs.save(providerID: nil) }
+    }
+
+    private var settingsForm: some View {
             Form {
                 Section("My Favorites") {
                     NavigationLink("Manage Favorite Teams & Players") { KyroHomeFavoritePicker(shelf: .myTeams, host: host) }
@@ -25,6 +42,7 @@ struct KyroSportsSettingsView: View {
                     Toggle("Completed games", isOn: binding(\.showCompleted))
                     NavigationLink("Enabled leagues & order") { leagueOrder }
                     NavigationLink("Soccer competitions") { soccerCompetitions }
+                    if presentedAsSheet {
                     Picker("Live TV watch guide", selection: $guideStyle) {
                         ForEach(LiveTVEmbeddedGuideStyle.allCases) { Text($0.title).tag($0.rawValue) }
                     }
@@ -36,6 +54,7 @@ struct KyroSportsSettingsView: View {
                     }
                     Text("Guide, List, Grid and Categories are Live TV preferences, not Sports Hub layouts. Manage them in Playback & Channels below.")
                         .font(.caption).foregroundStyle(.secondary)
+                    }
                     Button("Reset Dashboard Preferences", role: .destructive) {
                         settings.value = .init()
                         for league in KyroSportLeague.allCases { UserDefaults.standard.removeObject(forKey: KyroSportsHubStore.modeKey(league)) }
@@ -56,14 +75,8 @@ struct KyroSportsSettingsView: View {
             }
             .navigationTitle("Sports Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .scrollContentBackground(.hidden)
-            .background(KyroTheme.background)
-        }
-        .tint(KyroTheme.accentInk)
-        .preferredColorScheme(.dark)
-        .onAppear { host.refreshScope(); settings.reload() }
-        .onChange(of: categoryPreferences) { _, prefs in prefs.save(providerID: nil) }
+            .background(SettingsBackdrop())
     }
     private func binding(_ key: WritableKeyPath<KyroSportsDashboardPreferences, Bool>) -> Binding<Bool> {
         Binding(get: { settings.value[keyPath: key] }, set: { settings.value[keyPath: key] = $0 })

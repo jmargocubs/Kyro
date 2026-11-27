@@ -26,7 +26,6 @@ final class KyroPodcastChartsModel {
     private(set) var loadingCategory: PodcastCategory?
     private(set) var failed = false
     var category: PodcastCategory?
-    var opening: String?
 
     @ObservationIgnored private let charts: PodcastCharts
     @ObservationIgnored let country: String
@@ -64,11 +63,11 @@ final class KyroPodcastChartsModel {
         try await charts.chart(category: category, limit: Self.fullLimit, country: country)
     }
 
-    /// Finds the show's public feed and hands it to the existing preview flow.
-    func feed(for entry: PodcastChartEntry) async -> URL? {
-        opening = entry.appleID
-        defer { if opening == entry.appleID { opening = nil } }
-        return try? await charts.feed(appleID: entry.appleID, country: country)
+}
+
+private extension PodcastChartEntry {
+    var openingRequest: PodcastShowOpeningRequest {
+        .init(title: title, artwork: artwork, feed: nil, appleID: appleID, fromDirectory: true)
     }
 }
 
@@ -307,7 +306,7 @@ struct KyroPodcastDiscoverHome: View {
             discovery.submit()
         }
         .navigationDestination(item: $fullChart) { selection in
-            KyroPodcastFullChart(selection: selection, charts: charts, discovery: discovery)
+            KyroPodcastFullChart(selection: selection, charts: charts)
         }
     }
 
@@ -315,25 +314,14 @@ struct KyroPodcastDiscoverHome: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
-            KyroAudioPageHeading(title: "Podcasts", subtitle: "Discover, follow and stream podcasts on Kyro X.")
             HStack(spacing: 10) {
-                HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(KyroSignature.secondary).accessibilityHidden(true)
+                KyroAudioSearchField(hasText: !discovery.query.isEmpty, clear: discovery.clearSearch) {
                     TextField("Search podcasts or creators", text: $discovery.query)
                         .submitLabel(.search)
                         .focused($searchFocused)
                         .onSubmit { searchFocused = false; discovery.submit() }
                         .autocorrectionDisabled()
-                    if !discovery.query.isEmpty {
-                        Button { discovery.clearSearch() } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(KyroSignature.secondary)
-                                .frame(width: 44, height: 44)
-                        }
-                        .buttonStyle(.plain).accessibilityLabel("Clear search")
-                    }
                 }
-                .padding(.horizontal, 14).frame(minHeight: 48)
-                .background { KyroControlSurface() }
                 Menu {
                     Button("Add RSS Feed", systemImage: "link.badge.plus", action: openFeedEntry)
                     Button("Podcast Settings", systemImage: "slider.horizontal.3", action: openSettings)
@@ -348,7 +336,6 @@ struct KyroPodcastDiscoverHome: View {
             if let problem = discovery.problem {
                 Text(problem).font(.footnote).foregroundStyle(KyroModernStyle.secondary)
             }
-            if discovery.opening { ProgressView("Opening feed…").tint(.white) }
         }
         .padding(.horizontal, 20)
     }
@@ -360,14 +347,14 @@ struct KyroPodcastDiscoverHome: View {
             if discovery.searching {
                 ProgressView("Searching Apple Podcasts…").tint(.white).padding(.horizontal, 20)
             } else if discovery.submitted != nil, discovery.results.isEmpty, discovery.problem == nil {
-                Text("No public feeds found. Try another title or creator, or add a feed address.")
+                Text("No podcasts found. Try another title or creator, or add a feed address.")
                     .font(.subheadline).foregroundStyle(KyroModernStyle.secondary).padding(.horizontal, 20)
             }
             LazyVStack(spacing: 10) {
                 ForEach(discovery.results) { result in
                     Button {
                         searchFocused = false
-                        discovery.open(result.feed)
+                        discovery.open(result.opening)
                     } label: {
                         HStack(spacing: 12) {
                             KyroPodcastArtwork(url: result.artwork, size: 64, decodeSize: 128)
@@ -402,7 +389,7 @@ struct KyroPodcastDiscoverHome: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 14) {
                     ForEach(Array(entries.enumerated()), id: \.element.id) { rank, entry in
-                        KyroPodcastFeatureCard(entry: entry, rank: rank + 1, busy: charts.opening == entry.appleID) { open(entry) }
+                        KyroPodcastFeatureCard(entry: entry, rank: rank + 1, busy: false) { open(entry) }
                             .containerRelativeFrame(.horizontal) { width, _ in max(260, width - 40) }
                     }
                 }
@@ -484,8 +471,7 @@ struct KyroPodcastDiscoverHome: View {
             LazyHStack(alignment: .top, spacing: 14) {
                 ForEach(entries) { entry in
                     Button { open(entry) } label: {
-                        KyroPodcastShowTile(title: entry.title, subtitle: entry.creator, artwork: entry.artwork,
-                                            busy: charts.opening == entry.appleID)
+                        KyroPodcastShowTile(title: entry.title, subtitle: entry.creator, artwork: entry.artwork)
                     }
                     .buttonStyle(.plain)
                 }
@@ -495,13 +481,8 @@ struct KyroPodcastDiscoverHome: View {
     }
 
     private func open(_ entry: PodcastChartEntry) {
-        Task {
-            if let feed = await charts.feed(for: entry) {
-                discovery.open(feed)
-            } else {
-                discovery.problem = "“\(entry.title)” has no public RSS feed Kyro can open."
-            }
-        }
+        searchFocused = false
+        discovery.open(entry.openingRequest)
     }
 
     // MARK: Personal shelves
@@ -531,7 +512,7 @@ struct KyroPodcastDiscoverHome: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 14) {
                         ForEach(shows) { show in
-                            NavigationLink { KyroPodcastShowView(initialShow: show) } label: {
+                            NavigationLink { KyroPodcastShowView(initialShow: show, needsPageShelf: true) } label: {
                                 KyroPodcastShowTile(title: show.title, subtitle: "", artwork: show.artwork, size: 112, badge: true)
                             }
                             .buttonStyle(.plain)
@@ -654,7 +635,7 @@ struct KyroPodcastFullChart: View {
     }
     let selection: Selection
     let charts: KyroPodcastChartsModel
-    let discovery: KyroPodcastDiscoveryState
+    @Environment(\.nowPlayingShelfCoversPushedPages) private var shelfCoversPushedPages
     @State private var chart: PodcastChart?
     @State private var failed = false
 
@@ -663,11 +644,8 @@ struct KyroPodcastFullChart: View {
             LazyVStack(spacing: 10) {
                 if let chart {
                     ForEach(Array(chart.entries.enumerated()), id: \.element.id) { index, entry in
-                        Button {
-                            Task {
-                                if let feed = await charts.feed(for: entry) { discovery.open(feed) }
-                                else { discovery.problem = "“\(entry.title)” has no public RSS feed Kyro can open." }
-                            }
+                        NavigationLink {
+                            KyroPodcastOpeningPage(request: entry.openingRequest)
                         } label: {
                             HStack(spacing: 12) {
                                 Text("\(index + 1)").font(.headline.monospacedDigit()).foregroundStyle(KyroModernStyle.secondary)
@@ -678,7 +656,7 @@ struct KyroPodcastFullChart: View {
                                     Text(entry.creator).font(.caption).foregroundStyle(KyroModernStyle.secondary).lineLimit(1)
                                 }
                                 Spacer(minLength: 0)
-                                if charts.opening == entry.appleID { ProgressView().tint(.white) }
+                                Image(systemName: "chevron.right").foregroundStyle(.secondary)
                             }
                             .padding(10)
                             .background(KyroModernStyle.card(cornerRadius: 14))
@@ -695,10 +673,14 @@ struct KyroPodcastFullChart: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
         }
-        .background(KyroModernStyle.background.ignoresSafeArea())
+        .siloPageBackground()
         .environment(\.colorScheme, .dark)
         .navigationTitle(selection.category.map { "Top \($0.title)" } ?? "Top Podcasts")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !shelfCoversPushedPages { KyroRadioPageNowPlayingBar() }
+        }
         .task {
             do { chart = try await charts.full(selection.category) } catch { failed = chart == nil }
         }
@@ -738,7 +720,7 @@ struct KyroPodcastLibraryHome: View {
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 18) {
             HStack {
-                Text("Library").font(.largeTitle.weight(.heavy)).accessibilityAddTraits(.isHeader)
+                Text("Podcast Library").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer()
                 manageMenu
             }
@@ -750,8 +732,7 @@ struct KyroPodcastLibraryHome: View {
                             Label(item.rawValue, systemImage: item.symbol)
                                 .font(.subheadline.weight(.semibold))
                                 .padding(.horizontal, 14).frame(height: 40)
-                                .background(Capsule().fill(shelf == item ? KyroPodcastPalette.accent : KyroPodcastPalette.chip))
-                                .overlay(Capsule().strokeBorder(shelf == item ? .clear : KyroPodcastPalette.chipStroke))
+                                .background { KyroControlSurface(selected: shelf == item, cornerRadius: 20) }
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(shelf == item ? .isSelected : [])
@@ -812,12 +793,9 @@ struct KyroPodcastLibraryHome: View {
         let sorted = PodcastLibrarySort.sorted(library.shows, by: sort, latest: sort == .recentlyUpdated ? latestDates : [:], matching: query)
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(KyroModernStyle.secondary)
+                KyroAudioSearchField(hasText: !query.isEmpty, clear: { query = "" }) {
                     TextField("Search your shows", text: $query).autocorrectionDisabled()
                 }
-                .padding(.horizontal, 12).frame(minHeight: 44)
-                .background { KyroControlSurface(cornerRadius: 12) }
                 Menu {
                     Picker("Sort", selection: $sort) {
                         ForEach(PodcastLibrarySort.allCases) { Text($0.rawValue).tag($0) }
@@ -842,7 +820,7 @@ struct KyroPodcastLibraryHome: View {
             } else if grid {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 160), spacing: 14, alignment: .top)], spacing: 18) {
                     ForEach(sorted) { show in
-                        NavigationLink { KyroPodcastShowView(initialShow: show) } label: {
+                        NavigationLink { KyroPodcastShowView(initialShow: show, needsPageShelf: true) } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 KyroPodcastGridArtwork(url: show.artwork)
                                 Text(show.title).font(.caption.weight(.semibold)).lineLimit(2, reservesSpace: true)
@@ -855,7 +833,7 @@ struct KyroPodcastLibraryHome: View {
             } else {
                 LazyVStack(spacing: 10) {
                     ForEach(sorted) { show in
-                        NavigationLink { KyroPodcastShowView(initialShow: show) } label: {
+                        NavigationLink { KyroPodcastShowView(initialShow: show, needsPageShelf: true) } label: {
                             HStack(spacing: 12) {
                                 KyroPodcastArtwork(url: show.artwork, size: 64, decodeSize: 128)
                                 VStack(alignment: .leading, spacing: 3) {

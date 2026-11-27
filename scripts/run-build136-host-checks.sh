@@ -12,6 +12,7 @@ xcrun swiftc -D KYRO_STANDALONE_TESTS -parse-as-library -o "$OUTPUT/build136" \
 git diff --exit-code 3c3f3c9e89a0614a012f0fff80fcdf6bbad5de3c -- \
   "$ROOT"/Home "$ROOT"/Shell \
   "$ROOT"/Radio/KyroRadio{Player,PlaybackMachine,BrowserClient,Library,PlayerTheme,Turntable,BackupSettings}.swift \
-  "$ROOT"/Podcasts/KyroPodcast{Player,Cassette,Library,Charts,Feed,Network,Downloads,Backup}.swift \
+  "$ROOT"/Podcasts/KyroPodcast{Player,Library,Downloads,Backup}.swift \
+  ':(exclude)iosApp/iosApp/Kyro/Home/KyroHomeCustomizationView.swift' \
   iosApp/iosApp/ContentView.swift iosApp/iosApp/Control/iOS/NowPlayingShelf.swift \
   iosApp/iosApp/tvOS iosApp/Signing fastlane

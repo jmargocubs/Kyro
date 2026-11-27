@@ -145,4 +145,38 @@ struct KyroAppAppearancePicker: View {
         .accessibilityIdentifier("kyroAppAppearance")
     }
 }
+
+struct KyroSettingsRowSurface: View {
+    private let appearance = KyroAppAppearanceStore.shared
+
+    var body: some View {
+        appearance.selection == .signature ? KyroSignature.card : Color.siloGroupedCell
+    }
+}
+
+extension View {
+    func kyroSettingsRowSurface() -> some View {
+        listRowBackground(KyroSettingsRowSurface())
+    }
+}
+
+/// Reuses the existing material or native accessory; does not add a blur.
+struct KyroAudioMiniChrome: ViewModifier {
+    let style: NowPlayingBarStyle
+    private let appearance = KyroAppAppearanceStore.shared
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if appearance.selection == .signature {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(reduceTransparency && style == .card ? KyroSignature.card :
+                                KyroSignature.burgundy.opacity(style == .card ? 0.65 : 0.32))
+                        .allowsHitTesting(false)
+                }
+            }
+            .modifier(NowPlayingBarChrome(style: style))
+    }
+}
 #endif

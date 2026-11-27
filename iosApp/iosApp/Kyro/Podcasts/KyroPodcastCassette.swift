@@ -39,17 +39,17 @@ struct KyroPodcastMiniPlayer: View {
                             Text(entry.episode.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                             if !isInline {
                                 Text(player.state == .failed ? "Playback failed · tap Play to retry" : entry.showTitle)
-                                    .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                                    .font(.footnote).foregroundStyle(KyroSignature.secondary).lineLimit(1)
                             }
                         }
                         Spacer(minLength: 0)
                     }.contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityHint("Opens cassette player")
+                }.buttonStyle(.plain).accessibilityHint("Opens podcast player")
                 KyroPodcastMiniTransport(player: player)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, isInline ? 4 : 8)
-            .modifier(NowPlayingBarChrome(style: style))
+            .modifier(KyroAudioMiniChrome(style: style))
             .padding(.horizontal, style == .card ? 16 : 0)
             .padding(.bottom, style == .card ? 8 : 0)
             .accessibilityIdentifier("kyroPodcastMiniPlayer")

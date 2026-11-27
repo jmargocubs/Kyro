@@ -6,7 +6,7 @@ import FoundationXML
 #endif
 
 enum PodcastError: LocalizedError {
-    case invalidURL, invalidFeed, invalidOPML, tooLarge, unavailable, capacity
+    case invalidURL, invalidFeed, invalidOPML, tooLarge, unavailable, capacity, noPublicFeed, restrictedFeed
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +16,8 @@ enum PodcastError: LocalizedError {
         case .tooLarge: "This podcast file exceeds the size limit."
         case .unavailable: "The publisher or discovery service could not be reached. Try again."
         case .capacity: "Your podcast library is full."
+        case .noPublicFeed: "Apple Podcasts did not provide a public RSS feed for this show."
+        case .restrictedFeed: "The publisher denied access to this feed. Kyro only supports publicly accessible RSS feeds."
         }
     }
 }

@@ -192,10 +192,8 @@ enum KyroBuild130HostChecks {
         check(mini.contains("KyroRadioTransportButton"), "the bar keeps play and pause")
         check(mini.contains("KyroRadioStatusText.line(player: player)"), "the bar keeps track metadata")
         let radioView = body(of: "struct KyroRadioView: View", in: views)
-        let insetAt = radioView.range(of: "KyroRadioPageNowPlayingBar()")?.lowerBound
-        let searchAt = radioView.range(of: ".modifier(KyroRadioSearchBarModifier(")?.lowerBound
-        check(insetAt != nil && searchAt != nil && insetAt! < searchAt!,
-              "the page bar is inside the searchable content, so it rests above the bottom search bar")
+        check(radioView.contains("inlineSearchRow") && radioView.contains("KyroAudioSearchField") &&
+              !radioView.contains(".searchable("), "all Radio routes use inline search without a bottom search bar")
         check(radioView.contains(".safeAreaInset(edge: .bottom, spacing: 0)"),
               "the page bar is a bottom safe-area inset, which reserves scroll space")
         check(radioView.contains("KyroRadioNavigationPolicy.pageHostsNowPlayingBar("), "the page follows the bar policy")

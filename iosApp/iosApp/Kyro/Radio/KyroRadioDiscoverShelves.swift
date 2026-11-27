@@ -150,11 +150,7 @@ struct KyroRadioDirectoryRows: View {
             ProgressView("Finding stations…")
                 .frame(maxWidth: .infinity).padding(.vertical, 24).listRowBackground(Color.clear)
         case .failed(let message):
-            ContentUnavailableView {
-                Label("Stations Unavailable", systemImage: "wifi.exclamationmark")
-            } description: { Text(message) } actions: {
-                Button("Try Again") { model.retry() }.buttonStyle(.borderedProminent)
-            }
+            KyroAudioProblem(title: "Stations Unavailable", message: message, retry: model.retry)
             .listRowBackground(Color.clear)
         case .loaded:
             if model.stations.isEmpty && !model.canLoadMore {
