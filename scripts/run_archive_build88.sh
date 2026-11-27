@@ -1,0 +1,23 @@
+#!/bin/zsh
+set -e
+
+PROJECT_DIR="/Users/paolazanetti/.t3/scratch/kyro-silo/iosApp"
+ARCHIVE_PATH="$PROJECT_DIR/artifacts/Kyro-1.0.0-88-unsigned-arm64.xcarchive"
+LOG_PATH="$PROJECT_DIR/artifacts/kyro-b88-archive.log"
+
+cd "$PROJECT_DIR"
+
+/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild archive \
+  -project Silo.xcodeproj \
+  -scheme Silo \
+  -configuration Release \
+  -destination generic/platform=iOS \
+  -archivePath "$ARCHIVE_PATH" \
+  -jobs 1 \
+  CODE_SIGNING_ALLOWED=NO \
+  CODE_SIGNING_REQUIRED=NO \
+  CODE_SIGN_ENTITLEMENTS="" \
+  SILO_BUILD_CHANNEL=sideload \
+  MARKETING_VERSION=1.0.0 \
+  CURRENT_PROJECT_VERSION=88 \
+  >> "$LOG_PATH" 2>&1
