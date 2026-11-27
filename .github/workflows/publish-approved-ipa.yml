@@ -118,7 +118,9 @@ jobs:
                   raise SystemExit("tvOS IPA is missing the Top Shelf extension")
               catalog, name = "source.json", "Kyro Apple TV"
           else:
-              production_source = metadata.get("source_ref") == "kyro/m1-rebrand"
+              # kyro/ios-recovered is the current iOS line (Build 127 stable tag,
+              # Build 136 published); kyro/m1-rebrand stays allowed for history.
+              production_source = metadata.get("source_ref") in ("kyro/m1-rebrand", "kyro/ios-recovered")
               if bundle != "com.cubbiestream.kyro" or not (production_source or phase2_source):
                   raise SystemExit("iOS bundle/source identity mismatch")
               if "iPhoneOS" not in supported:
