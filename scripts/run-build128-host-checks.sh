@@ -8,6 +8,7 @@ OUTPUT="$(mktemp -d /private/tmp/kyro-build128-checks.XXXXXX)"
 xcrun swiftc -D KYRO_STANDALONE_TESTS -parse-as-library -o "$OUTPUT/build128" \
   iosApp/Tests/KyroBuild128HostChecks.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioModels.swift \
+  iosApp/iosApp/Kyro/Radio/KyroIPTVMusicClassifier.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioBrowserClient.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioLibrary.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioDiscoverModel.swift \

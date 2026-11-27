@@ -198,13 +198,19 @@ struct KyroAudioMiniChrome: ViewModifier {
         content
             .background {
                 if appearance.selection == .signature {
-                    RoundedRectangle(cornerRadius: 14)
+                    // Build 139: a little more opaque, with a fine crimson edge, so titles read
+                    // clearly over scrolling artwork. Solid fills only; no added blur.
+                    let shape = RoundedRectangle(cornerRadius: 14)
+                    shape
                         .fill(reduceTransparency && style == .card ? KyroSignature.card :
-                                KyroSignature.burgundy.opacity(style == .card ? 0.65 : 0.32))
+                                KyroSignature.burgundy.opacity(style == .card ? 0.78 : 0.42))
+                        .overlay(shape.strokeBorder(KyroSignature.crimson.opacity(style == .card ? 0.38 : 0.22), lineWidth: 0.75))
                         .allowsHitTesting(false)
                 }
             }
             .modifier(NowPlayingBarChrome(style: style))
+            // Card bars float over content: a soft drop shadow separates them from rows and pills.
+            .shadow(color: .black.opacity(style == .card && appearance.selection == .signature ? 0.35 : 0), radius: 10, y: 4)
     }
 }
 #endif

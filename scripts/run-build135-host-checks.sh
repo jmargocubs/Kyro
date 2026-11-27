@@ -12,6 +12,7 @@ xcrun swiftc -D KYRO_STANDALONE_TESTS -D KYRO_PODCAST_HOST_TESTS -parse-as-libra
   iosApp/Tests/KyroBuild135HostChecks.swift \
   "$ROOT"/Podcasts/KyroPodcast{Feed,Network,Library,Backup,Charts}.swift \
   "$ROOT"/Radio/KyroRadio{PlayerTheme,Models,BrowserClient,Library,PlaybackMachine,BackupSettings}.swift \
+  "$ROOT"/Radio/KyroIPTVMusicClassifier.swift \
   "$ROOT"/Home/KyroHome{Preferences,Arrangement}.swift \
   "$ROOT"/Sports/Models/KyroSportsModels.swift \
   "$ROOT"/Sports/Providers/KyroSportsProvider.swift \

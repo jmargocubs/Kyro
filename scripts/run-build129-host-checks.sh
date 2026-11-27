@@ -12,5 +12,6 @@ xcrun swiftc -D KYRO_STANDALONE_TESTS -parse-as-library -o "$OUTPUT/build129" \
   iosApp/iosApp/Shared/AetherAudioSessionOwnership.swift \
   iosApp/iosApp/Shared/KyroLifecycleJournal.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioModels.swift \
+  iosApp/iosApp/Kyro/Radio/KyroIPTVMusicClassifier.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioPlaybackMachine.swift
 "$OUTPUT/build129"

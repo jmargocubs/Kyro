@@ -9,6 +9,7 @@ xcrun swiftc -D KYRO_STANDALONE_TESTS -parse-as-library -o "$OUTPUT/build132" \
   iosApp/Tests/KyroBuild132HostChecks.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioPlayerTheme.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioModels.swift \
+  iosApp/iosApp/Kyro/Radio/KyroIPTVMusicClassifier.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioBrowserClient.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioLibrary.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioPlaybackMachine.swift \

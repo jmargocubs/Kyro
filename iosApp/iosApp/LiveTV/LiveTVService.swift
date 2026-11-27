@@ -2188,3 +2188,55 @@ private extension Optional {
     }
 }
 #endif
+
+#if os(iOS)
+// MARK: - Build 139: Radio music sources
+
+/// Read-only catalog access for Radio's IPTV music collections. Every call is a
+/// bounded indexed query on the existing SQLite catalog; nothing is imported,
+/// copied or modified, and Live TV's own lists are unaffected.
+extension LiveTVService {
+    /// Category counts plus bounded brand searches, for one provider's active generation.
+    /// Nil when the provider has no indexed catalog yet.
+    func musicCatalogSnapshot(providerID: UUID, extraChannelIDs: [String]) async -> KyroIPTVCatalogSnapshot? {
+        await restoreCachedState(for: providerID)
+        guard let provider = providers.first(where: { $0.id == providerID }),
+              channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore(),
+              let generation = await store.activeGeneration(providerID: providerID) else { return nil }
+        let categories = await store.categories(providerID: providerID)
+        var matches: [KyroIPTVCatalogSnapshot.Match] = []
+        for term in KyroMusicClassifier.brandSearchTerms {
+            guard !Task.isCancelled else { return nil }
+            for channel in await store.page(providerID: providerID, query: term, limit: 200) {
+                matches.append(.init(id: channel.id, name: channel.name, category: channel.category))
+            }
+        }
+        let prefix = providerID.uuidString + ":"
+        let extra = extraChannelIDs.filter { $0.hasPrefix(prefix) }
+        if !extra.isEmpty {
+            for channel in await store.channels(providerID: providerID, ids: extra, limit: 200) {
+                matches.append(.init(id: channel.id, name: channel.name, category: channel.category))
+            }
+        }
+        return KyroIPTVCatalogSnapshot(providerID: providerID, providerName: provider.name, generation: generation,
+                                       categories: categories, matches: matches)
+    }
+
+    /// Channels by ID from the active generation (at most 200). Missing IDs are skipped.
+    func musicChannels(providerID: UUID, ids: [String]) async -> [LiveTVChannel] {
+        await restoreCachedState(for: providerID)
+        guard providers.contains(where: { $0.id == providerID }) else { return [] }
+        if channelStoreFreshProviderIDs.contains(providerID), let store = await channelStore() {
+            return await store.channels(providerID: providerID, ids: ids, limit: 200)
+        }
+        let wanted = Set(ids)
+        return (channelCatalogs[providerID] ?? []).filter { wanted.contains($0.id) }
+    }
+
+    /// Whether the provider is Xtream and which outputs its account offers.
+    func musicStreamOptions(providerID: UUID) -> (isXtream: Bool, formats: [String]) {
+        let provider = providers.first { $0.id == providerID }
+        return (provider?.kind == .xtream, provider?.allowedOutputFormats ?? [])
+    }
+}
+#endif

@@ -45,6 +45,16 @@ struct KyroRadioPreferences: Codable, Equatable, Sendable {
     }
 }
 
+/// Build 139: IPTV music channels keep their favorites in Live TV's favorite
+/// store and their history as channel references (no stream addresses), so
+/// Radio hands those stations to this owner instead of saving them itself.
+@MainActor
+protocol KyroRadioExternalStations: AnyObject {
+    func isFavorite(_ id: String) -> Bool
+    func toggleFavorite(_ station: KyroRadioStation)
+    func recordPlay(_ station: KyroRadioStation)
+}
+
 /// Radio favorites, listening history and preferences. Favorites are keyed by
 /// Radio Browser's stable `stationuuid`. History is local only (never in a
 /// portable backup) and bounded.
@@ -74,6 +84,11 @@ final class KyroRadioLibrary {
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let now: () -> Date
+    /// Owner of IPTV music stations (Build 139). Their IDs are catalog channel
+    /// IDs ("<provider>:<channel>"), never Radio Browser UUIDs.
+    @ObservationIgnored weak var external: KyroRadioExternalStations?
+
+    static func isExternalID(_ id: String) -> Bool { id.contains(":") }
 
     init(defaults: UserDefaults = .standard, now: @escaping () -> Date = { Date() }) {
         self.defaults = defaults
@@ -95,9 +110,16 @@ final class KyroRadioLibrary {
 
     // MARK: Favorites
 
-    func isFavorite(_ id: String) -> Bool { favorites.contains { $0.id == id } }
+    func isFavorite(_ id: String) -> Bool {
+        if Self.isExternalID(id) { return external?.isFavorite(id) ?? false }
+        return favorites.contains { $0.id == id }
+    }
 
     func setFavorite(_ station: KyroRadioStation, _ isFavorite: Bool) {
+        if station.iptv != nil || Self.isExternalID(station.id) {
+            if isFavorite != self.isFavorite(station.id) { external?.toggleFavorite(station) }
+            return
+        }
         favorites.removeAll { $0.id == station.id }
         if isFavorite {
             favorites.insert(.init(station: station, date: now()), at: 0)
@@ -107,6 +129,7 @@ final class KyroRadioLibrary {
     }
 
     func toggleFavorite(_ station: KyroRadioStation) {
+        if station.iptv != nil || Self.isExternalID(station.id) { external?.toggleFavorite(station); return }
         setFavorite(station, !isFavorite(station.id))
     }
 
@@ -154,6 +177,7 @@ final class KyroRadioLibrary {
 
     /// A station started playing: it moves to the top, once.
     func recordPlay(_ station: KyroRadioStation) {
+        if station.iptv != nil || Self.isExternalID(station.id) { external?.recordPlay(station); return }
         history.removeAll { $0.id == station.id }
         history.insert(.init(station: station, date: now()), at: 0)
         if history.count > Self.maxHistory { history.removeLast(history.count - Self.maxHistory) }

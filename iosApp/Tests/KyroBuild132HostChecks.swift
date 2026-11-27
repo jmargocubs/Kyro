@@ -74,7 +74,7 @@ enum KyroBuild132HostChecks {
 
         // Backward compatibility: earlier entries are unchanged, and a backup without the
         // theme (Builds 128–131) leaves the device's theme alone.
-        check(settings.map(\.id) == ["radio.favorites", "radio.preferences", "radio.homeShelves", "radio.playerTheme"],
+        check(settings.map(\.id) == ["radio.favorites", "radio.preferences", "radio.homeShelves", "radio.playerTheme", "radio.musicSources", "radio.homeShelfLimits"],
               "earlier Radio backup entries keep their IDs and order")
         let untouched = KyroRadioPlayerAppearance(defaults: freshDefaults())
         check(untouched.theme == .crimsonNoir, "a backup without the theme keeps the default")

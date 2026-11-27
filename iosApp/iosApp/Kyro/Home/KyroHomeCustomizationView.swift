@@ -49,6 +49,9 @@ struct KyroHomeCustomizationView: View {
 
             sportsFavoritesSections
 
+            // Build 139: how many items each audio shelf shows.
+            KyroAudioShelfLimitsSection()
+
             Section {
                 ForEach(host.diagnostics()) { item in
                     VStack(alignment: .leading, spacing: 2) {

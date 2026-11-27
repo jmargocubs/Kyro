@@ -11,5 +11,6 @@ xcrun swiftc -D KYRO_STANDALONE_TESTS -parse-as-library -o "$OUTPUT/build130" \
   iosApp/iosApp/Kyro/LiveTVNavigation/KyroLiveTVDestination.swift \
   iosApp/iosApp/Kyro/LiveTVNavigation/KyroNavigationHandleTrace.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioModels.swift \
+  iosApp/iosApp/Kyro/Radio/KyroIPTVMusicClassifier.swift \
   iosApp/iosApp/Kyro/Radio/KyroRadioPlaybackMachine.swift
 "$OUTPUT/build130"

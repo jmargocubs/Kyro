@@ -3,6 +3,8 @@ import SwiftUI
 
 enum KyroRadioShelfLink: Hashable {
     case directory(title: String, query: KyroRadioQuery)
+    /// Build 139: an IPTV music collection.
+    case collection(KyroMusicCollection)
     case favorites
     case history
 }

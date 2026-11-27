@@ -14,6 +14,12 @@ import Foundation
 ///   128–131 skip it as an unrecognized setting; a backup without it leaves
 ///   the theme as it is (Crimson Noir on a fresh install).
 ///
+/// - `radio.musicSources` (Build 139): whether IPTV music channels appear in
+///   Radio, and category assignments by category name. Provider choices,
+///   channel decisions and IPTV favorites are provider-scoped and stay on the
+///   device; no stream address or credential is ever included.
+/// - `radio.homeShelfLimits` (Build 139): Home's audio shelf sizes.
+///
 /// Listening history is never included.
 enum KyroRadioBackupSettings {
     private struct InvalidValue: Error {}
@@ -71,6 +77,33 @@ enum KyroRadioBackupSettings {
                     appearance.select(theme)
                 },
                 label: { value in playerTheme(value)?.title ?? "Custom" }),
+            BackupSetting(id: "radio.musicSources", group: .radio, title: "Radio music sources",
+                validate: { musicSources($0) != nil },
+                read: { encodeMusicSources(KyroIPTVMusicPreferences.load(from: defaults)) },
+                write: { value in
+                    guard let restored = musicSources(value) else { throw InvalidValue() }
+                    var prefs = KyroIPTVMusicPreferences.load(from: defaults)
+                    prefs.enabled = restored.enabled
+                    prefs.categoryAssignments = restored.categories
+                    prefs.save(to: defaults)
+                },
+                label: { value in
+                    guard let restored = musicSources(value) else { return "Custom" }
+                    return restored.enabled ? "On · \(restored.categories.count) category choices" : "Off"
+                }),
+            BackupSetting(id: "radio.homeShelfLimits", group: .radio, title: "Audio Home shelf sizes",
+                validate: { shelfLimits($0) != nil },
+                read: { .record(Dictionary(uniqueKeysWithValues: KyroAudioShelfLimit.all.map {
+                    ($0.key, BackupValue.int(KyroAudioShelfLimit.value($0, in: defaults)))
+                })) },
+                write: { value in
+                    guard let limits = shelfLimits(value) else { throw InvalidValue() }
+                    for limit in KyroAudioShelfLimit.all { if let size = limits[limit.key] { KyroAudioShelfLimit.set(size, for: limit, in: defaults) } }
+                },
+                label: { value in
+                    let limits = shelfLimits(value) ?? [:]
+                    return KyroAudioShelfLimit.all.allSatisfy { limits[$0.key] == $0.defaultValue } ? "Default" : "Custom"
+                }),
         ]
     }
 
@@ -156,6 +189,53 @@ enum KyroRadioBackupSettings {
     static func playerTheme(_ value: BackupValue) -> KyroRadioPlayerTheme? {
         guard case .string(let raw) = value else { return nil }
         return KyroRadioPlayerTheme(rawValue: raw)
+    }
+
+    // MARK: Music sources
+
+    static func encodeMusicSources(_ prefs: KyroIPTVMusicPreferences) -> BackupValue {
+        let entries = prefs.categoryAssignments.sorted { $0.key < $1.key }.compactMap { name, assignment -> BackupValue? in
+            let clean = portableName(name)
+            guard !clean.isEmpty, clean == name else { return nil }
+            let text = "\(clean)|\(assignment.storageValue)"
+            guard text.count <= SettingsBackupSafety.maxStringValueLength,
+                  !SettingsBackupSafety.isSuspiciousValue(.string(text)) else { return nil }
+            return .string(text)
+        }
+        let list = Array(entries.prefix(SettingsBackupSafety.maxArrayMembers * 3))
+        let size = SettingsBackupSafety.maxArrayMembers
+        let pages = stride(from: 0, to: list.count, by: size).map { BackupValue.array(Array(list[$0..<min($0 + size, list.count)])) }
+        return .record(["enabled": .bool(prefs.enabled), "categories": .array(pages)])
+    }
+
+    static func musicSources(_ value: BackupValue) -> (enabled: Bool, categories: [String: KyroMusicAssignment])? {
+        guard case .record(let fields) = value, Set(fields.keys) == ["enabled", "categories"],
+              case .bool(let enabled) = fields["enabled"], case .array(let pages) = fields["categories"],
+              pages.count <= 3 else { return nil }
+        var categories: [String: KyroMusicAssignment] = [:]
+        for page in pages {
+            guard case .array(let members) = page, members.count <= SettingsBackupSafety.maxArrayMembers else { return nil }
+            for member in members {
+                guard case .string(let text) = member else { return nil }
+                let parts = text.split(separator: "|", omittingEmptySubsequences: false)
+                guard parts.count == 2, !parts[0].isEmpty, parts[0].count <= maxNameLength,
+                      let assignment = KyroMusicAssignment(storageValue: String(parts[1])) else { return nil }
+                categories[String(parts[0])] = assignment
+            }
+        }
+        return (enabled, categories)
+    }
+
+    // MARK: Home shelf limits
+
+    static func shelfLimits(_ value: BackupValue) -> [String: Int]? {
+        guard case .record(let fields) = value, Set(fields.keys) == Set(KyroAudioShelfLimit.all.map(\.key)) else { return nil }
+        var limits: [String: Int] = [:]
+        for (key, field) in fields {
+            guard case .int(let size) = field, KyroAudioShelfLimit.choices.contains(size) else { return nil }
+            limits[key] = size
+        }
+        return limits
     }
 
     // MARK: Home shelves

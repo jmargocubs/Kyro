@@ -1125,6 +1125,11 @@ private struct KyroRadioStationPanel: View {
             if let format = station?.formatLine {
                 Text(format).font(.caption.monospacedDigit()).foregroundStyle(palette.panelSecondary)
             }
+            if station?.iptv != nil {
+                KyroIPTVNowPlayingExtras(station: station, failed: { if case .failed = player.state { true } else { false } }(),
+                                         tint: palette.panelPrimary)
+                    .foregroundStyle(palette.panelSecondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)

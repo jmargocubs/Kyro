@@ -171,6 +171,13 @@ private struct KyroEpisodeMeta: View {
             if let duration = entry.episode.duration, duration > 0 {
                 Text("·"); Text(KyroModernStyle.time(duration))
             }
+            // Build 139: saved and downloaded at a glance.
+            if library.saved.contains(entry.id) {
+                Image(systemName: "bookmark.fill").foregroundStyle(KyroPodcastPalette.accent).accessibilityLabel("Saved")
+            }
+            if KyroPodcastDownloads.shared.hasDownload(entry) {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(KyroSignature.secondary).accessibilityLabel("Downloaded")
+            }
         }
         .font(.caption)
         .foregroundStyle(KyroModernStyle.tertiary)
@@ -796,34 +803,46 @@ struct KyroPodcastLibraryHome: View {
                 KyroAudioSearchField(hasText: !query.isEmpty, clear: { query = "" }) {
                     TextField("Search your shows", text: $query).autocorrectionDisabled()
                 }
+            }
+            .padding(.horizontal, 20)
+            // Build 139: sort and layout on one aligned row under the search field.
+            HStack(spacing: 10) {
                 Menu {
                     Picker("Sort", selection: $sort) {
                         ForEach(PodcastLibrarySort.allCases) { Text($0.rawValue).tag($0) }
                     }
                 } label: {
-                    Image(systemName: "arrow.up.arrow.down").frame(width: 44, height: 44)
-                        .background { KyroControlSurface(cornerRadius: 12) }
+                    Label(sort.rawValue, systemImage: "arrow.up.arrow.down")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 14).frame(height: 40)
+                        .background { KyroControlSurface(cornerRadius: 20) }
                 }
                 .accessibilityLabel("Sort")
                 .accessibilityValue(sort.rawValue)
-                Button { grid.toggle() } label: {
-                    Image(systemName: grid ? "list.bullet" : "square.grid.2x2").frame(width: 44, height: 44)
-                        .background { KyroControlSurface(cornerRadius: 12) }
+                Spacer()
+                Text("\(sorted.count) \(sorted.count == 1 ? "show" : "shows")")
+                    .font(.caption).foregroundStyle(KyroModernStyle.secondary)
+                Picker("Layout", selection: $grid) {
+                    Image(systemName: "square.grid.2x2").accessibilityLabel("Grid").tag(true)
+                    Image(systemName: "list.bullet").accessibilityLabel("List").tag(false)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(grid ? "Show as List" : "Show as Grid")
+                .pickerStyle(.segmented)
+                .frame(width: 96)
             }
             .padding(.horizontal, 20)
             if sorted.isEmpty {
                 Text(library.shows.isEmpty ? "Subscribe in Discover, add an RSS feed, or import OPML." : "No matching shows.")
                     .font(.subheadline).foregroundStyle(KyroModernStyle.secondary).padding(.horizontal, 20)
             } else if grid {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 160), spacing: 14, alignment: .top)], spacing: 18) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 14, alignment: .top)], spacing: 20) {
                     ForEach(sorted) { show in
                         NavigationLink { KyroPodcastShowView(initialShow: show, needsPageShelf: true) } label: {
-                            VStack(alignment: .leading, spacing: 6) {
+                            VStack(alignment: .leading, spacing: 4) {
                                 KyroPodcastGridArtwork(url: show.artwork)
+                                    .padding(.bottom, 2)
                                 Text(show.title).font(.caption.weight(.semibold)).lineLimit(2, reservesSpace: true)
+                                Text(show.publisher.isEmpty ? " " : show.publisher)
+                                    .font(.caption2).foregroundStyle(KyroModernStyle.secondary).lineLimit(1)
                             }
                         }
                         .buttonStyle(.plain)
@@ -835,9 +854,9 @@ struct KyroPodcastLibraryHome: View {
                     ForEach(sorted) { show in
                         NavigationLink { KyroPodcastShowView(initialShow: show, needsPageShelf: true) } label: {
                             HStack(spacing: 12) {
-                                KyroPodcastArtwork(url: show.artwork, size: 64, decodeSize: 128)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(show.title).font(.headline).lineLimit(2)
+                                KyroPodcastArtwork(url: show.artwork, size: 60, decodeSize: 128)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(show.title).font(.subheadline.weight(.semibold)).lineLimit(2)
                                     if !show.publisher.isEmpty {
                                         Text(show.publisher).font(.caption).foregroundStyle(KyroModernStyle.secondary).lineLimit(1)
                                     }

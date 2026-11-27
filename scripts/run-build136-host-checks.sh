@@ -6,6 +6,7 @@ ROOT=iosApp/iosApp/Kyro
 xcrun swiftc -D KYRO_STANDALONE_TESTS -parse-as-library -o "$OUTPUT/build136" \
   iosApp/Tests/KyroBuild136HostChecks.swift \
   "$ROOT"/Radio/KyroRadio{PlayerTheme,Models,BrowserClient,Library,DiscoverModel,PlaybackMachine}.swift \
+  "$ROOT"/Radio/KyroIPTVMusicClassifier.swift \
   "$ROOT"/Settings/KyroAppAppearance.swift \
   "$ROOT"/Settings/Backup/SettingsBackup{Core,Restore}.swift
 "$OUTPUT/build136"

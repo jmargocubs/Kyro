@@ -32,6 +32,8 @@ final class KyroRadioBrowsing {
     var discoverText = ""
     var libraryText = ""
     var searchField: KyroRadioQuery.Field = .name
+    /// Build 139: which sources Discover's search covers.
+    var sourceScope: KyroRadioSearchScope = .all
 }
 
 /// The Radio page.
@@ -97,7 +99,7 @@ struct KyroRadioView: View {
 
             switch section {
             case .discover:
-                KyroRadioDiscoverContent(model: discover, searchText: browsing.discoverText, open: openShelf)
+                KyroRadioDiscoverContent(model: discover, searchText: browsing.discoverText, scope: browsing.sourceScope, open: openShelf)
             case .library:
                 KyroRadioLibraryContent(searchText: browsing.libraryText)
             case .history:
@@ -141,7 +143,11 @@ struct KyroRadioView: View {
         }
         .sheet(isPresented: $isShowingSettings) { KyroRadioSettingsView() }
         .navigationDestination(item: $directoryLink) { link in
-            if case let .directory(title, query) = link { KyroRadioDirectoryPage(title: title, query: query) }
+            switch link {
+            case let .directory(title, query): KyroRadioDirectoryPage(title: title, query: query)
+            case let .collection(collection): KyroIPTVMusicCollectionPage(collection: collection)
+            case .favorites, .history: EmptyView()
+            }
         }
         .tint(KyroTheme.accentInk)
         .onAppear { discover.loadIfNeeded(library.preferences.discoveryQuery) }
@@ -162,11 +168,16 @@ struct KyroRadioView: View {
             discover.update(query)
         }
         .task { await refreshSavedDetails() }
+        // Build 139: IPTV music collections follow the Live TV catalog. Bounded indexed queries,
+        // and only when the catalog, providers, hidden categories or a correction changed.
+        .task(id: "\(LiveTVService.shared.channelCatalogRevision)|\(KyroIPTVMusicLibrary.shared.revision)") {
+            await KyroIPTVMusicLibrary.shared.refresh()
+        }
     }
 
     private func openShelf(_ link: KyroRadioShelfLink) {
         switch link {
-        case .directory: directoryLink = link
+        case .directory, .collection: directoryLink = link
         case .favorites: browsing.libraryText = ""; browsing.section = .library
         case .history: browsing.libraryText = ""; browsing.section = .history
         }
@@ -198,6 +209,14 @@ struct KyroRadioView: View {
                 Menu {
                     Picker("Search by", selection: $browsing.searchField) {
                         ForEach(KyroRadioQuery.Field.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    let collections = KyroIPTVMusicLibrary.shared.availableCollections
+                    if !collections.isEmpty {
+                        Picker("Sources", selection: $browsing.sourceScope) {
+                            Text(KyroRadioSearchScope.all.title).tag(KyroRadioSearchScope.all)
+                            Text(KyroRadioSearchScope.internetRadio.title).tag(KyroRadioSearchScope.internetRadio)
+                            ForEach(collections) { Text($0.title).tag(KyroRadioSearchScope.collection($0)) }
+                        }
                     }
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease")
@@ -263,6 +282,7 @@ private extension KyroRadioQuery.Field {
 private struct KyroRadioDiscoverContent: View {
     let model: KyroRadioDiscoverModel
     let searchText: String
+    var scope: KyroRadioSearchScope = .all
     let open: (KyroRadioShelfLink) -> Void
     @State private var isShowingFilters = false
     private let library = KyroRadioLibrary.shared
@@ -288,9 +308,12 @@ private struct KyroRadioDiscoverContent: View {
                     .listRowInsets(EdgeInsets())
             }
             if showsShelves {
+                KyroRadioSourcesShelf(openInternetRadio: { open(.directory(title: "Internet Radio", query: .worldwide())) },
+                                      openCollection: { open(.collection($0)) })
                 KyroRadioDiscoverShelves(local: model, preferences: library.preferences, open: open)
             } else {
-                results
+                if isSearching { KyroIPTVSearchResults(text: searchText, scope: scope) }
+                if !isSearching || scope.includesInternetRadio { results }
             }
         }
         .sheet(isPresented: $isShowingFilters) {
@@ -515,6 +538,8 @@ private struct KyroRadioLibraryContent: View {
 
     var body: some View {
         let saved = library.favorites(matching: searchText, sort: sort)
+        // Build 139: favorite IPTV music channels (Live TV's favorites) share this page.
+        KyroIPTVFavoriteRows(searchText: searchText)
         if library.favorites.isEmpty {
             ContentUnavailableView("No Favorite Stations", systemImage: "heart",
                 description: Text("Tap the heart on a station in Discover to save it here."))
@@ -564,31 +589,52 @@ private struct KyroRadioLibraryContent: View {
     }
 }
 
+/// Build 139: Radio Browser stations and IPTV music channels together, newest first.
 private struct KyroRadioHistoryContent: View {
     let searchText: String
     @State private var isConfirmingClear = false
     private let library = KyroRadioLibrary.shared
+    private let music = KyroIPTVMusicLibrary.shared
+
+    private enum Item: Identifiable {
+        case radio(KyroRadioSavedStation)
+        case iptv(KyroIPTVHistoryEntry)
+        var id: String { switch self { case .radio(let entry): "r-\(entry.id)"; case .iptv(let entry): "i-\(entry.id)" } }
+        var date: Date { switch self { case .radio(let entry): entry.date; case .iptv(let entry): entry.date } }
+    }
 
     var body: some View {
-        let entries = library.history.filter { $0.station.matches(searchText) }
-        if library.history.isEmpty {
+        let radio = library.history.filter { $0.station.matches(searchText) }.map(Item.radio)
+        let iptv = music.history.filter {
+            searchText.isEmpty || $0.name.localizedCaseInsensitiveContains(searchText) || $0.collection.title.localizedCaseInsensitiveContains(searchText)
+        }.map(Item.iptv)
+        let entries = (radio + iptv).sorted { $0.date > $1.date }
+        if library.history.isEmpty && music.history.isEmpty {
             ContentUnavailableView("No Listening History", systemImage: "clock",
-                description: Text("Stations you play appear here. History stays on this iPhone."))
+                description: Text("Stations and music channels you play appear here. History stays on this iPhone."))
                 .listRowBackground(Color.clear)
         } else {
             Button("Clear History", role: .destructive) { isConfirmingClear = true }
                 .listRowBackground(Color.clear)
                 .confirmationDialog("Clear radio listening history?", isPresented: $isConfirmingClear, titleVisibility: .visible) {
-                    Button("Clear History", role: .destructive) { library.clearHistory() }
+                    Button("Clear History", role: .destructive) { library.clearHistory(); music.clearHistory() }
                 }
             if entries.isEmpty {
                 ContentUnavailableView.search(text: searchText).listRowBackground(Color.clear)
             }
-            ForEach(entries) { entry in
-                KyroRadioStationRow(station: entry.station, playedAt: entry.date)
-                    .swipeActions {
-                        Button("Remove", role: .destructive) { library.removeFromHistory(entry.id) }
-                    }
+            ForEach(entries) { item in
+                switch item {
+                case .radio(let entry):
+                    KyroRadioStationRow(station: entry.station, playedAt: entry.date)
+                        .swipeActions {
+                            Button("Remove", role: .destructive) { library.removeFromHistory(entry.id) }
+                        }
+                case .iptv(let entry):
+                    KyroIPTVHistoryRow(entry: entry)
+                        .swipeActions {
+                            Button("Remove", role: .destructive) { music.removeFromHistory(entry.id) }
+                        }
+                }
             }
         }
     }
@@ -660,7 +706,8 @@ struct KyroRadioStationRow: View {
     }
 }
 
-/// A station's logo through the shared artwork pipeline, or a radio glyph.
+/// A station's logo through the shared artwork pipeline. Build 139: one
+/// source-aware container for Radio Browser stations and IPTV channels alike.
 struct KyroRadioArtwork: View {
     let station: KyroRadioStation?
     var size: CGFloat
@@ -668,38 +715,9 @@ struct KyroRadioArtwork: View {
     /// radio bar resizes as the tab bar minimizes on scroll; decoding at one
     /// fixed size keeps that from starting a new image request each time.
     var decodeSize: CGFloat? = nil
-    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.2, style: .continuous)
-            .fill(Color.white.opacity(0.08))
-            .overlay {
-                if let url = station?.favicon,
-                   let request = PosterImageCache.displayRequest(url: url, pointSize: CGSize(width: decodeSize ?? size,
-                                                                                            height: decodeSize ?? size),
-                                                                 scale: displayScale, priority: .normal) {
-                    LazyImage(request: request) { state in
-                        if let image = state.image {
-                            image.resizable().scaledToFit()
-                        } else {
-                            glyph
-                        }
-                    }
-                    .onDisappear(.cancel)
-                    .padding(size * 0.08)
-                } else {
-                    glyph
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: size * 0.2, style: .continuous))
-            .frame(width: size, height: size)
-            .accessibilityHidden(true)
-    }
-
-    private var glyph: some View {
-        Image(systemName: "radio")
-            .font(.system(size: size * 0.4, weight: .semibold))
-            .foregroundStyle(KyroTheme.accentInk)
+        KyroRadioSourceArtwork(url: station?.favicon, collection: station?.iptv?.collection, size: size, decodeSize: decodeSize)
     }
 }
 
@@ -887,6 +905,15 @@ struct KyroRadioSettingsForm: View {
             KyroRadioRegionPickers(
                 countryCode: binding(\.countryCode), countryName: binding(\.countryName),
                 state: binding(\.state), language: binding(\.language))
+            // Build 139: IPTV music channels in Radio.
+            Section {
+                NavigationLink("Manage Music Sources") { KyroIPTVMusicSourcesSettings() }
+            } header: {
+                Text("Music Sources")
+            } footer: {
+                Text("SiriusXM, Music Choice, Stingray Music and other music channels from your IPTV providers.")
+            }
+            .kyroSettingsRowSurface()
             Section("History") {
                 LabeledContent("Saved", value: "\(library.history.count) of \(KyroRadioLibrary.maxHistory) stations")
                 Button("Clear History", role: .destructive) { isConfirmingClear = true }
@@ -949,11 +976,14 @@ struct KyroHomeRadioRail: View {
     private let library = KyroRadioLibrary.shared
     private let player = KyroRadioPlayer.shared
 
-    static let maximumStations = 20
+    /// The largest shelf size Customize Home offers (Build 139).
+    static let maximumStations = 30
 
     var stations: [KyroRadioStation] {
         let saved = shelf == .favoriteRadio ? library.favorites : library.history
-        return saved.prefix(Self.maximumStations).map(\.station)
+        // Build 139: the shelf size from Customize Home (default 20, the Build 138 limit).
+        let limit = KyroAudioShelfLimits.shared.value(shelf == .favoriteRadio ? .favoriteRadio : .recentRadio)
+        return saved.prefix(min(limit, Self.maximumStations)).map(\.station)
     }
 
     var body: some View {

@@ -705,6 +705,11 @@ private struct KyroRadioModernInfo: View {
             } else if let location = player.station?.location, !location.isEmpty {
                 Text(location).font(.body).foregroundStyle(KyroModernStyle.secondary).lineLimit(2)
             }
+            if player.station?.iptv != nil {
+                KyroIPTVNowPlayingExtras(station: player.station, failed: { if case .failed = player.state { true } else { false } }(),
+                                         tint: .white)
+                    .foregroundStyle(KyroModernStyle.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

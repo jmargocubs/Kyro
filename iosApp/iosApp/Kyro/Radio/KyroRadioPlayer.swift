@@ -133,6 +133,9 @@ final class KyroRadioPlayer {
         case .recordStart:
             guard let station else { return }
             library.recordPlay(station)
+            // Radio Browser's click report is for its own stations only; an IPTV
+            // channel (Build 139) is never reported to a third party.
+            guard station.iptv == nil else { return }
             let client = client
             Task { await client.reportClick(station.id) }
         case .load(let candidate, let generation):

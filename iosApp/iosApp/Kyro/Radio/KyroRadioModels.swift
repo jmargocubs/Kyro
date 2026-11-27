@@ -5,8 +5,23 @@ import Foundation
 // (https://api.radio-browser.info). Field names below are the API's own,
 // confirmed against live responses on 2026-11-25.
 
+/// Build 139: where an IPTV music channel came from. Present only on stations
+/// built from the listener's IPTV catalog; Radio Browser stations have none.
+/// Such a station is never written to Radio's own favorites or history (its
+/// stream address may carry provider credentials); Radio keeps a reference by
+/// channel ID instead, and resolves the stream from the catalog when played.
+struct KyroIPTVStationSource: Codable, Hashable, Sendable {
+    let providerID: UUID
+    let providerName: String
+    let channelID: String
+    let collection: KyroMusicCollection
+    let category: String
+    let guideID: String?
+}
+
 /// One Radio Browser station: only the fields Kyro shows or plays.
 /// `id` is Radio Browser's `stationuuid`, the station's stable identity.
+/// IPTV music channels (Build 139) use their catalog channel ID and `iptv`.
 struct KyroRadioStation: Codable, Hashable, Identifiable, Sendable {
     let id: String
     var name: String
@@ -23,6 +38,9 @@ struct KyroRadioStation: Codable, Hashable, Identifiable, Sendable {
     var bitrate: Int
     var isHLS: Bool
     var lastCheckOK: Bool
+    /// Build 139: set for IPTV music channels only. Optional, so stations saved
+    /// by earlier builds decode unchanged.
+    var iptv: KyroIPTVStationSource? = nil
 
     /// Longest name, tag or place Kyro keeps from a directory row.
     static let maxTextLength = 200
@@ -68,9 +86,13 @@ struct KyroRadioStation: Codable, Hashable, Identifiable, Sendable {
     }
 
     /// Streams to try, best first: Radio Browser's resolved URL is preferred
-    /// (its integration guidance), and an https address before http.
+    /// (its integration guidance), and an https address before http. IPTV
+    /// channels keep the route's own order (HLS variant, then the original).
     var playbackCandidates: [URL] {
         var seen = Set<String>()
+        if iptv != nil {
+            return [resolvedURL, streamURL].compactMap { $0 }.filter { seen.insert($0.absoluteString).inserted }
+        }
         let ordered = [resolvedURL, streamURL].compactMap { $0 }
         return (ordered.filter { $0.scheme == "https" } + ordered.filter { $0.scheme == "http" })
             .filter { seen.insert($0.absoluteString).inserted }
@@ -87,6 +109,7 @@ struct KyroRadioStation: Codable, Hashable, Identifiable, Sendable {
     }
 
     var location: String {
+        if let iptv { return [iptv.collection.title, iptv.providerName].filter { !$0.isEmpty }.joined(separator: " · ") }
         let parts = [state, country.isEmpty ? countryCode : country].filter { !$0.isEmpty }
         return parts.joined(separator: ", ")
     }
