@@ -2,6 +2,7 @@
 import AVKit
 import Nuke
 import NukeUI
+import Observation
 import SwiftUI
 
 // Build 128/129: Radio, opened from More, the fourth tab, Home Radio shelves,
@@ -9,18 +10,28 @@ import SwiftUI
 // page; the mini player and Now Playing follow the listener everywhere.
 
 @MainActor
-enum KyroRadioEntry {
-    static func open(router: AppRouter) {
-        if KyroUnifiedNavigation.isActive,
-           KyroGlobalNavigationStore.shared.selectIfTab(.radio) {
+extension KyroAudioDestination {
+    var secondaryRoute: SecondaryDestinationID { self == .radio ? .radio : .podcasts }
+
+    func open(router: AppRouter) {
+        let navigation = KyroGlobalNavigationStore.shared
+        if openTarget(unifiedShell: KyroUnifiedNavigation.isActive, tabDestinations: navigation.tabDestinations) == .tab {
+            router.popToRoot()
+            navigation.selectIfTab(choice.destination)
             return
         }
-        router.navigate(to: .secondaryDestination(.radio))
+        let route = Route.secondaryDestination(secondaryRoute)
+        if router.visiblePushedRoutes.last != route { router.navigate(to: route) }
     }
+}
 
-    static var profileMenuOffersRadio: Bool {
-        KyroRadioNavigationPolicy.profileMenuOffersRadio(unifiedShell: KyroUnifiedNavigation.isActive)
-    }
+@MainActor @Observable
+final class KyroRadioBrowsing {
+    var section: KyroRadioView.Section = .discover
+    let discover = KyroRadioDiscoverModel()
+    var discoverText = ""
+    var libraryText = ""
+    var searchField: KyroRadioQuery.Field = .name
 }
 
 /// The Radio page.
@@ -32,20 +43,18 @@ struct KyroRadioView: View {
     }
 
     var isSecondaryDestination = false
-    @Binding var audioDestination: KyroAudioDestination
+    @Bindable var browsing: KyroRadioBrowsing
     @Environment(\.kyroShellHeader) private var shellHeader
     @Environment(\.nowPlayingShelfCoversPushedPages) private var shelfCoversPushedPages
     @State private var fallbackScrollState = PageChromeScrollState()
-    @State private var section: Section = .discover
-    @State private var discover = KyroRadioDiscoverModel()
-    @State private var discoverText = ""
-    @State private var libraryText = ""
-    @State private var searchField: KyroRadioQuery.Field = .name
     @State private var isShowingSettings = false
     @State private var directoryLink: KyroRadioShelfLink?
     @FocusState private var searchFocused: Bool
     private let library = KyroRadioLibrary.shared
     private let appearance = KyroAppAppearanceStore.shared
+    private var section: Section { browsing.section }
+    private var discover: KyroRadioDiscoverModel { browsing.discover }
+    private var searchField: KyroRadioQuery.Field { browsing.searchField }
 
     private var hostedRunway: CGFloat? {
         isSecondaryDestination ? nil : shellHeader?.runway
@@ -54,11 +63,11 @@ struct KyroRadioView: View {
     private var isHostedTab: Bool { hostedRunway != nil }
 
     private var scrollState: PageChromeScrollState {
-        shellHeader?.scrollState(for: .radio) ?? fallbackScrollState
+        isHostedTab ? shellHeader?.scrollState(for: .radio) ?? fallbackScrollState : fallbackScrollState
     }
 
     private var activeSearchText: Binding<String> {
-        section == .discover ? $discoverText : $libraryText
+        section == .discover ? $browsing.discoverText : $browsing.libraryText
     }
 
     private var activeSearchPrompt: String {
@@ -72,14 +81,13 @@ struct KyroRadioView: View {
     var body: some View {
         List {
             if isHostedTab {
-                KyroAudioHeader { settingsButton.font(.title3) }
+                KyroAudioHeader(title: "Radio") { settingsButton.font(.title3) }
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
             }
 
-            KyroAudioSelector(selection: $audioDestination)
-            KyroAudioSectionPicker(title: "Radio section", selection: $section, options: Section.allCases, name: \.title)
+            KyroAudioSectionPicker(title: "Radio section", selection: $browsing.section, options: Section.allCases, name: \.title)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .accessibilityIdentifier("kyroRadioSection")
@@ -89,11 +97,11 @@ struct KyroRadioView: View {
 
             switch section {
             case .discover:
-                KyroRadioDiscoverContent(model: discover, searchText: discoverText, open: openShelf)
+                KyroRadioDiscoverContent(model: discover, searchText: browsing.discoverText, open: openShelf)
             case .library:
-                KyroRadioLibraryContent(searchText: libraryText)
+                KyroRadioLibraryContent(searchText: browsing.libraryText)
             case .history:
-                KyroRadioHistoryContent(searchText: libraryText)
+                KyroRadioHistoryContent(searchText: browsing.libraryText)
             }
         }
         .listStyle(.plain)
@@ -116,12 +124,12 @@ struct KyroRadioView: View {
         // accessory, so it carries the one bar itself. The List reserves
         // scroll space; the bar steps aside while the inline field is editing.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if KyroRadioNavigationPolicy.pageHostsNowPlayingBar(isSecondaryDestination: isSecondaryDestination,
+            if KyroAudioDestination.pageHostsNowPlayingBar(isSecondaryDestination: isSecondaryDestination,
                                                                 shelfCoversPushedPages: shelfCoversPushedPages) {
                 KyroRadioPageNowPlayingBar()
             }
         }
-        .navigationTitle(isHostedTab ? "" : KyroAudioDestination.title)
+        .navigationTitle(isHostedTab ? "" : "Radio")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(isHostedTab ? .hidden : .visible, for: .navigationBar)
         .toolbar {
@@ -141,7 +149,7 @@ struct KyroRadioView: View {
         .onChange(of: library.preferences.discoveryQuery) { old, new in
             if discover.query == old { discover.update(new) }
         }
-        .onChange(of: discoverText) { _, text in
+        .onChange(of: browsing.discoverText) { _, text in
             var query = discover.query
             query.text = text
             query.field = searchField
@@ -159,8 +167,8 @@ struct KyroRadioView: View {
     private func openShelf(_ link: KyroRadioShelfLink) {
         switch link {
         case .directory: directoryLink = link
-        case .favorites: libraryText = ""; section = .library
-        case .history: libraryText = ""; section = .history
+        case .favorites: browsing.libraryText = ""; browsing.section = .library
+        case .history: browsing.libraryText = ""; browsing.section = .history
         }
     }
 
@@ -188,7 +196,7 @@ struct KyroRadioView: View {
             }
             if section == .discover {
                 Menu {
-                    Picker("Search by", selection: $searchField) {
+                    Picker("Search by", selection: $browsing.searchField) {
                         ForEach(KyroRadioQuery.Field.allCases, id: \.self) { Text($0.title).tag($0) }
                     }
                 } label: {
@@ -822,7 +830,7 @@ struct KyroRadioNowPlayingPresentation: ViewModifier {
 // MARK: - Settings
 
 enum KyroRadioSettingsEntry {
-    static let title = "Radio"
+    static let title = "Radio Settings"
     static let subtitle = "Region, language and listening history"
     static let systemImage = "radio"
     static let searchTerms = ["radio", "radio settings", "radio browser", "internet radio", "stations", "region", "country", "state", "language", "history"]
@@ -949,11 +957,12 @@ struct KyroHomeRadioRail: View {
     }
 
     var body: some View {
+        let _ = KyroPerformanceDiagnostics.count(.homeRadioRailBody)
         let stations = stations
         if !stations.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Button {
-                    KyroRadioEntry.open(router: router)
+                    KyroAudioDestination.radio.open(router: router)
                 } label: {
                     HStack(spacing: 6) {
                         Text(shelf.title)

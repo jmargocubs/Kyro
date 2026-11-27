@@ -55,6 +55,13 @@ enum KyroPerformanceDiagnostics {
         KyroPerformanceStats.shared.increment(counter)
     }
 
+    /// Counts activity while the Home frame tally is active, not image decodes.
+    @MainActor
+    static func countOnHome(_ counter: KyroPerformanceCounter) {
+        guard isEnabled, KyroPerformanceStats.shared.section == "Home" else { return }
+        KyroPerformanceStats.shared.increment(counter)
+    }
+
     /// Starts a measured interval. `end` records its duration under `metric`.
     @MainActor
     static func begin(_ name: StaticString, _ metric: KyroPerformanceMetric) -> KyroPerformanceInterval? {
@@ -141,6 +148,12 @@ enum KyroPerformanceCounter: String, CaseIterable {
     case homeSportsProbeBuild = "Home sports height probe build"
     case shellBody = "App shell body"
     case shellHeaderBody = "Shell header body"
+    case homeBackdropBody = "Home backdrop body"
+    case homePodcastRailBody = "Home podcast rail body"
+    case homeRadioRailBody = "Home radio rail body"
+    case homeAudioShelfBody = "Now Playing shelf body on Home"
+    case homeScrollChrome = "Home page chrome publications"
+    case homePosterBody = "Home poster card body"
 }
 
 enum KyroPerformanceMetric: String, CaseIterable {
@@ -156,6 +169,8 @@ enum KyroPerformanceMetric: String, CaseIterable {
     case liveTVCatalogRefresh = "Live TV catalog refresh"
     case sportsLiveNowReady = "Sports Live Now ready"
     case sportsEventMatch = "Sports event match"
+    case homePodcastCache = "Home podcast cache load"
+    case podcastCheckpointWrite = "Podcast checkpoint worker"
 }
 
 /// Frame pacing over some stretch of active time.

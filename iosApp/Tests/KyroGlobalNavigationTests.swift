@@ -11,7 +11,7 @@ final class KyroGlobalNavigationTests: XCTestCase {
     }
 
     func testEveryFourthTabChoiceKeepsTheOtherFourTabsInPlace() {
-        XCTAssertEqual(KyroFourthTab.allCases, [.sports, .forYou, .favorites])
+        XCTAssertEqual(KyroFourthTab.allCases, [.sports, .forYou, .favorites, .radio, .podcasts])
         for choice in KyroFourthTab.allCases {
             XCTAssertEqual(KyroGlobalDestination.tabDestinations(fourthTab: choice),
                            [.home, .movies, .series, choice.destination, .liveTV])

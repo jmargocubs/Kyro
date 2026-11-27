@@ -23,7 +23,8 @@ extension KyroFourthTab {
         case .sports: "Scores, schedules and your teams."
         case .forYou: "Personal recommendations. Also in the profile menu."
         case .favorites: "Everything you marked as a favorite."
-        case .radio: "Internet radio stations and podcasts."
+        case .radio: "Internet radio, favorite stations, and listening history."
+        case .podcasts: "Discover, subscribe, and listen to podcasts."
         }
     }
 }
@@ -41,7 +42,7 @@ struct KyroNavigationSettingsRow: View {
                 title: KyroNavigationSettingsEntry.title,
                 subtitle: KyroNavigationSettingsEntry.subtitle,
                 systemImage: KyroNavigationSettingsEntry.systemImage,
-                value: store.preferences.fourthTab == .radio ? KyroAudioDestination.title : store.preferences.fourthTab.title
+                value: store.preferences.fourthTab.title
             )
         }
         .accessibilityIdentifier("kyroSettingsNavigation")
@@ -90,7 +91,7 @@ struct KyroNavigationSettingsView: View {
                 .frame(width: 32)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(choice == .radio ? KyroAudioDestination.title : choice.title).foregroundStyle(KyroTheme.textPrimary)
+                    Text(choice.title).foregroundStyle(KyroTheme.textPrimary)
                     if choice == .default {
                         Text("Default")
                             .font(.caption2.weight(.semibold))

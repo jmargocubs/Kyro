@@ -13,6 +13,7 @@ enum KyroGlobalDestination: String, Codable, CaseIterable, Identifiable, Sendabl
     case forYou
     case favorites
     case radio
+    case podcasts
     case liveTV
 
     var id: String { rawValue }
@@ -31,6 +32,7 @@ enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
     case forYou
     case favorites
     case radio
+    case podcasts
 
     static let `default`: Self = .sports
 
@@ -42,6 +44,7 @@ enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
         case .forYou: .forYou
         case .favorites: .favorites
         case .radio: .radio
+        case .podcasts: .podcasts
         }
     }
 
@@ -51,6 +54,7 @@ enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
         case .forYou: "For You"
         case .favorites: "Favorites"
         case .radio: "Radio"
+        case .podcasts: "Podcasts"
         }
     }
 
@@ -60,6 +64,7 @@ enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
         case .forYou: "sparkles"
         case .favorites: "heart"
         case .radio: "radio"
+        case .podcasts: "headphones"
         }
     }
 
@@ -69,6 +74,7 @@ enum KyroFourthTab: String, Codable, CaseIterable, Identifiable, Sendable {
         case .forYou: "sparkles"
         case .favorites: "heart.fill"
         case .radio: "radio.fill"
+        case .podcasts: "headphones"
         }
     }
 }
@@ -249,30 +255,31 @@ final class KyroGlobalNavigationStore {
     }
 }
 
-/// Pure routing policy for Radio entry points so both the app and host tests
-/// verify the exact same rules.
-enum KyroRadioNavigationPolicy {
+/// The stored Build 128–137 fourth-tab value `radio` still opens Radio.
+/// Podcasts has a new identity without changing the five-slot layout.
+enum KyroAudioDestination: String, CaseIterable, Identifiable {
+    case radio, podcasts
+    var id: String { rawValue }
+    var choice: KyroFourthTab { self == .radio ? .radio : .podcasts }
+    var title: String { choice.title }
+
+    static func moreEntries(unifiedShell: Bool, tabDestinations: [KyroGlobalDestination]) -> [Self] {
+        guard unifiedShell else { return [] }
+        return allCases.filter { !tabDestinations.contains($0.choice.destination) }
+    }
+
+    static func legacyProfileEntries(unifiedShell: Bool) -> [Self] { unifiedShell ? [] : allCases }
+
     enum Target: Equatable, Sendable {
         case tab
         case secondaryRoute
     }
 
-    static func openTarget(unifiedShell: Bool, tabDestinations: [KyroGlobalDestination]) -> Target {
-        if unifiedShell && tabDestinations.contains(.radio) {
-            return .tab
-        }
-        return .secondaryRoute
+    func openTarget(unifiedShell: Bool, tabDestinations: [KyroGlobalDestination]) -> Target {
+        unifiedShell && tabDestinations.contains(choice.destination) ? .tab : .secondaryRoute
     }
 
-    static func profileMenuOffersRadio(unifiedShell: Bool) -> Bool {
-        !unifiedShell
-    }
-
-    static func moreMenuIncludesRadio(unifiedShell: Bool, tabDestinations: [KyroGlobalDestination]) -> Bool {
-        unifiedShell && !tabDestinations.contains(.radio)
-    }
-
-    /// Build 130: whether the Radio page shows its own Now Playing bar. As a
+    /// Whether this audio page shows its own shared Now Playing bar. As a
     /// tab, the tab bar's accessory shows it. Pushed (More, Home shelf
     /// headers, the profile menu, the sidebar), the page covers the tab bar
     /// and its accessory, so the page shows the bar itself, unless the layout

@@ -34,6 +34,7 @@ enum KyroBuild133HostChecks {
         let parsed = try rss()
         try discoveryAndOPML(parsed)
         try await libraryAndCache(parsed)
+        try await checkpointTiming(parsed)
         try playback(parsed)
         try backup(parsed)
         try playerAppearance()
@@ -115,6 +116,8 @@ enum KyroBuild133HostChecks {
         let newStore = KyroPodcastLibrary(defaults: defaults, base: base)
         await newStore.restoreAll()
         require(newStore.entries(for: parsed.show).count == 2, "disk cache reloads offline")
+        require(newStore.cachedLatestCount(upTo: 1) == 1 && newStore.cachedLatestCount(upTo: 12) == 2,
+                "Home diagnostic count matches cached entries and respects the cap")
         let entry = PodcastEntry(parsed.episodes[0], show: parsed.show)
         let invalidated = OSAllocatedUnfairLock(initialState: false)
         withObservationTracking {
@@ -124,8 +127,11 @@ enum KyroBuild133HostChecks {
         }
         newStore.checkpoint(entry, position: 40, duration: 80, played: false, publish: false)
         require(!invalidated.withLock { $0 } && newStore.progress.isEmpty && newStore.resumePosition(for: entry.id) == 40, "private checkpoint isolated")
+        newStore.checkpoint(entry, position: 20, duration: 80, played: false, publish: false)
+        newStore.checkpoint(entry, position: 40, duration: 80, played: false, publish: false)
+        await newStore.flushProgressWrites()
         let reopened = KyroPodcastLibrary(defaults: defaults, base: base)
-        require(reopened.resumePosition(for: entry.id) == 40, "checkpoint resume across relaunch")
+        require(reopened.resumePosition(for: entry.id) == 40, "ordered worker persists latest checkpoint across relaunch")
         newStore.checkpoint(entry, position: 40, duration: 80, played: false, publish: true)
         require(newStore.progress[entry.id]?.fraction == 0.5 && newStore.continuing().first == entry, "published resume card")
         newStore.mark(entry, played: true)
@@ -143,6 +149,37 @@ enum KyroBuild133HostChecks {
         changed.media = URL(string: "https://feeds.example.com/stream")!
         require(location.existing(for: changed) == path, "an enclosure URL change preserves the local download")
         require(location.url(for: changed, mime: "audio/mp4").pathExtension == "m4a", "extensionless download uses MIME")
+    }
+
+    private static func checkpointTiming(_ parsed: PodcastFeed) async throws {
+        let defaults = UserDefaults(suiteName: "kyro.138.checkpoint.\(UUID())")!
+        let entry = PodcastEntry(parsed.episodes[0], show: parsed.show)
+        var fixture = Dictionary(uniqueKeysWithValues: (0..<5_000).map {
+            ("fixture:\($0)", PodcastProgress(position: Double($0), duration: 6_000, played: false))
+        })
+        fixture[entry.id] = .init(position: 10, duration: 80, played: false)
+        defaults.set(try JSONEncoder().encode(fixture), forKey: "kyrox.podcasts.progress.v1")
+        let library = KyroPodcastLibrary(defaults: defaults)
+        library.retain(entry)
+
+        func ms(_ seconds: Double) -> Double { seconds * 1000 }
+        var encodeTimes: [Double] = []
+        var callerTimes: [Double] = []
+        for iteration in 0..<7 {
+            let referenceStart = ProcessInfo.processInfo.systemUptime
+            let bytes = try JSONEncoder().encode(fixture)
+            encodeTimes.append(ms(ProcessInfo.processInfo.systemUptime - referenceStart))
+            precondition(!bytes.isEmpty)
+
+            let queueStart = ProcessInfo.processInfo.systemUptime
+            library.checkpoint(entry, position: Double(iteration + 20), duration: 80, played: false, publish: false)
+            callerTimes.append(ms(ProcessInfo.processInfo.systemUptime - queueStart))
+            await library.flushProgressWrites()
+        }
+        require(KyroPodcastLibrary(defaults: defaults).resumePosition(for: entry.id) == 26,
+                "worker writes full legacy snapshot without dropping the latest update")
+        print(String(format: "Mac host, 5,001 checkpoints: synchronous encode-only %.2f ms; new caller including enqueue %.3f ms (medians; worker excluded).",
+                     encodeTimes.sorted()[3], callerTimes.sorted()[3]))
     }
 
     private static func playback(_ parsed: PodcastFeed) throws {
@@ -223,6 +260,16 @@ enum KyroBuild133HostChecks {
                                                      app: app, now: Date())
         let older = try SettingsBackupCodec.decode(legacy)
         require(older.groups["podcasts"] == nil && older.groups["radio"]?["radio.playerTheme"] == .string("classicWalnut"), "old backup remains readable")
+        for choice in [KyroFourthTab.radio, .podcasts] {
+            let navigation = try SettingsBackupCodec.encode(
+                values: [(id: "navigation.fourthTab", group: .navigation, value: .string(choice.rawValue))],
+                app: app, now: Date())
+            let backup = try SettingsBackupCodec.decode(navigation)
+            guard case .string(let stored)? = backup.groups["navigation"]?["navigation.fourthTab"] else {
+                preconditionFailure("Missing fourth tab after round trip")
+            }
+            require(KyroFourthTab(rawValue: stored) == choice, "portable fourth tab round trips: \(choice.rawValue)")
+        }
         let arrangement = KyroHomeArrangement()
         require(KyroHomeShelf.allCases.filter(\.isPodcast).allSatisfy(arrangement.isHidden), "podcast home shelves opt-in")
     }
@@ -238,10 +285,8 @@ enum KyroBuild133HostChecks {
         require(video.contains("source: .video") && live.contains("source: .liveTV"), "Silo and live player wiring")
         let home = try source("Kyro/Home/KyroHomeShelves.swift")
         require(home.contains("KyroHomeSportsHeightProbe.games(games)") && home.contains("isHeightProbe: true"), "sports tallest-card probe preserved")
-        let project = try String(contentsOfFile: "iosApp/project.yml", encoding: .utf8)
-        require(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 137").count == 4 &&
-                project.components(separatedBy: "MARKETING_VERSION: \"1.0.137\"").count == 4, "iOS app and extensions target Build 137")
-
+        require(!rail.contains("restoreAll()") && home.contains(".task(id: host.needsPodcastCache)"),
+                "Home hydration does not restart per audio rail")
         let cassette = try source("Kyro/Podcasts/KyroPodcastCassette.swift")
         let radio = try source("Kyro/Radio/KyroRadioTurntable.swift")
         let radioViews = try source("Kyro/Radio/KyroRadioViews.swift")

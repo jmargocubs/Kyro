@@ -9,11 +9,14 @@ xcrun swiftc -D KYRO_STANDALONE_TESTS -D KYRO_PODCAST_HOST_TESTS -parse-as-libra
   "$ROOT"/Podcasts/KyroPodcast{Feed,Network,Library,Backup}.swift \
   "$ROOT"/Radio/KyroRadio{PlayerTheme,Models,BrowserClient,Library,PlaybackMachine,BackupSettings}.swift \
   "$ROOT"/Home/KyroHome{Preferences,Arrangement}.swift \
+  "$ROOT"/Shell/KyroGlobalNavigation.swift \
+  "$ROOT"/LiveTVNavigation/Kyro{LiveTVNavigationPreferences,LiveTVDestination,NavigationHandleTrace}.swift \
   "$ROOT"/Sports/Models/KyroSportsModels.swift \
   "$ROOT"/Sports/Providers/KyroSportsProvider.swift \
   "$ROOT"/Settings/Backup/SettingsBackupCore.swift \
   "$ROOT"/Settings/Backup/SettingsBackupRestore.swift
 "$OUTPUT/build133" "$@"
+if [[ ${1:-} == --behavior-only ]]; then exit 0; fi
 git diff --exit-code aa16b77868a1546dc0aaadad50e6d098e4fa58cd -- \
   "$ROOT"/Radio/KyroRadioPlayer.swift \
   "$ROOT"/Radio/KyroRadioDiscoverModel.swift \

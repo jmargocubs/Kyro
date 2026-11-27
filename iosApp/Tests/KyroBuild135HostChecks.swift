@@ -231,8 +231,8 @@ enum KyroBuild135HostChecks {
         }
         check(discover.contains("PodcastOPML.write(library.shows)") && discover.contains("library.importFeeds(feeds)"),
               "OPML import and export stay")
-        check(browser.contains("case discover = \"Discover\", library = \"Library\"") && browser.contains("KyroAudioSelector(selection: $selection)"),
-              "Radio and Podcasts stay switchable; Podcasts has Discover and Library")
+        check(browser.contains("case discover = \"Discover\", library = \"Library\"") && browser.contains("KyroAudioSectionPicker(title: \"Podcast section\""),
+              "the dedicated Podcasts page has Discover and Library")
         check(browser.contains("KyroRadioPageNowPlayingBar()"), "the pushed page keeps the mini-player")
     }
 

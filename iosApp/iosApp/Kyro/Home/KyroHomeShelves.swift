@@ -122,6 +122,7 @@ final class KyroHomeShelfHost {
 
     private func isEnabled(_ shelf: KyroHomeShelf) -> Bool { !arrangement.isHidden(shelf) }
     var needsTodaySports: Bool { isEnabled(.sportsToday) || isEnabled(.upcomingSports) }
+    var needsPodcastCache: Bool { isEnabled(.latestPodcasts) || isEnabled(.continuePodcasts) }
     var needsFollowedSports: Bool {
         (isEnabled(.myTeams) || isEnabled(.myLeagues)) && !favorites.preferences.relevantLeagues.isEmpty
     }
@@ -395,6 +396,14 @@ struct KyroHomeShelfHostModifier: ViewModifier {
                 await host.loadSports()
                 host.logDiagnostics()
             }
+            // Hydrate once per Home task, not on each lazy rail that can
+            // restart as it re-enters the viewport.
+            .task(id: host.needsPodcastCache) {
+                guard host.needsPodcastCache else { return }
+                let interval = KyroPerformanceDiagnostics.begin("Home podcast cache", .homePodcastCache)
+                defer { KyroPerformanceDiagnostics.end(interval) }
+                await KyroPodcastLibrary.shared.restoreAll()
+            }
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active, isVisible else { return }
                 host.favorites.reload()
@@ -609,13 +618,27 @@ struct KyroHomeRail<Content: View, Probe: View>: View {
 
     let title: String
     let sizing: Sizing
+    var openHeader: (() -> Void)? = nil
     @ViewBuilder let content: () -> Content
     @ViewBuilder let heightProbe: () -> Probe
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.title3.bold()).accessibilityAddTraits(.isHeader)
-                .padding(.horizontal, SiloTheme.padding)
+            Group {
+                if let openHeader {
+                    Button(action: openHeader) {
+                        HStack(spacing: 6) {
+                            Text(title).font(.title3.bold())
+                            Image(systemName: "chevron.right").font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary).accessibilityHidden(true)
+                        }
+                    }.buttonStyle(.plain)
+                } else {
+                    Text(title).font(.title3.bold())
+                }
+            }
+            .accessibilityAddTraits(.isHeader)
+            .padding(.horizontal, SiloTheme.padding)
             ScrollView(.horizontal, showsIndicators: false) {
                 switch sizing {
                 case .lazy:
@@ -643,8 +666,8 @@ struct KyroHomeRail<Content: View, Probe: View>: View {
 }
 
 extension KyroHomeRail where Probe == EmptyView {
-    init(title: String, sizing: Sizing, @ViewBuilder content: @escaping () -> Content) {
-        self.init(title: title, sizing: sizing, content: content, heightProbe: { EmptyView() })
+    init(title: String, sizing: Sizing, openHeader: (() -> Void)? = nil, @ViewBuilder content: @escaping () -> Content) {
+        self.init(title: title, sizing: sizing, openHeader: openHeader, content: content, heightProbe: { EmptyView() })
     }
 }
 

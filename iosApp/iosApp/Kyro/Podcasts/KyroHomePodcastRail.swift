@@ -5,6 +5,7 @@ import SwiftUI
 /// network work on Home; playback checkpoints and cached entries drive cards.
 struct KyroHomePodcastRail: View {
     let shelf: KyroHomeShelf
+    @Environment(AppRouter.self) private var router
     @State private var selectedShow: PodcastShow?
     private let library = KyroPodcastLibrary.shared
     private static let limit = 12
@@ -18,15 +19,19 @@ struct KyroHomePodcastRail: View {
 
     static func itemCount(for shelf: KyroHomeShelf) -> Int {
         let library = KyroPodcastLibrary.shared
-        if shelf == .favoritePodcasts { return min(limit, library.favoriteShows.count) }
-        return shelf == .latestPodcasts ? library.latest(limit: limit).count : min(limit, library.continuing().count)
+        switch shelf {
+        case .favoritePodcasts: return min(limit, library.favoriteShows.count)
+        case .latestPodcasts: return library.cachedLatestCount(upTo: limit)
+        default: return min(limit, library.continuing().count)
+        }
     }
 
     var body: some View {
+        let _ = KyroPerformanceDiagnostics.count(.homePodcastRailBody)
         if shelf == .favoritePodcasts {
             let shows = favorites
             if !shows.isEmpty {
-                KyroHomeRail(title: shelf.title, sizing: .lazy) {
+                KyroHomeRail(title: shelf.title, sizing: .lazy, openHeader: openPodcasts) {
                     ForEach(shows) { show in
                         Button { selectedShow = show } label: {
                             KyroHomePodcastCard(title: show.title, subtitle: show.publisher, artwork: show.artwork, progress: nil)
@@ -37,23 +42,20 @@ struct KyroHomePodcastRail: View {
             }
         } else {
             let episodes = entries
-            VStack(spacing: 0) {
-                if !episodes.isEmpty {
-                    KyroHomeRail(title: shelf.title, sizing: .lazy) {
-                        ForEach(episodes) { entry in
-                            Button { KyroPodcastPlayer.shared.play(entry) } label: {
-                                KyroHomePodcastCard(title: entry.episode.title, subtitle: entry.showTitle, artwork: entry.artwork,
-                                    progress: shelf == .continuePodcasts ? library.progress[entry.id]?.fraction : nil)
-                            }.buttonStyle(.plain)
-                        }
+            if !episodes.isEmpty {
+                KyroHomeRail(title: shelf.title, sizing: .lazy, openHeader: openPodcasts) {
+                    ForEach(episodes) { entry in
+                        Button { KyroPodcastPlayer.shared.play(entry) } label: {
+                            KyroHomePodcastCard(title: entry.episode.title, subtitle: entry.showTitle, artwork: entry.artwork,
+                                progress: shelf == .continuePodcasts ? library.progress[entry.id]?.fraction : nil)
+                        }.buttonStyle(.plain)
                     }
                 }
             }
-            .task(id: shelf) {
-                if shelf == .latestPodcasts || shelf == .continuePodcasts { await library.restoreAll() }
-            }
         }
     }
+
+    private func openPodcasts() { KyroAudioDestination.podcasts.open(router: router) }
 }
 
 private struct KyroHomePodcastCard: View {

@@ -21,6 +21,7 @@ struct NowPlayingShelf: View {
 
     var body: some View {
         #if os(iOS)
+        let _ = KyroPerformanceDiagnostics.countOnHome(.homeAudioShelfBody)
         // Stays mounted under the full remote sheet so dismissing the sheet
         // doesn't re-insert the accessory.
         if siloControl.remotePlaybackEngaged {

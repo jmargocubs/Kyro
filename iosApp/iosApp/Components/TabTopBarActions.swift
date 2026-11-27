@@ -371,12 +371,11 @@ struct ProfileAvatarMenu: View {
                 pushesScreen: true
             ) { KyroLiveTVEntry.open(router: router) })
         }
-        if KyroRadioEntry.profileMenuOffersRadio {
-            liveTV.append(.init(
-                title: "Radio & Podcasts",
-                systemImage: "radio",
-                pushesScreen: true
-            ) { KyroRadioEntry.open(router: router) })
+        for audio in KyroAudioDestination.legacyProfileEntries(unifiedShell: KyroUnifiedNavigation.isActive) {
+            let title: LocalizedStringResource = audio == .radio ? "Radio" : "Podcasts"
+            liveTV.append(.init(title: title, systemImage: audio.choice.systemImage, pushesScreen: true) {
+                audio.open(router: router)
+            })
         }
         var features: [ProfileMenuPanel.Row] = []
         if let onOpenForYou {

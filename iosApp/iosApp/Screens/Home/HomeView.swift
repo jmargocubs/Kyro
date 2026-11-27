@@ -155,8 +155,13 @@ struct HomeView: View {
         }
         #else
         ZStack(alignment: .top) {
+            #if os(iOS)
+            SiloPageBackdrop(feature: true, fixedSignatureFeature: true)
+                .ignoresSafeArea()
+            #else
             SiloPageBackdrop(feature: true)
                 .ignoresSafeArea()
+            #endif
 
             Group {
                 #if os(iOS)

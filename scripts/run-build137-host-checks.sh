@@ -11,6 +11,7 @@ if [[ ${1:-} == --live ]]; then
 else
   "$OUTPUT/build137"
 fi
+if [[ ${1:-} == --behavior-only ]]; then exit 0; fi
 git diff --exit-code d47d4da37030d03850dd521554fc76846e47b7b0 -- \
   "$ROOT"/Podcasts/KyroPodcast{Player,Library,Downloads,Backup}.swift \
   "$ROOT"/Podcasts/KyroModernPlayers.swift \

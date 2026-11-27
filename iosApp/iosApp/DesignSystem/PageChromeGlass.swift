@@ -15,6 +15,9 @@ final class PageChromeScrollState {
         // deep into the page.
         let clamped = min(max(0, rawOffset), PageChromeGlass.fadeEnd)
         guard abs(clamped - offset) >= 0.5 else { return }
+        #if os(iOS)
+        KyroPerformanceDiagnostics.countOnHome(.homeScrollChrome)
+        #endif
         offset = clamped
     }
 }

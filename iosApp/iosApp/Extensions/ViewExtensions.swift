@@ -8,14 +8,23 @@ import SwiftUI
 struct SiloPageBackdrop: View {
     var feature = false
     #if os(iOS)
+    var fixedSignatureFeature = false
     @Environment(\.displayScale) private var displayScale
     private let appearance = KyroAppAppearanceStore.shared
     #endif
 
     var body: some View {
         #if os(iOS)
+        let _ = fixedSignatureFeature ? KyroPerformanceDiagnostics.count(.homeBackdropBody) : ()
         if appearance.selection == .signature {
-            KyroSignatureBackdrop(finish: feature ? .feature : .dense)
+            if fixedSignatureFeature {
+                KyroFixedSignatureFeatureSurface()
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            } else {
+                KyroSignatureBackdrop(finish: feature ? .feature : .dense)
+            }
         } else {
             classicBackdrop
         }

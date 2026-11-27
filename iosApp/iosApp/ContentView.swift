@@ -2409,8 +2409,8 @@ enum KyroRootPage: Hashable {
     case sports
     case favorites
     #if os(iOS)
-    /// Build 128: reached from More; never a tab.
     case radio
+    case podcasts
     #endif
 }
 
@@ -2423,6 +2423,7 @@ extension MainTabDestinationID {
         #if os(iOS)
         case .sports: self = .kyroRoot(.sports)
         case .radio: self = .kyroRoot(.radio)
+        case .podcasts: self = .kyroRoot(.podcasts)
         #endif
         }
     }
@@ -2464,6 +2465,8 @@ struct MainTabDestination: Identifiable, Equatable {
             .kyroRoot(.favorites, choice: .favorites)
         case .radio:
             .kyroRoot(.radio, choice: .radio)
+        case .podcasts:
+            .kyroRoot(.podcasts, choice: .podcasts)
         case .liveTV:
             .init(id: .liveTV, title: "Live TV", icon: "dot.radiowaves.left.and.right",
                   selectedIcon: "dot.radiowaves.left.and.right")
@@ -2504,6 +2507,7 @@ func kyroGlobalDestination(for id: MainTabDestinationID) -> KyroGlobalDestinatio
     case .kyroRoot(.sports): .sports
     case .kyroRoot(.favorites): .favorites
     case .kyroRoot(.radio): .radio
+    case .kyroRoot(.podcasts): .podcasts
     case .liveTV: .liveTV
     default: nil
     }
@@ -2812,6 +2816,11 @@ struct MainTabView: View {
     @State private var kyroNavigation = KyroGlobalNavigationStore.shared
     /// Scroll state per global destination, shared by the shell's one header (`KyroAppHeader`).
     @State private var kyroShellScrollStates = KyroShellScrollStates()
+    @State private var radioBrowsingSlot = LazyModel<KyroRadioBrowsing>()
+    @State private var podcastBrowsingSlot = LazyModel<KyroPodcastBrowsing>()
+
+    private func radioBrowsing() -> KyroRadioBrowsing { radioBrowsingSlot.value { KyroRadioBrowsing() } }
+    private func podcastBrowsing() -> KyroPodcastBrowsing { podcastBrowsingSlot.value { KyroPodcastBrowsing() } }
     #endif
     @State private var uiCustomization = UICustomizationPreferences.shared
     /// The local audiobook opt-in is a final visibility gate even when a
@@ -3266,10 +3275,9 @@ struct MainTabView: View {
                 router.navigate(to: .secondaryDestination(.sports))
             })
         }
-        // Build 128/129: Radio lives in More unless chosen as the fourth tab.
-        if !kyroNavigation.tabDestinations.contains(.radio) {
-            items.append(KyroMoreMenuItem(id: "kyro-radio", title: KyroAudioDestination.title, systemImage: "radio") {
-                router.navigate(to: .secondaryDestination(.radio))
+        for audio in KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: kyroNavigation.tabDestinations) {
+            items.append(KyroMoreMenuItem(id: "kyro-\(audio.id)", title: audio.title, systemImage: audio.choice.systemImage) {
+                audio.open(router: router)
             })
         }
         return KyroMoreMenuContext(items: items)
@@ -3633,22 +3641,23 @@ struct MainTabView: View {
                 .tag(destination.id)
             }
             #if os(iOS)
-            Button {
-                router.popToRoot()
-                KyroRadioEntry.open(router: router)
-                if dismissAfterSelection {
-                    dismissSidebar()
+            ForEach(KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations:
+                usesGlobalClassicNavigation ? kyroNavigation.tabDestinations : [])) { audio in
+                Button {
+                    router.popToRoot()
+                    audio.open(router: router)
+                    if dismissAfterSelection { dismissSidebar() }
+                } label: {
+                    let selected = router.visiblePushedRoutes.last == .secondaryDestination(audio.secondaryRoute)
+                    Label {
+                        Text(audio.title)
+                    } icon: {
+                        Image(systemName: selected ? audio.choice.selectedSystemImage : audio.choice.systemImage)
+                            .foregroundStyle(selected ? .primary : .secondary)
+                    }
                 }
-            } label: {
-                let isRadioSelected = router.visiblePushedRoutes.last == .secondaryDestination(.radio)
-                Label {
-                    Text(KyroAudioDestination.title)
-                } icon: {
-                    Image(systemName: isRadioSelected ? "radio.fill" : "radio")
-                        .foregroundStyle(isRadioSelected ? .primary : .secondary)
-                }
+                .accessibilityIdentifier(audio == .radio ? "kyroSidebarRadio" : "kyroSidebarPodcasts")
             }
-            .accessibilityIdentifier("kyroSidebarRadio")
             #endif
         }
         // The sidebar's few rows rarely overflow; without this the list
@@ -3713,7 +3722,7 @@ struct MainTabView: View {
             LiveTVView(service: .shared)
         case .kyroRoot(let page):
             #if os(iOS)
-            KyroRootPageView(page: page)
+            KyroRootPageView(page: page, radioBrowsing: radioBrowsing, podcastBrowsing: podcastBrowsing)
             #else
             EmptyView()
             #endif
@@ -3741,7 +3750,10 @@ struct MainTabView: View {
             KyroSportsHubView(isSecondaryDestination: true)
                 .environment(\.kyroShellHeader, nil)
         } else if id == .kyroRoot(.radio) {
-            KyroAudioHub(isSecondaryDestination: true)
+            KyroRadioView(isSecondaryDestination: true, browsing: radioBrowsing())
+                .environment(\.kyroShellHeader, nil)
+        } else if id == .kyroRoot(.podcasts) {
+            KyroPodcastBrowser(isSecondaryDestination: true, browsing: podcastBrowsing())
                 .environment(\.kyroShellHeader, nil)
         } else {
             resolvedSecondaryDestinationContent(for: id)
@@ -3779,7 +3791,7 @@ struct MainTabView: View {
         #if os(iOS)
         case .kyroRoot(.sports):
             return MainTabDestination.global(.sports)
-        case .kyroRoot(.favorites), .kyroRoot(.radio):
+        case .kyroRoot(.favorites), .kyroRoot(.radio), .kyroRoot(.podcasts):
             return nil
         #else
         case .kyroRoot:

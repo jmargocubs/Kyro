@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// Kyro X's approved Crimson Noir palette as semantic roles (Build 121; it
 /// replaces the C3 electric blue). Live TV, Kyro's floating navigation and
@@ -94,14 +97,39 @@ enum KyroSignature {
     ], startPoint: .top, endPoint: .bottom)
     static let spotlight = RadialGradient(colors: [crimson.opacity(0.32), .clear], center: .top,
                                            startRadius: 0, endRadius: 380)
-    static let feature = LinearGradient(stops: [
+    static let featureStops: [Gradient.Stop] = [
         .init(color: burgundy, location: 0), .init(color: card, location: 0.35),
         .init(color: night, location: 0.85)
-    ], startPoint: .top, endPoint: .bottom)
+    ]
+    static let feature = LinearGradient(stops: featureStops, startPoint: .top, endPoint: .bottom)
     static let dense = LinearGradient(colors: [card, night, night], startPoint: .top, endPoint: .bottom)
 }
 
 enum KyroPageFinish { case dense, feature, discovery }
+
+/// Home's opaque, stationary Signature wash. Install its three unchanged
+/// color stops once, on a single compositor layer with no scroll inputs,
+/// bitmap generation, or per-scroll SwiftUI gradient updates.
+struct KyroFixedSignatureFeatureSurface: UIViewRepresentable {
+    func makeUIView(context: Context) -> Surface {
+        let view = Surface()
+        view.isOpaque = true
+        view.isUserInteractionEnabled = false
+        let gradient = view.layer as! CAGradientLayer // Surface owns its backing-layer type.
+        gradient.isOpaque = true
+        gradient.startPoint = CGPoint(x: 0.5, y: 0)
+        gradient.endPoint = CGPoint(x: 0.5, y: 1)
+        gradient.colors = KyroSignature.featureStops.map { UIColor($0.color).cgColor }
+        gradient.locations = KyroSignature.featureStops.map { NSNumber(value: Double($0.location)) }
+        return view
+    }
+
+    func updateUIView(_ uiView: Surface, context: Context) {}
+
+    final class Surface: UIView {
+        override class var layerClass: AnyClass { CAGradientLayer.self }
+    }
+}
 
 struct KyroSignatureBackdrop: View {
     var finish: KyroPageFinish

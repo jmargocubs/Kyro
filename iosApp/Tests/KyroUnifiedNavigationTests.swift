@@ -389,16 +389,35 @@ final class KyroUnifiedNavigationTests: XCTestCase {
         let defaultTabs = KyroGlobalDestination.tabDestinations(fourthTab: .sports)
         let radioTabs = KyroGlobalDestination.tabDestinations(fourthTab: .radio)
 
-        XCTAssertTrue(KyroRadioNavigationPolicy.moreMenuIncludesRadio(unifiedShell: true, tabDestinations: defaultTabs))
-        XCTAssertFalse(KyroRadioNavigationPolicy.moreMenuIncludesRadio(unifiedShell: true, tabDestinations: radioTabs))
-        XCTAssertFalse(KyroRadioNavigationPolicy.moreMenuIncludesRadio(unifiedShell: false, tabDestinations: defaultTabs))
+        XCTAssertEqual(KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: defaultTabs), [.radio, .podcasts])
+        XCTAssertEqual(KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: radioTabs), [.podcasts])
+        XCTAssertTrue(KyroAudioDestination.moreEntries(unifiedShell: false, tabDestinations: defaultTabs).isEmpty)
 
-        XCTAssertFalse(KyroRadioNavigationPolicy.profileMenuOffersRadio(unifiedShell: true))
-        XCTAssertTrue(KyroRadioNavigationPolicy.profileMenuOffersRadio(unifiedShell: false))
+        XCTAssertTrue(KyroAudioDestination.legacyProfileEntries(unifiedShell: true).isEmpty)
+        XCTAssertEqual(KyroAudioDestination.legacyProfileEntries(unifiedShell: false), [.radio, .podcasts])
 
-        XCTAssertEqual(KyroRadioNavigationPolicy.openTarget(unifiedShell: true, tabDestinations: radioTabs), .tab)
-        XCTAssertEqual(KyroRadioNavigationPolicy.openTarget(unifiedShell: true, tabDestinations: defaultTabs), .secondaryRoute)
-        XCTAssertEqual(KyroRadioNavigationPolicy.openTarget(unifiedShell: false, tabDestinations: radioTabs), .secondaryRoute)
+        XCTAssertEqual(KyroAudioDestination.radio.openTarget(unifiedShell: true, tabDestinations: radioTabs), .tab)
+        XCTAssertEqual(KyroAudioDestination.radio.openTarget(unifiedShell: true, tabDestinations: defaultTabs), .secondaryRoute)
+        XCTAssertEqual(KyroAudioDestination.radio.openTarget(unifiedShell: false, tabDestinations: radioTabs), .secondaryRoute)
+    }
+
+    func testAudioBrowsingStateAndDestinationsAreIndependent() {
+        let radio = KyroRadioBrowsing()
+        let podcasts = KyroPodcastBrowsing()
+        radio.section = .history
+        radio.discoverText = "Jazz"
+        podcasts.section = .library
+        podcasts.libraryShelf = .saved
+        podcasts.discovery.query = "Science"
+
+        XCTAssertEqual(radio.section, .history)
+        XCTAssertEqual(radio.discoverText, "Jazz")
+        XCTAssertEqual(podcasts.section, .library)
+        XCTAssertEqual(podcasts.libraryShelf, .saved)
+        XCTAssertEqual(podcasts.discovery.query, "Science")
+        XCTAssertNotEqual(Route.secondaryDestination(.radio), Route.secondaryDestination(.podcasts))
+        XCTAssertEqual(kyroGlobalDestination(for: .kyroRoot(.radio)), .radio)
+        XCTAssertEqual(kyroGlobalDestination(for: .kyroRoot(.podcasts)), .podcasts)
     }
 
     func testResumingLiveTVFromPictureInPictureYieldsRadio() {

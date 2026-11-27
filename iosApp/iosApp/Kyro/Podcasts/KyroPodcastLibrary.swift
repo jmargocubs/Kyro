@@ -156,6 +156,42 @@ actor PodcastCacheDisk {
     }
 }
 
+/// Serial writes preserve checkpoint order with the existing on-disk key.
+/// Only the writer's queue uses its captured persistence dependencies.
+private final class PodcastProgressWriter: @unchecked Sendable {
+    private let defaults: UserDefaults
+    private let key: String
+    private let queue = DispatchQueue(label: "kyro.podcast.checkpoints", qos: .utility)
+
+    init(defaults: UserDefaults, key: String) {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    func submit(_ snapshot: [String: PodcastProgress]) {
+        queue.async { [self] in
+            #if os(iOS)
+            let start = KyroPerformanceDiagnostics.isEnabled ? KyroPerformanceClock.now() : nil
+            #endif
+            if let data = try? JSONEncoder().encode(snapshot) { defaults.set(data, forKey: key) }
+            #if os(iOS)
+            if let start {
+                let duration = (KyroPerformanceClock.now() - start) * 1000
+                Task { @MainActor in KyroPerformanceDiagnostics.record(.podcastCheckpointWrite, milliseconds: duration) }
+            }
+            #endif
+        }
+    }
+
+    #if KYRO_PODCAST_HOST_TESTS
+    func flush() async {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume() }
+        }
+    }
+    #endif
+}
+
 @MainActor @Observable
 final class KyroPodcastLibrary {
     static let shared = KyroPodcastLibrary()
@@ -192,6 +228,7 @@ final class KyroPodcastLibrary {
     private(set) var isRefreshing = false
     @ObservationIgnored private var state: State
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let progressWriter: PodcastProgressWriter
     @ObservationIgnored private let disk: PodcastCacheDisk
     @ObservationIgnored private var cache: [String: PodcastFeedCache] = [:]
     @ObservationIgnored private var automaticCursor = ""
@@ -200,6 +237,7 @@ final class KyroPodcastLibrary {
 
     init(defaults: UserDefaults = .standard, base: URL? = nil) {
         self.defaults = defaults
+        progressWriter = PodcastProgressWriter(defaults: defaults, key: Self.progressKey)
         let base = base ?? URL.applicationSupportDirectory.appendingPathComponent("KyroPodcasts", isDirectory: true)
         disk = PodcastCacheDisk(directory: base.appendingPathComponent("Feeds", isDirectory: true))
         let decoder = JSONDecoder()
@@ -372,6 +410,17 @@ final class KyroPodcastLibrary {
             .prefix(limit).map { $0 }
     }
 
+    /// Shelf diagnostics need a count, not a rebuilt and sorted card list.
+    func cachedLatestCount(upTo limit: Int) -> Int {
+        guard limit > 0 else { return 0 }
+        var count = 0
+        for show in shows {
+            count += episodes[show.id]?.count ?? (previewCache?.show.id == show.id ? previewCache?.episodes.count ?? 0 : 0)
+            if count >= limit { return limit }
+        }
+        return count
+    }
+
     func continuing() -> [PodcastEntry] {
         var seen = Set<String>()
         let positions = progress
@@ -507,7 +556,11 @@ final class KyroPodcastLibrary {
     }
 
     private func persistProgress() {
-        if let data = try? JSONEncoder().encode(state.progress) { defaults.set(data, forKey: Self.progressKey) }
+        progressWriter.submit(state.progress)
     }
+
+    #if KYRO_PODCAST_HOST_TESTS
+    func flushProgressWrites() async { await progressWriter.flush() }
+    #endif
 }
 #endif

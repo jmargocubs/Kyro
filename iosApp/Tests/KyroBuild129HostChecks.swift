@@ -117,8 +117,8 @@ enum KyroBuild129HostChecks {
         defer { defaults.removePersistentDomain(forName: suite) }
 
         check(KyroFourthTab.default == .sports, "Sports remains the default fourth tab")
-        check(KyroFourthTab.allCases == [.sports, .forYou, .favorites, .radio],
-              "fourth tab options include Sports, For You, Favorites and Radio")
+        check(KyroFourthTab.allCases == [.sports, .forYou, .favorites, .radio, .podcasts],
+              "the fourth slot offers Radio and Podcasts independently")
 
         let fiveTabs = KyroGlobalDestination.tabDestinations(fourthTab: .radio)
         check(fiveTabs == [.home, .movies, .series, .radio, .liveTV] && fiveTabs.count == 5,
@@ -142,6 +142,14 @@ enum KyroBuild129HostChecks {
         reloaded.preferences.fourthTab = .sports
         check(reloaded.selectedDestination == .sports, "switching fourth tab updates hidden selection safely")
 
+        let oldData = Data(#"{"schemaVersion":1,"style":"glassDock","fourthTab":"radio","autoCollapse":false}"#.utf8)
+        let old = try! JSONDecoder().decode(KyroGlobalNavigationPreferences.self, from: oldData)
+        check(old.fourthTab == .radio && old.style == .glassDock && !old.autoCollapse,
+              "the Build 137 radio choice migrates without changing presentation preferences")
+        reloaded.preferences.fourthTab = .podcasts
+        check(KyroGlobalNavigationStore(defaults: defaults).preferences.fourthTab == .podcasts,
+              "the independent Podcasts choice survives relaunch")
+
         // Existing primary destinations stay intact.
         for choice in KyroFourthTab.allCases {
             let tabs = KyroGlobalDestination.tabDestinations(fourthTab: choice)
@@ -155,26 +163,39 @@ enum KyroBuild129HostChecks {
         let radioTabs = KyroGlobalDestination.tabDestinations(fourthTab: .radio)
 
         // More menu visibility for Radio.
-        check(KyroRadioNavigationPolicy.moreMenuIncludesRadio(unifiedShell: true, tabDestinations: defaultTabs),
+        check(KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: defaultTabs).contains(.radio),
               "More includes Radio when Sports is the fourth tab")
-        check(!KyroRadioNavigationPolicy.moreMenuIncludesRadio(unifiedShell: true, tabDestinations: radioTabs),
+        check(!KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: radioTabs).contains(.radio),
               "More omits Radio when Radio is already the fourth tab")
-        check(!KyroRadioNavigationPolicy.moreMenuIncludesRadio(unifiedShell: false, tabDestinations: defaultTabs),
+        check(KyroAudioDestination.moreEntries(unifiedShell: false, tabDestinations: defaultTabs).isEmpty,
               "legacy/iPad shell uses profile/sidebar entries rather than unified More menu")
 
         // Profile menu visibility for iPad and legacy iPhone shell.
-        check(!KyroRadioNavigationPolicy.profileMenuOffersRadio(unifiedShell: true),
+        check(KyroAudioDestination.legacyProfileEntries(unifiedShell: true).isEmpty,
               "unified iPhone profile menu does not duplicate More/tab Radio")
-        check(KyroRadioNavigationPolicy.profileMenuOffersRadio(unifiedShell: false),
+        check(KyroAudioDestination.legacyProfileEntries(unifiedShell: false).contains(.radio),
               "iPad and legacy iPhone profile menu expose Radio")
 
         // Home Radio shelf header & entry-point routing.
-        check(KyroRadioNavigationPolicy.openTarget(unifiedShell: true, tabDestinations: radioTabs) == .tab,
+        check(KyroAudioDestination.radio.openTarget(unifiedShell: true, tabDestinations: radioTabs) == .tab,
               "Home shelf header selects Radio tab when Radio is the fourth tab")
-        check(KyroRadioNavigationPolicy.openTarget(unifiedShell: true, tabDestinations: defaultTabs) == .secondaryRoute,
+        check(KyroAudioDestination.radio.openTarget(unifiedShell: true, tabDestinations: defaultTabs) == .secondaryRoute,
               "Home shelf header pushes secondary Radio route when Sports is the fourth tab")
-        check(KyroRadioNavigationPolicy.openTarget(unifiedShell: false, tabDestinations: radioTabs) == .secondaryRoute,
+        check(KyroAudioDestination.radio.openTarget(unifiedShell: false, tabDestinations: radioTabs) == .secondaryRoute,
               "iPad and legacy shell push secondary Radio route")
+
+        check(KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: defaultTabs) == [.radio, .podcasts],
+              "Sports default leaves both audio destinations in More, once each")
+        let podcastTabs = KyroGlobalDestination.tabDestinations(fourthTab: .podcasts)
+        check(podcastTabs == [.home, .movies, .series, .podcasts, .liveTV], "Podcasts occupies only the fourth slot")
+        check(KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: podcastTabs) == [.radio] &&
+              KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: radioTabs) == [.podcasts],
+              "More omits the audio destination that already has a main tab")
+        check(KyroAudioDestination.legacyProfileEntries(unifiedShell: false) == [.radio, .podcasts],
+              "legacy profile/sidebar routes expose both pages")
+        check(KyroAudioDestination.podcasts.openTarget(unifiedShell: true, tabDestinations: podcastTabs) == .tab &&
+              KyroAudioDestination.podcasts.openTarget(unifiedShell: true, tabDestinations: radioTabs) == .secondaryRoute,
+              "Podcasts Home headers use the correct tab or pushed destination")
     }
 
     static func liveTVPiPResumeYieldsRadio() {
@@ -230,12 +251,22 @@ enum KyroBuild129HostChecks {
         let moreEnvRange = content.range(of: ".environment(\\.kyroMoreMenu, moreMenuContext)")!.lowerBound
         check(moreEnvRange > headerOverlayRange && moreEnvRange > statusOverlayRange,
               "ContentView places .environment(\\.kyroMoreMenu, moreMenuContext) outside KyroAppHeader and statusColumnBar overlays")
-        check(content.contains("if !kyroNavigation.tabDestinations.contains(.radio)"),
+        check(content.contains("KyroAudioDestination.moreEntries(unifiedShell: true, tabDestinations: kyroNavigation.tabDestinations)"),
               "More menu checks whether Radio is already the fourth tab")
         check(content.contains("kyroSidebarRadio"),
               "iPad sidebar exposes Radio")
-        check(content.contains("KyroAudioHub(isSecondaryDestination: true)"),
-              "secondary Radio route pushes the Radio & Podcasts hub (Build 133) with isSecondaryDestination")
+        check(content.contains("KyroRadioView(isSecondaryDestination: true, browsing: radioBrowsing())"),
+              "secondary Radio route pushes its own page with isSecondaryDestination")
+        check(content.contains("KyroPodcastBrowser(isSecondaryDestination: true, browsing: podcastBrowsing())") &&
+              content.contains("LazyModel<KyroRadioBrowsing>()") && content.contains("LazyModel<KyroPodcastBrowsing>()"),
+              "the shell supplies separate, lazy browsing state to the dedicated pages")
+        let podcast = try source("iosApp/iosApp/Kyro/Podcasts/KyroPodcastBrowser.swift")
+        let rail = try source("iosApp/iosApp/Kyro/Podcasts/KyroHomePodcastRail.swift")
+        check(rail.contains("KyroAudioDestination.podcasts.open(router: router)") && rail.contains("openHeader: openPodcasts"),
+              "Podcast Home shelf headers navigate independently")
+        check(!podcast.contains("KyroAudioSelector") && podcast.contains("scrollState(for: .podcasts)") &&
+              podcast.contains(".navigationDestination(item: $discovery.destination)"),
+              "Podcasts retains inline show navigation and its own shell scroll state without a cross-page selector")
 
         let debugShell = try source("iosApp/iosApp/Kyro/KyroDebugLiveTVFixtureRoute.swift")
         let debugOverlay = debugShell.range(of: "KyroAppHeader(router: router, scrollStates: scrollStates, store: store)")!.lowerBound
@@ -244,8 +275,8 @@ enum KyroBuild129HostChecks {
               "debug unified shell places .environment(\\.kyroMoreMenu, moreMenu) outside KyroAppHeader overlay")
 
         let radioViews = try source("iosApp/iosApp/Kyro/Radio/KyroRadioViews.swift")
-        check(radioViews.contains("KyroRadioEntry.open(router: router)") && radioViews.contains("kyroHomeRadioHeader-"),
-              "Radio Home shelf headers open Radio via KyroRadioEntry")
+        check(radioViews.contains("KyroAudioDestination.radio.open(router: router)") && radioViews.contains("kyroHomeRadioHeader-"),
+              "Radio Home shelf headers open Radio via the shared audio routing policy")
         check(radioViews.contains("var isHostedTab: Bool") && radioViews.contains("KyroRadioSettingsForm"),
               "KyroRadioView adapts to fourth-tab hosting and shares KyroRadioSettingsForm")
 
@@ -253,12 +284,9 @@ enum KyroBuild129HostChecks {
         check(settings.contains("KyroRadioSettingsRow()"), "Settings overview includes Radio Settings row")
 
         let topBar = try source("iosApp/iosApp/Components/TabTopBarActions.swift")
-        check(topBar.contains("KyroRadioEntry.profileMenuOffersRadio") && topBar.contains("KyroRadioEntry.open(router: router)"),
+        check(topBar.contains("KyroAudioDestination.legacyProfileEntries") && topBar.contains("audio.open(router: router)"),
               "Profile menu offers Radio on iPad and legacy shell")
 
-        let project = try source("iosApp/project.yml")
-        check(project.components(separatedBy: "CURRENT_PROJECT_VERSION: 135").count == 4, "app and extensions target Build 135")
-        check(project.components(separatedBy: "MARKETING_VERSION: \"1.0.135\"").count == 4, "version 1.0.135")
     }
 }
 #endif

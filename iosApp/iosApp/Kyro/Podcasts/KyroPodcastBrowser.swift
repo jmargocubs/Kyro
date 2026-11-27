@@ -5,17 +5,13 @@ import Observation
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum KyroAudioDestination: String, CaseIterable {
-    case radio = "Radio", podcasts = "Podcasts"
-    static let title = "Radio & Podcasts"
-}
-
 struct KyroAudioHeader<Actions: View>: View {
+    let title: String
     @ViewBuilder let actions: () -> Actions
 
     var body: some View {
         HStack {
-            Text(KyroAudioDestination.title)
+            Text(title)
                 .font(.title2.bold()).foregroundStyle(KyroSignature.primary)
                 .accessibilityAddTraits(.isHeader)
             Spacer()
@@ -78,42 +74,11 @@ struct KyroAudioSectionPicker<Selection: Hashable>: View {
     }
 }
 
-struct KyroAudioSelector: View {
-    @Binding var selection: KyroAudioDestination
-    var body: some View {
-        Picker("Audio destination", selection: $selection) {
-            ForEach(KyroAudioDestination.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-        }
-        .pickerStyle(.segmented)
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .accessibilityIdentifier("kyroAudioDestination")
-    }
-}
-
-struct KyroAudioHub: View {
-    let isSecondaryDestination: Bool
-    @State private var selection: KyroAudioDestination
-
-    init(isSecondaryDestination: Bool = false, initialSelection: KyroAudioDestination = .radio) {
-        self.isSecondaryDestination = isSecondaryDestination
-        _selection = State(initialValue: initialSelection)
-    }
-
-    var body: some View {
-        switch selection {
-        case .radio:
-            KyroRadioView(isSecondaryDestination: isSecondaryDestination, audioDestination: $selection)
-        case .podcasts:
-            KyroPodcastBrowser(isSecondaryDestination: isSecondaryDestination, selection: $selection)
-        }
-    }
-}
-
 /// Local audio is usable before server setup or sign-in. This does not
 /// navigate, authenticate or change state in the Silo server flow.
 struct KyroAudioGuestAccess: ViewModifier {
     @State private var presented = false
+    @State private var browsing = KyroPodcastBrowsing()
     func body(content: Content) -> some View {
         content.safeAreaInset(edge: .bottom) {
             Button("Browse Podcasts Without Signing In", systemImage: "headphones") { presented = true }
@@ -122,63 +87,68 @@ struct KyroAudioGuestAccess: ViewModifier {
         }
         .sheet(isPresented: $presented) {
             NavigationStack {
-                KyroAudioHub(isSecondaryDestination: true, initialSelection: .podcasts)
+                KyroPodcastBrowser(isSecondaryDestination: true, browsing: browsing)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) { Button("Done") { presented = false } }
                     }
             }
             .modifier(KyroPodcastPresentation())
-            .modifier(KyroRadioNowPlayingPresentation())
+            .modifier(KyroRadioNowPlayingPresentation()) // shared accessory can still show an existing Radio session
         }
     }
 }
 
+@MainActor @Observable
+final class KyroPodcastBrowsing {
+    var section: KyroPodcastBrowser.Section = .discover
+    var libraryShelf: KyroPodcastLibraryHome.Shelf = .shows
+    let discovery = KyroPodcastDiscoveryState()
+    let charts = KyroPodcastChartsModel()
+}
+
 @MainActor
-private struct KyroPodcastBrowser: View {
+struct KyroPodcastBrowser: View {
     /// Build 135: Discover and Library. Library holds Shows, Latest, Saved,
     /// Downloads and History, so the page has two clear destinations.
     enum Section: String, CaseIterable {
         case discover = "Discover", library = "Library"
     }
     let isSecondaryDestination: Bool
-    @Binding var selection: KyroAudioDestination
+    @Bindable var browsing: KyroPodcastBrowsing
     @Environment(\.kyroShellHeader) private var shellHeader
     @Environment(\.nowPlayingShelfCoversPushedPages) private var shelfCoversPushedPages
     @Environment(\.scenePhase) private var scenePhase
-    @State private var section: Section = .discover
-    @State private var libraryShelf: KyroPodcastLibraryHome.Shelf = .shows
     @State private var fallbackScroll = PageChromeScrollState()
     @State private var showSettings = false
     @State private var showQueue = false
     @State private var showFeedEntry = false
     @State private var isDisplayed = false
-    @State private var discovery = KyroPodcastDiscoveryState()
-    @State private var charts = KyroPodcastChartsModel()
+    private var section: Section { browsing.section }
     private var runway: CGFloat? { isSecondaryDestination ? nil : shellHeader?.runway }
     private var hosted: Bool { runway != nil }
     private let library = KyroPodcastLibrary.shared
     private let appearance = KyroAppAppearanceStore.shared
 
     var body: some View {
+        @Bindable var discovery = browsing.discovery
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 8) {
                     if hosted {
-                        KyroAudioHeader { actions }
+                        KyroAudioHeader(title: "Podcasts") { actions }
                     }
-                    KyroAudioSelector(selection: $selection)
-                    KyroAudioSectionPicker(title: "Podcast section", selection: $section, options: Section.allCases, name: \.rawValue)
+                    KyroAudioSectionPicker(title: "Podcast section", selection: $browsing.section, options: Section.allCases, name: \.rawValue)
                     .accessibilityIdentifier("kyroPodcastSection")
                 }
                 .padding(.horizontal, 20)
                 switch section {
                 case .discover:
-                    KyroPodcastDiscoverHome(discovery: discovery, charts: charts,
-                                            showLibrary: { libraryShelf = .shows; section = .library },
+                    KyroPodcastDiscoverHome(discovery: discovery, charts: browsing.charts,
+                                            showLibrary: { browsing.libraryShelf = .shows; browsing.section = .library },
                                             openSettings: { showSettings = true },
                                             openFeedEntry: { showFeedEntry = true })
                 case .library:
-                    KyroPodcastLibraryHome(shelf: $libraryShelf, openFeedEntry: { showFeedEntry = true })
+                    KyroPodcastLibraryHome(shelf: $browsing.libraryShelf, openFeedEntry: { showFeedEntry = true })
                 }
             }
             .padding(.top, 8)
@@ -197,14 +167,14 @@ private struct KyroPodcastBrowser: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             if let runway { Color.clear.frame(height: runway) }
         }
-        .reportsPageChromeScroll(to: shellHeader?.scrollState(for: .radio) ?? fallbackScroll)
+        .reportsPageChromeScroll(to: hosted ? shellHeader?.scrollState(for: .podcasts) ?? fallbackScroll : fallbackScroll)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if KyroRadioNavigationPolicy.pageHostsNowPlayingBar(isSecondaryDestination: isSecondaryDestination,
+            if KyroAudioDestination.pageHostsNowPlayingBar(isSecondaryDestination: isSecondaryDestination,
                                                                 shelfCoversPushedPages: shelfCoversPushedPages) {
                 KyroRadioPageNowPlayingBar()
             }
         }
-        .navigationTitle(hosted ? "" : KyroAudioDestination.title)
+        .navigationTitle(hosted ? "" : "Podcasts")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(hosted ? .hidden : .visible, for: .navigationBar)
         .toolbar { if !hosted { ToolbarItemGroup(placement: .topBarTrailing) { actions } } }

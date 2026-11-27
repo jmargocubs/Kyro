@@ -127,20 +127,20 @@ enum KyroBuild130HostChecks {
     // MARK: Pushed page policy
 
     static func pushedRadioPageBarPolicy() {
-        check(KyroRadioNavigationPolicy.pageHostsNowPlayingBar(isSecondaryDestination: true, shelfCoversPushedPages: false),
+        check(KyroAudioDestination.pageHostsNowPlayingBar(isSecondaryDestination: true, shelfCoversPushedPages: false),
               "Radio pushed from More, Home or the profile menu shows its own bar")
-        check(!KyroRadioNavigationPolicy.pageHostsNowPlayingBar(isSecondaryDestination: false, shelfCoversPushedPages: false),
+        check(!KyroAudioDestination.pageHostsNowPlayingBar(isSecondaryDestination: false, shelfCoversPushedPages: false),
               "Radio as the fourth tab relies on the tab bar accessory (no duplicate)")
-        check(!KyroRadioNavigationPolicy.pageHostsNowPlayingBar(isSecondaryDestination: true, shelfCoversPushedPages: true),
+        check(!KyroAudioDestination.pageHostsNowPlayingBar(isSecondaryDestination: true, shelfCoversPushedPages: true),
               "the iPad sidebar layout's page-wide bar is not duplicated")
-        check(!KyroRadioNavigationPolicy.pageHostsNowPlayingBar(isSecondaryDestination: false, shelfCoversPushedPages: true),
+        check(!KyroAudioDestination.pageHostsNowPlayingBar(isSecondaryDestination: false, shelfCoversPushedPages: true),
               "a tab under the sidebar layout adds no bar")
         // Every Radio entry point either selects the tab or pushes the secondary route.
-        check(KyroRadioNavigationPolicy.openTarget(unifiedShell: true, tabDestinations: [.home, .movies, .series, .radio, .liveTV]) == .tab,
+        check(KyroAudioDestination.radio.openTarget(unifiedShell: true, tabDestinations: [.home, .movies, .series, .radio, .liveTV]) == .tab,
               "Radio as the fourth tab opens the tab")
-        check(KyroRadioNavigationPolicy.openTarget(unifiedShell: true, tabDestinations: [.home, .movies, .series, .sports, .liveTV]) == .secondaryRoute,
+        check(KyroAudioDestination.radio.openTarget(unifiedShell: true, tabDestinations: [.home, .movies, .series, .sports, .liveTV]) == .secondaryRoute,
               "Radio from More opens the pushed route, which hosts its own bar")
-        check(KyroRadioNavigationPolicy.openTarget(unifiedShell: false, tabDestinations: []) == .secondaryRoute,
+        check(KyroAudioDestination.radio.openTarget(unifiedShell: false, tabDestinations: []) == .secondaryRoute,
               "legacy and iPad entry points push the route")
     }
 
@@ -196,7 +196,7 @@ enum KyroBuild130HostChecks {
               !radioView.contains(".searchable("), "all Radio routes use inline search without a bottom search bar")
         check(radioView.contains(".safeAreaInset(edge: .bottom, spacing: 0)"),
               "the page bar is a bottom safe-area inset, which reserves scroll space")
-        check(radioView.contains("KyroRadioNavigationPolicy.pageHostsNowPlayingBar("), "the page follows the bar policy")
+        check(radioView.contains("KyroAudioDestination.pageHostsNowPlayingBar("), "the page follows the bar policy")
         let pageBar = body(of: "struct KyroRadioPageNowPlayingBar: View", in: views)
         check(pageBar.contains("NowPlayingShelf(style: .card)"), "the page bar is the app's single Now Playing shelf")
         check(pageBar.contains("keyboardWillShowNotification") && pageBar.contains("VStack(spacing: 0)"),

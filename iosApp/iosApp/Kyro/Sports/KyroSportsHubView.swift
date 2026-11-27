@@ -10,6 +10,8 @@ import NukeUI
 /// A Kyro-only fourth-tab root, shown inside the unified shell's tab bar.
 struct KyroRootPageView: View {
     let page: KyroRootPage
+    let radioBrowsing: () -> KyroRadioBrowsing
+    let podcastBrowsing: () -> KyroPodcastBrowsing
 
     var body: some View {
         switch page {
@@ -20,7 +22,9 @@ struct KyroRootPageView: View {
                 FavoritesView(showsNavigationTitle: false)
             }
         case .radio:
-            KyroAudioHub()
+            KyroRadioView(browsing: radioBrowsing())
+        case .podcasts:
+            KyroPodcastBrowser(isSecondaryDestination: false, browsing: podcastBrowsing())
         }
     }
 }

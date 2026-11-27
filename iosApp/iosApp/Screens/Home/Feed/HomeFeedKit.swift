@@ -348,6 +348,9 @@ struct HomePosterCard: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        let _ = KyroPerformanceDiagnostics.countOnHome(.homePosterBody)
+        #endif
         HomeCardTap(
             contentId: item.contentId,
             accessibilityLabel: accessibilityDescription,

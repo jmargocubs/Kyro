@@ -41,7 +41,7 @@ enum IOSSettingsOverviewCategory: String, CaseIterable, Identifiable {
         case .liveTV: "Live TV"
         case .sports: "Sports Dashboard"
         case .radio: KyroRadioSettingsEntry.title
-        case .podcasts: "Podcasts"
+        case .podcasts: "Podcast Settings"
         case .appearanceNavigation: "Appearance & Navigation"
         case .downloadsStorage: "Downloads & Storage"
         case .backup: "Backup & Restore"
